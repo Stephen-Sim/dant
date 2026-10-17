@@ -1,0 +1,145 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build:
+    name: Test and package Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact: ${{ steps.artifact-name.outputs.name }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.x
+          architecture: x64
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install locked Node dependencies
+        run: npm ci
+      - name: Install VM test dependency
+        run: python -m pip install --disable-pip-version-check pycdlib==1.14.0
+      - name: Require VM test tools and check Bash syntax
+        run: node scripts/ci/preflight.mjs
+      - name: Check PowerShell syntax without running VM scripts
+        shell: pwsh
+        run: ./scripts/ci/check-powershell.ps1
+      - name: Check application and tag versions
+        id: version
+        run: node scripts/ci/version.mjs
+      - name: Test release version gate
+        run: node --test scripts/ci/version.test.mjs
+      - name: Test backend, including Windows DPAPI
+        run: npm test
+      - name: Test VM image, seed, desktop and SSH key helpers
+        run: python -m unittest discover -s tests -p test_vm.py -v
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
+      - name: Restore Rust compilation cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target/release/deps
+            src-tauri/target/release/build
+            src-tauri/target/release/.fingerprint
+            src-tauri/target/release/incremental
+          key: windows-x64-rust-1.99.1-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json', 'package-lock.json') }}
+          restore-keys: windows-x64-rust-1.99.1-
+      - name: Build frontend
+        run: npm run build
+      - name: Prepare Windows backend resources
+        run: node scripts/package-resources.mjs
+      - name: Build unsigned NSIS installer with locked Cargo dependencies
+        run: npx --no-install tauri build --ci --bundles nsis -- --locked
+      - name: Create complete portable runtime, checksums and metadata
+        run: node scripts/ci/artifacts.mjs
+      - name: Name artifact
+        id: artifact-name
+        shell: pwsh
+        run: '"name=dant-windows-x64-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" >> $env:GITHUB_OUTPUT'
+      - name: Upload tested Windows artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: src-tauri/target/ci-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  draft-release:
+    name: Create or update draft release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested Windows artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: artifacts
+      - name: Verify artifacts and tag before creating a draft
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$TAG" = "v$VERSION"
+          (cd artifacts && sha256sum --check SHA256SUMS)
+          python3 - <<'PY'
+          import glob, json, os
+          files = glob.glob('artifacts/*_build.json')
+          assert len(files) == 1, 'Expected exactly one build metadata file'
+          with open(files[0], encoding='utf-8') as stream:
+              metadata = json.load(stream)
+          assert metadata['version'] == os.environ['VERSION'], 'Artifact version mismatch'
+          assert metadata['commit'] == os.environ['GITHUB_SHA'], 'Artifact commit mismatch'
+          assert metadata['ref'] == os.environ['GITHUB_REF'], 'Artifact tag mismatch'
+          assert metadata['platform'] == 'win32' and metadata['arch'] == 'x64'
+          PY
+      - name: Create draft or replace assets on an existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if existing=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [ "$existing" != true ]; then
+              echo 'Refusing to replace assets on an already published release.' >&2
+              exit 1
+            fi
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            printf 'Unsigned Windows x64 build for %s.\n\nIncludes the NSIS installer, portable application with its complete backend, SHA-256 checksums, and build metadata.\n\nBuild: %s/%s/actions/runs/%s\n' "$VERSION" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/release-notes.md"
+            gh release create "$TAG" artifacts/* --draft --verify-tag --title "dant $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi

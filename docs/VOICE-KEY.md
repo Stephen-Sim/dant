@@ -1,6 +1,8 @@
 # 可选语音 API Key
 
-实时语音可以单独配置 OpenAI API Key。API 用量按对应 API 账号计费，不包含在 ChatGPT 订阅中。未配置时可以继续使用已有 ChatGPT 订阅聊天；是否启用通话由语音功能入口判断。
+本文只说明 dant 的可选独立 API 语音。ChatGPT 桌面应用中的原生语音使用现有订阅额度，无需单独 API Key；dant 尚未接入该原生通道。不能把 dant 当前接口的限制理解为 ChatGPT 桌面语音必须额外付费。参见 [官方语音说明](https://learn.chatgpt.com/docs/features/voice) 与 [订阅用量说明](https://learn.chatgpt.com/docs/pricing)。
+
+如自行选择独立 API 方案，可以在设置中展开“可选：独立 API 语音”并配置 OpenAI API Key。此方案的 API 用量按对应 API 项目计费，不包含在 ChatGPT 订阅中。未配置时可以继续使用已有 ChatGPT 订阅文字聊天与电脑任务。
 
 Windows 版把 Key 保存在应用数据目录的 `voice-key.dpapi`，使用 Windows DPAPI `CurrentUser` 保护。该文件只包含密文，Key 不写入 `state.json`、聊天记录或 Git。状态接口只提供是否配置和来源，不回显 Key；已配置不表示已通过远端 API 的有效性或额度验证。
 

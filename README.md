@@ -2,7 +2,7 @@
 
 Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Tauri 桌面壳、Node.js 本地服务和 VM 内的 Codex App Server。
 
-项目正在从零重建。当前已实机验证 Windows 原生窗口、Hyper-V VM、真实桌面与接管、SSH、ChatGPT 订阅回复、VM 内命令执行、文件交付、图片/文本附件和独立记忆。实时通话可单独配置 OpenAI API Key；文字聊天继续使用 ChatGPT 订阅。通话的真实麦克风、播放和模型连接需要配置有效 Key 后验收。
+项目正在从零重建。当前已实机验证 Windows 原生窗口、Hyper-V VM、真实桌面与接管、SSH、ChatGPT 订阅回复、VM 内命令执行、文件交付、图片/文本附件和独立记忆。ChatGPT 桌面应用的原生语音使用订阅额度，dant 尚未接入该通道；现有独立 API 语音仅为可选方案，另行计费，真实音频通话尚待有效 Key 验收。
 
 ## 功能
 
@@ -66,7 +66,9 @@ npm start
 
 ## 可选语音通话
 
-在设置中的“语音 API Key”填写自己的 OpenAI API Key 并保存。Key 使用 Windows 当前用户的 DPAPI 加密保存在应用数据目录；不会发送给 VM、进入聊天记录或纳入 Git。保存仅表示本地已配置，是否有效及是否有额度在建立通话时由官方 API 验证。
+ChatGPT 桌面应用中的原生语音使用现有订阅额度，无需单独配置 API Key，仍受套餐额度约束，见 [官方语音说明](https://learn.chatgpt.com/docs/features/voice) 和 [用量说明](https://learn.chatgpt.com/docs/pricing)。dant 当前尚未接入该原生订阅语音通道；Codex CLI `0.163.0` 的本地接口验收结果不能用于判断 ChatGPT 桌面原生语音是否可用。
+
+如自行选择独立 API 方案，在设置中展开“可选：独立 API 语音”，填写自己的 OpenAI API Key 并保存。Key 使用 Windows 当前用户的 DPAPI 加密保存在应用数据目录；不会发送给 VM、进入聊天记录或纳入 Git。保存仅表示本地已配置，是否有效及是否有额度在建立通话时由官方 API 验证。
 
 通话通过官方 Realtime WebRTC 接口，使用 `gpt-realtime-2.1`，费用由 API 项目单独承担，不包含在 ChatGPT 订阅内。通话中交代的电脑任务通过工具交给现有的订阅执行器，仍使用同一串行队列；语音转录不写入聊天，明确分享的链接和文件正常交付。录音附件不需要语音 Key。配置和验证方法见 [语音 Key 说明](docs/VOICE-KEY.md)。
 
@@ -80,13 +82,19 @@ python -m py_compile vm/guest.py vm/desktop.py scripts/seed.py
 
 自动测试使用模拟执行器验证队列、协议事件、持久化和 API。它们不代表真实模型或 VM 验收。首次实机验证应依次检查：桌面截图、接管输入、ChatGPT 登录、真实回复、任务中断、文件交付、重启恢复，再测试麦克风/播放/打断和通知。
 
+## GitHub Actions
+
+推送、Pull Request 和手动运行会触发 Ubuntu / Windows 的自动测试与前端构建。Windows 构建流程另外编译 Tauri 桌面程序，上传安装包、包含完整后端的 ZIP、SHA-256 校验文件和构建信息，可在 [Actions](https://github.com/Stephen-Sim/dant/actions) 下载。
+
+推送与项目版本一致的 `v*` 标签时，会在构建成功后创建 GitHub Release 草稿，供检查后手动发布。流程不需要 OpenAI Key 或真实 VM，也不会打包个人聊天、凭据或 VM 磁盘。用法与范围见 [CI 说明](docs/ci.md)。
+
 ## 数据与运行边界
 
 - `data/`：聊天、记忆、文件、SSH 密钥和 VM 磁盘；不纳入 Git。
 - `.cache/` 和 `.tools/`：下载镜像、协议参考和项目构建工具；不纳入 Git。
 - VM 内 Agent 拥有所选 VM 权限；宿主机只运行管理应用和 SSH 连接。
 - 任务调度需要应用正在运行；目前没有安装 Windows 后台服务。
-- 录音附件可上传、交付和播放；内容理解取决于模型工具。Codex 的订阅登录无法建立实时通话；可选语音 Key 直接连接官方 Realtime API，单独计费。没有使用未公开的 ChatGPT 网页音频接口。
+- 录音附件可上传、交付和播放；内容理解取决于模型工具。dant 尚未接入 ChatGPT 桌面原生订阅语音；可选的独立语音 Key 直接连接官方 Realtime API，单独计费。没有使用未公开的 ChatGPT 网页音频接口。
 - 桌面面板通过 SSH 隧道获取截图与发送输入，适合文档、浏览器和开发工作，不是高帧率视频串流。
 
 ## 官方接口参考

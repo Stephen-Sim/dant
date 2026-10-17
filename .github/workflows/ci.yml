@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  checks:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install locked Node dependencies
+        run: npm ci
+      - name: Install VM test dependency
+        run: python -m pip install --disable-pip-version-check pycdlib==1.14.0
+      - name: Require VM test tools and check Bash syntax
+        run: node scripts/ci/preflight.mjs
+      - name: Check PowerShell syntax without running VM scripts
+        shell: pwsh
+        run: ./scripts/ci/check-powershell.ps1
+      - name: Check application versions
+        run: node scripts/ci/version.mjs
+      - name: Test release version gate
+        run: node --test scripts/ci/version.test.mjs
+      - name: Test backend
+        run: npm test
+      - name: Test VM image, seed, desktop and SSH key helpers
+        run: python -m unittest discover -s tests -p test_vm.py -v
+      - name: Build frontend
+        run: npm run build

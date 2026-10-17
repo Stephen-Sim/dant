@@ -23,16 +23,16 @@ export class Engine extends EventEmitter {
  updateWork(id,patch){if(!this.voiceTasks.has(id))this.store.update(id,patch);}
  cancelVoiceQueue(reason){this.queue=this.queue.filter(message=>{const task=this.voiceTasks.get(message.id);if(!task)return true;this.voiceTasks.delete(message.id);task.reject(Error(reason));return false;});}
  cancelQueue(){for(const message of this.queue.splice(0)){const task=this.voiceTasks.get(message.id);if(task){this.voiceTasks.delete(message.id);task.reject(Error('Task interrupted'));}else this.store.update(message.id,{status:'interrupted'});}this.change();}
- async pump(){if(this.active||this.takeover||this.acquiring||this.worker.status!=='online'||!this.queue.length)return;const message=this.queue.shift();const active={messageId:message.id,turnId:null,voiceOutput:this.voiceTasks.has(message.id)?new Map():null};this.active=active;let ready;this.starting=new Promise(resolve=>ready=resolve);this.updateWork(message.id,{status:'running'});this.change();
-  try{const threadId=await this.thread();const input=[{type:'text',text:message.text||'Please inspect the attached files.',text_elements:[]}];
+ async pump(){if(this.active||this.takeover||this.acquiring||this.worker.status!=='online'||!this.queue.length)return;const message=this.queue.shift();const active={messageId:message.id,turnId:null,threadId:null,voiceOutput:this.voiceTasks.has(message.id)?new Map():null};let ready;active.starting=new Promise(resolve=>ready=resolve);active.stopped=new Promise(resolve=>active.resolveStopped=resolve);this.active=active;
+  try{this.updateWork(message.id,{status:'running'});this.change();const threadId=await this.thread();active.threadId=threadId;const input=[{type:'text',text:message.text||'Please inspect the attached files.',text_elements:[]}];
    if(message.replyTo){const target=this.store.state.messages.find(m=>m.id===message.replyTo);if(target)input[0].text=`Replying to: ${target.text}\n\n${input[0].text}`;}
    for(const a of message.attachments||[]){if(a.type.startsWith('image/'))input.push({type:'localImage',path:a.guestPath});else input[0].text+=`\nAttached file in VM: ${a.guestPath}`;}
    if(this.active!==active)return;if(active.stopRequested){this.finish('interrupted');return;}
-   const result=await this.worker.request('turn/start',{threadId,input,cwd:'/home/dant/work',approvalPolicy:'never',sandboxPolicy:{type:'dangerFullAccess'},model:this.store.state.settings.model||undefined});if(this.active===active)this.active.turnId=result.turn.id;
+   const result=await this.worker.request('turn/start',{threadId,input,cwd:'/home/dant/work',approvalPolicy:'never',sandboxPolicy:{type:'dangerFullAccess'},model:this.store.state.settings.model||undefined});if(this.active===active)active.turnId ||= result.turn.id;
   }catch(e){if(this.active===active)this.finish('failed',e.message);}finally{ready();}
  }
  async handle(e){const p=e.params||{};
-  if(p.threadId&&p.threadId!==this.store.state.threadId){if(e.id!==undefined)this.worker.rpc?.send({id:e.id,error:{code:-32602,message:'Inactive thread'}});return;}
+  if(p.threadId&&p.threadId!==(this.active?.threadId||this.store.state.threadId)){if(e.id!==undefined)this.worker.rpc?.send({id:e.id,error:{code:-32602,message:'Inactive thread'}});return;}
   const eventTurnId=p.turnId||p.turn?.id;
   if(eventTurnId&&(this.completedTurns.has(eventTurnId)||(this.active?.turnId&&eventTurnId!==this.active.turnId))){if(e.id!==undefined)this.worker.rpc?.send({id:e.id,error:{code:-32602,message:'Inactive turn'}});return;}
   if(e.id!==undefined){
@@ -40,7 +40,7 @@ export class Engine extends EventEmitter {
    this.worker.rpc.send({id:e.id,error:{code:-32601,message:'Unsupported request: '+e.method}});return;
   }
   if(e.method==='account/updated'||e.method==='account/login/completed'){this.worker.account=await this.worker.request('account/read',{});this.change();}
-  if(e.method==='turn/started'&&this.active)this.active.turnId=p.turn?.id;
+  if(e.method==='turn/started'&&eventTurnId&&this.active)this.active.turnId ||= eventTurnId;
   if(e.method==='item/agentMessage/delta'){
    if(this.completedItems.has(p.itemId)||(p.turnId&&!this.active))return;
    if(this.active?.voiceOutput){const output=this.active.voiceOutput;output.set(p.itemId,(output.get(p.itemId)||'')+p.delta);}else{let m=this.items.get(p.itemId);if(!m){m=this.store.add({role:'assistant',text:'',status:'streaming'});this.items.set(p.itemId,m);}m.text+=p.delta;this.store.save();this.emit('delta',{id:m.id,delta:p.delta});this.change();}
@@ -54,9 +54,29 @@ export class Engine extends EventEmitter {
   if(e.method.startsWith('thread/realtime/')){this.emit('realtime',e);if(e.method==='thread/realtime/closed')this.closeCall();if(e.method==='thread/realtime/error'&&this.call)await this.stopCall();}
  }
  async tool(name,args){switch(name){case 'memory_write':if(typeof args.text!=='string'||args.text.length>100000)throw Error('Invalid memory');this.store.state.memory=args.text;this.store.save();this.change();return {saved:true};case 'send_message':this.store.add({role:'assistant',text:String(args.text),status:'completed'});this.change();return {sent:true};case 'send_file':return await this.deliverFile(args.path);case 'end_call':await this.stopCall();return {ended:true};default:throw Error('Unknown tool');}}
- finish(status,error){error=readableError(error);if(this.active){if(this.active.turnId){this.completedTurns.add(this.active.turnId);if(this.completedTurns.size>1000)this.completedTurns.delete(this.completedTurns.values().next().value);}const task=this.voiceTasks.get(this.active.messageId);if(task){this.voiceTasks.delete(this.active.messageId);if(status==='completed')task.resolve({result:[...this.active.voiceOutput.values()].join('\n\n')||'Task completed.'});else task.reject(Error(error||'Task '+status));}else this.store.update(this.active.messageId,{status:status==='completed'?'read':status,error});}for(const [id,m] of this.items){if(m.status==='streaming')m.status=status;this.completedItems.add(id);}while(this.completedItems.size>1000)this.completedItems.delete(this.completedItems.values().next().value);this.items.clear();this.store.save();this.active=null;if(error)this.emit('notice',error);this.change();if(!this.takeover&&!this.acquiring)queueMicrotask(()=>this.pump());}
- async interrupt(){const active=this.active;if(!active)return;active.stopRequested=true;if(!active.turnId)await this.starting;if(this.active===active&&active.turnId)await this.worker.request('turn/interrupt',{threadId:this.store.state.threadId,turnId:active.turnId});}
- async acquire(){if(this.acquiring)throw Error('Desktop takeover is already in progress');this.acquiring=true;try{await this.interrupt();const deadline=Date.now()+15000;while(this.active&&Date.now()<deadline)await new Promise(r=>setTimeout(r,50));if(this.active)throw Error('Agent has not stopped yet');this.takeover=true;this.change();}finally{this.acquiring=false;if(!this.takeover)void this.pump();}}
+ finish(status,error){error=readableError(error);const active=this.active;
+  try{
+   if(active){if(active.turnId){this.completedTurns.add(active.turnId);if(this.completedTurns.size>1000)this.completedTurns.delete(this.completedTurns.values().next().value);}const task=this.voiceTasks.get(active.messageId);if(task){this.voiceTasks.delete(active.messageId);if(status==='completed')task.resolve({result:[...active.voiceOutput.values()].join('\n\n')||'Task completed.'});else task.reject(Error(error||'Task '+status));}else this.store.update(active.messageId,{status:status==='completed'?'read':status,error});}
+   for(const [id,m] of this.items){if(m.status==='streaming')m.status=status;this.completedItems.add(id);}while(this.completedItems.size>1000)this.completedItems.delete(this.completedItems.values().next().value);this.items.clear();this.store.save();
+  }catch(persistenceError){this.emit('notice','Could not save conversation: '+persistenceError.message);}
+  finally{this.items.clear();this.active=null;active?.resolveStopped?.();}
+  if(error)this.emit('notice',error);this.change();if(!this.takeover&&!this.acquiring)queueMicrotask(()=>this.pump());
+ }
+ async interrupt(active=this.active){
+  if(!active)return;active.stopRequested=true;
+  if(!active.turnId)await Promise.race([active.starting,active.stopped]);
+  if(this.active===active&&active.turnId)await Promise.race([this.worker.request('turn/interrupt',{threadId:active.threadId||this.store.state.threadId,turnId:active.turnId}),active.stopped]);
+ }
+ async acquire(){
+  if(this.acquiring)throw Error('Desktop takeover is already in progress');this.acquiring=true;const active=this.active;let timer;
+  try{
+   if(active)await Promise.race([
+    (async()=>{await this.interrupt(active);await active.stopped;})(),
+    new Promise((resolve,reject)=>timer=setTimeout(()=>reject(Error('Agent has not stopped yet')),15000))
+   ]);
+   if(this.active)throw Error('Agent has not stopped yet');this.takeover=true;this.change();
+  }finally{clearTimeout(timer);this.acquiring=false;if(!this.takeover)void this.pump();}
+ }
  release(){this.takeover=false;this.change();void this.pump();}
  async startCall(sdp){if(!this.voice)throw Error('Configure a separate voice API key in settings. Subscription chat remains connected.');if(this.worker.status!=='online')throw Error('Connect the VM first');if(this.call)throw Error('A call is already active');const call={started:Date.now(),status:'connecting',provider:'openai'};this.call=call;try{const result=await this.voice.start({sdp,voice:this.store.state.settings.voice,memory:this.store.state.memory});if(this.call!==call)throw Error('Call cancelled');call.status='connected';this.change();return result;}catch(e){if(this.call===call)this.call=null;this.change();throw e;}}
  closeCall(){if(!this.call)return;const seconds=Math.round((Date.now()-this.call.started)/1000);this.store.add({role:'system',kind:'call',seconds,text:'',status:'completed'});this.call=null;this.change();}

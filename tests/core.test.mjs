@@ -20,9 +20,28 @@ class FakeWorker extends EventEmitter {
 const tick=()=>new Promise(r=>setImmediate(r));
 test('restart retains messages and makes unfinished tasks explicitly resumable',t=>{const dir=temp(t);const s=new Store(dir);s.add({role:'user',text:'persist',status:'queued'});s.add({role:'assistant',text:'partial',status:'streaming'});const reopened=new Store(dir);assert.equal(reopened.state.messages.length,2);assert.deepEqual(reopened.state.messages.map(m=>m.status),['interrupted','interrupted']);});
 test('corrupt persistence is not silently overwritten',t=>{const dir=temp(t);fs.writeFileSync(path.join(dir,'state.json'),'{bad');assert.throws(()=>new Store(dir));assert.equal(fs.readFileSync(path.join(dir,'state.json'),'utf8'),'{bad');});
+test('Windows persistence retries a transient atomic rename without rewriting or losing state',t=>{
+ const dir=temp(t),pauses=[];let armed=false,attempts=0;
+ const store=new Store(dir,{platform:'win32',pause:ms=>pauses.push(ms),renameSync:(from,to)=>{if(armed&&++attempts===1)throw Object.assign(Error('Transient file lock'),{code:'EPERM'});fs.renameSync(from,to);}});
+ armed=true;store.state.memory='Saved after retry';store.save();
+ assert.equal(attempts,2);assert.deepEqual(pauses,[10]);assert.equal(JSON.parse(fs.readFileSync(store.file,'utf8')).memory,'Saved after retry');
+ assert.equal(fs.existsSync(store.file+'.tmp'),false);
+});
+test('Windows persistence exhausts a bounded rename retry and preserves the original file/error',t=>{
+ const dir=temp(t),pauses=[],failure=Object.assign(Error('Persistent file lock'),{code:'EACCES'});let armed=false,attempts=0;
+ const store=new Store(dir,{platform:'win32',pause:ms=>pauses.push(ms),renameSync:(from,to)=>{if(armed){attempts++;throw failure;}fs.renameSync(from,to);}});
+ const original=fs.readFileSync(store.file);armed=true;store.state.memory='Unsaved change';assert.throws(()=>store.save(),error=>error===failure);
+ assert.equal(attempts,6);assert.deepEqual(pauses,[10,20,30,40,50]);assert.ok(pauses.reduce((a,b)=>a+b,0)<=200);assert.deepEqual(fs.readFileSync(store.file),original);
+});
+test('persistence does not retry unrelated errors or permission errors on other platforms',t=>{
+ for(const [platform,code] of [['win32','ENOSPC'],['linux','EPERM']]){
+  let armed=false,attempts=0;const failure=Object.assign(Error('Not retryable'),{code}),store=new Store(temp(t),{platform,pause:()=>assert.fail('Unexpected retry pause'),renameSync:(from,to)=>{if(armed){attempts++;throw failure;}fs.renameSync(from,to);}});
+  const original=fs.readFileSync(store.file);armed=true;assert.throws(()=>store.save(),error=>error===failure);assert.equal(attempts,1);assert.deepEqual(fs.readFileSync(store.file),original);
+ }
+});
 test('VM host cannot inject SSH options or shell syntax',t=>{const dir=temp(t),key=path.join(dir,'key');fs.writeFileSync(key,'test');const valid={host:'172.16.0.2',user:'dant',port:22,keyPath:key,knownHosts:path.join(dir,'hosts')};assert.ok(sshArgs(valid).includes('BatchMode=yes'));for(const host of ['-oProxyCommand=x','host;whoami','$(whoami)','a b'])assert.throws(()=>sshArgs({...valid,host}));assert.throws(()=>sshArgs({...valid,user:'dant;id'}));assert.throws(()=>sshArgs({...valid,port:0}));});
 test('serial queue starts next task only after completion',async t=>{const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);const a=s.add({role:'user',text:'one'}),b=s.add({role:'user',text:'two'});e.enqueue(a);e.enqueue(b);await tick();assert.equal(w.calls.filter(c=>c.method==='turn/start').length,1);await e.handle({method:'turn/completed',params:{turn:{status:'completed'},threadId:'thread-test'}});await tick();assert.equal(w.calls.filter(c=>c.method==='turn/start').length,2);assert.equal(s.state.messages[0].status,'read');});
-test('takeover waits for interruption and pauses queued work until return',async t=>{const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);e.enqueue(s.add({role:'user',text:'one'}));e.enqueue(s.add({role:'user',text:'two'}));await tick();await e.acquire();assert.equal(e.active,null);assert.equal(e.takeover,true);assert.equal(w.calls.filter(c=>c.method==='turn/start').length,1);e.release();await tick();assert.equal(w.calls.filter(c=>c.method==='turn/start').length,2);});
+test('takeover waits for interruption and pauses queued work until return',async t=>{const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w),notices=[],events=[];e.on('notice',notice=>notices.push(notice));w.prependListener('event',event=>events.push({method:event.method,threadId:event.params?.threadId,turnId:event.params?.turn?.id}));e.enqueue(s.add({role:'user',text:'one'}));e.enqueue(s.add({role:'user',text:'two'}));await tick();try{await e.acquire();}catch(error){error.message+='; trace='+JSON.stringify({notices,events,threadId:s.state.threadId,active:e.active&&{turnId:e.active.turnId,stopRequested:e.active.stopRequested},completedTurns:[...e.completedTurns],calls:w.calls.map(call=>({method:call.method,threadId:call.params?.threadId,turnId:call.params?.turnId}))});throw error;}assert.equal(e.active,null);assert.equal(e.takeover,true);assert.equal(w.calls.filter(c=>c.method==='turn/start').length,1);e.release();await tick();assert.equal(w.calls.filter(c=>c.method==='turn/start').length,2);});
 test('streaming and final agent events produce one message with intact markdown',async t=>{const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);s.state.threadId='thread-test';for(const delta of ['**hello',' world**'])await e.handle({method:'item/agentMessage/delta',params:{threadId:'thread-test',itemId:'a',delta}});await e.handle({method:'item/completed',params:{threadId:'thread-test',item:{id:'a',type:'agentMessage',text:'**hello world**'}}});assert.equal(s.state.messages.length,1);assert.equal(s.state.messages[0].text,'**hello world**');assert.equal(s.state.messages[0].status,'completed');});
 test('independent memory survives a fresh process and call end leaves one record',async t=>{const dir=temp(t),s=new Store(dir),w=new FakeWorker(),e=new Engine(s,w);await e.tool('memory_write',{text:'Prefers Chinese'});assert.equal(new Store(dir).state.memory,'Prefers Chinese');e.call={started:Date.now()-3000};await e.stopCall();e.closeCall();assert.equal(s.state.messages.filter(m=>m.kind==='call').length,1);});
 test('disconnect invalidates loaded thread and marks work interrupted',async t=>{const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);e.enqueue(s.add({role:'user',text:'hello'}));await tick();assert.equal(e.loaded,true);w.disconnect();assert.equal(e.loaded,false);assert.equal(s.state.messages[0].status,'interrupted');});
@@ -78,6 +97,71 @@ test('takeover requested while thread starts cancels before sending turn/start',
  resolveStart({thread:{id:'thread-test'}});await takeover;
  assert.equal(e.takeover,true);assert.equal(message.status,'interrupted');
  assert.equal(w.calls.filter(c=>c.method==='turn/start').length,0);
+});
+
+test('failed running-status persistence settles startup instead of leaving takeover pending',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w),notices=[];e.on('notice',notice=>notices.push(notice));
+ const message=s.add({role:'user',text:'one'}),update=s.update.bind(s);let failed=false;
+ s.update=(id,patch)=>{if(patch.status==='running'&&!failed){failed=true;throw Error('Simulated initial save failure');}return update(id,patch);};
+ e.queue.push(message);await e.pump();await e.acquire();
+ assert.equal(failed,true);assert.equal(e.active,null);assert.equal(e.takeover,true);assert.equal(message.status,'failed');assert.equal(w.calls.length,0);
+ assert.ok(notices.includes('Simulated initial save failure'));
+});
+
+test('takeover accepts an early completion before the turn/start response arrives',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker();let resolveStart,requested;
+ const startRequested=new Promise(resolve=>requested=resolve),original=w.request.bind(w);
+ w.request=(method,params)=>{if(method!=='turn/start')return original(method,params);w.calls.push({method,params});requested();return new Promise(resolve=>resolveStart=resolve);};
+ const e=new Engine(s,w),first=s.add({role:'user',text:'one'});e.enqueue(first);e.enqueue(s.add({role:'user',text:'queued'}));await startRequested;
+ const takeover=e.acquire();await e.handle({method:'turn/completed',params:{threadId:'thread-test',turn:{id:'early-turn',status:'completed'}}});await tick();
+ const acquiredBeforeStartReply=e.takeover;resolveStart({turn:{id:'early-turn'}});await takeover;
+ assert.equal(acquiredBeforeStartReply,true);assert.equal(e.active,null);assert.equal(first.status,'read');assert.equal(e.queue.length,1);
+ assert.equal(w.calls.filter(call=>call.method==='turn/start').length,1);
+});
+
+test('takeover uses the completion notification without waiting for interrupt acknowledgement',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker();let acknowledge;
+ const original=w.request.bind(w);w.request=(method,params)=>{
+  if(method!=='turn/interrupt')return original(method,params);
+  w.calls.push({method,params});queueMicrotask(()=>w.emit('event',{method:'turn/completed',params:{threadId:params.threadId,turn:{id:params.turnId,status:'interrupted'}}}));
+  return new Promise(resolve=>acknowledge=resolve);
+ };
+ const e=new Engine(s,w);e.enqueue(s.add({role:'user',text:'one'}));await tick();
+ const takeover=e.acquire();await tick();const acquiredBeforeAck=e.takeover;acknowledge({});await takeover;
+ assert.equal(acquiredBeforeAck,true);assert.equal(e.active,null);
+});
+
+test('a later start response or incomplete started event cannot replace the observed turn ID',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker();let resolveStart,requested;
+ const startRequested=new Promise(resolve=>requested=resolve),original=w.request.bind(w);
+ w.request=(method,params)=>{if(method!=='turn/start')return original(method,params);w.calls.push({method,params});requested();return new Promise(resolve=>resolveStart=resolve);};
+ const e=new Engine(s,w);e.enqueue(s.add({role:'user',text:'one'}));await startRequested;
+ await e.handle({method:'turn/started',params:{threadId:'thread-test',turn:{id:'observed-turn'}}});
+ await e.handle({method:'turn/started',params:{threadId:'thread-test'}});
+ resolveStart({turn:{id:'stale-response-turn'}});await tick();
+ assert.equal(e.active.turnId,'observed-turn');await e.acquire();
+ assert.equal(w.calls.find(call=>call.method==='turn/interrupt').params.turnId,'observed-turn');assert.equal(e.takeover,true);
+});
+
+test('takeover matches the captured thread and ignores unrelated completion events',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker(),original=w.request.bind(w);
+ w.request=(method,params)=>{if(method!=='turn/interrupt')return original(method,params);w.calls.push({method,params});return Promise.resolve({});};
+ const e=new Engine(s,w);e.enqueue(s.add({role:'user',text:'one'}));await tick();const active=e.active,takeover=e.acquire();
+ await e.handle({method:'turn/completed',params:{threadId:'other-thread',turn:{id:active.turnId,status:'completed'}}});
+ await e.handle({method:'turn/completed',params:{threadId:'thread-test',turn:{id:'other-turn',status:'completed'}}});await tick();
+ assert.equal(e.active,active);assert.equal(e.takeover,false);
+ // A settings/thread refresh must not invalidate the running turn's identity.
+ s.state.threadId='other-thread';await e.handle({method:'turn/completed',params:{threadId:'thread-test',turn:{id:active.turnId,status:'interrupted'}}});
+ const accepted=e.active===null;if(e.active)e.finish('interrupted');await takeover;assert.equal(accepted,true);assert.equal(e.takeover,true);assert.equal(e.active,null);
+});
+
+test('confirmed completion releases takeover and reports a final persistence failure',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w),notices=[];e.on('notice',notice=>notices.push(notice));
+ e.enqueue(s.add({role:'user',text:'one'}));await tick();const original=fs.readFileSync(s.file),save=s.save.bind(s);
+ s.save=()=>{throw Error('Simulated final persistence failure');};
+ try{await e.acquire();}finally{s.save=save;}
+ assert.equal(e.active,null);assert.equal(e.takeover,true);assert.deepEqual(fs.readFileSync(s.file),original);
+ assert.ok(notices.some(notice=>notice.includes('Could not save conversation: Simulated final persistence failure')));
 });
 
 test('a failed old turn/start response cannot fail a newer task after reconnect',async t=>{
@@ -179,7 +263,7 @@ test('voice key HTTP configuration stays separate from subscription state and ne
  await new Promise(resolve=>instance.server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+instance.server.address().port;
  const {token}=await fetch(base+'/api/session').then(r=>r.json()),headers={'X-Dant-Token':token,'Content-Type':'application/json'},key='test-only-key-not-a-real-credential';
  const response=await fetch(base+'/api/voice-key',{method:'POST',headers,body:JSON.stringify({key})});assert.equal(response.status,200);assert.equal((await response.text()).includes(key),false);
- const snapshot=await fetch(base+'/api/state',{headers}).then(r=>r.json());assert.equal(snapshot.worker.realtime.available,true);assert.equal(snapshot.worker.account.type,'chatgpt');assert.equal(JSON.stringify(snapshot).includes(key),false);assert.equal(fs.readFileSync(instance.store.file,'utf8').includes(key),false);
+ const snapshot=await fetch(base+'/api/state',{headers}).then(r=>r.json());assert.equal(snapshot.worker.realtime.available,true);assert.equal(snapshot.worker.realtime.billing,'api');assert.deepEqual(snapshot.worker.realtime.subscription,{available:false,reason:'not-integrated'});assert.equal(snapshot.worker.account.type,'chatgpt');assert.equal(JSON.stringify(snapshot).includes(key),false);assert.equal(fs.readFileSync(instance.store.file,'utf8').includes(key),false);
  await instance.engine.startCall('offer');assert.equal((await fetch(base+'/api/voice-key',{method:'DELETE',headers})).status,400);await instance.engine.stopCall();
  assert.equal((await fetch(base+'/api/voice-key',{method:'DELETE',headers})).status,200);assert.equal(saved,null);assert.equal(w.calls.length,0);assert.equal(instance.store.state.messages.filter(m=>m.kind==='call').length,1);
 });
