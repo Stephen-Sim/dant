@@ -177,11 +177,11 @@ async function importAppearanceData(text){let patch;try{patch=parseAppearance(te
 function exportAppearance(){const blob=new Blob([JSON.stringify(appearanceExportData(),null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='dant-appearance.json';link.click();URL.revokeObjectURL(url);}
 function bindAppearance(){
  const update=patch=>changeAppearance(patch).catch(error=>toast(errorText(error)));
- document.querySelectorAll('[data-theme]').forEach(button=>button.onclick=()=>update({theme:button.dataset.theme}));
- document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>update({themePreset:'custom',accentColor:button.dataset.accent}));
- document.querySelectorAll('[data-reset-color]').forEach(button=>button.onclick=()=>update({[button.dataset.resetColor]:null}));
- document.querySelectorAll('[data-font]').forEach(button=>button.onclick=()=>{fontMenuOpen=false;fontSearch='';return update({font:button.dataset.font,fontFamily:''});});
- document.querySelectorAll('[data-font-family]').forEach(button=>button.onclick=()=>{if(!fontInventory?.fonts.includes(button.dataset.fontFamily))return;fontMenuOpen=false;fontSearch='';return update({fontFamily:button.dataset.fontFamily});});
+ document.querySelectorAll('.appearance-settings button[data-theme]').forEach(button=>button.onclick=()=>update({theme:button.dataset.theme}));
+ document.querySelectorAll('.appearance-settings button[data-accent]').forEach(button=>button.onclick=()=>update({themePreset:'custom',accentColor:button.dataset.accent}));
+ document.querySelectorAll('.appearance-settings button[data-reset-color]').forEach(button=>button.onclick=()=>update({[button.dataset.resetColor]:null}));
+ document.querySelectorAll('.appearance-settings button[data-font]').forEach(button=>button.onclick=()=>{fontMenuOpen=false;fontSearch='';return update({font:button.dataset.font,fontFamily:''});});
+ document.querySelectorAll('.appearance-settings button[data-font-family]').forEach(button=>button.onclick=()=>{if(!fontInventory?.fonts.includes(button.dataset.fontFamily))return;fontMenuOpen=false;fontSearch='';return update({fontFamily:button.dataset.fontFamily});});
  for(const [id,key]of [['appearance-size','fontSize'],['appearance-content-size','contentFontSize'],['appearance-code-size','codeFontSize'],['appearance-motion','reduceMotion'],['appearance-accentColor','accentColor'],['appearance-backgroundColor','backgroundColor'],['appearance-foregroundColor','foregroundColor']]){const input=document.querySelector('#'+id);if(input)input.onchange=()=>update({[key]:key.endsWith('FontSize')||key==='fontSize'?Number(input.value):input.value,...(key.endsWith('Color')?{themePreset:'custom'}:{})});}
  const preset=document.querySelector('#appearance-preset');if(preset)preset.onchange=()=>update({themePreset:preset.value,accentColor:null,backgroundColor:null,foregroundColor:null});
  const advanced=document.querySelector('#appearance-advanced');if(advanced)advanced.ontoggle=()=>appearanceAdvanced=advanced.open;
