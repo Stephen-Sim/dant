@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """VM-only desktop control. CLI used by dant and the local guest HTTP service."""
 import argparse, os, json, subprocess, sys, time, tempfile
+from control import desktop_access
 os.environ.setdefault('DISPLAY', ':0')
 def run(*args, data=None):
     return subprocess.run(args, input=data, capture_output=True, check=True, timeout=10).stdout
@@ -8,7 +9,11 @@ def point(x,y):
     return str(max(0,min(int(x),4096))),str(max(0,min(int(y),4096)))
 def button(value):
     return str({0:1,1:2,2:3}.get(int(value),1))
-def act(action):
+def act(action,session_id=None):
+    with desktop_access(session_id):
+        return _act(action)
+
+def _act(action):
     kind=action.get('type')
     if kind=='click':
         run('xdotool','mousemove',*point(action['x'],action['y']))
@@ -54,7 +59,8 @@ if __name__=='__main__':
     p.add_argument('action',choices=['screenshot','click','drag','text','key','scroll']);p.add_argument('args',nargs='*');a=p.parse_args()
     if a.action=='screenshot':
         target=a.args[0] if a.args else '/home/dant/work/screen.png'
-        open(target,'wb').write(screenshot());print(target)
+        with desktop_access():
+            open(target,'wb').write(screenshot());print(target)
     else:
         payload={'type':a.action}
         if a.action=='click':payload.update(x=int(a.args[0]),y=int(a.args[1]))

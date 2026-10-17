@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{io::{BufRead,BufReader,Write},path::PathBuf,process::{Child,Command,Stdio},sync::{Mutex,mpsc},time::Duration};
 use tauri::Manager;
+mod transport;
+mod notifications;
+mod speech;
 #[cfg(windows)] use std::os::windows::process::CommandExt;
 struct Backend(Mutex<Option<Child>>);
 fn runtime_path(path:PathBuf)->PathBuf{
@@ -24,7 +27,10 @@ fn main(){
  let app=tauri::Builder::default()
  .plugin(tauri_plugin_notification::init())
  .plugin(tauri_plugin_opener::init())
+ .manage(speech::SpeechProcess::default())
+ .invoke_handler(tauri::generate_handler![transport::api_request,speech::speech_start,speech::speech_stop])
  .setup(|app|{
+   if transport::existing_controller(){app.manage(Backend(Mutex::new(None)));notifications::start(app);return Ok(());}
    let backend_root=runtime_path(if cfg!(debug_assertions){PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()}else{app.path().resource_dir()?.join("backend")});
    let data=runtime_path(if let Some(value)=std::env::var_os("DANT_DATA"){PathBuf::from(value)}else if cfg!(debug_assertions){backend_root.join("data")}else{app.path().app_data_dir()?.join("data")});
    std::fs::create_dir_all(&data)?;
@@ -40,8 +46,9 @@ fn main(){
    std::thread::spawn(move||{for line in BufReader::new(output).lines().map_while(Result::ok){if line=="dant listening at http://127.0.0.1:4317"{let _=sender.send(());}}});
    if receiver.recv_timeout(Duration::from_secs(15)).is_err(){let _=child.kill();let _=child.wait();return Err(format!("dant backend could not start. Close other dant instances and check {}",data.join("startup.log").display()).into());}
    app.manage(Backend(Mutex::new(Some(child))));
+   notifications::start(app);
    Ok(())
  }).build(tauri::generate_context!());
  let app=match app{Ok(app)=>app,Err(error)=>{startup_error(&format!("Unable to start dant: {error}"));std::process::exit(1);}};
- app.run(|handle,event|{if let tauri::RunEvent::Exit=event {if let Some(state)=handle.try_state::<Backend>(){if let Some(mut child)=state.0.lock().unwrap().take(){drop(child.stdin.take());for _ in 0..30{if child.try_wait().ok().flatten().is_some(){break;}std::thread::sleep(Duration::from_millis(100));}let _=child.kill();let _=child.wait();}}}});
+ app.run(|handle,event|{if let tauri::RunEvent::Exit=event {if let Some(pump)=handle.try_state::<notifications::NotificationPump>(){pump.0.store(false,std::sync::atomic::Ordering::Relaxed);}if let Some(process)=handle.try_state::<speech::SpeechProcess>(){speech::stop(&process);}if let Some(state)=handle.try_state::<Backend>(){if let Some(mut child)=state.0.lock().unwrap().take(){drop(child.stdin.take());for _ in 0..30{if child.try_wait().ok().flatten().is_some(){break;}std::thread::sleep(Duration::from_millis(100));}let _=child.kill();let _=child.wait();}}}});
 }

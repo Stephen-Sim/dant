@@ -2,16 +2,18 @@
 
 Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Tauri 桌面壳、Node.js 本地服务和 VM 内的 Codex App Server。
 
-项目正在从零重建。当前已实机验证 Windows 原生窗口、Hyper-V VM、真实桌面与接管、SSH、ChatGPT 订阅回复、VM 内命令执行、文件交付、图片/文本附件和独立记忆。ChatGPT 桌面应用的原生语音使用订阅额度，dant 尚未接入该通道；现有独立 API 语音仅为可选方案，另行计费，真实音频通话尚待有效 Key 验收。
+按原版 UI 与架构重建，适配 Windows + Hyper-V。Windows 负责界面、VM 安装管理、本机通知和 API 代理；Ubuntu VM 持有聊天、任务、记忆、附件与 Codex 执行器。职责与 Mac / UTM 原版对应，通信改为 SSH 本地隧道。详见 [实现架构](docs/architecture.md)。
+
+订阅语音采用 Codex Realtime V3、WebRTC 与 `gpt-live-1-codex`。已用现有 ChatGPT 登录实测 SDP 协商及静默 WebRTC 连接，无需 API Key；麦克风、扬声器和连续对话仍需人工实机验收。独立 API 语音保留为可选通道。
 
 ## 功能
 
 - 单一持续聊天，Markdown、链接、附件、引用回复、表情和消息状态。
 - 中英文界面，黑白设计，整页设置，可调宽度的电脑面板。
-- VM 内串行执行任务，停止、接管、交还；聊天与长期记忆保存在本地。
+- VM 内串行执行任务，暂停、继续、待验收和明确验收；消息送达、执行确认、用户已读分别记录。
 - SSH 转发桌面画面及输入，不在宿主机执行 Agent 的工作命令。
-- 图片、文件和录音消息；Agent 可分享工作目录中的文件。
-- 未读消息通知、定时任务，以及可选的 API 计费实时语音通话。
+- 每条消息最多 5 个附件，每个 10 MiB；成功执行后自动归档 `output/` 中新增或变化的文件。
+- VM 文件记忆、人工接管共享锁和两分钟租约、本机未读完成通知、单次定时任务，以及订阅实时通话。
 
 ## 本地启动
 
@@ -64,13 +66,13 @@ npm start
 
 双击项目中的 `start-desktop.cmd`，即可使用项目已有的聊天和 VM 连接启动桌面版。
 
-## 可选语音通话
+## 语音通话
 
-ChatGPT 桌面应用中的原生语音使用现有订阅额度，无需单独配置 API Key，仍受套餐额度约束，见 [官方语音说明](https://learn.chatgpt.com/docs/features/voice) 和 [用量说明](https://learn.chatgpt.com/docs/pricing)。dant 当前尚未接入该原生订阅语音通道；Codex CLI `0.163.0` 的本地接口验收结果不能用于判断 ChatGPT 桌面原生语音是否可用。
+默认通过 VM 内 Codex App Server 的实验性 Realtime V3 接口使用 ChatGPT 登录。前端持有 WebRTC 音频连接，Controller 与 VM 只传 SDP 和控制事件。之前默认 WebSocket 测试返回“requires API key”的结论仅适用于那个通道；V3 WebRTC 已实测连接成功。可用性和额度仍取决于订阅账号与执行器版本，见 [官方语音说明](https://learn.chatgpt.com/docs/features/voice) 和 [用量说明](https://learn.chatgpt.com/docs/pricing)。
 
-如自行选择独立 API 方案，在设置中展开“可选：独立 API 语音”，填写自己的 OpenAI API Key 并保存。Key 使用 Windows 当前用户的 DPAPI 加密保存在应用数据目录；不会发送给 VM、进入聊天记录或纳入 Git。保存仅表示本地已配置，是否有效及是否有额度在建立通话时由官方 API 验证。
+如自行选择独立 API 方案，在设置中展开“可选：独立 API 语音”，填写自己的 OpenAI API Key。Key 使用 Windows 当前用户 DPAPI 加密保存；只有显式选择 API 通话时，经 SSH 传给 VM 的通话进程短时使用，结束后清除，不写入 VM 磁盘、聊天或 Git。保存仅表示本地已配置，实际权限由官方 API 验证。
 
-通话通过官方 Realtime WebRTC 接口，使用 `gpt-realtime-2.1`，费用由 API 项目单独承担，不包含在 ChatGPT 订阅内。通话中交代的电脑任务通过工具交给现有的订阅执行器，仍使用同一串行队列；语音转录不写入聊天，明确分享的链接和文件正常交付。录音附件不需要语音 Key。配置和验证方法见 [语音 Key 说明](docs/VOICE-KEY.md)。
+可选 API 通道使用 `gpt-realtime-2.1`，费用由 API 项目单独承担。默认订阅通道不要求这个 Key。应用只保存实际连接过的通话起止时间和时长，不把通话音频或转写正文写入聊天；明确交付的消息与文件照常保存。配置见 [语音说明](docs/VOICE-KEY.md)。
 
 ## 验证
 
@@ -90,11 +92,13 @@ python -m py_compile vm/guest.py vm/desktop.py scripts/seed.py
 
 ## 数据与运行边界
 
-- `data/`：聊天、记忆、文件、SSH 密钥和 VM 磁盘；不纳入 Git。
+- Windows `data/`：VM 连接、部署信息、通知、DPAPI 密钥及离线状态缓存；不纳入 Git。
+- VM `~/dant/data/`：权威聊天、附件与 `memory/dant/`；`~/dant/workspaces/<conversationId>/output/` 保存工作交付现场。
 - `.cache/` 和 `.tools/`：下载镜像、协议参考和项目构建工具；不纳入 Git。
 - VM 内 Agent 拥有所选 VM 权限；宿主机只运行管理应用和 SSH 连接。
-- 任务调度需要应用正在运行；目前没有安装 Windows 后台服务。
-- 录音附件可上传、交付和播放；内容理解取决于模型工具。dant 尚未接入 ChatGPT 桌面原生订阅语音；可选的独立语音 Key 直接连接官方 Realtime API，单独计费。没有使用未公开的 ChatGPT 网页音频接口。
+- 调度由 VM 用户服务运行；VM 在线且执行器健康时，关闭 Windows 窗口不会自动终止已提交工作。本机通知仍需 Windows 应用运行。
+- 结果未确认的任务不会自动重放；服务重启后保留为暂停，检查现场后由用户明确继续。
+- 录音附件与实时通话是独立能力，录音内容理解取决于模型工具。没有使用 ChatGPT 网页音频接口。
 - 桌面面板通过 SSH 隧道获取截图与发送输入，适合文档、浏览器和开发工作，不是高帧率视频串流。
 
 ## 官方接口参考

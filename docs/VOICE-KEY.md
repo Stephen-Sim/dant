@@ -1,10 +1,12 @@
 # 可选语音 API Key
 
-本文只说明 dant 的可选独立 API 语音。ChatGPT 桌面应用中的原生语音使用现有订阅额度，无需单独 API Key；dant 尚未接入该原生通道。不能把 dant 当前接口的限制理解为 ChatGPT 桌面语音必须额外付费。参见 [官方语音说明](https://learn.chatgpt.com/docs/features/voice) 与 [订阅用量说明](https://learn.chatgpt.com/docs/pricing)。
+本文只说明 dant 的可选独立 API 语音。默认通话使用 ChatGPT 登录、Codex Realtime V3 与 WebRTC，无需单独 API Key，仍受账号订阅额度约束。现有账号已通过静默 WebRTC 连接测试；该测试不代表真人麦克风与扬声器验收。参见 [官方语音说明](https://learn.chatgpt.com/docs/features/voice) 与 [订阅用量说明](https://learn.chatgpt.com/docs/pricing)。
 
-如自行选择独立 API 方案，可以在设置中展开“可选：独立 API 语音”并配置 OpenAI API Key。此方案的 API 用量按对应 API 项目计费，不包含在 ChatGPT 订阅中。未配置时可以继续使用已有 ChatGPT 订阅文字聊天与电脑任务。
+如自行选择独立 API 方案，可以在设置中展开“可选：独立 API 语音”并配置 OpenAI API Key，再显式选择 API 通话。此方案的 API 用量按对应 API 项目计费，不包含在 ChatGPT 订阅中。未配置不影响默认订阅通话、文字聊天或电脑任务。
 
 Windows 版把 Key 保存在应用数据目录的 `voice-key.dpapi`，使用 Windows DPAPI `CurrentUser` 保护。该文件只包含密文，Key 不写入 `state.json`、聊天记录或 Git。状态接口只提供是否配置和来源，不回显 Key；已配置不表示已通过远端 API 的有效性或额度验证。
+
+独立 API 通话开始时，Controller 只经已建立的 SSH 本地隧道将 Key 交给 VM 通话进程内存，停止或关闭后清除。它不会作为模型任务内容发送，也不写入 VM 认证文件。默认订阅通话不读取或转交这个 Key。
 
 删除配置会移除本机密文。若进程通过 `OPENAI_API_KEY` 环境变量获得 Key，删除本机配置后仍可能显示已配置，来源会变为 `environment`。应用不修改启动进程的环境变量。Windows 上已有本地密文时优先使用本地配置。
 

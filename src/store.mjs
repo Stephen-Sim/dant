@@ -3,12 +3,23 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 const renameRetryCodes=new Set(['EPERM','EACCES','EBUSY']);
 const pauseBuffer=new Int32Array(new SharedArrayBuffer(4));
+export const TASK_STATES=Object.freeze(['draft','queued','running','waiting_user','pausing','paused','failed','review','completed']);
+const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export class Store {
   constructor(dir,{renameSync=fs.renameSync,platform=process.platform,pause=ms=>Atomics.wait(pauseBuffer,0,0,ms)}={}) {
     this.renameSync=renameSync;this.platform=platform;this.pause=pause;
     this.dir=dir; fs.mkdirSync(dir,{recursive:true}); this.file=path.join(dir,'state.json');
-    this.state=fs.existsSync(this.file)?JSON.parse(fs.readFileSync(this.file,'utf8')):{version:1,messages:[],memory:'',settings:{language:'zh',voice:'marin',model:'',notifications:true,vm:{host:'',user:'dant',port:22,keyPath:'',knownHosts:''}},threadId:null,threadHost:null,schedules:[]};
-    for(const m of this.state.messages) if(['queued','running','streaming'].includes(m.status)) m.status='interrupted';
+    this.state=fs.existsSync(this.file)?JSON.parse(fs.readFileSync(this.file,'utf8')):{version:2,messages:[],memory:'',settings:{language:'zh',voice:'marin',model:'',notifications:true,vm:{host:'',user:'dant',port:22,keyPath:'',knownHosts:''}},threadId:null,threadRuntime:null,schedules:[]};
+    if(!uuidPattern.test(this.state.conversationId||''))this.state.conversationId=randomUUID();
+    this.state.version=2;this.state.schedules ||= [];this.state.completions ||= [];
+    for(const m of this.state.messages){
+      if(m.role==='user'){
+        m.receivedAt ??= m.time||Date.now();m.executorConfirmedAt ??= null;
+        if(m.status==='read')m.status='review';
+        if(['queued','running','waiting_user','pausing','interrupted'].includes(m.status)){m.status='paused';m.pauseReason='restart';}
+        m.status ||= 'draft';
+      }else if(m.status==='streaming'){m.status='paused';m.pauseReason='restart';}
+    }
     this.save();
   }
   save(){const temp=this.file+'.tmp';fs.writeFileSync(temp,JSON.stringify(this.state,null,2));
@@ -17,6 +28,11 @@ export class Store {
       catch(error){if(this.platform!=='win32'||!renameRetryCodes.has(error.code)||attempt===5)throw error;this.pause((attempt+1)*10);}
     }
   }
-  add(data){const m={id:randomUUID(),time:Date.now(),reactions:[],read:false,...data};this.state.messages.push(m);this.save();return m;}
+  add(data){const m={id:randomUUID(),time:Date.now(),reactions:[],read:false,...data};if(m.role==='user'){m.status ||= 'draft';m.receivedAt ??= Date.now();m.executorConfirmedAt ??= null;}this.state.messages.push(m);this.save();return m;}
   update(id,data){const m=this.state.messages.find(m=>m.id===id);if(!m)throw Error('Message not found');Object.assign(m,data);this.save();return m;}
+  setTaskState(id,status,patch={}){if(!TASK_STATES.includes(status))throw Error('Invalid task state');return this.update(id,{...patch,status});}
+  confirmExecution(id,patch={}){return this.update(id,{...patch,executorConfirmedAt:Date.now()});}
+  markVisible(ids){const selected=new Set(ids);for(const message of this.state.messages)if(message.role==='assistant'&&selected.has(message.id)){message.read=true;message.visibleAt=Date.now();}for(const completion of this.state.completions){if(completion.messageIds.length&&completion.messageIds.every(id=>this.state.messages.find(message=>message.id===id)?.read))completion.readAt ||= Date.now();}this.save();}
+  addCompletion({turnId,messageIds,taskId}){if(this.state.completions.some(item=>item.turnId===turnId))return;const completion={id:randomUUID(),turnId,messageIds:[...messageIds],taskId,at:Date.now(),readAt:null};this.state.completions.push(completion);this.state.completions=this.state.completions.slice(-300);this.save();return completion;}
+  confirm(id){const message=this.state.messages.find(m=>m.id===id&&m.role==='user');if(!message||message.status!=='review')throw Error('Only a task awaiting review can be accepted');return this.setTaskState(id,'completed',{acceptedAt:Date.now()});}
 }

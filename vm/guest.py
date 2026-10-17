@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-import base64,json,mimetypes,pathlib,uuid
+import base64,json,mimetypes,pathlib,uuid,os
 from http.server import BaseHTTPRequestHandler,HTTPServer
 from desktop import act,screenshot
+from control import command
 ROOT=pathlib.Path('/home/dant/work');ROOT.mkdir(parents=True,exist_ok=True)
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
@@ -19,7 +20,10 @@ class Handler(BaseHTTPRequestHandler):
             length=int(self.headers.get('Content-Length',0))
             if length>36*1024*1024:raise ValueError('Too large')
             body=json.loads(self.rfile.read(length))
-            if self.path=='/input':self.send(act(body))
+            if self.path=='/input':
+                if not isinstance(body.get('sessionId'),str):raise ValueError('A confirmed desktop session is required')
+                result=act(body,body['sessionId']);result.update(command({'action':'status'}));self.send(result)
+            elif self.path=='/control':self.send(command(body))
             elif self.path=='/file':
                 folder=ROOT/'uploads';folder.mkdir(exist_ok=True)
                 name=pathlib.Path(body['name'].replace('\\','/')).name
@@ -31,4 +35,4 @@ class Handler(BaseHTTPRequestHandler):
                 data=target.read_bytes();self.send({'data':base64.b64encode(data).decode(),'name':target.name,'type':mimetypes.guess_type(target)[0] or 'application/octet-stream','size':len(data)})
             else:self.send({'error':'Not found'},status=404)
         except Exception as e:self.send({'error':str(e)},status=400)
-HTTPServer(('127.0.0.1',4319),Handler).serve_forever()
+HTTPServer(('127.0.0.1',int(os.environ.get('DANT_GUEST_PORT','4319'))),Handler).serve_forever()

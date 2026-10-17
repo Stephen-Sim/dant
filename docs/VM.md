@@ -1,6 +1,24 @@
 # Windows / Hyper-V VM 初始化与排障
 
-dant 的桌面和 Codex 运行在 Ubuntu 虚拟机内。Windows 通过 SSH 启动 Codex app-server，并把仅监听虚拟机 `127.0.0.1:4319` 的桌面桥转发到本机。虚拟机默认 4 个 CPU、6 GB 内存、40 GB 动态磁盘，使用 Hyper-V Default Switch 的 DHCP/NAT 网络。
+dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Node 服务通过 stdio 启动，桌面桥只供 VM 内访问。虚拟机默认 4 个 CPU、6 GB 内存、40 GB 动态磁盘，使用 Hyper-V Default Switch 的 DHCP/NAT 网络。
+
+## Worker 部署与运行
+
+首次连接会同步源码允许列表，校验并安装用户目录内的 Node 22，使用锁文件安装运行依赖，以普通用户创建 `dant-worker.service` 和 `dant-guest-local.service`。启用 user lingering 后，Windows Controller 退出不终止 VM 服务。旧系统桌面桥端口 4319 保留，新 Worker 使用本机 4320 的租约桥，均不绑定 VM 外部地址。
+
+Worker 拒绝在 Windows、裸机 Linux、root 账号或缺少可用图形桌面的环境执行任务。更新前会检查活动任务与通话；正在工作时保留当前进程并推迟升级。相同源码版本复用已有健康服务。
+
+Windows 原有聊天迁移前保存完整备份，再把附件复制为 VM UUID 存储；迁移只允许进入未被另一份对话占用的目标目录。Codex 自行保存和刷新认证，部署不读取或打包认证文件。
+
+```powershell
+# 已有 data/vm.json 时单独部署，不启动 Windows UI
+node src/server.mjs --deploy-worker
+
+# 仅展示安装准备界面，不自动连接 Worker
+node src/server.mjs --prepare
+```
+
+VM 权威数据为 `~/dant/data/`，工作目录为 `~/dant/workspaces/<conversationId>/`，程序版本保存在 `~/dant/releases/`。诊断用户服务时使用 `systemctl --user status dant-worker dant-guest-local` 和 `journalctl --user -u dant-worker`；不要把包含私人聊天的日志原文提交仓库。
 
 ## 初始化
 

@@ -67,7 +67,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 '''}
-files=[{'path':'/opt/dant/'+f,'permissions':'0755','content':(root/'vm'/f).read_text(encoding='utf-8')} for f in ['desktop.py','guest.py','start-codex.sh','bootstrap.sh']]
+files=[{'path':'/opt/dant/'+f,'permissions':'0755','content':(root/'vm'/f).read_text(encoding='utf-8')} for f in ['desktop.py','desktop_mcp.py','voice_message.py','guest.py','control.py','start-codex.sh','bootstrap.sh']]
 files += [{'path':'/etc/systemd/system/'+name,'content':text} for name,text in units.items()]
 files += [{'path':'/etc/cloud/cloud.cfg.d/99-dant-datasource.cfg','content':'datasource_list: [ NoCloud, None ]\n'}]
 user={'name':'dant','shell':'/bin/bash','groups':['adm'],'lock_passwd':True,'ssh_authorized_keys':[public],'sudo':'ALL=(ALL) NOPASSWD:ALL' if admin else None}

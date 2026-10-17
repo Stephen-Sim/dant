@@ -14,8 +14,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zlib
+import wave
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'vm'))
 
 
 def load(name, file):
@@ -28,6 +30,8 @@ def load(name, file):
 image = load("patch_image", "scripts/patch-image.py")
 desktop = load("desktop", "vm/desktop.py")
 vm_key = load("vm_key", "scripts/vm-key.py")
+voice_message = load('voice_message_test', 'vm/voice_message.py')
+desktop_mcp = load('desktop_mcp_test', 'vm/desktop_mcp.py')
 
 
 def fixture():
@@ -124,6 +128,15 @@ class ImageTests(unittest.TestCase):
 
 
 class DesktopTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.env = patch.dict(os.environ, {'DANT_CONTROL_FILE': str(pathlib.Path(self.folder.name) / 'control.json')})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.folder.cleanup()
+
     def test_drag_releases_button_when_movement_fails(self):
         calls = []
 
@@ -137,6 +150,73 @@ class DesktopTests(unittest.TestCase):
                 desktop.act({"type": "drag", "startX": 12, "startY": 34, "endX": 300, "endY": 500, "button": 2})
         self.assertEqual(calls[1], ("xdotool", "mousedown", "3"))
         self.assertEqual(calls[-1], ("xdotool", "mouseup", "3"))
+
+    def test_human_reservation_blocks_model_until_explicit_release(self):
+        import control
+        session = control.command({'action': 'acquire'})
+        with patch.object(desktop, 'run', return_value=b''):
+            with self.assertRaisesRegex(ValueError, 'human control'):
+                desktop.act({'type': 'key', 'key': 'a'})
+            with self.assertRaisesRegex(ValueError, 'not confirmed'):
+                desktop.act({'type': 'key', 'key': 'a'}, session['sessionId'])
+            control.command({'action': 'confirm', 'sessionId': session['sessionId']})
+            self.assertEqual(desktop.act({'type': 'key', 'key': 'a'}, session['sessionId']), {'ok': True})
+            with self.assertRaisesRegex(ValueError, 'session expired'):
+                desktop.act({'type': 'key', 'key': 'a'}, 'stale-session')
+            control.command({'action': 'release', 'sessionId': session['sessionId']})
+            self.assertEqual(desktop.act({'type': 'key', 'key': 'a'}), {'ok': True})
+
+    def test_expired_session_does_not_accept_input(self):
+        import control
+        with patch.object(control.time, 'time', return_value=1000):
+            session = control.command({'action': 'acquire'})
+            control.command({'action': 'confirm', 'sessionId': session['sessionId']})
+        with patch.object(control.time, 'time', return_value=1121):
+            with self.assertRaisesRegex(ValueError, 'expired'):
+                desktop.act({'type': 'key', 'key': 'a'}, session['sessionId'])
+            self.assertEqual(control.command({'action': 'status'})['status'], 'dant')
+
+
+class VoiceAndMCPTests(unittest.TestCase):
+    def test_voice_message_is_a_valid_immutable_wav_artifact(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def synthesize(command, **options):
+                with wave.open(command[-1], 'wb') as audio:
+                    audio.setnchannels(1)
+                    audio.setsampwidth(2)
+                    audio.setframerate(22050)
+                    audio.writeframes(b'\x00\x00' * 2205)
+            with patch.object(voice_message.shutil, 'which', return_value='/usr/bin/espeak-ng'), patch.object(voice_message.subprocess, 'run', side_effect=synthesize):
+                result = voice_message.create('测试语音', folder)
+                self.assertTrue(pathlib.Path(result['path']).is_file())
+                self.assertEqual(result['type'], 'audio/wav')
+                self.assertGreater(result['size'], 44)
+
+    def test_invalid_speech_output_is_rejected_and_removed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def synthesize(command, **options):
+                pathlib.Path(command[-1]).write_bytes(b'not a wave file')
+            with patch.object(voice_message.shutil, 'which', return_value='/usr/bin/espeak-ng'), patch.object(voice_message.subprocess, 'run', side_effect=synthesize):
+                with self.assertRaises(ValueError):
+                    voice_message.create('test', folder)
+            self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
+
+    def test_mcp_delivery_is_structured_and_does_not_send_an_http_message(self):
+        with tempfile.TemporaryDirectory() as folder:
+            response = desktop_mcp.dispatch({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call', 'params': {'name': 'send_chat_message', 'arguments': {'text': 'A verified link'}}}, folder)
+            self.assertEqual(response['result']['structuredContent'], {'dantMessage': {'text': 'A verified link'}})
+            self.assertFalse(response['result']['isError'])
+            response = desktop_mcp.dispatch({'id': 8, 'method': 'tools/call', 'params': {'name': 'open_url', 'arguments': {'url': 'javascript:alert(1)'}}}, folder)
+            self.assertTrue(response['result']['isError'])
+
+    def test_mcp_stdio_negotiation_uses_newline_json(self):
+        with tempfile.TemporaryDirectory() as folder:
+            messages = [{'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05'}}, {'id': 2, 'method': 'tools/list'}]
+            result = subprocess.run([sys.executable, str(ROOT / 'vm/desktop_mcp.py'), '--output-dir', folder], input=('\n'.join(map(json.dumps, messages))+'\n').encode(), capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            responses = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(responses[0]['result']['serverInfo']['name'], 'dant_desktop')
+            self.assertIn('screenshot', [tool['name'] for tool in responses[1]['result']['tools']])
 
 
 class SeedTests(unittest.TestCase):

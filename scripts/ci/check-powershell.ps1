@@ -1,6 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $repository = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$scripts = Get-ChildItem -LiteralPath (Join-Path $repository 'scripts') -Filter '*.ps1' -Recurse -File
+$scripts = @('scripts', 'native') | ForEach-Object {
+    $folder = Join-Path $repository $_
+    if (Test-Path -LiteralPath $folder) { Get-ChildItem -LiteralPath $folder -Filter '*.ps1' -Recurse -File }
+}
 $failed = $false
 foreach ($script in $scripts) {
     $tokens = $null
