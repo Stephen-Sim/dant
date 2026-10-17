@@ -9,7 +9,7 @@ test('desktop dictation and read aloud are user-triggered native requests',async
 
 test('cancelling while native stop is pending never resurrects dictation',async()=>{
  let finish;const calls=[],helper=new SpeechHelper({desktop:true,invoke:(command)=>{calls.push(command);return calls.length===1?new Promise(resolve=>finish=resolve):Promise.resolve();}});
- const dictation=helper.dictate('zh');await helper.stop();finish();await assert.rejects(dictation,/cancelled/);assert.deepEqual(calls,['speech_stop','speech_stop']);
+ const dictation=helper.dictate('zh');await helper.stop();finish();await assert.rejects(dictation,error=>error.code==='speech-cancelled');assert.deepEqual(calls,['speech_stop','speech_stop']);
 });
 
 test('unsupported browser dictation reports a concrete fallback instead of recording audio',async()=>{

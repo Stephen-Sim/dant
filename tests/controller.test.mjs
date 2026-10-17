@@ -22,6 +22,15 @@ async function listen(t,dir,bridge=new FakeBridge()){
  const session=await fetch(base+'/api/session').then(response=>response.json());return {app,bridge,base,session,headers:{'X-Dant-Token':session.token,'Content-Type':'application/json'}};
 }
 
+test('language changes persist offline and synchronize the VM default on reconnect',async t=>{
+ const dir=temporary(t),{app,base,headers,bridge}=await listen(t,dir);
+ let response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'en'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'en');assert.equal(bridge.requests.length,0);assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'controller.json'))).language,'en');
+ bridge.connect=async()=>{bridge.status='online';bridge.cached={settings:{language:'zh'}};};
+ response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.ok,true);assert.equal(bridge.requests.length,1);assert.equal(bridge.requests[0].route,'/api/settings');assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'en'});
+ response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'zh'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'zh');assert.deepEqual(JSON.parse(bridge.requests.at(-1).body),{language:'zh'});
+ const invalid=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'unknown'})});assert.equal(invalid.ok,false);assert.equal(app.snapshot().settings.language,'zh');
+});
+
 test('default Controller has no authoritative Store or local task executor',async t=>{
  const dir=temporary(t),{app,base,session,headers}=await listen(t,dir);
  assert.equal(session.product,'dant');assert.equal(session.mode,'controller');assert.equal(app.store,undefined);assert.equal(app.engine,undefined);assert.equal(app.worker,undefined);assert.equal(fs.existsSync(path.join(dir,'state.json')),false);

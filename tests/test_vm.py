@@ -178,28 +178,59 @@ class DesktopTests(unittest.TestCase):
 
 
 class VoiceAndMCPTests(unittest.TestCase):
+    @staticmethod
+    def synthesize_wav(command, **options):
+        with wave.open(command[-1], 'wb') as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(22050)
+            audio.writeframes(b'\x00\x00' * 2205)
+
     def test_voice_message_is_a_valid_immutable_wav_artifact(self):
         with tempfile.TemporaryDirectory() as folder:
-            def synthesize(command, **options):
-                with wave.open(command[-1], 'wb') as audio:
-                    audio.setnchannels(1)
-                    audio.setsampwidth(2)
-                    audio.setframerate(22050)
-                    audio.writeframes(b'\x00\x00' * 2205)
-            with patch.object(voice_message.shutil, 'which', return_value='/usr/bin/espeak-ng'), patch.object(voice_message.subprocess, 'run', side_effect=synthesize):
-                result = voice_message.create('测试语音', folder)
+            # Windows runner TEMP can contain an 8.3 account-name alias. The VM
+            # helper intentionally rejects unresolved paths, so canonicalize the
+            # test fixture rather than relaxing its Linux output-directory guard.
+            output = pathlib.Path(folder).resolve()
+            with patch.object(voice_message.shutil, 'which', return_value='/usr/bin/espeak-ng'), patch.object(voice_message.subprocess, 'run', side_effect=self.synthesize_wav):
+                result = voice_message.create('测试语音', output)
                 self.assertTrue(pathlib.Path(result['path']).is_file())
                 self.assertEqual(result['type'], 'audio/wav')
                 self.assertGreater(result['size'], 44)
 
     def test_invalid_speech_output_is_rejected_and_removed(self):
         with tempfile.TemporaryDirectory() as folder:
+            output = pathlib.Path(folder).resolve()
             def synthesize(command, **options):
                 pathlib.Path(command[-1]).write_bytes(b'not a wave file')
-            with patch.object(voice_message.shutil, 'which', return_value='/usr/bin/espeak-ng'), patch.object(voice_message.subprocess, 'run', side_effect=synthesize):
+            with patch.object(voice_message.shutil, 'which', return_value='/usr/bin/espeak-ng'), patch.object(voice_message.subprocess, 'run', side_effect=synthesize) as speech:
                 with self.assertRaises(ValueError):
-                    voice_message.create('test', folder)
-            self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
+                    voice_message.create('test', output)
+                speech.assert_called_once()
+            self.assertEqual(list(output.iterdir()), [])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows short-path aliases')
+    def test_windows_short_output_path_is_canonicalized_before_synthesis(self):
+        import ctypes
+        with tempfile.TemporaryDirectory() as folder:
+            output = pathlib.Path(folder).resolve() / 'voice output directory with spaces'
+            output.mkdir()
+            short_path = ctypes.windll.kernel32.GetShortPathNameW
+            short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+            short_path.restype = ctypes.c_uint32
+            buffer = ctypes.create_unicode_buffer(32768)
+            if not short_path(str(output), buffer, len(buffer)):
+                self.skipTest('This filesystem does not expose Windows short paths')
+            alias = pathlib.Path(buffer.value)
+            self.assertEqual(alias.resolve(), output.resolve())
+            if alias.absolute() != alias.resolve():
+                with patch.object(voice_message.subprocess, 'run') as speech:
+                    with self.assertRaisesRegex(ValueError, 'ordinary output directory'):
+                        voice_message.create('unresolved alias', alias)
+                    speech.assert_not_called()
+            with patch.object(voice_message.shutil, 'which', return_value='/usr/bin/espeak-ng'), patch.object(voice_message.subprocess, 'run', side_effect=self.synthesize_wav):
+                result = voice_message.create('alias regression', alias.resolve())
+            self.assertEqual(pathlib.Path(result['path']).parent, output.resolve())
 
     def test_mcp_delivery_is_structured_and_does_not_send_an_http_message(self):
         with tempfile.TemporaryDirectory() as folder:

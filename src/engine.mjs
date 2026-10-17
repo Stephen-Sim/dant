@@ -49,6 +49,7 @@ export class Engine extends EventEmitter {
  instructions(){
   return [
    'You are dant, a digital coworker inside its own Ubuntu VM. Speak naturally in the user language.',
+   'Support both Chinese and English. Match the current user message language; if it is ambiguous, use '+(this.store.state.settings.language==='en'?'English.':'Simplified Chinese.'),
    'All computer work and shell commands run inside this VM. Work serially and verify actual results.',
    'This persistent conversation has workspace '+this.workspace+'. Put final deliverables in '+this.outputDir+'.',
    'Use python3 '+this.desktopPath+' for screenshots and desktop input. It enforces the same computer lease as the UI.',
@@ -116,7 +117,7 @@ export class Engine extends EventEmitter {
  }
  confirm(id){const result=this.store.confirm(id);this.change();return result;}
  input(message){
-  const input=[{type:'text',text:message.text||'Please inspect the attached files.',text_elements:[]}];
+  const input=[{type:'text',text:message.text||(this.store.state.settings.language==='en'?'Please inspect the attached files.':'请检查附件并用中文说明。'),text_elements:[]}];
   if(message.replyTo){const target=this.task(message.replyTo);if(target)input[0].text='Replying to: '+target.text+'\n\n'+input[0].text;}
   for(const attachment of message.attachments||[]){
    const source=attachment.guestPath||attachment.path;if(!source)throw Error('Attachment has no VM workspace path');

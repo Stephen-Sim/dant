@@ -1,5 +1,7 @@
 # dant
 
+中文 · [English](README.en.md)
+
 Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Tauri 桌面壳、Node.js 本地服务和 VM 内的 Codex App Server。
 
 按原版 UI 与架构重建，适配 Windows + Hyper-V。Windows 负责界面、VM 安装管理、本机通知和 API 代理；Ubuntu VM 持有聊天、任务、记忆、附件与 Codex 执行器。职责与 Mac / UTM 原版对应，通信改为 SSH 本地隧道。详见 [实现架构](docs/architecture.md)。

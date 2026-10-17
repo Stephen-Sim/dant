@@ -33,6 +33,11 @@ test('streamed output has a total bound and completion receipts track visible re
  store.markVisible(completion.messageIds);assert.ok(completion.readAt);assert.equal(store.state.messages[0].status,'review');
 });
 
+test('Chinese and English messages are supported and attachment-only input follows the selected language',async t=>{
+ const {engine,store,worker}=setup(t);store.state.settings.language='en';await engine.thread();assert.match(worker.calls.at(-1).params.developerInstructions,/Support both Chinese and English/);assert.match(worker.calls.at(-1).params.developerInstructions,/ambiguous, use English/);assert.match(engine.input({text:''})[0].text,/Please inspect/);
+ store.state.settings.language='zh';engine.loaded=false;await engine.thread();assert.match(worker.calls.at(-1).params.developerInstructions,/ambiguous, use Simplified Chinese/);assert.match(engine.input({text:''})[0].text,/中文/);assert.equal(engine.input({text:'Please use English.'})[0].text,'Please use English.');assert.equal(engine.input({text:'请用中文。'})[0].text,'请用中文。');
+});
+
 test('one persistent conversation UUID determines the workspace and resumed thread',async t=>{
  const {dir,store,worker,engine}=setup(t),id=store.state.conversationId;assert.match(id,/^[0-9a-f-]{36}$/);await engine.thread();
  const first=worker.calls[0];assert.equal(first.params.cwd,path.join(worker.workspaceRoot,id));assert.ok(fs.statSync(engine.outputDir).isDirectory());assert.ok(first.params.developerInstructions.includes(worker.desktopPath));assert.equal(first.params.developerInstructions.includes('/opt/dant/desktop.py'),false);
