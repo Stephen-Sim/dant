@@ -8,7 +8,7 @@ export class ConversationHistory {
  deletedClientIds(messages){const additions=messages.filter(item=>item.role==='user'&&typeof item.clientMessageId==='string'&&item.clientMessageId.length>0&&item.clientMessageId.length<=128).map(item=>item.clientMessageId),prior=Array.isArray(this.store.state.deletedClientMessageIds)?this.store.state.deletedClientMessageIds:[];return [...new Set([...prior.filter(id=>!additions.includes(id)),...additions])].slice(-2000);}
  message(id){if(typeof id!=='string'||!id||id.length>128)throw fail('Invalid message ID',400);const message=this.store.state.messages.find(item=>item.id===id);if(!message)throw fail('Message not found',404);return message;}
  callGuard(){if(this.engine.call)throw fail('End the voice call before changing history',409);}
- idleGuard(){this.callGuard();if(this.engine.active||this.engine.finishing||this.engine.nativeVoice?.active)throw fail('Stop active work before changing history',409);}
+ idleGuard(){this.callGuard();if(this.engine.active||this.engine.finishing||this.engine.pendingFollowups?.size||this.engine.callReferences?.size||this.engine.nativeVoice?.active)throw fail('Stop active work before changing history',409);}
  commit(messages,completions,deletedClientMessageIds=this.store.state.deletedClientMessageIds){
   const state=this.store.state,before={messages:state.messages,completions:state.completions,deletedClientMessageIds:state.deletedClientMessageIds};state.messages=messages;state.completions=completions;state.deletedClientMessageIds=deletedClientMessageIds;
   try{this.store.save();}catch(error){Object.assign(state,before);throw error;}

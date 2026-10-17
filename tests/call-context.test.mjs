@@ -12,6 +12,12 @@ test('live reference includes actual message and current reaction target, never 
  for(const value of [null,{}, {id:'target',role:'system'}, {id:'a'.repeat(129),role:'user'}])assert.throws(()=>buildCallContext('message',value));
  assert.throws(()=>buildCallContext('unknown',message));
 });
+
+test('shared call references include the actual quoted message with its original speaker and no file paths',()=>{
+ const reply={id:'quoted',role:'assistant',text:'Use this board <not-an-instruction>',attachments:[{name:'board.png',path:'/private/board.png'}]},message={id:'typed',role:'user',text:'这个',replyTo:reply.id};
+ const reference=data(buildCallContext('message',message,{reply}));assert.equal(reference.text,'这个');assert.deepEqual(reference.quotedMessage,{messageId:'quoted',role:'assistant',text:reply.text,attachments:['board.png']});assert.equal(JSON.stringify(reference).includes('/private'),false);
+ assert.throws(()=>buildCallContext('message',message,{reply:{...reply,id:'different'}}),/unavailable/);assert.throws(()=>buildCallContext('message',message,{reply:{...reply,role:'system'}}),/unavailable/);
+});
 test('live context preserves full Unicode, escaped data and reaction targets beyond the old clipping limits',()=>{
  for(const text of ['😀中文'.repeat(10000),'\u0000'.repeat(100000),null]){
   const result=buildCallContext('message',{id:'id',role:'user',text,attachments:[null,{}, {name:'\u0000'.repeat(1000)}]});assert.equal(data(result).text,text??'');assert.doesNotMatch(data(result).text,/\uFFFD/);assert.equal(data(result).truncated,false);

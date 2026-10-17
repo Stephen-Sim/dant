@@ -8,10 +8,10 @@ import {createWorkerApp} from '../src/server.mjs';
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function deferred(){let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};}
-async function setup(t,{api,native}={}){
+async function setup(t,{api,native,input}={}){
  const dir=fs.mkdtempSync(path.join(root,'server-context-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  class Worker extends EventEmitter{constructor(){super();this.status='online';this.calls=[];}async request(method,params){this.calls.push({method,params});return method==='thread/start'?{thread:{id:'thread'}}:method==='turn/start'?{turn:{id:'turn'}}:{};}disconnect(){this.status='offline';this.emit('status');}}
- class Provider extends EventEmitter{constructor(handler){super();this.handler=handler;this.calls=[];this.state={available:true};}async syncContext(args){this.calls.push(args);return this.handler?await this.handler(args):{callId:args.callId,contextId:'context-'+this.calls.length,messageId:args.message.id,kind:args.kind,status:'submitted'};}async close(){}async stop(){}}
+ class Provider extends EventEmitter{constructor(handler){super();this.handler=handler;this.calls=[];this.inputs=[];this.state={available:true};}async syncContext(args){this.calls.push(args);return this.handler?await this.handler(args):{callId:args.callId,contextId:'context-'+this.calls.length,messageId:args.message.id,kind:args.kind,status:'submitted'};}async message(args){this.inputs.push(args);return input?await input(args):{submission:'confirmed',confirmedAt:Date.now()};}async close(){}async stop(){}}
  const worker=new Worker(),voice=new Provider(api),nativeVoice=new Provider(native);let voiceOptions;
  const instance=createWorkerApp({dataDir:dir,workerFactory:()=>worker,voiceFactory:options=>{voiceOptions=options;return voice;},nativeVoiceFactory:()=>nativeVoice});t.after(()=>instance.close());
  await new Promise(resolve=>instance.server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+instance.server.address().port,{token}=await fetch(base+'/api/session').then(response=>response.json());
@@ -19,14 +19,16 @@ async function setup(t,{api,native}={}){
  return {instance,worker,voice,nativeVoice,post,voiceOptions};
 }
 
-test('API call text remains one ordinary task and duplicate HTTP attempts do not resubmit context',async t=>{
- const entered=deferred(),done=deferred();const h=await setup(t,{api:async args=>{entered.resolve(args);return done.promise;}});h.instance.engine.call={id:'api-call',provider:'api'};
- const payload={text:'Create the actual report',clientMessageId:'650af0bf-1264-49ee-bc6f-1571b99e7295'},first=h.post('/messages',payload);const captured=await entered.promise;await tick();
- assert.equal(h.instance.store.state.messages.length,1);assert.equal(h.worker.calls.filter(call=>call.method==='turn/start').length,1);assert.equal(captured.message.text,payload.text);assert.equal(captured.callId,'api-call');assert.equal(captured.kind,'message');
- const duplicate=await (await h.post('/messages',payload)).json();assert.equal(duplicate.id,captured.message.id);assert.equal(h.voice.calls.length,1);
- done.resolve({callId:'api-call',contextId:'live-context',kind:'message',messageId:captured.message.id,status:'submitted'});const result=await (await first).json();assert.equal(result.voiceContext.status,'submitted');assert.equal(result.id,duplicate.id);assert.equal(result.read,false);
- assert.equal((await (await h.post('/messages',payload)).json()).voiceContext.contextId,'live-context');assert.equal(h.voice.calls.length,1);assert.equal(h.worker.calls.filter(call=>call.method==='turn/start').length,1);
- assert.match(h.voiceOptions.context(),new RegExp(captured.message.id));assert.match(h.voiceOptions.context(),/Create the actual report/);assert.equal((await h.post('/messages',{...payload,text:'Different request'})).status,409);
+test('API call text reaches the same live call once and duplicate HTTP attempts never create an ordinary task',{timeout:15000},async t=>{
+ const entered=deferred(),done=deferred();const h=await setup(t,{input:async args=>{entered.resolve(args);return done.promise;}});h.instance.engine.call={id:'api-call',provider:'api'};
+ try{
+  const payload={text:'Create the actual report',clientMessageId:'650af0bf-1264-49ee-bc6f-1571b99e7295'},first=await h.post('/messages',payload),result=await first.json(),captured=await entered.promise,message=h.instance.store.state.messages[0];
+  assert.equal(message.executorConfirmedAt,null);assert.equal(h.instance.store.state.messages.length,1);assert.equal(captured.message.text,payload.text);assert.equal(captured.callId,'api-call');assert.equal(h.worker.calls.filter(call=>call.method==='thread/inject_items').length,1);assert.equal(h.worker.calls.filter(call=>call.method==='turn/start').length,0);assert.equal(h.voice.calls.length,0);assert.equal(h.instance.engine.queue.length,0);
+  const duplicate=await (await h.post('/messages',payload)).json();assert.equal(duplicate.id,result.id);assert.equal(h.voice.inputs.length,1);
+  done.resolve({submission:'confirmed',confirmedAt:Date.now()});await h.instance.engine.pendingFollowups.get(message.id);assert.equal(message.submission,'confirmed');assert.equal(message.status,'accepted');assert.ok(message.executorConfirmedAt);assert.equal(message.read,false);
+  await h.post('/messages',payload);assert.equal(h.voice.inputs.length,1);assert.equal(h.worker.calls.filter(call=>call.method==='thread/inject_items').length,1);assert.equal(h.worker.calls.filter(call=>call.method==='turn/start').length,0);
+  assert.match(h.voiceOptions.context(),new RegExp(message.id));assert.match(h.voiceOptions.context(),/Create the actual report/);assert.equal((await h.post('/messages',{...payload,text:'Different request'})).status,409);
+ }finally{done.resolve({submission:'confirmed',confirmedAt:Date.now()});}
 });
 
 test('reactions persist before current API or subscription context synchronization without creating tasks',async t=>{

@@ -2,7 +2,7 @@ const taskStates=new Set(['waiting_user','pausing','unknown']);
 export function trayStatus(state={}){
  const bridge=state.controller?.status,disconnected=state.controller?.cached===true||(bridge!==undefined&&bridge!=='online');
  const connection=!disconnected&&state.worker?.status==='online'?'online':bridge==='connecting'||(!disconnected&&state.worker?.status==='connecting')?'connecting':'offline';
- const active=state.active,task=active?(taskStates.has(active.status)?active.status:active.background?'background':'running'):'idle';
+ const active=state.active?.visible===false&&!taskStates.has(state.active.status)?null:state.active,task=active?(taskStates.has(active.status)?active.status:active.background?'background':'running'):'idle';
  return {language:state.settings?.language==='en'?'en':'zh',connection,task,queued:Math.min(999,Array.isArray(state.queue)?state.queue.length:0)};
 }
 export function createNativeTray({desktop=false,onProgress=()=>{},loadCore=()=>import('@tauri-apps/api/core'),loadEvents=()=>import('@tauri-apps/api/event')}={}){

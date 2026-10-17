@@ -91,7 +91,7 @@ test('explicitly resuming dismissed work clears its marker and surfaces the actu
 test('enqueue clears history dismissal only once the task may enter accepted work paths',t=>{
  const {store,engine}=setup(t),task=store.add({role:'user',text:'Run again',status:'paused'});engine.dismissProgress(task.id,'task');const dismissed=task.progressDismissedAt;
  engine.takeover=true;engine.enqueue(task);assert.equal(task.progressDismissedAt,dismissed);engine.takeover=false;engine.call={provider:'subscription'};engine.enqueue(task);assert.equal(task.progressDismissedAt,dismissed);engine.call=null;
- let received;engine.nativeVoice={acceptsChatInput:true,answerBackground:async message=>{received=message;}};engine.enqueue(task);assert.equal(received,task);assert.equal(task.progressDismissedAt,null);assert.equal(engine.queue.length,0);
+ let received;engine.nativeVoice={acceptsChatInput:true,answerBackground:async message=>{received=message;}};engine.enqueue(task,{interactive:true});assert.equal(received,task);assert.equal(task.progressDismissedAt,null);assert.equal(engine.queue.length,0);
 });
 
 async function apiSetup(t){

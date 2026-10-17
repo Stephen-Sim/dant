@@ -46,6 +46,17 @@ test('background native work blocks executor and model replacement even after me
  assert.equal(store.state.settings.model,model);assert.equal(worker.calls.length,0);assert.equal(worker.connections,0);delete nativeVoice.active;
 });
 
+test('pending followup or native canonical-reference delivery blocks executor replacement and new calls after its owner ends',async t=>{
+ const {api,worker,engine,store}=await fixture(t),model=store.state.settings.model;
+ for(const deliveries of [engine.pendingFollowups,engine.callReferences]){deliveries.set('awaiting-message',new Promise(()=>{}));assert.equal(engine.active,null);
+ try{
+  for(const [route,body,method]of [['/connect',{}],['/connect',{idleRecovery:true}],['/logout',{}],['/provision',{}],['/settings',{model:'replacement'},'PATCH'],['/call',{sdp:'unused',provider:'subscription'}]]){
+   const response=await api(route,body,method);assert.ok([400,409].includes(response.status),route);
+  }
+  assert.equal(store.state.settings.model,model);assert.equal(worker.calls.length,0);assert.equal(worker.connections,0);assert.equal(engine.call,null);
+ }finally{deliveries.clear();}}
+});
+
 test('public work progress keeps ephemeral voice work visible after hangup and exposes only safe plan metadata',async t=>{
  const {api,engine,nativeVoice}=await fixture(t);
  const progress={messageId:null,turnId:'native-owned-turn',source:'voice',background:true,status:'waiting_user',startedAt:100,updatedAt:200,step:'computer',plan:{total:3,completed:1,currentStep:'Check the board'}};
@@ -56,12 +67,38 @@ test('public work progress keeps ephemeral voice work visible after hangup and e
  engine.active=null;delete nativeVoice.progress;
 });
 
+test('private shared call input references never enter desktop state snapshots',async t=>{
+ const {api,store}=await fixture(t);store.state.callInputHistory=[{messageId:'private-input',callId:'private-call',text:'PRIVATE_CALL_INPUT',quotedMessage:{role:'assistant',text:'PRIVATE_QUOTED_CONTENT'},status:'submitted'}];store.save();
+ const snapshot=await api('/state').then(response=>response.json());assert.equal('callInputHistory' in snapshot,false);assert.doesNotMatch(JSON.stringify(snapshot),/PRIVATE_CALL_INPUT|PRIVATE_QUOTED_CONTENT/);
+});
+
 test('steering preflight rejects an unavailable or different owned turn before creating a message or task',async t=>{
  const {api,engine,nativeVoice,store}=await fixture(t);
  for(const progress of [null,{turnId:'native-background',source:'voice',background:true,canSteer:false},{turnId:'new-turn',canSteer:true}]){
   Object.defineProperty(nativeVoice,'progress',{configurable:true,value:progress});const response=await api('/steer',{text:'Only adjust the displayed turn',expectedTurnId:'native-background'});assert.equal(response.status,400);assert.equal(store.state.messages.length,0);assert.equal(engine.queue.length,0);
  }
  delete nativeVoice.progress;
+});
+
+test('ordinary chat followups reach the active task once and remain unread until executor acknowledgement',async t=>{
+ const {api,worker,engine,store}=await fixture(t);
+ const first=await api('/messages',{text:'Keep working on the current task'}).then(response=>response.json());
+ while(!engine.active?.turnId)await new Promise(resolve=>setImmediate(resolve));
+ const turnId=engine.active.turnId,request=worker.request.bind(worker);let acknowledge,entered;
+ const submitted=new Promise(resolve=>entered=resolve);
+ worker.request=(method,params)=>{if(method!=='turn/steer')return request(method,params);worker.calls.push({method,params});entered();return new Promise(resolve=>acknowledge=resolve);};
+ try{
+ const payload={text:'Open the test room first',replyTo:first.id,clientMessageId:randomUUID()};
+ const sent=await api('/messages',payload);assert.equal(sent.status,200);await submitted;
+ const followup=store.state.messages.find(message=>message.clientMessageId===payload.clientMessageId);
+ assert.equal(followup.executorConfirmedAt,null);assert.equal(engine.queue.length,0);
+ assert.equal((await api('/messages',payload)).status,200);assert.equal(worker.calls.filter(call=>call.method==='turn/steer').length,1);
+ acknowledge({});await engine.active.steerChain;
+ assert.ok(followup.executorConfirmedAt);assert.equal(followup.turnId,turnId);assert.equal(followup.submission,'confirmed');
+ const steer=worker.calls.find(call=>call.method==='turn/steer');assert.equal(steer.params.expectedTurnId,turnId);assert.match(steer.params.input[0].text,/Replying to: Keep working on the current task/);assert.match(steer.params.input[0].text,/Open the test room first/);
+ assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1);assert.equal(store.state.messages.filter(message=>message.clientMessageId===payload.clientMessageId).length,1);
+ await engine.handle({method:'turn/completed',params:{threadId:'api-thread',turn:{id:turnId,status:'completed'}}});assert.equal(followup.status,'review');
+ }finally{acknowledge?.({});}
 });
 
 test('recorded voice API preserves original playback while recognized speech reaches the shared task once',async t=>{

@@ -3,11 +3,13 @@ const copy={
  zh:{title:'工作进度',idle:'当前没有正在执行的任务',offline:'暂时无法确认工作状态',running:'正在执行',background:'正在后台继续',waiting_user:'等待你回复',pausing:'正在安全停止',unknown:'状态未确认',review:'待验收',paused:'已暂停',failed:'失败',completed:'已完成',queued:'排队中',voice:'通话中交办的任务',chat:'聊天任务',task:'任务',preparing:'准备任务',working:'正在处理',computer:'正在操作电脑',command:'正在执行命令',files:'正在处理文件',responding:'正在准备回复',saving:'正在保存结果',elapsed:'已用时',updated:'最后更新',steps:'步已完成',plan:'任务步骤',pendingStep:'待处理',inProgressStep:'正在执行',dismiss:'收起任务',view:'查看结果',unread:'结果未读',stale:'重新连接后才能确认当前状态；保留上次已知任务。',continues:'挂断通话或关闭窗口后，这项任务会继续执行。',queuedCount:n=>`${n} 项排队中`,reviewCount:n=>`${n} 项待验收`}
 };
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+Object.assign(copy.en,{continuing:'In progress',ongoing:'Ongoing tasks',unfinished:'This task is unfinished. Related follow-ups stay with this task.'});
+Object.assign(copy.zh,{continuing:'进行中',ongoing:'进行中的任务',unfinished:'这项任务尚未完成；相关补充和追问会接续这项任务。'});
 const time=value=>typeof value==='number'&&Number.isFinite(value)&&value>0&&value<=8640000000000000?value:null;
 const text=(message,fallback)=>String(message?.text||message?.attachments?.map(file=>file.name).join(', ')||fallback).slice(0,240);
-const statuses=new Set(['draft','running','waiting_user','pausing','unknown','review','paused','failed','completed','queued','cancelled','interrupted']);
+const statuses=new Set(['draft','running','continuing','waiting_user','pausing','unknown','review','paused','failed','completed','queued','cancelled','interrupted']);
 const status=value=>value==='read'?'review':statuses.has(value)?value:'unknown';
-const finalStatuses=new Set(['review','paused','failed','completed']);
+const finalStatuses=new Set(['review','paused','failed','completed','continuing']);
 const read=message=>message?.read===true||Boolean(message?.readAt||message?.receipt?.readAt||message?.visibleAt);
 const elapsedTime=(startedAt,now)=>{const seconds=Math.max(0,Math.floor((now-startedAt)/1000));return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;};
 const title=value=>typeof value==='string'?value.trim().slice(0,240):'';
@@ -23,13 +25,13 @@ export function updateWorkTimers(document,now=Date.now()){
 }
 
 export function workProgress(state,{language='en',connected=true,now=Date.now()}={}){
- const labels=copy[language==='zh'?'zh':'en'],messages=state?.messages||[],users=messages.filter(message=>message.role==='user'&&message.kind!=='call'),byId=new Map(messages.map(message=>[message.id,message]));
+ const labels=copy[language==='zh'?'zh':'en'],messages=state?.messages||[],users=messages.filter(message=>message.role==='user'&&message.kind!=='call'&&message.workKind!=='conversation'&&!(message.voiceCallId&&!message.turnId)),byId=new Map(messages.map(message=>[message.id,message]));
  const reliable=connected&&state?.controller?.cached!==true&&(state?.controller?.status===undefined||state.controller.status==='online')&&(state?.worker?.status===undefined||state.worker.status==='online');
- const current=state?.active,activeIds=new Set([current?.messageId,...(current?.messageIds||[])].filter(Boolean)),queueIds=new Set(state?.queue||[]);
+ const current=state?.active?.visible===false&&!['unknown','pausing','waiting_user'].includes(state.active.status)?null:state?.active,activeIds=new Set([current?.messageId,...(current?.messageIds||[])].filter(Boolean)),queueIds=new Set(state?.queue||[]);
  const records=[],registeredTurns=new Set(),registeredMessages=new Set(),recordIds=new Set();
  for(const record of [...(state?.workTasks||[])].sort((a,b)=>(time(b.updatedAt)||0)-(time(a.updatedAt)||0))){
   if(!record?.id||!record.turnId||registeredTurns.has(record.turnId)||recordIds.has(record.id))continue;
-  records.push(record);registeredTurns.add(record.turnId);recordIds.add(record.id);const message=byId.get(record.messageId);if(message?.role==='user'&&(!message.turnId||message.turnId===record.turnId))registeredMessages.add(message.id);
+  records.push(record);for(const id of [record.turnId,...(record.turnIds||[])])registeredTurns.add(id);recordIds.add(record.id);const message=byId.get(record.messageId);if(message?.role==='user'&&(!message.turnId||registeredTurns.has(message.turnId)))registeredMessages.add(message.id);
  }
  const registered=records.find(record=>current&&(record.id===current.workId||record.turnId===current.turnId));
  if(current?.turnId)for(const message of users)if(message.turnId===current.turnId)activeIds.add(message.id);
@@ -38,12 +40,12 @@ export function workProgress(state,{language='en',connected=true,now=Date.now()}
   const message=users.find(item=>activeIds.has(item.id)),source=current.source==='voice'?'voice':'chat',known=status(current.status||(['waiting_user','pausing'].includes(message?.status)?message.status:'running'));
   active={...current,title:title(current.title)||title(registered?.title)||text(message,labels[source==='voice'?'voice':'task']),source,canSteer:current.canSteer===true||current.canSteer===undefined&&source==='chat'&&Boolean(current.turnId),status:reliable?known:'unknown',knownStatus:known,stale:!reliable,startedAt:time(current.startedAt)||time(registered?.startedAt)||time(message?.time),updatedAt:time(current.updatedAt)||time(registered?.updatedAt),plan:workPlan(current.plan||registered?.plan)};
  }
- const queue=(state?.queue||[]).map(id=>byId.get(id)).filter(message=>message?.role==='user').map(message=>({message,status:'queued',title:text(message,labels.task),time:time(message.time)}));
+ const queue=(state?.queue||[]).map(id=>byId.get(id)).filter(message=>users.includes(message)).map(message=>({message,status:'queued',title:text(message,labels.task),time:time(message.time)}));
  const history=users.filter(message=>!activeIds.has(message.id)&&!queueIds.has(message.id)&&!registeredMessages.has(message.id)&&!registeredTurns.has(message.turnId)&&!time(message.progressDismissedAt)).map(message=>({message,status:status(message.status),title:text(message,labels.task),time:time(message.time),voice:false}));
  for(const record of records){
-  const message=byId.get(record.messageId),ownsMessage=message?.role==='user'&&(!message.turnId||message.turnId===record.turnId);
+  const original=byId.get(record.messageId),turnIds=new Set([record.turnId,...(record.turnIds||[])]),message=messages.find(item=>item.role==='user'&&item.turnId===record.turnId)||(original?.role==='user'&&!original.turnId?original:null),ownsMessage=message?.role==='user';
   if(time(record.progressDismissedAt)||record.id===current?.workId||record.turnId===current?.turnId||!current?.turnId&&activeIds.has(record.messageId)||ownsMessage&&queueIds.has(record.messageId))continue;
-  const results=(state?.completions||[]).filter(completion=>completion.turnId===record.turnId).flatMap(completion=>completion.messageIds||[]).map(id=>byId.get(id)).filter(item=>item?.role==='assistant'&&item.kind!=='call');
+  const results=(state?.completions||[]).filter(completion=>turnIds.has(completion.turnId)).flatMap(completion=>completion.messageIds||[]).map(id=>byId.get(id)).filter(item=>item?.role==='assistant'&&item.kind!=='call');
   const known=status(record.status),source=record.source==='voice'?'voice':'chat';
   history.push({id:record.id,turnId:record.turnId,work:true,registered:true,voice:source==='voice',source,taskId:ownsMessage?message.id:null,message:ownsMessage?message:undefined,messageId:results[0]?.id,status:!reliable&&['running','waiting_user','pausing'].includes(known)?'unknown':known,knownStatus:known,canDismiss:finalStatuses.has(known),title:title(record.title)||text(message,labels[source==='voice'?'voice':'task']),time:time(record.updatedAt)||time(record.startedAt)||time(message?.time),startedAt:time(record.startedAt),updatedAt:time(record.updatedAt),plan:workPlan(record.plan),unread:results.some(item=>!read(item))});
  }
@@ -56,25 +58,19 @@ export function workProgress(state,{language='en',connected=true,now=Date.now()}
   history.push({id:completion.id||completion.turnId,voice:true,status:status(completion.work?.status||'review'),title:labels.voice,time:time(completion.work?.updatedAt)||time(completion.at),messageId:result[0].id,unread:result.some(message=>!read(message))});
  }
  history.sort((a,b)=>(b.time||0)-(a.time||0));
- const reviewCount=history.filter(item=>item.status==='review'&&(!item.voice||item.unread)).length;
- return {active,queue,history:history.slice(0,12),reviewCount,reliable,now,labels};
-}
-export function renderWorkSummary(model){
- const {active,queue,labels,reliable}=model;
- if(!active&&!queue.length)return '';
- const state=active?.status||(!reliable?'unknown':'queued'),label=active?.status==='running'&&active.background?labels.background:labels[state]||labels.idle;
- const details=queue.length?labels.queuedCount(queue.length):'';
- return `<button type="button" class="work-summary ${escape(state)}" data-key="work-summary" data-action="progress" aria-label="${escape(labels.title+': '+label)}"><i class="work-status-dot" aria-hidden="true"></i><span class="work-summary-copy"><strong>${escape(label)}</strong><span>${escape(active?.title||(!reliable?labels.offline:labels.title))}</span></span>${details?`<small>${escape(details)}</small>`:''}<span class="work-summary-arrow" aria-hidden="true">›</span></button>`;
+ const ongoing=history.filter(item=>item.registered&&['continuing','waiting_user'].includes(item.knownStatus)),recent=history.filter(item=>!ongoing.includes(item));
+ const reviewCount=recent.filter(item=>item.status==='review'&&(!item.voice||item.unread)).length;
+ return {active,queue,ongoing,history:recent.slice(0,12),reviewCount,reliable,now,labels};
 }
 export function renderWorkEntry(model,icon=''){
  const {labels,reviewCount}=model,label=labels.title+(reviewCount?' · '+labels.reviewCount(reviewCount):'');
  return `<button type="button" class="text-btn header-work" data-action="progress" title="${escape(label)}" aria-label="${escape(label)}">${icon}<span>${escape(labels.title)}</span>${reviewCount?'<i class="work-review-marker" data-work-review-marker aria-hidden="true"></i>':''}</button>`;
 }
-function renderPlan(plan,labels,{history=false}={}){
+function renderPlan(plan,labels,{history=false,workId,expanded=false}={}){
  if(!plan)return '';
  const count=`${plan.completed} / ${plan.total} ${escape(labels.steps)}`;
  const checklist=plan.steps?.length?`<ol class="work-checklist" aria-label="${escape(labels.plan)}">${plan.steps.map(item=>`<li data-work-step-status="${item.status}"><span class="work-step-icon" aria-hidden="true">${item.status==='completed'?'✓':item.status==='inProgress'?'◉':'○'}</span><span>${escape(item.step)}</span><small>${escape(item.status==='completed'?labels.completed:item.status==='inProgress'?labels.inProgressStep:labels.pendingStep)}</small></li>`).join('')}</ol>`:plan.currentStep?`<p>${escape(plan.currentStep)}</p>`:'';
- if(history)return `<details class="work-plan work-history-plan"><summary>${count}</summary>${checklist}</details>`;
+ if(history)return `<details class="work-plan work-history-plan" data-key="work-plan-${escape(workId)}" data-work-plan="${escape(workId)}" ${expanded?'open':''}><summary>${count}</summary>${checklist}</details>`;
  return `<div class="work-plan"><div><span>${count}</span></div><progress max="${plan.total}" value="${plan.completed}" aria-label="${escape(labels.steps)}"></progress>${checklist}</div>`;
 }
 export function renderActiveWork(model){
@@ -88,8 +84,8 @@ export function renderVoiceWorkHistory(item,labels,{pending=false}={}){
  const dismiss=labels.dismiss;
  return `<div class="progress-item voice-work" data-key="voice-work-${escape(item.id)}"><span class="progress-state ${escape(item.status)}" aria-hidden="true">◷</span><div><p>${escape(item.title)}</p><small>${escape(labels[item.status]||labels.unknown)}${item.unread?' · '+escape(labels.unread):''}</small><div class="task-actions"><button type="button" class="text-btn" data-progress-message="${escape(item.messageId)}">${escape(labels.view)}</button></div></div><button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${escape(item.id)}" data-progress-kind="completion" title="${dismiss}" aria-label="${dismiss}" ${pending?'disabled':''}><span aria-hidden="true">×</span></button></div>`;
 }
-export function renderWorkTaskHistory(item,labels,{pending=false,actions=''}={}){
+export function renderWorkTaskHistory(item,labels,{pending=false,actions='',planOpen=false}={}){
  const at=item.time?new Intl.DateTimeFormat(labels===copy.zh?'zh-CN':'en',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}).format(item.time):'';
  const view=item.messageId?`<button type="button" class="text-btn" data-progress-message="${escape(item.messageId)}">${escape(labels.view)}</button>`:'';
- return `<div class="progress-item registered-work" data-key="registered-work-${escape(item.id)}"><span class="progress-state ${escape(item.status)}" aria-hidden="true">${item.status==='completed'?'✓':'◷'}</span><div><p>${escape(item.title)}</p><small>${escape(labels[item.status]||labels.unknown)}${at?' · '+escape(at):''}${item.unread?' · '+escape(labels.unread):''}</small>${renderPlan(item.plan,labels,{history:true})}${view?`<div class="task-actions">${view}</div>`:''}${actions}</div>${item.canDismiss?`<button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${escape(item.id)}" data-progress-kind="work" title="${escape(labels.dismiss)}" aria-label="${escape(labels.dismiss)}" ${pending?'disabled':''}><span aria-hidden="true">×</span></button>`:''}</div>`;
+ return `<div class="progress-item registered-work${['continuing','waiting_user'].includes(item.knownStatus)?' ongoing-work':''}" data-key="registered-work-${escape(item.id)}"><span class="progress-state ${escape(item.status)}" aria-hidden="true">${item.status==='completed'?'✓':'◷'}</span><div><p>${escape(item.title)}</p><small>${escape(labels[item.status]||labels.unknown)}${at?' · '+escape(at):''}${item.unread?' · '+escape(labels.unread):''}</small>${item.knownStatus==='continuing'?`<p class="work-continuation">${escape(labels.unfinished)}</p>`:''}${renderPlan(item.plan,labels,{history:true,workId:item.id,expanded:planOpen})}${view?`<div class="task-actions">${view}</div>`:''}${actions}</div>${item.canDismiss?`<button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${escape(item.id)}" data-progress-kind="work" title="${escape(labels.dismiss)}" aria-label="${escape(labels.dismiss)}" ${pending?'disabled':''}><span aria-hidden="true">×</span></button>`:''}</div>`;
 }

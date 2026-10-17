@@ -13,6 +13,8 @@ import {formatPresence} from '../ui/presence.js';
 import {workProgress,renderWorkEntry} from '../ui/work-progress.js';
 import {createUpdates} from '../ui/updates.js';
 import {createSettingsNavigation} from '../ui/settings-navigation.js';
+import {createSchedules} from '../ui/schedules.js';
+import {createWorkDisclosures} from '../ui/work-disclosures.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
@@ -23,6 +25,7 @@ function fixture({language='en',online=true,live=false}={}){
  const c={bindAttachmentImages,workProgress,renderWorkEntry,textEditor:{renderSettings:()=>'',bind(){},load:async()=>{},dispose(){}},nativeTray:{sync(){},dispose(){}},downloads:{bind(){}},filePreview:{bind(){},syncModal:value=>value},document,Event,window:{},app:document.querySelector('#app'),reconcile,icons:lucide,formatPresence,formatCallDuration,fallbackLanguage:language,state:{conversationId:'same-vm',settings:{...appearanceDefaults,language,vm:{host:'vm.test',port:22,user:'dant'}},worker:{status:online?'online':'offline',models:[]},controller:{status:online?'online':'offline'},messages:[],queue:[],active:null,call:live?call:null,credentials:{items:[],requests:[]},skills:{items:[{name:'computer-check',description:'Inspect the computer',path:'.agents/skills/computer-check',enabled:true}]}},vmDraft:null,eventConnected:online,page:'chat',modal:null,emojiFor:null,showComputer:false,chatMode:live?'voice':'text',callMini:false,callMuted:false,callConnected:live,callStarting:false,callStops:{pending:false},callChannel:{readyState:'open'},pc:live?peer:null,stream:live?stream:null,audio:live?audio:null,callId:live?call.id:null,callProvider:'subscription',composerDraft:'Keep my draft',attachmentMenu:false,dictating:false,speakingId:null,pendingActions:new Set(),localStorage:{setItem(){}},chatHistory:{onClose(){},bind(){},bindModal(){},renderSettings:()=>''},toast:message=>toasts.push(message),errorText:error=>error.message||String(error),humanControl:()=>false,resizeComposer(){},positionReactionMenus(){},updateRead(){},restartScreen(){},bindSteer(){},bindProvision(){},bindVoiceKey(){},bindTelegram(){},bindAppearance(){},bindVMSettings(){},bindComputerInput(){},clearTelegramPairing(){},loadTelegram:async()=>{},loadFonts:async()=>{},loadVoices:async()=>{},renderAppearance:()=>'',renderVoiceSettings:()=>'',renderVMSettings:()=>'',renderLoginDetails:()=>'',renderTelegramSettings:()=>'',renderMemory:()=>'',renderSchedules:()=>'',renderCallReady:()=>'',renderComputer:()=>'',eyes:()=>'<i class="call-avatar"></i>'};
  c.createElement=definition=>{const previous=globalThis.document;globalThis.document=document;try{return lucide.createElement(definition);}finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}};
  c.appearance=createAppearance({document,storage:null,matchMedia:()=>null});c.floatingCall={sync(){}};c.nativeCallOverlay={update(){}};
+ c.workDisclosures=createWorkDisclosures({getState:()=>c.state,document});c.scheduledTasks=createSchedules({getState:()=>c.state,document,connected:()=>c.eventConnected,render:()=>c.render(),request:async()=>({items:c.state.schedules||[]})});c.renderSchedules=()=>c.scheduledTasks.renderPage();
  c.callDuration=createCallDuration({now:()=>18000,schedule:fn=>{timers.set(++nextTimer,fn);return nextTimer;},cancel:id=>timers.delete(id)});if(live)c.callDuration.start(call.id,call.connectedAt);
  c.renderChat=()=>`<div id="messages"></div><textarea id="composer">${c.composerDraft}</textarea>`;
  c.openModal=next=>{c.modal=next;c.render();};c.closeModal=()=>{c.managedSettings.onClose(c.modal);c.modal=null;c.render();};
@@ -48,6 +51,13 @@ test('opening skills and returning to chat preserves draft, live media and elaps
  const f=fixture({live:true}),clock=f.c.callDuration;f.document.querySelector('#composer').value='Unsent message';
  await f.click('.rail [data-action="skills"]');assert.equal(f.c.composerDraft,'Unsent message');assert.ok(f.document.querySelector('.header-actions [data-action="hangup"]'));assert.equal(f.c.pc,f.peer);assert.equal(f.c.stream,f.stream);assert.equal(f.c.audio,f.audio);assert.equal(f.c.state.call,f.call);assert.equal(clock.snapshot.seconds,17);assert.equal(f.timers.size,1);
  await f.click('.rail [data-action="chat"]');assert.equal(f.c.page,'chat');assert.equal(f.document.querySelector('#composer').value,'Unsent message');assert.equal(f.c.callMini,true);assert.equal(f.document.querySelector('.call-view').classList.contains('mini'),true);assert.equal(f.c.pc,f.peer);assert.equal(f.c.callId,f.call.id);assert.equal(f.c.callDuration,clock);assert.equal(clock.snapshot.running,true);assert.equal(f.timers.size,1);assert.deepEqual(f.requests.map(item=>item.route),['/skills']);clock.dispose();
+});
+
+test('scheduled tasks open from the sidebar beside skills while retaining live call media and chat draft',async()=>{
+ for(const language of ['en','zh']){
+  const f=fixture({language,live:true});f.document.querySelector('#composer').value='Keep this message';await f.click('.rail [data-action="schedules"]');const entry=f.document.querySelector('.rail-schedules');assert.equal(f.c.page,'schedules');assert.equal(entry.previousElementSibling.dataset.action,'skills');assert.equal(entry.getAttribute('aria-current'),'page');assert.equal(entry.getAttribute('aria-label'),language==='en'?'Scheduled tasks':'定时任务');assert.ok(f.document.querySelector('.schedules-page [data-schedule-add]'));assert.equal(f.document.querySelector('#schedule-form'),null);assert.equal(f.c.pc,f.peer);assert.equal(f.c.state.call,f.call);assert.deepEqual(f.requests,[]);
+  await f.click('.rail [data-action="chat"]');assert.equal(f.document.querySelector('#composer').value,'Keep this message');assert.equal(f.c.stream,f.stream);assert.equal(f.c.callDuration.snapshot.running,true);f.c.callDuration.dispose();
+ }
 });
 
 test('offline navigation keeps cached skills visible and never starts a request or task',async()=>{

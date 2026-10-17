@@ -41,7 +41,8 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  async function connect({recoverExecutor=false}={}){
   try{const discovery=profiles.autoImport();if(discovery.requiresSelection)throw Object.assign(Error(discovery.error),{status:409});readVmBinding(dataDir);profileError=null;}catch(error){profileError=error.message;throw error;}
   await bridge.connect();
-  if(bridge.status==='online'&&bridge.cached?.settings?.language!==config.language){const response=await bridge.request('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:config.language})});if(!response.ok)throw Error('The computer connected, but its default response language could not be updated.');}
+  const timeZone=Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if(bridge.status==='online'&&(bridge.cached?.settings?.language!==config.language||bridge.cached?.settings?.timeZone!==timeZone)){const response=await bridge.request('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:config.language,timeZone})});if(!response.ok)throw Error('The computer connected, but its language and time zone could not be updated.');}
   // Reopening SSH after startup or a transport failure must preserve an executor
   // intentionally stopped by voice safety. Only the explicit Reconnect action
   // may start it again, after checking fresh authoritative VM state.

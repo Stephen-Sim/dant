@@ -6,7 +6,7 @@ export function formatPresence(state={},language='zh',now=Date.now()){
  const online=!disconnected&&workerStatus==='online';
  const connecting=!online&&(bridge==='connecting'||(!disconnected&&workerStatus==='connecting'));
  const inCall=online&&call?.status==='connected'&&state.callActiveNow!==false;
- const working=online&&Boolean(work);
+ const working=online&&Boolean(work)&&(work.visible!==false||['unknown','pausing','waiting_user'].includes(work.status));
  const active=inCall||working;
  const validAt=typeof lastActiveAt==='number'&&Number.isFinite(lastActiveAt)&&lastActiveAt>0&&lastActiveAt<=8640000000000000;
  const clock=typeof now==='number'&&Number.isFinite(now)?now:Date.now();

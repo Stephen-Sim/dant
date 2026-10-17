@@ -16,6 +16,13 @@ function setup(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dant-history-'
 const identity=({store,engine})=>({threadId:store.state.threadId,threadRuntime:store.state.threadRuntime,threadConversationId:store.state.threadConversationId,conversationId:store.state.conversationId,loaded:engine.loaded,workspace:engine.workspace});
 const errorStatus=status=>error=>error.status===status;
 
+test('pending message delivery keeps history immutable after its original task ends',t=>{
+ const context=setup(t),{store,engine,history}=context,message=store.add({role:'user',text:'A followup awaiting acknowledgement',status:'running'}),before=structuredClone(store.state);
+ engine.pendingFollowups.set(message.id,new Promise(()=>{}));assert.equal(engine.active,null);
+ assert.throws(()=>history.edit(message.id,{text:'Changed'}),errorStatus(409));assert.throws(()=>history.remove(message.id),errorStatus(409));assert.throws(()=>history.clear({confirm:true}),errorStatus(409));assert.deepEqual(store.state,before);
+ engine.pendingFollowups.clear();assert.equal(history.edit(message.id,{text:'Safe after delivery'}).edited,true);
+});
+
 test('editing changes only the stored user text by default and preserves model conversation/task status',t=>{
  const context=setup(t),{store,history,engine,worker,dir}=context,before=identity(context),attachments=[{id:'file',path:'/retained/output.txt'}];
  const user=store.add({role:'user',text:'Original',status:'completed',turnId:'old-turn',executorConfirmedAt:100,acceptedAt:200,attachments});const result=history.edit(user.id,{text:' Edited text '});

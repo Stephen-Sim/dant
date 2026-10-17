@@ -42,16 +42,16 @@ test('normal native hangup ends media, keeps the accepted turn, and sends final 
  await f.finish('accepted');await tick();assert.equal(f.voice.session,null);assert.equal(f.store.state.messages.filter(item=>item.text==='Verified background result').length,1);assert.equal(f.store.state.completions.filter(item=>item.turnId==='accepted').length,1);assert.equal(f.store.state.messages.filter(item=>item.kind==='call').length,1);assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,1);await f.finish('typed-1');
 });
 
-test('typed in-call work keeps its status after hangup and later receives its original final result',async t=>{
- const f=fixture(t),call=await f.engine.startCall(sdp),sent=await f.voice.message({clientMessageId:'typed-work',text:'A typed task'});assert.equal(sent.message.status,'running');await f.engine.stopCall(call.callId);assert.equal(sent.message.status,'running');await f.output(sent.turnId,'The typed task finished');await f.finish(sent.turnId);assert.equal(sent.message.status,'review');assert.equal(f.store.state.messages.filter(item=>item.text==='The typed task finished').length,1);assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,1);
+test('typed call input stays accepted while its actual delegated work continues after hangup and reports the final result',async t=>{
+ const f=fixture(t),call=await f.engine.startCall(sdp),sent=await f.voice.message({clientMessageId:'typed-work',text:'A typed task'});assert.equal(sent.message.status,'accepted');await f.begin('delegated-typed-work');await f.engine.stopCall(call.callId);assert.equal(sent.message.status,'accepted');await f.output('delegated-typed-work','The typed task finished');await f.finish('delegated-typed-work');assert.equal(sent.message.status,'accepted');assert.equal(f.store.state.messages.filter(item=>item.text==='The typed task finished').length,1);assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,0);assert.equal(f.store.state.completions.filter(item=>item.turnId==='delegated-typed-work').length,1);
 });
 
 test('an exact adjustment cannot silently become new queued work after native media hangup',async t=>{
  const f=fixture(t),call=await f.engine.startCall(sdp);await f.begin('owned-background');await f.engine.stopCall(call.callId);
- assert.equal(f.voice.progress.canSteer,false);const message=f.store.add({role:'user',text:'Adjust this same task'});
- await assert.rejects(f.engine.steer(message,'owned-background'),/active turn changed/);assert.equal(f.engine.queue.length,0);assert.equal(f.worker.calls.some(call=>call.method==='turn/start'||call.method==='turn/steer'),false);
+ assert.equal(f.voice.progress.canSteer,true);const message=f.store.add({role:'user',text:'Adjust this same task'});
+ await assert.rejects(f.engine.steer(message,'previous-background'),/active turn changed/);assert.equal(f.engine.queue.length,0);assert.equal(f.worker.calls.some(call=>call.method==='turn/start'||call.method==='turn/steer'),false);
  await f.event('item/tool/requestUserInput',{turnId:'owned-background',questions:[{question:'Which project?'}]},701);assert.equal(f.voice.progress.canSteer,true);
- await f.engine.steer(message,'owned-background');assert.equal(f.engine.queue.length,0);assert.equal(f.worker.calls.filter(call=>call.method==='turn/steer').length,1);assert.equal(f.voice.progress.canSteer,false);await f.finish('owned-background');
+ await f.engine.steer(message,'owned-background');assert.equal(f.engine.queue.length,0);assert.equal(f.worker.calls.filter(call=>call.method==='turn/steer').length,1);assert.equal(f.voice.progress.canSteer,true);assert.equal(f.voice.acceptsChatInput,false);await f.finish('owned-background');
 });
 
 test('explicit pause after media hangup waits for the matching turn stop before allowing desktop takeover',async t=>{
@@ -91,7 +91,7 @@ test('a missing final turn event is reconciled from owned terminal history witho
 });
 
 test('the next chat message answers a background input blocker by steering the exact accepted native turn',async t=>{
- const f=fixture(t),call=await f.engine.startCall(sdp);await f.begin('input-blocker');await f.engine.stopCall(call.callId);await f.event('item/tool/requestUserInput',{turnId:'input-blocker',questions:[{question:'Which folder?'}]},71);const message=f.store.add({role:'user',text:'Use the demo folder'});f.engine.enqueue(message);await f.voice.session.messageChain;assert.equal(message.submission,'confirmed');assert.equal(f.engine.queue.length,0);const steers=f.worker.calls.filter(call=>call.method==='turn/steer');assert.equal(steers.length,1);assert.equal(steers[0].params.expectedTurnId,'input-blocker');assert.ok(steers[0].params.input[0].text.includes('Use the demo folder'));assert.equal(f.worker.calls.some(call=>call.method==='turn/start'),false);await f.output('input-blocker','Folder task finished');await f.finish('input-blocker');assert.equal(message.status,'review');assert.equal(f.voice.session,null);
+ const f=fixture(t),call=await f.engine.startCall(sdp);await f.begin('input-blocker');await f.engine.stopCall(call.callId);await f.event('item/tool/requestUserInput',{turnId:'input-blocker',questions:[{question:'Which folder?'}]},71);const message=f.store.add({role:'user',text:'Use the demo folder'});f.engine.enqueue(message,{interactive:true});await f.voice.session.messageChain;assert.equal(message.submission,'confirmed');assert.equal(f.engine.queue.length,0);const steers=f.worker.calls.filter(call=>call.method==='turn/steer');assert.equal(steers.length,1);assert.equal(steers[0].params.expectedTurnId,'input-blocker');assert.ok(steers[0].params.input[0].text.includes('Use the demo folder'));assert.equal(f.worker.calls.some(call=>call.method==='turn/start'),false);await f.output('input-blocker','Folder task finished');await f.finish('input-blocker');assert.equal(message.status,'review');assert.equal(f.voice.session,null);
 });
 
 test('shutdown during a pending normal hangup overrides continuation and confirms the accepted task stopped',async t=>{

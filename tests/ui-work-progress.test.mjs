@@ -3,12 +3,33 @@ import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {workProgress,renderWorkSummary,renderWorkEntry,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,updateWorkTimers} from '../ui/work-progress.js';
+import {workProgress,renderWorkEntry,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,updateWorkTimers} from '../ui/work-progress.js';
 
 const state=()=>({worker:{status:'online'},controller:{status:'online'},messages:[],queue:[],completions:[]});
+test('accepted call conversation inputs are not phantom tasks while registered call work remains visible',()=>{
+ const data=state();data.messages=[{id:'spoken-input',role:'user',text:'This one',status:'accepted',voiceCallId:'call',time:100},{id:'task-input',role:'user',text:'Check the file',status:'accepted',voiceCallId:'call',time:200},{id:'uncertain-input',role:'user',text:'Delivery uncertain',status:'unknown',voiceCallId:'call',turnId:'actual-unknown-work',time:300}];
+ data.workTasks=[{id:'call-work',turnId:'actual-turn',messageId:'task-input',source:'voice',title:'Checking the file',status:'review',updatedAt:400}];
+ const model=workProgress(data);assert.deepEqual(model.history.map(item=>item.id||item.message.id),['call-work','uncertain-input']);assert.equal(model.history[0].status,'review');assert.equal(model.history[0].message.id,'task-input');assert.equal(model.history[1].status,'unknown');assert.equal(model.reviewCount,0);
+});
+test('related work spans multiple execution turns while conversation-only replies create no progress entries',()=>{
+ const data=state();data.active={turnId:'speech-tail',source:'voice',status:'running',visible:false};data.messages=[{id:'first',role:'user',turnId:'first-turn',workKind:'task',text:'Check a room',status:'review'},{id:'followup',role:'user',turnId:'next-turn',workKind:'task',text:'Use this room',status:'review'},{id:'hello',role:'user',turnId:'greeting',workKind:'conversation',text:'Hello',status:'review'},{id:'input-only',role:'user',voiceCallId:'call',status:'paused'},{id:'old-output',role:'assistant',text:'Room created',read:true},{id:'next-output',role:'assistant',text:'Checking',read:false}];
+ data.workTasks=[{id:'same-work',turnId:'next-turn',turnIds:['first-turn','next-turn'],messageId:'first',source:'voice',title:'Test the private room',status:'continuing',startedAt:1000,updatedAt:3000,plan:{steps:[{step:'Create room',status:'completed'},{step:'Verify play',status:'inProgress'}]}}];data.completions=[{turnId:'first-turn',messageIds:['old-output'],work:{source:'voice',status:'review'}},{turnId:'next-turn',messageIds:['next-output'],work:{source:'voice',status:'review'}}];
+ let model=workProgress(data);assert.equal(model.active,null);assert.equal(model.history.length,0);assert.equal(model.ongoing.length,1);assert.equal(model.ongoing[0].id,'same-work');assert.equal(model.ongoing[0].message.id,'followup');assert.equal(model.reviewCount,0);
+ for(const language of ['en','zh']){model=workProgress(data,{language});const {document}=parseHTML(renderWorkTaskHistory(model.ongoing[0],model.labels));assert.match(document.querySelector('.registered-work').textContent,language==='en'?/In progress/:/进行中/);assert.equal(document.querySelectorAll('ol li').length,2);assert.equal(document.querySelector('[data-work-started]'),null);assert.equal(document.querySelector('[data-task-accept]'),null);}
+ data.active={workId:'same-work',turnId:'next-turn',status:'running',source:'voice'};model=workProgress(data);assert.equal(model.active.title,'Test the private room');assert.equal(model.ongoing.length,0);assert.equal(model.history.length,0);
+ data.active=null;data.workTasks[0].status='review';model=workProgress(data);assert.equal(model.ongoing.length,0);assert.equal(model.history.length,1);assert.equal(model.reviewCount,1);assert.equal(model.history[0].unread,true);
+});
+
+test('continued work binds review and resume controls only to its latest actual human turn, never its original anchor',()=>{
+ const data=state();data.messages=[{id:'original',role:'user',text:'Original request',status:'review',turnId:'first-turn'},{id:'latest',role:'user',text:'Latest continuation',status:'review',turnId:'latest-turn'}];data.workTasks=[{id:'same-work',turnId:'latest-turn',turnIds:['first-turn','latest-turn'],messageId:'original',source:'chat',title:'Continue the same work',status:'review',plan:{steps:[{step:'Verified result',status:'completed'}]}}];
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderProgress(){'),end=source.indexOf('function renderModal(){',start),context={workDisclosures:{capture(){},bind(){},isOpen:()=>false},workProgress,renderActiveWork,renderWorkTaskHistory,renderVoiceWorkHistory,state:data,language:()=>'en',eventConnected:true,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:()=>false};vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+ let document=parseHTML(context.renderProgress()).document;assert.equal(document.querySelectorAll('.registered-work').length,1);assert.equal(document.querySelector('[data-task-accept]').dataset.taskAccept,'latest');assert.equal(document.querySelector('[data-task-accept="original"]'),null);
+ data.messages[1].status='paused';data.workTasks[0].status='paused';document=parseHTML(context.renderProgress()).document;assert.equal(document.querySelector('[data-task-resume]').dataset.taskResume,'latest');assert.equal(document.querySelector('[data-task-resume="original"]'),null);
+ data.messages.pop();document=parseHTML(context.renderProgress()).document;assert.equal(document.querySelector('[data-task-accept],[data-task-resume]'),null,'a current voice-only continuation cannot inherit an old human action');
+});
 test('speech-only work remains visible after media hangup with actual stage and plan, without fabricated progress',()=>{
  const data=state();data.active={messageId:null,turnId:'turn',source:'voice',background:true,status:'running',startedAt:1000,updatedAt:5000,step:'computer'};
- const before=structuredClone(data),model=workProgress(data,{now:61000}),html=renderWorkSummary(model)+renderActiveWork(model);
+ const before=structuredClone(data),model=workProgress(data,{now:61000}),html=renderActiveWork(model);
  assert.match(html,/Continuing in the background/);assert.match(html,/Task from a call/);assert.match(html,/Using the computer/);assert.match(html,/1:00/);assert.doesNotMatch(html,/<progress|No task is running|100%/);assert.deepEqual(data,before);
  data.active.plan={total:4,completed:2,currentStep:'Inspect <board> & verify'};const plan=renderActiveWork(workProgress(data));assert.match(plan,/<progress max="4" value="2"/);assert.match(plan,/Inspect &lt;board&gt; &amp; verify/);
 });
@@ -18,6 +39,16 @@ test('waiting for input, stopping and uncertain ownership remain distinct from n
  for(const [status,label]of [['pausing','Stopping safely'],['unknown','Status unconfirmed']]){data.active.status=status;assert.match(renderActiveWork(workProgress(data)),new RegExp(label));}
  for(const controller of [{status:'offline'},{status:'connecting'},{status:'online',cached:true}]){data.controller=controller;data.active.status='running';const model=workProgress(data);assert.equal(model.active.status,'unknown');assert.match(renderActiveWork(model),/Reconnect to confirm/);assert.equal(data.active.status,'running');}
  data.controller={status:'online'};assert.equal(workProgress(data,{connected:false}).active.status,'unknown');
+});
+
+test('hidden conversation markers cannot suppress uncertain, stopping or actual waiting ownership and its Stop control',()=>{
+ const data=state();data.messages=[{id:'conversation',role:'user',text:'Ordinary conversation',workKind:'conversation',status:'running',turnId:'conversation-turn'}];data.active={source:'voice',turnId:'conversation-turn',messageId:'conversation',visible:false,status:'running',canSteer:false};
+ assert.equal(workProgress(data).active,null);assert.equal(workProgress(data).history.length,0);
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderProgress(){'),end=source.indexOf('function renderModal(){',start),context={workDisclosures:{capture(){},bind(){},isOpen:()=>false},workProgress,renderActiveWork,renderWorkTaskHistory,renderVoiceWorkHistory,state:data,language:()=>'en',eventConnected:true,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:()=>false};vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+ for(const [status,label]of [['unknown','Status unconfirmed'],['pausing','Stopping safely'],['waiting_user','Waiting for your reply']]){
+  data.active.status=status;const model=workProgress(data),document=parseHTML(context.renderProgress()).document;assert.equal(model.active.status,status);assert.equal(model.history.length,0);assert.match(document.querySelector('.current-work').textContent,new RegExp(label));assert.ok(document.querySelector('[data-action="stop"]'));assert.equal(document.querySelector('[data-task-resume],[data-task-accept]'),null,'recovery visibility never invents a replay or acceptance action');
+ }
+ data.active.status='running';assert.equal(parseHTML(context.renderProgress()).document.querySelector('.current-work'),null,'ordinary conversation stays hidden again once ownership is known');
 });
 test('recent work combines user tasks and readable voice receipts without duplicate or phantom tasks',()=>{
  const data=state();data.active={messageId:'active',turnId:'active-turn'};data.queue=['q2','q1'];data.messages=[{id:'active',role:'user',text:'Active'},{id:'q1',role:'user',text:'First queued'},{id:'q2',role:'user',text:'Second queued'},{id:'human',role:'user',text:'Chat result',status:'review',time:20},{id:'call',role:'system',kind:'call'},{id:'result',role:'assistant',status:'completed',text:'Voice result',time:30,source:{type:'voice-call'}},{id:'old',role:'user',text:'Needs explicit resume',status:'paused',submission:'unknown',time:10}];
@@ -66,7 +97,7 @@ test('retried turns keep separate history without letting the old run accept or 
 test('a retry that fails before registration keeps its own Resume action alongside the older saved attempt',()=>{
  const data=state();data.messages=[{id:'task',role:'user',turnId:'retry-turn',text:'Retry export',status:'failed',time:30},{id:'old-result',role:'assistant',read:true}];data.workTasks=[{id:'old-work',turnId:'old-turn',messageId:'task',source:'chat',title:'Earlier export attempt',status:'paused',updatedAt:10,plan:{steps:[{step:'Collect files',status:'completed'}]}}];data.completions=[{turnId:'old-turn',messageIds:['old-result']}];
  const before=structuredClone(data),model=workProgress(data),latest=model.history.find(item=>!item.registered),earlier=model.history.find(item=>item.registered);assert.equal(model.history.length,2);assert.equal(latest.message,data.messages[0]);assert.equal(latest.status,'failed');assert.equal(earlier.taskId,null);assert.equal(earlier.message,undefined);assert.equal(earlier.messageId,'old-result');assert.deepEqual(data,before);
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderProgress(){'),end=source.indexOf('function renderModal(){',start),context={workProgress,renderActiveWork,renderWorkTaskHistory,renderVoiceWorkHistory,state:data,language:()=>'en',eventConnected:true,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:()=>false};vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderProgress(){'),end=source.indexOf('function renderModal(){',start),context={workDisclosures:{capture(){},bind(){},isOpen:()=>false},workProgress,renderActiveWork,renderWorkTaskHistory,renderVoiceWorkHistory,state:data,language:()=>'en',eventConnected:true,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:()=>false};vm.createContext(context);vm.runInContext(source.slice(start,end),context);
  const {document}=parseHTML(context.renderProgress()),fallback=document.querySelector('[data-key="progress-task"]'),saved=document.querySelector('[data-key="registered-work-old-work"]');assert.ok(fallback);assert.ok(saved);assert.equal(fallback.querySelector('[data-task-resume]').dataset.taskResume,'task');assert.equal(fallback.querySelector('[data-task-resume]').hasAttribute('disabled'),false);assert.equal(saved.querySelector('[data-task-resume],[data-task-accept]'),null);assert.equal(saved.querySelector('[data-progress-message]').dataset.progressMessage,'old-result');assert.equal(saved.querySelector('[data-task-dismiss]').dataset.taskDismiss,'old-work');
 });
 test('registered history keeps canonical status, exact result navigation, dismissal kind and supplied task actions',()=>{
@@ -103,16 +134,14 @@ test('close handlers submit only dismissal metadata and refresh through the exis
  const locked={pendingActions:new Set(),state:null,render:()=>{},post:async(...args)=>{requests.push(args);await pending;},api:async path=>{snapshots.push(path);return {messages:[{id:'preserved'}]};}};vm.createContext(locked);vm.runInContext(source.slice(requestStart,requestEnd),locked);
  const first=locked.taskRequest('id','/tasks/id/dismiss',{kind:'task'});await locked.taskRequest('id','/tasks/id/dismiss',{kind:'task'});assert.equal(requests.length,1);assert.equal(locked.pendingActions.has('task:id'),true);release();await first;assert.deepEqual(snapshots,['/state']);assert.equal(locked.pendingActions.size,0);assert.equal(locked.state.messages[0].id,'preserved');
 });
-test('review stays in a small localized progress-entry marker without an idle banner or visible review label',()=>{
- const data=state();assert.equal(renderWorkSummary(workProgress(data,{language:'zh'})),'');
- data.worker.status='offline';assert.equal(renderWorkSummary(workProgress(data)),'','offline presence already belongs in the header');
- data.worker.status='online';data.messages=[{id:'q',role:'user',text:'<script>alert(1)</script>',status:'queued'},{id:'r',role:'user',status:'review'}];
+test('header progress entry keeps its localized review marker while active and queued details stay in the panel',()=>{
+ const data=state();data.messages=[{id:'q',role:'user',text:'<script>alert(1)</script>',status:'queued'},{id:'r',role:'user',status:'review'}];
  for(const language of ['en','zh']){
   const model=workProgress(data,{language}),{document}=parseHTML(renderWorkEntry(model,'<svg></svg>')),entry=document.querySelector('button');
-  assert.equal(entry.textContent,language==='en'?'Work progress':'工作进度');assert.ok(entry.querySelector('[data-work-review-marker]'));assert.match(entry.getAttribute('aria-label'),language==='en'?/1 awaiting review/:/1 项待验收/);assert.equal(entry.dataset.action,'progress');assert.equal(renderWorkSummary(model),'');
+  assert.equal(entry.textContent,language==='en'?'Work progress':'工作进度');assert.ok(entry.querySelector('[data-work-review-marker]'));assert.match(entry.getAttribute('aria-label'),language==='en'?/1 awaiting review/:/1 项待验收/);assert.equal(entry.dataset.action,'progress');
  }
- data.queue=['q'];let html=renderWorkSummary(workProgress(data));assert.match(html,/1 queued/);assert.doesNotMatch(html,/awaiting review|<script>/);
- data.active={messageId:'q',turnId:'turn',status:'running'};html=renderWorkSummary(workProgress(data));assert.match(html,/Working/);assert.doesNotMatch(html,/awaiting review|<script>/);
+ data.queue=['q'];let html=renderWorkEntry(workProgress(data));assert.doesNotMatch(html,/queued|<script>/);
+ data.active={messageId:'q',turnId:'turn',status:'running'};html=renderWorkEntry(workProgress(data));assert.doesNotMatch(html,/Working|<script>/);assert.match(renderActiveWork(workProgress(data)),/Working/);
  data.messages.find(item=>item.id==='r').status='completed';assert.doesNotMatch(renderWorkEntry(workProgress(data)),/data-work-review-marker/);
 });
 
@@ -126,6 +155,18 @@ test('quiet work elapsed time updates in place without replacing focused drafts 
  const {document}=parseHTML('<time data-work-started="1000">0:00</time><input value="preserved"><time data-work-started="NaN">invalid</time>'),draft=document.querySelector('input');
  updateWorkTimers(document,126000);assert.equal(document.querySelector('time').textContent,'2:05');assert.equal(document.querySelector('input'),draft);assert.equal(draft.value,'preserved');assert.equal(document.querySelectorAll('time')[1].textContent,'invalid');
  updateWorkTimers(document,0);assert.equal(document.querySelector('time').textContent,'0:00');
+});
+
+test('chat keeps messages and the composer free of an inline work card in every task state',()=>{
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderChat(){'),end=source.indexOf('function renderDraftAttachment(',start);
+ const data=state(),context={state:data,renderMessages:()=>'<article class="message">Saved chat</article>',renderUnreadControl:()=>'',managedSettings:{renderRequests:()=>''},replyTo:null,attachments:[],renderUnconfirmedMessage:()=>'',renderVoiceRecorder:()=>'',recordDraft:null,recordStarting:false,composerDraft:'Draft stays here',esc:value=>String(value??''),t:value=>value,renderAttachmentOptions:()=>'',speechBlocked:()=>false,dictating:false,recording:null,sending:false,uploading:false,eventConnected:true,speakingId:null,ico:()=>'',button:(action)=>`<button data-action="${action}"></button>`};
+ data.messages=[{id:'saved',role:'assistant',text:'Saved chat'}];vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+ for(const activeStatus of [null,'running','waiting_user','pausing','unknown']){
+  data.active=activeStatus?{messageId:'task',turnId:'owned',status:activeStatus}:null;data.queue=activeStatus?['queued']:[];
+  const {document}=parseHTML('<main>'+context.renderChat()+'</main>'),main=document.querySelector('main');
+  assert.equal(main.firstElementChild.id,'messages');assert.equal(document.querySelectorAll('.message').length,1);assert.equal(document.querySelector('#composer').textContent,'Draft stays here');assert.equal(document.querySelector('.work-summary,.current-work,[data-action="progress"]'),null);assert.equal(Boolean(document.querySelector('[data-action="stop"]')),Boolean(activeStatus));
+ }
+ assert.doesNotMatch(source,/renderWorkSummary/);
 });
 
 test('main renders first-class task access and voice result navigation without changing read state itself',()=>{

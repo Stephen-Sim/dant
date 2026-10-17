@@ -43,10 +43,10 @@ test('voice uses the host key only for API and sideband authentication and retur
  assert.equal(requests[0].url,'https://api.openai.com/v1/realtime/calls');assert.equal(requests[0].options.redirect,'error');
  assert.equal(requests[0].options.headers.Authorization,`Bearer ${KEY}`);assert.equal(requests[0].options.body.get('sdp'),SDP);
  assert.equal(session.model,DEFAULT_VOICE_MODEL);assert.equal(session.audio.output.voice,'marin');assert.deepEqual(session.audio.input.transcription,{model:'gpt-transcribe'});assert.match(session.instructions,/Prefers Chinese/);assert.match(session.instructions,/current text chat/);
- assert.deepEqual(session.tools.map(tool=>tool.name),['run_task','memory_write','send_message','react_message','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','send_file','end_call']);
+ assert.deepEqual(session.tools.map(tool=>tool.name),['run_task','memory_write','send_message','react_message','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','send_file','schedule_list','schedule_save','schedule_delete','end_call']);
  assert.equal(sockets[0].url,'wss://api.openai.com/v1/realtime?call_id=rtc_test');assert.equal(sockets[0].options.headers.Authorization,`Bearer ${KEY}`);
  assert.equal(voice.call.status,'active');assert.equal(JSON.stringify({state:voice.state,events}).includes(KEY),false);
- assert.ok(VOICES.includes('cedar'));assert.equal(VOICE_TOOLS.length,13);
+ assert.ok(VOICES.includes('cedar'));assert.equal(VOICE_TOOLS.length,16);
 });
 
 test('missing keys and invalid offers fail before sending requests',async t=>{
@@ -153,7 +153,7 @@ const ack=(socket,event=socket.sent.at(-1))=>emit(socket,{type:'session.updated'
 test('live API context waits for matching configuration acknowledgement and retains original instructions',async t=>{
  const h=harness(t);await h.voice.start({sdp:SDP,callId:'engine-call',memory:'Original memory'});const socket=h.sockets[0],original=JSON.parse(h.requests[0].options.body.get('session')).instructions;
  let resolved=false;const pending=h.voice.syncContext({kind:'message',message:reference('user-1','Please inspect the actual chart'),callId:'engine-call'}).then(result=>{resolved=true;return result;});await tick();
- const event=socket.sent[0];assert.equal(event.type,'session.update');assert.deepEqual(Object.keys(event.session).sort(),['instructions','type']);assert.ok(event.session.instructions.startsWith(original+'\n\n'));assert.match(event.session.instructions,/Please inspect the actual chart/);assert.match(event.session.instructions,/attached\.txt/);assert.match(event.session.instructions,/"messageId":"user-1"/);assert.match(event.session.instructions,/do not execute or delegate them again/);
+ const event=socket.sent[0];assert.equal(event.type,'session.update');assert.deepEqual(Object.keys(event.session).sort(),['instructions','type']);assert.ok(event.session.instructions.startsWith(original+'\n\n'));assert.match(event.session.instructions,/Please inspect the actual chart/);assert.match(event.session.instructions,/attached\.txt/);assert.match(event.session.instructions,/"messageId":"user-1"/);assert.match(event.session.instructions,/do not execute or delegate these reference entries again/);
  assert.equal(resolved,false);emit(socket,{type:'session.updated',session:{instructions:original}});await tick();assert.equal(resolved,false);
  ack(socket,event);const result=await pending;assert.equal(result.status,'submitted');assert.equal(result.callId,'engine-call');assert.equal(result.contextId,event.event_id);assert.equal(h.tasks.length,0);assert.equal(h.tools.length,0);assert.equal(socket.sent.some(event=>event.type==='response.create'),false);
  const second=h.voice.syncContext({kind:'message',message:reference('user-2','A second typed reference'),callId:'engine-call'});await tick();const later=socket.sent.at(-1);assert.ok(later.session.instructions.startsWith(original+'\n\n'));assert.match(later.session.instructions,/Please inspect the actual chart/);assert.match(later.session.instructions,/A second typed reference/);ack(socket);assert.equal((await second).status,'submitted');
@@ -226,6 +226,81 @@ const transcript=(socket,id,text)=>emit(socket,{type:'conversation.item.input_au
 const spoken=(id,text)=>({id,type:'message',role:'assistant',status:'completed',content:[{type:'audio',transcript:text}]});
 const added=(socket,item,previous=null)=>emit(socket,{type:'conversation.item.added',item,previous_item_id:previous});
 
+const typed=(id,text='这个',replyTo=null)=>({id,role:'user',text,replyTo,attachments:[]});
+const inputEvent=socket=>socket.sent.filter(event=>event.type==='conversation.item.create'&&event.item?.role==='user').at(-1);
+const acceptInput=(socket,event=inputEvent(socket))=>added(socket,event.item);
+
+test('typed API call input is one authoritative quoted user message and acknowledgement starts a spoken response',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0],message=typed('typed-input','这个','answer'),reply={id:'answer',role:'assistant',text:'The blue example from the current call',attachments:[]};
+ let settled=false;const pending=h.voice.message({message,reply,callId:'current'}).then(result=>{settled=true;return result;});await tick();
+ const event=inputEvent(socket);assert.ok(event);assert.match(event.item.content[0].text,/这个/);assert.match(event.item.content[0].text,/The blue example from the current call/);assert.match(event.item.content[0].text,/"messageId":"typed-input"/);assert.equal(settled,false);assert.equal(socket.sent.some(event=>event.type==='response.create'),false);
+ added(socket,{...event.item,id:'unrelated'});await tick();assert.equal(settled,false);acceptInput(socket,event);const result=await pending;
+ assert.equal(result.submission,'confirmed');assert.equal(result.messageId,message.id);assert.ok(result.confirmedAt);assert.equal(socket.sent.filter(event=>event.type==='response.create').length,1);assert.equal(h.tasks.length,0);assert.equal(h.tools.length,0);assert.equal(h.events.conversation.length,0,'The existing typed chat record is not copied into speech transcripts');
+});
+
+test('pending and acknowledged API call input IDs deduplicate and cannot change their content',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0],message=typed('same-id','One actual current request');
+ const first=h.voice.message({message,callId:'current'}),second=h.voice.message({message,callId:'current'});assert.equal(first,second);await tick();assert.equal(socket.sent.length,1);
+ await assert.rejects(h.voice.message({message:{...message,text:'Different request'},callId:'current'}),/different call input/);acceptInput(socket);const result=await first;
+ assert.deepEqual(await h.voice.message({message,callId:'current'}),result);assert.equal(socket.sent.filter(event=>event.item?.role==='user').length,1);assert.equal(socket.sent.filter(event=>event.type==='response.create').length,1);
+});
+
+test('rapid API call inputs serialize and wait for the current spoken response before asking for another',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0],first=h.voice.message({message:typed('one','First input'),callId:'current'}),second=h.voice.message({message:typed('two','Second input'),callId:'current'});
+ await tick();assert.equal(socket.sent.filter(event=>event.item?.role==='user').length,1);acceptInput(socket);await first;await tick();assert.equal(socket.sent.filter(event=>event.item?.role==='user').length,2);acceptInput(socket);await second;
+ assert.equal(socket.sent.filter(event=>event.type==='response.create').length,1);emit(socket,completed([]));assert.equal(socket.sent.filter(event=>event.type==='response.create').length,2);assert.equal(h.tasks.length,0);
+});
+
+test('a response-start race with VAD preserves the typed-input audio response until the active response finishes',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0],pending=h.voice.message({message:typed('race'),callId:'current'});await tick();acceptInput(socket);await pending;
+ assert.equal(socket.sent.filter(event=>event.type==='response.create').length,1);emit(socket,{type:'error',error:{code:'response_already_in_progress'}});assert.equal(socket.sent.filter(event=>event.type==='response.create').length,1);emit(socket,completed([]));assert.equal(socket.sent.filter(event=>event.type==='response.create').length,2);assert.equal(h.tasks.length,0);assert.equal(h.events.notices.length,0);
+});
+
+test('a correlated API call-input rejection has no receipt or response and does not replay on the next message',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0],rejected=h.voice.message({message:typed('rejected'),callId:'current'});await tick();const event=inputEvent(socket);
+ emit(socket,{type:'error',error:{event_id:event.event_id,code:'invalid_value',message:KEY}});await assert.rejects(rejected,error=>error.submission==='rejected'&&!error.message.includes(KEY));assert.equal(socket.sent.some(event=>event.type==='response.create'),false);
+ const accepted=h.voice.message({message:typed('accepted','A fresh request'),callId:'current'});await tick();acceptInput(socket);assert.equal((await accepted).submission,'confirmed');assert.equal(socket.sent.filter(event=>event.item?.role==='user').length,2);assert.equal(JSON.stringify(h.events).includes(KEY),false);
+});
+
+test('an unacknowledged API call input becomes unknown and blocks later input without replay',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});h.voice.requestTimeoutMs=15;const socket=h.sockets[0],message=typed('uncertain');
+ await assert.rejects(h.voice.message({message,callId:'current'}),error=>error.unknownOutcome&&error.submission==='unknown');assert.equal(h.voice.state.inputUnconfirmed,true);
+ await assert.rejects(h.voice.message({message,callId:'current'}),error=>error.unknownOutcome);await assert.rejects(h.voice.message({message:typed('later'),callId:'current'}),error=>error.submission==='not-submitted');assert.equal(socket.sent.length,1);assert.equal(h.tasks.length,0);
+});
+
+test('typed API input waits for finalized speech and its canonical-context callback before admission',async t=>{
+ let release;const h=harness(t,{onConversationItem:()=>new Promise(resolve=>release=resolve)});await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0];committed(socket,'human');
+ const pending=h.voice.message({message:typed('after-speech','Use what I just said'),callId:'current'});await tick();assert.equal(socket.sent.length,0);transcript(socket,'human','Remember the blue example');await tick();assert.equal(socket.sent.length,0);release();await tick();assert.ok(inputEvent(socket));acceptInput(socket);assert.equal((await pending).submission,'confirmed');assert.equal(h.tasks.length,0);
+});
+
+test('Stop while an API typed message waits in the provider queue cancels that unsent message',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0];let epoch=0;const isCurrent=()=>epoch===0;
+ const first=h.voice.message({message:typed('first','Already dispatched input'),callId:'current',isCurrent}),second=h.voice.message({message:typed('second','Must remain unsent after Stop'),callId:'current',isCurrent}),cancelled=assert.rejects(second,error=>error.submission==='not-submitted'&&!error.unknownOutcome);
+ await tick();assert.equal(socket.sent.filter(event=>event.item?.role==='user').length,1);epoch++;acceptInput(socket);assert.equal((await first).submission,'confirmed');await cancelled;assert.equal(socket.sent.filter(event=>event.item?.role==='user').length,1);assert.equal(h.tasks.length,0);assert.equal(h.voice.state.inputUnconfirmed,false);
+});
+
+test('Stop during newly committed speech after the Engine barrier blocks the provider input send',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0];await h.voice.conversationReady('current');committed(socket,'new-audio-after-engine-barrier');let active=true;
+ const pending=h.voice.message({message:typed('after-barrier','Must not send after Stop'),callId:'current',isCurrent:()=>active}),cancelled=assert.rejects(pending,error=>error.submission==='not-submitted'&&!error.unknownOutcome);await tick();assert.equal(socket.sent.length,0);active=false;transcript(socket,'new-audio-after-engine-barrier','A newly completed spoken fact');await cancelled;assert.equal(socket.sent.length,0);assert.equal(h.tasks.length,0);assert.equal(h.voice.state.inputUnconfirmed,false);
+ await assert.rejects(h.voice.message({message:typed('already-stopped'),callId:'current',isCurrent:()=>false}),error=>error.submission==='not-submitted');assert.equal(socket.sent.length,0);
+});
+
+test('hangup before typed input dispatch never submits it to a later call',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'old'});const old=h.sockets[0];committed(old,'pending-speech');const pending=h.voice.message({message:typed('unsent'),callId:'old'}),rejected=assert.rejects(pending,error=>error.submission==='not-submitted');await tick();
+ const stopping=h.voice.stop();emit(old,{type:'conversation.item.input_audio_transcription.failed',item_id:'pending-speech'});await stopping;await rejected;assert.equal(old.sent.length,0);
+ await h.voice.start({sdp:SDP,callId:'new'});await assert.rejects(h.voice.message({message:typed('stale'),callId:'old'}),error=>error.submission==='not-submitted');assert.equal(h.sockets[1].sent.length,0);assert.equal(h.tasks.length,0);
+});
+
+test('sideband loss after typed input dispatch is unknown and stale acknowledgements cannot revive it',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'old'});const old=h.sockets[0],pending=h.voice.message({message:typed('lost'),callId:'old'}),rejected=assert.rejects(pending,error=>error.unknownOutcome);await tick();const event=inputEvent(old);
+ old.readyState=3;old.emit('close');await rejected;await h.voice.stop();await h.voice.start({sdp:SDP,callId:'new'});acceptInput(old,event);await tick();assert.equal(h.sockets[1].sent.length,0);assert.equal(h.tasks.length,0);assert.equal(JSON.stringify(h.events).includes(KEY),false);
+});
+
+test('API voice-only input retains full text and rejects invalid media or a mismatched quote without sending',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0];await assert.rejects(h.voice.message({message:{...typed('media'),attachments:[{name:'recording.webm'}]},callId:'current'}),/without attachments/);await assert.rejects(h.voice.message({message:typed('wrong-quote','This one','actual'),reply:{id:'other',role:'assistant',text:'Wrong source'},callId:'current'}),/quoted reply is invalid/);assert.equal(socket.sent.length,0);
+ const text='完整 typed input '.repeat(10000)+'UNCUT_INPUT_TAIL',pending=h.voice.message({message:typed('long',text),callId:'current'});await tick();assert.ok(inputEvent(socket).item.content[0].text.includes(text));acceptInput(socket);assert.equal((await pending).submission,'confirmed');
+});
+
 test('final API speech callbacks follow default conversation order despite late input transcriptions and are deduplicated',async t=>{
  const h=harness(t);await h.voice.start({sdp:SDP,callId:'shared-call'});const socket=h.sockets[0],answer=spoken('answer','Completed spoken answer');
  committed(socket,'user-1');added(socket,answer,'user-1');committed(socket,'user-2','answer');
@@ -250,8 +325,8 @@ test('API run_task waits for the preceding human transcription and its asynchron
 });
 
 test('conversationReady exposes the same bounded speech barrier to typed tasks and rejects stale calls',async t=>{
- const h=harness(t,{requestTimeoutMs:20});await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0];await assert.rejects(h.voice.conversationReady('old'),/no longer current/);committed(socket,'late-input');let ready=false;const pending=h.voice.conversationReady('current').then(result=>{ready=true;return result;});await tick();assert.equal(ready,false);transcript(socket,'late-input','Available to the typed task');assert.equal((await pending).status,'submitted');assert.equal(h.events.conversation[0].text,'Available to the typed task');
- committed(socket,'lost-transcript','late-input');await assert.rejects(h.voice.conversationReady('current'),/timed out/);assert.equal(h.tasks.length,0);assert.equal(h.tools.length,0);emit(socket,{type:'conversation.item.input_audio_transcription.failed',item_id:'lost-transcript'});
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'current'});const socket=h.sockets[0];await assert.rejects(h.voice.conversationReady('old'),/no longer current/);committed(socket,'late-input');let ready=false;const pending=h.voice.conversationReady('current').then(result=>{ready=true;return result;});await tick();assert.equal(ready,false);transcript(socket,'late-input','Available to the typed task');assert.equal((await pending).status,'submitted');assert.equal(h.events.conversation[0].text,'Available to the typed task');
+ h.voice.requestTimeoutMs=20;committed(socket,'lost-transcript','late-input');await assert.rejects(h.voice.conversationReady('current'),/timed out/);assert.equal(h.tasks.length,0);assert.equal(h.tools.length,0);emit(socket,{type:'conversation.item.input_audio_transcription.failed',item_id:'lost-transcript'});
 });
 
 test('speech barriers include callbacks and input committed while an earlier context write is pending',async t=>{

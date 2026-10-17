@@ -58,6 +58,12 @@ test('task plan failures roll back both first registration and updates before an
  f.store.save=()=>{throw Error('Disk is full');};await assert.rejects(f.engine.tool('task_plan',{title:'Unsaved replacement',steps:steps()}),/Disk is full/);assert.deepEqual(f.store.state.workTasks,before);assert.equal(active.workRecord,oldRecord);
 });
 
+test('an entrusted task spans related conversational follow-ups without a task for every sentence or completed response',async t=>{
+ const f=setup(t),first=activeTask(f,{id:'first-conversation'});first.message.workKind='conversation';first.active.conversationalInput=true;assert.equal(f.engine.progress.visible,false);const saved=await f.engine.tool('task_plan',plan());assert.equal(first.message.workKind,'task');assert.notEqual(f.engine.progress.visible,false);const started=f.engine.progress.startedAt;await f.engine.finish('completed');assert.equal(f.engine.active,null);assert.equal(f.store.state.workTasks[0].status,'continuing');assert.equal(f.store.state.workTasks.length,1);
+ const followup=activeTask(f,{id:'related-followup'});followup.message.workKind='conversation';followup.active.conversationalInput=true;assert.equal(f.engine.progress.visible,false);const continued=await f.engine.tool('task_plan',{...plan(),workId:saved.workId});assert.equal(continued.workId,saved.workId);assert.equal(followup.message.workKind,'task');assert.notEqual(f.engine.progress.visible,false);assert.equal(f.engine.progress.startedAt,started);assert.deepEqual(f.store.state.workTasks[0].turnIds,['first-conversation','related-followup']);assert.equal(f.store.state.workTasks.length,1);await f.engine.tool('task_plan',{...plan(),workId:saved.workId,steps:steps().map(step=>({...step,status:'completed'}))});await f.engine.finish('completed');assert.equal(f.store.state.workTasks[0].status,'review');assert.equal(f.engine.active,null);assert.equal(f.engine.queue.length,0);assert.equal(f.worker.calls.some(call=>call.method==='turn/start'),false);
+ const conversation=activeTask(f,{id:'ordinary-thanks'});conversation.message.workKind='conversation';conversation.active.conversationalInput=true;assert.equal(f.engine.progress.visible,false);await f.engine.finish('completed');assert.equal(conversation.message.workKind,'conversation');assert.equal(f.store.state.workTasks.length,1);assert.equal(f.store.state.workTasks[0].status,'review');
+});
+
 test('stale, unacknowledged, paused, offline and unrelated voice callers cannot register a plan',async t=>{
  const f=setup(t),{active}=activeTask(f);
  for(const flag of ['startAcknowledged','stopRequested','finishing']){const old=active[flag];active[flag]=flag==='startAcknowledged'?false:true;await assert.rejects(f.engine.tool('task_plan',plan()),/current acknowledged/);active[flag]=old;}
@@ -70,7 +76,7 @@ test('stale, unacknowledged, paused, offline and unrelated voice callers cannot 
 test('typed lifecycle follows executor status, persists review, accepts result and dismisses without touching shared model context',async t=>{
  const f=setup(t),{active,message}=activeTask(f);f.store.state.threadId='shared-thread';f.store.state.voiceHistory=[{role:'user',text:'Private reference only'}];
  await f.engine.tool('task_plan',plan());const id=active.workRecord.id;active.awaitingChatInput=true;f.engine.change();assert.equal(f.store.state.workTasks[0].status,'waiting_user');active.awaitingChatInput=false;f.engine.change();assert.equal(f.store.state.workTasks[0].status,'running');
- assert.throws(()=>f.engine.dismissProgress(id,'work'),error=>error.status===409);await f.engine.finish('completed');assert.equal(f.store.state.workTasks[0].status,'review');assert.equal(message.status,'review');f.engine.confirm(message.id);assert.equal(f.store.state.workTasks[0].status,'completed');
+ assert.throws(()=>f.engine.dismissProgress(id,'work'),error=>error.status===409);await f.engine.tool('task_plan',{...plan(),steps:steps().map(step=>({...step,status:'completed'}))});await f.engine.finish('completed');assert.equal(f.store.state.workTasks[0].status,'review');assert.equal(message.status,'review');f.engine.confirm(message.id);assert.equal(f.store.state.workTasks[0].status,'completed');
  const before=structuredClone(f.store.state),read=message.read;assert.deepEqual(f.engine.dismissProgress(id,'work'),{ok:true});assert.equal(message.read,read);assert.equal(f.store.state.threadId,'shared-thread');assert.deepEqual(f.store.state.voiceHistory,before.voiceHistory);assert.equal(f.worker.calls.length,0);assert.deepEqual(f.engine.dismissProgress(id,'work'),{ok:true});
  const restored=new Store(f.dir);assert.equal(restored.state.workTasks[0].status,'completed');assert.ok(restored.state.workTasks[0].progressDismissedAt>0);assert.equal(restored.state.workTasks[0].id,id);
 });
@@ -81,7 +87,7 @@ test('registered records pause after restart and failed persistence never expose
 });
 
 test('accepting registered work persists message and work state atomically and leaves failures retryable',async t=>{
- const f=setup(t),{message}=activeTask(f);await f.engine.tool('task_plan',plan());await f.engine.finish('completed');const before=structuredClone(f.store.state),save=f.store.save;f.store.save=()=>{throw Error('Cannot accept yet');};
+ const f=setup(t),{message}=activeTask(f);await f.engine.tool('task_plan',{...plan(),steps:steps().map(step=>({...step,status:'completed'}))});await f.engine.finish('completed');const before=structuredClone(f.store.state),save=f.store.save;f.store.save=()=>{throw Error('Cannot accept yet');};
  assert.throws(()=>f.engine.confirm(message.id),/Cannot accept yet/);assert.deepEqual(f.store.state,before);assert.equal(message.status,'review');assert.equal(f.store.state.workTasks[0].status,'review');f.store.save=save;
  f.engine.confirm(message.id);const disk=JSON.parse(fs.readFileSync(f.store.file,'utf8'));assert.equal(disk.messages[0].status,'completed');assert.equal(disk.workTasks[0].status,'completed');
 });
@@ -111,7 +117,7 @@ test('native call tasks register before their tool result, survive hangup, and f
  assert.equal(f.worker.calls.some(call=>call.method==='turn/start'),false);assert.equal(f.engine.queue.length,0);
  f.worker.request=async(method,params)=>{f.worker.calls.push({method,params});if(method==='thread/realtime/stop')queueMicrotask(()=>f.worker.emit('event',event('thread/realtime/closed')));if(method==='thread/read')return {thread:{id:'thread',status:{type:'active'},turns:[{id:turn.turnId,status:'inProgress'}]}};return {};};
  await f.engine.stopCall(call.callId);assert.equal(f.engine.call,null);assert.equal(voice.progress.title,plan().title);assert.equal(f.store.state.workTasks[0].status,'running');
- await f.engine.handle(event('turn/completed',{turn:{id:turn.turnId,status:'completed'}}));assert.equal(f.store.state.workTasks[0].status,'review');assert.equal(voice.session,null);assert.equal(f.store.state.messages.filter(message=>message.role==='user').length,0);assert.equal(JSON.stringify(f.store.state.workTasks).includes('Private spoken context'),false);
+ await f.engine.handle(event('turn/completed',{turn:{id:turn.turnId,status:'completed'}}));assert.equal(f.store.state.workTasks[0].status,'continuing');assert.equal(voice.session,null);assert.equal(f.store.state.messages.filter(message=>message.role==='user').length,0);assert.equal(JSON.stringify(f.store.state.workTasks).includes('Private spoken context'),false);assert.match(f.store.state.messages.find(message=>message.role==='assistant').text,/unfinished|尚未完成/);
 });
 
 test('native registered work remains in history even with no final chat result and cannot be updated by a completed scope',async t=>{

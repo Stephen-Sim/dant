@@ -26,7 +26,7 @@ These commands are available only to the paired private owner. `/pause` controls
 
 Resume never bypasses unknown submissions, active work, disconnected executors, human control or subscription-call restrictions. Resolve the reported condition first. A task requested only by speech has no user-message task ID to resume; give a new explicit instruction in chat or the connected call instead.
 
-Ordinary input goes through the same queue, human-control lease, and call restrictions as desktop input. A finished turn awaits review; delivery does not automatically accept a task. Group messages do not create work.
+Ordinary input follows the same interactive delivery, queue, human-control lease and call restrictions as desktop input. A followup goes to the current acknowledged task when it can accept it; during a call, text goes to that same voice session. Scheduled work and explicit resumes retain independent queue behavior. Ordinary conversation does not create a work entry; related work reuses its registered task ID across turns. Unfinished plans stay **In progress**, and only a complete plan awaits review. Delivery does not accept a task. Group messages do not create work.
 
 Attachments use the app's content inspection and 10 MiB per-file limit. Unsupported content or oversized downloads fail explicitly. Outgoing files are read from immutable app attachments; arbitrary VM paths are not uploaded.
 

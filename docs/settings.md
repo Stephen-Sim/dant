@@ -14,6 +14,10 @@ Switching categories preserves local form drafts and an ongoing call. Some setti
 
 Chat shows a time divider at the start of the conversation, on a new day, and after gaps longer than 30 minutes. Each message's original sent time remains saved and does not change when edited. Completed dant replies show **Read** or **Unread**. The sidebar badge counts unread replies, and the **unread messages** button scrolls to the first one.
 
+Your message shows one check after it is saved, and two after the executor acknowledges its delivery. This confirms receipt, not comprehension or task completion. New chat messages go to the current task when it can accept followups; otherwise they wait in the queue. Explicitly resumed and scheduled tasks keep their separate queue behavior. A background task left by a subscription call accepts text followups; its attachments wait for a separate task.
+
+While a call is connected, typed text goes to that same call and dant responds aloud. Quoted replies carry the original message and speaker; both voice providers share the same conversation memory. Work progress remains available from its header button, and task checklist expansion survives status refreshes and reopening the panel.
+
 An actual bubble must remain in view for 450 ms in the focused foreground text chat before it is marked read. Minimizing the app, showing the full call view, switching pages or opening a modal stops that tracking. Restoring the window or receiving a notification does not mark unseen replies read. Receipts are saved in the VM conversation; native notification delivery is a separate record.
 
 Enable **Message notifications** in General to receive alerts for unread results or requests for input. A notification means dant has a message for you; it does not necessarily mean the task has finished. Native alerts require the Windows app to remain running and notification permission to be granted.
@@ -43,3 +47,9 @@ The tray shows a brief online/work/waiting status and queue count. **Work progre
 Choose **Show call window** in the tray menu to restore a hidden desktop call bar. This action is unavailable without a current call.
 
 Choose **Exit dant** in the tray menu to end the application through its normal shutdown path. Use this before installing an update. If the operating system cannot create the tray icon, closing the main window exits normally so there is no inaccessible hidden app. The tray does not start dant automatically after Windows restarts.
+
+## Scheduled tasks
+
+The clock beside Skills in the left sidebar opens **Scheduled tasks**. Search or filter upcoming, paused and past entries; create or edit a task, pause it, or remove it. New tasks use your computer's time zone; editing preserves the task's saved zone, shown beside its date/time field. Entries display the saved execution time and zone. These are one-time tasks; creating or editing a schedule saves it without immediately running its instructions.
+
+You can also ask dant in chat or a call to arrange work. The shared `schedule_list`, `schedule_save` and `schedule_delete` tools manage the same entries. dant must use the intended time zone and confirm the saved result before claiming a task is scheduled. Due jobs wait while the work computer is unavailable, in a call or under human control. Closing the window to the tray keeps the service available; removing a schedule does not stop work already dispatched.

@@ -14,6 +14,7 @@ function fixture(options={}){
 test('tray status projects only bounded public metadata and separates active work from call presence',()=>{
  assert.deepEqual(trayStatus(),{language:'zh',connection:'offline',task:'idle',queued:0});
  assert.deepEqual(trayStatus(state({call:{id:'secret-call'},messages:[{text:'private'}],token:'secret'})),{language:'en',connection:'online',task:'idle',queued:0});
+ assert.equal(trayStatus(state({active:{status:'running',source:'voice',visible:false}})).task,'idle','ordinary speech does not advertise a work task');
  assert.equal(trayStatus(state({active:{status:'running',background:true,text:'private task'}})).task,'background');
  for(const status of ['waiting_user','pausing','unknown'])assert.equal(trayStatus(state({active:{status,background:true}})).task,status);
  assert.equal(trayStatus(state({active:{status:'private exception'}})).task,'running');

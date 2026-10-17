@@ -33,7 +33,7 @@ test('language changes persist offline and synchronize the VM default on reconne
  let response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'en'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'en');assert.equal(bridge.requests.length,0);assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'controller.json'))).language,'en');
  fs.writeFileSync(path.join(dir,'test-key'),'temporary test fixture');fs.writeFileSync(path.join(dir,'vm.json'),JSON.stringify({host:'192.0.2.1',user:'dant',port:22,keyPath:'test-key'}));
  bridge.connect=async()=>{bridge.status='online';bridge.cached={settings:{language:'zh'}};};
- response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.ok,true);assert.equal(bridge.requests.length,1);assert.equal(bridge.requests[0].route,'/api/settings');assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'en'});
+ response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.ok,true);assert.equal(bridge.requests.length,1);assert.equal(bridge.requests[0].route,'/api/settings');assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'en',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});
  response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'zh'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'zh');assert.deepEqual(JSON.parse(bridge.requests.at(-1).body),{language:'zh'});
  const invalid=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'unknown'})});assert.equal(invalid.ok,false);assert.equal(app.snapshot().settings.language,'zh');
 });
@@ -189,7 +189,7 @@ test('invalid persisted appearance values fall back to safe defaults and font en
  const response=await fetch(base+'/api/fonts',{headers});assert.equal(response.status,503);assert.equal((await response.json()).error,'Windows font list is unavailable.');assert.equal(bridge.requests.length,0);
 });
 
-const idleRecoveryState=()=>({conversationId:'preserved-conversation',messages:[{id:'paused-task',role:'user',text:'Existing work',status:'paused',pauseReason:'executor-disconnected'}],settings:{language:'zh'},worker:{status:'offline',error:'Worker stopped'},active:null,queue:[],call:null,takeover:false,computer:{status:'dant',sessionId:null,expiresAt:0}});
+const idleRecoveryState=()=>({conversationId:'preserved-conversation',messages:[{id:'paused-task',role:'user',text:'Existing work',status:'paused',pauseReason:'executor-disconnected'}],settings:{language:'zh',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},worker:{status:'offline',error:'Worker stopped'},active:null,queue:[],call:null,takeover:false,computer:{status:'dant',sessionId:null,expiresAt:0}});
 class RecoveryBridge extends FakeBridge{
  constructor(state=idleRecoveryState()){super();this.state=state;this.connections=0;this.refreshes=[];}
  async connect(){this.connections++;this.status='online';this.cached=this.state;this.emit('state',this.state);return this.state;}

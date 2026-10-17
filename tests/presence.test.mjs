@@ -16,6 +16,10 @@ class Worker extends EventEmitter{
 function setup(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dant-presence-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=new Store(dir),worker=new Worker(),engine=new Engine(store,worker);return {dir,store,worker,engine};}
 const completed={method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',status:'completed'}}};
 
+test('ordinary conversation activity does not advertise a work task while real call presence remains visible',()=>{
+ const state={worker:{status:'online'},active:{status:'running',visible:false}};assert.equal(formatPresence(state,'en').detail,'');state.call={status:'connected'};assert.equal(formatPresence(state,'en').detail,'In a call');state.call=null;state.active.visible=true;assert.equal(formatPresence(state,'en').detail,'Working');
+});
+
 test('presence starts unknown, persists activity, and ignores invalid/backwards/repeated timestamps',t=>{
  const {dir,store,engine}=setup(t);assert.deepEqual(engine.presence,{lastActiveAt:null});assert.deepEqual(store.state.presence,{lastActiveAt:null});
  assert.equal(engine.touchActivity(1000),true);assert.deepEqual(new Store(dir).state.presence,{lastActiveAt:1000});

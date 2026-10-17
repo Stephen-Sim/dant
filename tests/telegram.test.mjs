@@ -169,6 +169,19 @@ test('shared progress includes registered desktop and call plans, timestamps, qu
  assert.equal(output.includes('/resume voice-record'),false);assert.equal(output.includes(steer.text),false);assert.equal(output.match(/Verified call work/g).length,1);assert.equal(gateway.workState().recent.some(item=>item.taskId===current.id||item.taskId===steer.id),false);assert.equal(paused.status,'paused');assert.equal(engine.call.id,'existing-call');assert.equal(store.state.messages.length,4);
 });
 
+test('progress excludes admitted call conversation inputs and retains real call tasks and uncertain deliveries',t=>{
+ const {store,gateway}=setup(t);store.add({id:'call-input',role:'user',text:'A conversational reply',status:'accepted',voiceCallId:'call'});store.add({id:'work-input',role:'user',text:'Check a file',status:'accepted',voiceCallId:'call'});store.add({id:'unknown-input',role:'user',text:'Unconfirmed work',status:'unknown',voiceCallId:'call',turnId:'unknown-work'});
+ store.state.workTasks=[{id:'real-work',turnId:'work-turn',messageId:'work-input',source:'voice',title:'Checking a file',status:'review',updatedAt:2000}];
+ const recent=gateway.workState().recent;assert.equal(recent.length,2);assert.ok(recent.some(item=>item.taskId==='work-input'&&item.status==='review'));assert.ok(recent.some(item=>item.taskId==='unknown-input'&&item.status==='unknown'));assert.equal(gateway.progressText().includes('A conversational reply'),false);
+});
+
+test('Telegram preserves uncertain, stopping and real waiting ownership despite a hidden conversation marker',t=>{
+ const {gateway,engine,store}=setup(t);store.add({id:'conversation',role:'user',text:'Ordinary conversation',status:'running',workKind:'conversation',turnId:'conversation-turn'});engine.progress={messageId:'conversation',turnId:'conversation-turn',source:'voice',visible:false,status:'running'};
+ assert.equal(gateway.workState().active,null);assert.equal(gateway.workState().recent.length,0);
+ for(const [status,label]of [['unknown','Status unconfirmed'],['pausing','Stopping safely'],['waiting_user','Waiting for your reply']]){engine.progress.status=status;assert.equal(gateway.workState().active.status,status);assert.equal(gateway.workState().recent.length,0);assert.match(gateway.progressText(),new RegExp(label));assert.doesNotMatch(gateway.progressText(),/\/resume conversation/);}
+ engine.progress.status='running';assert.equal(gateway.workState().active,null);
+});
+
 test('/porgress alias is read-only, and offline status never implies cached work is still running',async t=>{
  const context=setup(t);await paired(context);const {engine,gateway,store}=context;engine.worker.status='offline';engine.progress={source:'voice',status:'running',title:'Cached public title',updatedAt:1000};store.state.voiceHistory=[{text:'Private speech should not be included'}];
  await gateway.receive(update(2,'/porgress'));await gateway.receive(update(3,'/status'));await gateway.flush();const replies=context.api.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text).filter(text=>text.startsWith('Work progress'));
@@ -193,6 +206,21 @@ test('/pause pauses shared work and queue through the engine without hanging up 
 
 test('/pause handles idle work, arguments and unconfirmed stopping without claiming success',async t=>{
  const context=setup(t);await paired(context);const {gateway,engine}=context;await gateway.receive(update(2,'/pause'));await gateway.receive(update(3,'/pause anything'));engine.active={messageId:'current'};let attempts=0;engine.pause=async()=>{attempts++;throw Error(TOKEN+' private executor details');};await gateway.receive(update(4,'/pause'));await gateway.flush();const replies=context.api.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text).join('\n');assert.match(replies,/no current or queued work/i);assert.match(replies,/Usage: \/pause/);assert.match(replies,/not confirmed it stopped/);assert.equal(replies.includes('private executor details'),false);assert.equal(attempts,1);
+});
+
+test('pending message and canonical-reference delivery remain visible to Telegram status, pause and resume guards',async t=>{
+ const context=setup(t);await paired(context);const {gateway,engine,store}=context,task=store.add({id:'paused-task',role:'user',text:'Independent paused work',status:'paused'});let pauses=0,resumes=0,id=2;engine.pause=async()=>{pauses++;};engine.resumePaused=()=>{resumes++;};
+ for(const property of ['pendingFollowups','callReferences']){
+  engine[property]=new Map([['pending-private-message',{private:'PRIVATE_REFERENCE_TEXT'}]]);assert.match(gateway.progressText({brief:true}),/Message delivery.*Awaiting confirmation/);assert.equal(gateway.progressText().includes('PRIVATE_REFERENCE_TEXT'),false);
+  await gateway.receive(update(id++,'/pause'));await gateway.receive(update(id++,'/resume '+task.id));assert.equal(resumes,0);engine[property].clear();
+ }
+ assert.equal(pauses,2);await gateway.flush();const replies=context.api.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text).join('\n');assert.match(replies,/Current work is still active or unconfirmed/);assert.equal(replies.includes('PRIVATE_REFERENCE_TEXT'),false);assert.equal(engine.enqueued.length,0);
+});
+
+test('Telegram continued-work history offers only its latest human task ID and never replays the historical anchor',t=>{
+ const {store,gateway}=setup(t);store.state.messages=[{id:'original',role:'user',text:'Original request',status:'paused',turnId:'first-turn'},{id:'latest',role:'user',text:'Latest continuation',status:'paused',turnId:'latest-turn'}];store.state.workTasks=[{id:'same-work',turnId:'latest-turn',turnIds:['first-turn','latest-turn'],messageId:'original',source:'voice',title:'Continued task',status:'paused'}];
+ let progress=gateway.progressText();assert.match(progress,/\/resume latest/);assert.doesNotMatch(progress,/\/resume original/);assert.equal(gateway.workState().recent.length,1);
+ store.state.messages.pop();progress=gateway.progressText();assert.doesNotMatch(progress,/\/resume original/);assert.match(progress,/Continue with a new instruction in chat/);
 });
 
 test('/resume requires one exact eligible user task and never guesses among paused tasks',async t=>{
@@ -238,9 +266,11 @@ test('Unicode output pressure obeys the file byte bound as well as the queue ent
  const context=setup(t);await paired(context);for(let index=0;index<80;index++)context.gateway.queueText('unicode-'+index,'中'.repeat(4096));assert.match(context.gateway.status().lastError,/byte limit/);assert.ok(context.gateway.config.outbox.length<128);assert.ok(fs.statSync(context.gateway.file).size<1024*1024);
 });
 
-test('real Engine preserves human takeover and native-call constraints for Telegram submissions',async t=>{
+test('real Engine preserves human takeover and delivers Telegram call input to the same voice peer without a separate task',async t=>{
  const context=setup(t);await paired(context);await context.gateway.close();class Worker extends EventEmitter{constructor(){super();this.status='online';this.calls=[];}async request(method,params){this.calls.push({method,params});return method==='thread/start'?{thread:{id:'tg-thread'}}:{turn:{id:'tg-turn'}};}}
- const worker=new Worker(),engine=new Engine(context.store,worker),gateway=new TelegramGateway({dataDir:context.dir,store:context.store,engine,attachments:context.attachments,fetchImpl:context.api.fetch,autoPoll:false});t.after(()=>gateway.close());engine.takeover=true;await gateway.receive(update(2,'While human controls'));assert.equal(context.store.state.messages[0].status,'paused');engine.takeover=false;engine.call={provider:'subscription'};await gateway.receive(update(3,'During native call'));assert.equal(context.store.state.messages[1].status,'paused');assert.equal(worker.calls.length,0);engine.call=null;
+ const worker=new Worker(),engine=new Engine(context.store,worker),gateway=new TelegramGateway({dataDir:context.dir,store:context.store,engine,attachments:context.attachments,fetchImpl:context.api.fetch,autoPoll:false});t.after(()=>gateway.close());engine.takeover=true;await gateway.receive(update(2,'While human controls'));assert.equal(context.store.state.messages[0].status,'paused');assert.equal(worker.calls.length,0);engine.takeover=false;engine.call={id:'native-call',provider:'subscription'};
+ const admitted=[];engine.nativeVoice={submitCallMessage:async(message,{callId})=>{admitted.push({message,callId});await engine.rememberCallInput(message,callId);return {submission:'confirmed'};}};
+ await gateway.receive(update(3,'During native call'));await Promise.all([...engine.pendingFollowups.values()]);assert.equal(context.store.state.messages[1].status,'accepted');assert.ok(context.store.state.messages[1].executorConfirmedAt);assert.equal(admitted.length,1);assert.equal(admitted[0].message,context.store.state.messages[1]);assert.equal(admitted[0].callId,'native-call');assert.equal(worker.calls.filter(call=>call.method==='turn/start'||call.method==='turn/steer').length,0);assert.equal(worker.calls.filter(call=>call.method==='thread/inject_items').length,1);engine.call=null;engine.nativeVoice=null;
  await gateway.receive(update(4,'A fresh Telegram request'));await tick();assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1);assert.ok(context.store.state.messages[2].executorConfirmedAt);await engine.handle({method:'turn/completed',params:{threadId:'tg-thread',turn:{id:'tg-turn',status:'completed'}}});assert.equal(context.store.state.messages[2].status,'review');
 });
 

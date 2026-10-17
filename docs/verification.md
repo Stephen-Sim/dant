@@ -4,6 +4,18 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.5 unified conversation, ongoing work and scheduled tasks follow-up
+
+The final local JavaScript coverage run passed **1,189 tests, zero failures and zero skips**. Coverage is **98.75% lines, 91.02% branches and 91.48% functions**, with every configured gate satisfied. The seven separate coverage/version checks and **22 mocked Python VM/MCP tests** also passed. The frontend production build and all 102 local documentation links passed validation.
+
+Tests cover interactive desktop/Telegram follow-ups reaching the exact acknowledged turn, receipts only after acknowledgement, and queued internal work remaining independent. Text during a call enters that live voice session once with its full role-bound quote; it does not also start a chat executor. Shared private call references survive restart and clearing visible chat, and remain absent from state snapshots. Stop, hangup, stale calls, duplicate IDs and unknown delivery retain their separate safeguards. Failed conversational input cannot silently retry through another execution channel during a call.
+
+Related work explicitly reuses a stable work ID across execution turns. Ordinary conversation and transcript tails create no work entry; an unfinished plan stays ongoing, while a real input blocker remains waiting. Exact current-turn actions reject historical Resume/Accept requests. Checklist expansion survives status updates and reopening the panel. The redundant inline work card is removed, and clocks remain at conversation group boundaries. Unknown execution ownership keeps its visible Stop/recovery controls.
+
+Scheduled tasks now have a sidebar page, search, filters, an editor, pause and remove controls. Conversation tools and both voice providers manage the same persistent one-time schedules through the private owned bridge. Coverage includes explicit time zones, DST wall-time validation, draft preservation, stale VM responses, creation retry IDs, deletion tombstones, atomic dispatch claims, restart without duplicate dispatch, admission barriers, and schedules queued before a later API call. Current call work remains available while its scheduled queue head waits.
+
+These are protocol, API and simulated DOM checks. This batch did not operate the live VM, native UI, microphone or a new real-model call. It updates local source; installation and push remain at the earlier checkpoint below until the new changes are deployed separately.
+
 ## 0.4.5 Telegram controls and notification previews follow-up
 
 The final JavaScript run passed **1,039 tests, zero failures and zero skips**. Coverage is **98.59% lines, 90.55% branches and 90.93% functions**, with all configured gates satisfied. All **18 native Rust tests** passed with no ignored tests; the seven separate coverage/version gate tests also passed. No real Telegram message, native notification banner or GUI interaction was used for these checks.

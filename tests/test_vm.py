@@ -269,7 +269,10 @@ class VoiceAndMCPTests(unittest.TestCase):
                 self.assertIn(name, [tool['name'] for tool in responses[1]['result']['tools']])
 
     def test_mcp_task_plan_waits_for_private_application_save(self):
-        args = {'title': 'Verify the project', 'steps': [{'step': 'Inspect', 'status': 'inProgress'}]}
+        plan_tool = next(tool for tool in desktop_mcp.TOOLS if tool['name'] == 'task_plan')
+        self.assertIn('workId', plan_tool['inputSchema']['properties'])
+        self.assertNotIn('workId', plan_tool['inputSchema']['required'])
+        args = {'workId': 'existing-work', 'title': 'Verify the project', 'steps': [{'step': 'Inspect', 'status': 'inProgress'}]}
         with patch.object(desktop_mcp, 'credential_bridge', return_value={'saved': True, 'workId': 'owned'}) as bridge:
             response = desktop_mcp.invoke('task_plan', args, pathlib.Path('.'))
             self.assertEqual(json.loads(response['content'][0]['text'])['taskPlanResult']['workId'], 'owned')
@@ -340,6 +343,20 @@ class VoiceAndMCPTests(unittest.TestCase):
                 self.assertEqual(response['structuredContent'], {'skillResult': {'saved': True}})
                 bridge.assert_called_with(name, args)
             self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
+
+    def test_mcp_schedule_tools_share_the_private_owned_service_without_executing_or_writing_jobs_locally(self):
+        names = {tool['name']: tool for tool in desktop_mcp.TOOLS}
+        self.assertEqual(names['schedule_save']['inputSchema']['properties']['at']['type'], 'string')
+        self.assertIn('timeZone', names['schedule_save']['inputSchema']['properties'])
+        with tempfile.TemporaryDirectory() as folder, patch.object(desktop_mcp, 'credential_bridge', return_value={'saved': True}) as bridge:
+            for name, args in [('schedule_list', {}), ('schedule_save', {'text': 'A requested future check', 'at': '2026-10-18T09:00:00+08:00', 'timeZone': 'Asia/Kuala_Lumpur'}), ('schedule_delete', {'id': 'saved-job'})]:
+                response = desktop_mcp.invoke(name, args, folder)
+                self.assertEqual(response['structuredContent'], {'scheduleResult': {'saved': True}})
+                bridge.assert_called_with(name, args)
+            self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
+        with patch.object(desktop_mcp, 'credential_bridge', side_effect=ValueError('The current owner changed')):
+            response = desktop_mcp.dispatch({'id': 99, 'method': 'tools/call', 'params': {'name': 'schedule_save', 'arguments': {'text': 'Never claim this was saved'}}}, pathlib.Path('.'))
+            self.assertTrue(response['result']['isError'])
 
 
 class SeedTests(unittest.TestCase):
