@@ -4,6 +4,12 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
+## 0.4.1 voice-message composer
+
+The Windows run executed 484 JavaScript tests: 483 passed, one Windows symlink check skipped, and none failed. Coverage was 97.78% lines, 86.83% branches and 89.14% functions; all seven coverage/version gate tests passed. Ten new recording regressions exercise the actual composer handlers with a simulated recorder: preserving typed text, audio-file upload and preview, explicit sending, bilingual speech-to-text separation, cancellation, late permissions, device errors, stopping read-aloud before recording and call/format guards. They do not open a physical microphone. The unchanged Python helpers retain the 51 passing checks from 0.4.0.
+
+The primary microphone now creates an audio attachment instead of dictating text. The ordinary model task receives the preserved file reference; automatic transcription and guaranteed audio understanding are not part of this change.
+
 ## 0.4.0 tool and live-delivery acceptance
 
 The final Windows run executed 474 JavaScript tests: 473 passed, one Windows symlink check skipped, and none failed. Coverage was 97.78% lines, 86.88% branches and 88.95% functions. All 51 Python tests and seven CI coverage/version gate tests passed; workflow lint, Bash parsing and ten PowerShell syntax checks passed. The frontend production build and locked native release build passed. UI event tests also cover credential forms, skills, search, history actions, presence and call-preserving search navigation. A reproduced Windows file-lock failure in atomic memory/skill replacement now uses bounded retries; non-timeout voice fixtures no longer race a 100 ms CI scheduling window.

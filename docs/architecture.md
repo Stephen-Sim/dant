@@ -107,6 +107,8 @@ Minimizing or expanding changes only the call view. It preserves the peer connec
 
 The optional API channel is selected explicitly and has separate API billing. Its key persists only under Windows DPAPI and reaches VM call-process memory transiently over SSH. Dictation, browser read-aloud, and local WAV creation are separate helper paths.
 
+The composer microphone records a WebM or Ogg voice-message file, previews the uploaded attachment without autoplay and waits for explicit Send. Cancellation or recording failure discards its audio and releases microphone tracks. Speech to text is an explicit attachment-menu action. Recorded audio stays a file reference in ordinary task input; there is no automatic transcription or guarantee of model audio understanding.
+
 ## Telegram
 
 The gateway runs with the VM Worker and is disabled by default. Fixed HTTPS Bot API endpoints provide outbound long polling without a public inbound port. A short-lived one-time pairing code binds both private-chat ID and user ID. Groups and unpaired users cannot submit tasks.

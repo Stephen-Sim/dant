@@ -36,10 +36,10 @@ test('both UI and speech dictionaries have complete matching keys',()=>{
 });
 
 test('settings language persists and updates pages, status, accessibility and retained errors',async()=>{
- const {context:c,storage,requests}=fixture();assert.match(c.renderHeader('online'),/在线/);assert.match(c.renderChat(),/aria-label="听写"/);
+ const {context:c,storage,requests}=fixture();assert.match(c.renderHeader('online'),/在线/);assert.match(c.renderChat(),/aria-label="录制语音消息"/);
  c.voiceError='voiceUnavailable';c.screenError=true;
  await c.changeLanguage('en');assert.equal(storage.get('dant.language'),'en');assert.equal(requests[0].route,'/settings');assert.equal(requests[0].options.body.language,'en');
- assert.match(c.renderHeader('online'),/Online/);assert.match(c.renderChat(),/Message dant…/);assert.match(c.renderChat(),/aria-label="Dictate"/);assert.doesNotMatch(c.renderChat(),/听写|上传|录音/);
+ assert.match(c.renderHeader('online'),/Online/);assert.match(c.renderChat(),/Message dant…/);assert.match(c.renderChat(),/aria-label="Record a voice message"/);assert.doesNotMatch(c.renderChat(),/听写|上传|录音/);
  const computer=c.renderComputer();assert.match(computer,/aria-label="Resize computer panel"/);assert.match(computer,/aria-label="Work computer keyboard input"/);assert.match(computer,/The desktop could not refresh/);
  assert.match(c.renderSettings(),/Settings|Language|Call voice/);assert.match(c.renderVoiceSettings(c.state.settings),/Voice options are unavailable/);assert.match(c.renderMemory(),/No shared memories yet/);assert.match(c.renderSchedules(),/No scheduled tasks yet/);
  await c.changeLanguage('zh');assert.equal(storage.get('dant.language'),'zh');assert.match(c.renderComputer(),/调整电脑区域宽度|桌面暂时无法刷新/);assert.match(c.renderVoiceSettings(c.state.settings),/暂时无法获取声音选项/);assert.match(c.renderMemory(),/我们还没有共同的记忆/);assert.match(c.renderSchedules(),/还没有定时任务/);
