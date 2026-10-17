@@ -14,6 +14,8 @@ Windows notifications now use the latest completed assistant text from the exact
 
 After the user exited dant, the idle Worker was updated and reconnected online with all 100 existing message IDs preserved and three-day diagnostics retention. The complete 21-file TETR.IO skill was then saved through the normal authenticated API; its downloaded ZIP matched the verified candidate byte for byte. Chat content, read receipts, registered work, completion records, schedules, shared memory, model thread and voice history were unchanged, and the original external helper sources were preserved. No model turn or desktop action was started.
 
+The Windows installer was rebuilt from clean source commit `d0dca56` and installed silently. All **5,404 runtime files** matched the package, the executable matched apart from the expected NSIS bundle marker, and the existing connection-profile hash was unchanged. File/product versions and the installed version API reported **0.4.5**. A temporary installed Controller connected online to the existing Worker and 100-message conversation; both diagnostic stores retained three-day expiry. The verification Controller was closed afterward without opening a native window. Telegram was not configured on this device, so its new commands remain covered by mocked Bot API tests rather than a live bot acceptance.
+
 ## 0.4.5 task registration, file cards and hidden call window follow-up
 
 The final local JavaScript run passed **1,020 tests, zero failures and zero skips**. Coverage is **98.57% lines, 90.67% branches and 90.84% functions**, with every configured gate satisfied. All **16 native Rust tests**, 21 mocked Python VM/MCP tests and seven separate coverage/version gate tests passed without ignored or skipped tests.
