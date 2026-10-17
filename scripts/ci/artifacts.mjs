@@ -44,7 +44,7 @@ async function describe(name) {
 
 // The resource directory is built from this checkout on Windows. Never include data,
 // keys, local caches, or an executable copied from a different operating system.
-for (const name of ['package.json', 'src/server.mjs', 'dist/index.html', 'scripts/prepare-vm.ps1', 'scripts/create-vm.ps1', 'scripts/check-vm.ps1', 'scripts/seed.py', 'scripts/patch-image.py', 'scripts/vm-key.py', 'vm/bootstrap.sh', 'vm/guest.py', 'vm/desktop.py', 'node_modules/express/package.json']) {
+for (const name of ['LICENSE', 'package.json', 'src/server.mjs', 'dist/index.html', 'scripts/prepare-vm.ps1', 'scripts/create-vm.ps1', 'scripts/check-vm.ps1', 'scripts/seed.py', 'scripts/patch-image.py', 'scripts/vm-key.py', 'vm/bootstrap.sh', 'vm/guest.py', 'vm/desktop.py', 'node_modules/express/package.json']) {
   requireFile(path.join(resources, name));
 }
 for (const name of ['data', '.cache', '.tools', '.env']) {
@@ -53,15 +53,14 @@ for (const name of ['data', '.cache', '.tools', '.env']) {
 requirePe(path.join(release, 'dant.exe'));
 requirePe(path.join(resources, 'node.exe'));
 const nsis = path.join(release, 'bundle/nsis');
-const installers = fs.readdirSync(nsis).filter(name => name.endsWith('-setup.exe'));
-if (installers.length !== 1) throw new Error(`Expected one NSIS installer; found ${installers.length}.`);
+const installer = `dant_${version}_x64-setup.exe`;
 // NSIS uses a 32-bit installer stub even when the installed application is x64.
-requirePe(path.join(nsis, installers[0]), false);
+requirePe(path.join(nsis, installer), false);
 fs.mkdirSync(output, { recursive: true });
 const setupName = `${prefix}_setup.exe`;
 const zipName = `${prefix}_portable.zip`;
 const metadataName = `${prefix}_build.json`;
-fs.copyFileSync(path.join(nsis, installers[0]), path.join(output, setupName));
+fs.copyFileSync(path.join(nsis, installer), path.join(output, setupName));
 
 const staging = fs.mkdtempSync(path.join(projectRoot, 'src-tauri/target/ci-portable-'));
 try {

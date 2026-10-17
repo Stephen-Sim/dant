@@ -37,11 +37,11 @@ export class LocalWorker extends EventEmitter {
    const command=candidates.find(file=>fs.existsSync(file));if(!command)throw Error('Codex is not installed in the VM.');
    const args=['-c','features.realtime_conversation=true','-c','mcp_servers.dant_desktop.command='+JSON.stringify('/usr/bin/python3'),'-c','mcp_servers.dant_desktop.args='+JSON.stringify([path.join(this.home,'dant/vm/desktop_mcp.py'),'--output-dir',path.join(this.workspaceRoot,this.store.state.conversationId,'output')]),'app-server','--listen','stdio://'];
    rpc=this.rpcFactory(command,args,{cwd:this.workspaceRoot,env:{...process.env,DISPLAY:':0',CODEX_HOME:path.join(this.home,'.dant-codex'),PATH:`${path.join(this.home,'.local/bin')}:${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:${process.env.PATH||''}`}});this.rpc=rpc;
-   if(rpc.child){this.executorChild=rpc.child;this.executorClosed=false;this.executorClose=new Promise(resolve=>rpc.child.once('close',()=>{this.executorClosed=true;resolve();}));}
+   if(rpc.child){this.executorChild=rpc.child;this.executorClosed=false;this.executorClose=new Promise(resolve=>rpc.child.once('close',()=>{if(this.executorChild===rpc.child)this.executorClosed=true;resolve();}));}
    rpc.on('event',event=>{if(this.rpc===rpc)this.emit('event',event);});
    rpc.on('disconnected',error=>{if(this.rpc===rpc){this.rpc=null;this.status='offline';this.account=null;this.models=null;this.error=error.message;this.emit('status');}});
    await rpc.request('initialize',{clientInfo:{name:'dant',title:'dant',version:'0.1.0'},capabilities:{experimentalApi:true}});current();rpc.send({method:'initialized'});
-   this.account=await rpc.request('account/read',{});current();this.models=await rpc.request('model/list',{});current();this.status='online';this.error=null;this.emit('status');return this.account;
+   const account=await rpc.request('account/read',{});current();this.account=account;const models=await rpc.request('model/list',{});current();this.models=models;this.status='online';this.error=null;this.emit('status');return this.account;
   }catch(error){if(this.rpc===rpc)this.rpc=null;rpc?.close();if(generation===this.generation){this.status='offline';this.error=error.message;this.emit('status');}throw error;}
  }
  disconnect(){this.generation++;this.connecting=null;if(this.rpc){const rpc=this.rpc;this.rpc=null;rpc.close();}this.status='offline';this.account=null;this.models=null;this.emit('status');}

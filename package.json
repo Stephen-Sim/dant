@@ -1,13 +1,15 @@
 {
   "name": "dant",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "node src/server.mjs",
     "start": "node src/server.mjs",
     "build": "vite build",
     "test": "node --test tests/*.test.mjs",
+    "test:coverage": "node scripts/ci/coverage.mjs",
     "desktop": "npm run build && node scripts/package-resources.mjs && tauri dev",
     "desktop:build": "npm run build && node scripts/package-resources.mjs && tauri build && node scripts/package-resources.mjs --stage-release"
   },
@@ -24,6 +26,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
+    "linkedom": "0.18.13",
     "vite": "^7.1.0"
   },
   "engines": {

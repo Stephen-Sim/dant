@@ -1,100 +1,114 @@
-# dant Windows 实现架构
+# dant Windows architecture
 
-实现依据为用户提供的 Mac / UTM 架构与 15 张界面参考。Windows 版本沿用职责划分，平台部分替换为 Hyper-V、AMD64 Ubuntu、OpenSSH 与 Windows 原生桌面宿主。
+English · [简体中文](zh-CN/architecture.md)
+
+This implementation follows the supplied Mac/UTM architecture and 15 reference screens. Windows substitutes Hyper-V, AMD64 Ubuntu, OpenSSH, and a native desktop host while preserving responsibility boundaries.
 
 ```mermaid
 flowchart LR
-  UI[共享 JavaScript / CSS 界面] -->|浏览器 HTTP + SSE| Controller
-  UI -->|桌面 IPC| Rust[Tauri / Rust]
-  Rust -->|固定本机 HTTP| Controller[Windows Controller 127.0.0.1:4317]
-  Controller -->|SSH 本地隧道| Worker[Ubuntu Worker 127.0.0.1:4317]
-  Worker --> Engine[任务引擎与唯一持续对话]
+  UI[Shared JavaScript / CSS UI] -->|Browser HTTP + SSE| Controller
+  UI -->|Desktop IPC| Rust[Tauri / Rust]
+  Rust -->|Fixed local HTTP| Controller[Windows Controller 127.0.0.1:4317]
+  Controller -->|SSH local forwarding| Worker[Ubuntu Worker 127.0.0.1:4317]
+  Worker --> Engine[Task engine and persistent conversation]
+  Telegram[Paired Telegram private chat] <-->|Bot API long polling and replies| Gateway[VM Telegram gateway]
+  Gateway --> Engine
   Engine --> Codex[Codex App Server / stdio JSON-RPC]
-  Engine --> Files[VM 记忆、附件、工作目录]
-  Codex --> Desktop[Python 桌面工具]
-  Worker -->|人工输入| Desktop
-  Desktop --> Lock[共享文件锁与控制租约]
+  Engine --> Files[VM memory, attachments, workspace]
+  Codex --> Desktop[Python desktop tools]
+  Worker -->|Human input| Desktop
+  Desktop --> Lock[Shared lock and control lease]
 ```
 
-## 运行模式与数据归属
+## Modes and data ownership
 
-| 模式 | 职责 |
+| Mode | Responsibility |
 | --- | --- |
-| `--prepare` | 界面与安装准备，不自动连接 VM 或启动模型 |
-| 默认 / `--vm-controller` | Hyper-V 准备、部署、Windows 通知、离线缓存、工作 API 代理 |
-| `--vm-worker` | VM 内普通用户运行，持有 Engine、Store、Codex、附件、记忆和桌面控制 |
-| `--deploy-worker` | 仅部署或更新执行器，不启动本机界面 |
+| `--prepare` | UI and setup preparation; no automatic VM connection or model execution. |
+| Default / `--vm-controller` | Hyper-V setup, deployment, Windows notifications, offline cache, and API forwarding. |
+| `--vm-worker` | Ordinary VM user owning Engine, Store, Codex, attachments, memory, and desktop control. |
+| `--deploy-worker` | Deploy or update the Worker without starting a local UI. |
 
-Controller 不创建任务 Engine，也不在 Windows 执行用户任务。Worker 启动时核验 Linux 虚拟环境、普通用户和图形桌面。两端 HTTP 服务只监听各自 loopback；VM API 不暴露到虚拟网卡，文件通过受控接口显式传递，不建立宿主目录共享。
+The Controller never constructs a task Engine or executes agent work on Windows. The Worker checks for a Linux VM, an ordinary user, and a healthy graphical desktop at startup. Both HTTP services bind only to their own loopback address. The VM API is not exposed on its virtual network adapter; files cross controlled interfaces rather than shared host directories.
 
-Windows 保存 `controller.json`、`vm.json`、部署及迁移记录、`notifications.json`、加密的可选 API Key 和 `state-cache.json`。后者仅供断线展示，不成为新的对话存储。断线保留最后已知聊天和输入草稿，工作请求明确失败，不切换到宿主执行。
+Windows stores `controller.json`, `vm.json`, deployment and migration receipts, notification state, an optional encrypted API key, and `state-cache.json`. The cache is for offline display, not another conversation authority. A disconnection retains the last known conversation and local draft, but work fails explicitly rather than executing on the host.
 
-VM 保存 `~/dant/data/state.json`、`attachments/<UUID>.bin` 与元数据、`memory/dant/`，工作现场为 `~/dant/workspaces/<conversationId>/output/`。首次迁移保留 Windows 原始数据备份，转换附件引用；不复制 Codex 认证文件。部署只同步源码允许列表，保留工作数据和版本备份，活动任务期间推迟更新。
+Language and appearance belong to the Controller and can change offline. Semantic CSS colors and native window theme stay in sync. Fonts include Chinese and English fallbacks; VM screenshots retain original colors. Valid connection directories used by this Windows user enter a local profile registry. An unconfigured installation may import a single valid source automatically; multiple sources require selection. Import saves connection information only, preserves existing valid bindings, and leaves keys, disks, and authentication at their original locations.
 
-## 持续对话和执行
+The VM owns `~/dant/data/state.json`, immutable UUID attachment files and metadata, and `memory/dant/`. Work runs under `~/dant/workspaces/<conversationId>/output/`. Initial migration backs up original Windows data and converts attachment references without copying Codex authentication. Deployment uses a source allowlist, retains data and release backups, and defers updates during active work or calls.
 
-唯一 `conversationId` 为永久 UUID，对应固定工作目录并复用 Codex 线程。用户消息先保存送达时间，`turn/start` 返回有效轮次 ID 后才标记执行器已确认。提前到达的轮次事件受数量和大小限制，确认后只重放匹配 ID 的事件。
+## Persistent conversation and execution
+
+A permanent UUID identifies the conversation, workspace, and reused Codex thread. User receipt is saved before execution. Only a valid `turn/start` acknowledgment establishes executor confirmation. Early events are bounded by count and size and replayed only after matching the acknowledged turn.
 
 ```mermaid
 stateDiagram-v2
-  [*] --> queued: 保存用户输入
-  queued --> running: 取得唯一执行位置
-  running --> waiting_user: 等待执行器交互
-  waiting_user --> running: 明确回应
-  running --> pausing: 请求停止
-  pausing --> paused: 确认停止
-  running --> review: 成功结束本轮
-  review --> completed: 用户验收
-  running --> failed: 已确认失败
-  paused --> queued: 用户明确继续
-  failed --> queued: 用户明确重试
+  [*] --> queued: Persist user input
+  queued --> running: Acquire the execution slot
+  running --> waiting_user: Executor requests input
+  waiting_user --> running: Explicit response
+  running --> pausing: Request interruption
+  pausing --> paused: Stop confirmed
+  running --> review: Turn succeeds
+  review --> completed: User accepts
+  running --> failed: Confirmed failure
+  paused --> queued: Explicit resume
+  failed --> queued: Explicit retry
 ```
 
-`review`、`completed` 和“已读”各有独立含义。助手结果只有在页面可见、有焦点且进入视口持续约 450 ms 后才标为已读。普通成功轮次生成 Completion，供宿主延迟三秒检查未读并投递固定内容通知。
+Review, completion, and reading are separate. An assistant message is read only after remaining in the viewport of a visible, focused page for about 450 ms. A successful ordinary turn creates a Completion record; Windows waits three seconds before checking unread state and displaying a fixed-content notification.
 
-补充指令在已确认运行轮次上通过 `turn/steer` 与 `expectedTurnId` 串行提交。等待启动回执时先排队。未知提交结果被暂停，不自动重发。重启遗留运行、暂停中、等待决定及排队工作保留为暂停，避免无意重放外部操作。
+Steering is serialized against an acknowledged `expectedTurnId`; requests arriving before startup acknowledgment wait. Uncertain submissions pause without automatic replay. Restart recovery pauses queued, running, stopping, or input-waiting tasks so external actions are not repeated unintentionally.
 
-## 文件与记忆
+## Files and memory
 
-附件最多五个、每个 10 MiB；后端根据内容识别媒体格式，按 UUID 存储，不信任客户端 MIME 或原文件名路径。活动 HTML / SVG 作为下载，远程图片不自动加载，收到音频不自动播放。
+Messages allow at most five attachments of 10 MiB each. Content inspection determines media type. UUID storage prevents client filenames or declared MIME types from controlling paths. Active HTML/SVG downloads instead of rendering; remote images are not loaded automatically, and incoming audio never autoplays.
 
-每轮工作前计算 `output/` SHA-256 基线，成功后归档新增或变化文件；明确引用可再次交付已有文件。交付保存独立副本，后续修改原件不改变消息附件。扫描限制为 512 项、64 MiB、八层，拒绝符号链接、多硬链接、秘密及日志文件名；Linux 扫描以目录文件描述符锚定子路径，检查读前读后 inode 与状态。
+Before a turn, the engine computes a SHA-256 baseline of `output/`. Successful turns archive new or changed eligible files; explicitly referenced existing files may be delivered again. Delivery stores an independent copy. Scanning is bounded to 512 entries, 64 MiB, and eight levels, and rejects symlinks, multiple hardlinks, secret-like names, and logs. Linux scanning anchors paths to directory descriptors and verifies identity and metadata before and after reading.
 
-记忆为 `README.md`、`identity.md`、`working-memory.md`，单文件上限 64 KiB，模型上下文上限 12,000 字符。记忆内容经过基础凭据脱敏和边界转义，只作参考数据，不能授予新权限。它与 ChatGPT 云端记忆独立。
+Memory consists of `README.md`, `identity.md`, and `working-memory.md`, limited to 64 KiB per file and 12,000 context characters. Basic credential redaction and delimiter escaping treat notes as reference data rather than new permission. This memory is independent of ChatGPT cloud memory.
 
-## 桌面互斥
+## Desktop ownership
 
 ```mermaid
 sequenceDiagram
   participant UI as Windows UI
   participant Session as ComputerSession
   participant Engine as VM Engine
-  participant Lock as Python flock / 租约
-  UI->>Session: 请求接管
-  Session->>Engine: 保留执行位置，暂停队列
-  Session->>Lock: 建立 taking-over 租约
-  Session->>Engine: 中断活动轮次并等待确认
-  Engine-->>Session: 已停止
-  Session->>Lock: 确认 human
+  participant Lock as Python flock / lease
+  UI->>Session: Request takeover
+  Session->>Engine: Preserve work and pause queue
+  Session->>Lock: Create taking-over lease
+  Session->>Engine: Interrupt active turn and await confirmation
+  Engine-->>Session: Stopped
+  Session->>Lock: Confirm human ownership
   Session-->>UI: sessionId / expiresAt
-  UI->>Lock: 携带 sessionId 的输入
-  Lock-->>UI: 成功并续租
+  UI->>Lock: Input with sessionId
+  Lock-->>UI: Apply input and renew lease
 ```
 
-模型 Python 工具与人工输入共享 `flock` 和控制文件。接管停止未确认时不开放输入；旧会话 ID、未确认租约及过期租约均拒绝。两分钟没有输入则释放，交还后由用户明确继续已暂停任务。电脑面板仅在可见时串行取截图，并按实际图片区域换算坐标。
+Model tools and human input share `flock` and the control file. Unconfirmed interruption never grants input access. Stale session IDs, unconfirmed leases, and expired leases are rejected. Two idle minutes release ownership; paused tasks require explicit resumption afterward. The visible computer panel fetches screenshots serially and maps input to actual image bounds.
 
-互斥约束覆盖应用调度及桌面工具，不能保证此前启动的独立后台进程停止，也不能代替 VM 的操作系统权限隔离。
+These constraints cover app scheduling and desktop tools. They cannot guarantee termination of previously detached background processes or replace VM operating-system permissions.
 
-## 语音
+## Voice
 
-默认订阅通道使用 `thread/realtime/start`、`version: v3`、`gpt-live-1-codex` 与 WebRTC。前端拥有音轨和 `oai-events` 数据通道；Controller 和 VM 只传递协商与工作控制。实际媒体连接确认后才记录通话开始，单有 SDP 不算接通。
+The default subscription channel uses `thread/realtime/start`, V3, `gpt-live-1-codex`, and WebRTC. The frontend owns audio tracks and the `oai-events` data channel; Controller and Worker carry negotiation and work control. Call records begin only after actual media connection confirmation, not after SDP alone.
 
-通话共享当前聊天线程和 VM 工作现场；明确交付的消息与文件进入聊天，语音转写不作为普通消息保存。停止同时处理音频与后台工作，无法确认的委派需要确认旧执行器退出，不能只因音频关闭就释放工作位置。
+Calls share the conversation thread and workspace. Explicit messages and files are saved; ordinary spoken narration and transcripts are not persisted as chat. Stopping handles both audio and delegated work. An uncertain stop requires confirmed executor termination rather than releasing ownership just because audio ended.
 
-可选独立 API 通道显式启用，使用单独 API 费用。Key 只在 Windows DPAPI 持久化，经 SSH 短时交给 VM 通话进程使用。听写、浏览器朗读和本地 WAV 语音文件属于独立辅助通路。
+The optional API channel is selected explicitly and has separate API billing. Its key persists only under Windows DPAPI and reaches VM call-process memory transiently over SSH. Dictation, browser read-aloud, and local WAV creation are separate helper paths.
 
-## 平台差异与验证边界
+## Telegram
 
-Windows 版保留现有 Express、WebSocket、Vite 等依赖，没有为了追求 Mac 原型的零 npm 依赖重写网络栈。浏览器默认 SSE，桌面 JSON 请求经 Rust IPC，状态在上次请求结束约 700 ms 后再轮询；Controller 合并 VM 状态读取，缓存窗口两秒。请求失败不会自动重发业务操作。
+The gateway runs with the VM Worker and is disabled by default. Fixed HTTPS Bot API endpoints provide outbound long polling without a public inbound port. A short-lived one-time pairing code binds both private-chat ID and user ID. Groups and unpaired users cannot submit tasks.
 
-自动测试使用隔离数据目录、模拟执行器及 loopback 服务，验证回执时序、未知结果、数据迁移、归档、租约和传输。真实 VM 模型回复、桌面操作、附件以及 V3 静默 WebRTC 连接另行验收。真人麦克风、扬声器、连续语音打断和系统通知横幅必须与协议测试区别看待。
+Telegram inputs have stable external IDs and use the same Store and serial Engine. Only completed messages and controlled attachments belonging to that Telegram task return to its owner. Other desktop tasks and historical messages are not broadcast.
+
+The Bot Token stays in a separate restricted VM data file, never a state snapshot, offline cache, memory note, or chat. Unconfirmed outbound results are recorded without blind replay. Poll offsets and deduplication survive restart; previously paused tasks do not resume automatically. See [Telegram setup](TELEGRAM.md).
+
+## Platform differences and verification boundaries
+
+The Windows rebuild retains Express, WebSocket, and Vite dependencies instead of recreating the prototype's zero-npm network stack. Browsers prefer SSE; desktop JSON calls use Rust IPC, with the next state poll about 700 ms after the previous finishes. The Controller merges VM state reads using a two-second cache. Failed business mutations are not automatically resent.
+
+Unit tests use isolated directories, injected executors, and loopback fixtures to verify receipts, uncertainty, migration, archival, leases, transports, themes, and Telegram behavior. Real VM model replies, desktop operations, file delivery, and silent V3 WebRTC have separate acceptance records. Microphones, speakers, continuous interruption, visual UI checks, and native notification banners must not be inferred from protocol tests.

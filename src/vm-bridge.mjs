@@ -6,16 +6,16 @@ import net from 'node:net';
 import {randomUUID,createHash} from 'node:crypto';
 import {WebSocket} from 'ws';
 import {sshArgs} from './worker.mjs';
+import {readVmBinding} from './vm-profiles.mjs';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const freePort=()=>new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
-const jsonFile=file=>JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
 
 export class VmBridge extends EventEmitter {
  constructor({dataDir,projectRoot,spawnProcess=spawn,fetchImpl=fetch,WebSocketImpl=WebSocket,cacheMs=2000}={}){
   super();this.dataDir=dataDir;this.projectRoot=projectRoot;this.spawnProcess=spawnProcess;this.fetchImpl=fetchImpl;this.WebSocketImpl=WebSocketImpl;this.cacheMs=cacheMs;this.status='offline';this.error=null;this.closed=false;this.generation=0;
  }
- binding(){const vm=jsonFile(path.join(this.dataDir,'vm.json'));vm.knownHosts||=path.join(this.dataDir,'known_hosts');sshArgs(vm);return vm;}
+ binding(){return readVmBinding(this.dataDir);}
  async connect({deploy=true}={}){
   if(this.closed)throw Error('VM bridge is closed');if(this.connecting)return this.connecting;
   const pending=this.open(deploy).finally(()=>{if(this.connecting===pending)this.connecting=null;});this.connecting=pending;return pending;
@@ -24,7 +24,7 @@ export class VmBridge extends EventEmitter {
   const reconnectDesired=this.reconnectDesired;this.disconnect();this.reconnectDesired=reconnectDesired;const generation=this.generation;this.status='connecting';this.error=null;this.emit('change');
   try{
    const vm=this.binding();if(deploy)try{await this.prepare(vm);}catch(error){if(!error.updateDeferred)throw error;this.emit('event',{type:'notice',data:{message:'The VM is still working. Its service update was deferred until work has stopped.'}});}if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');
-   this.port=await freePort();const child=this.spawnProcess('ssh',[...sshArgs(vm),'-N','-L',`127.0.0.1:${this.port}:127.0.0.1:4317`,'-o','ExitOnForwardFailure=yes',`${vm.user}@${vm.host}`],{shell:false,windowsHide:true,stdio:['ignore','ignore','pipe']});this.child=child;
+   this.port=await freePort();if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');const child=this.spawnProcess('ssh',[...sshArgs(vm),'-N','-L',`127.0.0.1:${this.port}:127.0.0.1:4317`,'-o','ExitOnForwardFailure=yes',`${vm.user}@${vm.host}`],{shell:false,windowsHide:true,stdio:['ignore','ignore','pipe']});this.child=child;
    child.stderr?.on('data',()=>{});child.once('error',()=>this.failed(generation,'Could not start the SSH connection.'));child.once('close',()=>this.failed(generation,'The VM connection was lost. Cached conversation remains available.'));
    let session;const deadline=Date.now()+30000;
    while(Date.now()<deadline){
@@ -32,8 +32,9 @@ export class VmBridge extends EventEmitter {
     try{const response=await this.fetchImpl(`http://127.0.0.1:${this.port}/api/session`,{signal:AbortSignal.timeout(2000)});if(response.ok){session=await response.json();break;}}catch{}
     await delay(300);
    }
+   if(this.closed||generation!==this.generation||this.status==='offline')throw Error(this.error||'VM connection cancelled');
    if(!session?.token)throw Error('The VM service did not become ready. Its files and work have been preserved.');
-   this.token=session.token;this.status='online';this.error=null;this.reconnectDesired=true;await this.refresh(true);this.openEvents(generation);this.emit('change');return this.cached;
+   this.token=session.token;this.status='online';this.error=null;this.reconnectDesired=true;await this.refresh(true);if(this.closed||generation!==this.generation||this.status!=='online')throw Error(this.error||'VM connection cancelled');this.openEvents(generation);this.emit('change');return this.cached;
   }catch(error){this.failed(generation,error.message);throw error;}
  }
  failed(generation,message){if(generation!==this.generation||this.closed||(this.status==='offline'&&!this.child&&this.error))return;this.status='offline';this.error=message;this.token=null;this.child?.kill();this.child=null;this.ws?.terminate?.();this.ws=null;this.emit('change');if(this.reconnectDesired){clearTimeout(this.reconnectTimer);this.reconnectTimer=setTimeout(()=>void this.connect({deploy:false}).catch(()=>{}),5000);this.reconnectTimer.unref();}}
@@ -45,7 +46,8 @@ export class VmBridge extends EventEmitter {
  async refresh(force=false){
   if(!force&&this.cached&&Date.now()-this.cachedAt<this.cacheMs)return this.cached;
   if(this.refreshing)return this.refreshing;
-  const pending=(async()=>{const response=await this.request('/api/state');if(!response.ok)throw Error(`VM state unavailable (${response.status})`);const state=await response.json();this.cached=state;this.cachedAt=Date.now();this.emit('state',state);return state;})().finally(()=>{if(this.refreshing===pending)this.refreshing=null;});this.refreshing=pending;return pending;
+  const generation=this.generation,current=()=>{if(this.closed||generation!==this.generation||this.status!=='online')throw Error('VM state refresh cancelled');};
+  const pending=(async()=>{const response=await this.request('/api/state');current();if(!response.ok)throw Error(`VM state unavailable (${response.status})`);const state=await response.json();current();this.cached=state;this.cachedAt=Date.now();this.emit('state',state);return state;})().finally(()=>{if(this.refreshing===pending)this.refreshing=null;});this.refreshing=pending;return pending;
  }
  async request(route,options={}){
   if(this.status!=='online'||!this.token)throw Object.assign(Error('The VM is offline. Reconnect before sending work.'),{status:503});
@@ -68,7 +70,7 @@ export class VmBridge extends EventEmitter {
  async deploy(vm){
   fs.mkdirSync(this.dataDir,{recursive:true});const temporary=fs.mkdtempSync(path.join(this.dataDir,'deploy-'));const archive=path.join(temporary,'source.tar');
   try{
-   const allowlist=['src','dist','package.json','package-lock.json','vm/install-worker.sh','vm/install-speech.sh','vm/migrate-state.mjs','vm/start-codex.sh','vm/guest.py','vm/desktop.py','vm/control.py','vm/voice_message.py','vm/desktop_mcp.py'];
+   const allowlist=['src','dist','LICENSE','package.json','package-lock.json','vm/install-worker.sh','vm/install-speech.sh','vm/migrate-state.mjs','vm/start-codex.sh','vm/guest.py','vm/desktop.py','vm/control.py','vm/voice_message.py','vm/desktop_mcp.py'];
    for(const name of allowlist)if(!fs.existsSync(path.join(this.projectRoot,name)))throw Error(`Build resources are missing: ${name}`);
    const tar=process.platform==='win32'?path.join(process.env.SystemRoot||'C:/Windows','System32/tar.exe'):'tar';
    await this.run(tar,['-cf',archive,'-C',this.projectRoot,...allowlist]);
@@ -89,6 +91,6 @@ export class VmBridge extends EventEmitter {
    if(migration)fs.writeFileSync(receipt,JSON.stringify({...migration,host:vm.host,completedAt:new Date().toISOString()},null,2));
   }finally{const relative=path.relative(this.dataDir,temporary);if(relative&&!relative.startsWith('..')&&!path.isAbsolute(relative)&&path.basename(temporary).startsWith('deploy-'))fs.rmSync(temporary,{recursive:true,force:true});}
  }
- disconnect(){this.generation++;this.reconnectDesired=false;clearTimeout(this.reconnectTimer);this.token=null;this.ws?.terminate?.();this.ws=null;this.child?.kill();this.child=null;this.status='offline';this.emit('change');}
+ disconnect(){this.generation++;this.connecting=null;this.refreshing=null;this.reconnectDesired=false;clearTimeout(this.reconnectTimer);this.token=null;this.ws?.terminate?.();this.ws=null;this.child?.kill();this.child=null;this.status='offline';this.emit('change');}
  close(){this.closed=true;this.disconnect();for(const child of this.preparationChildren||[])child.kill();this.removeAllListeners();}
 }

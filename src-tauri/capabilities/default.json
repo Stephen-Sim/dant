@@ -1,1 +1,1 @@
-{"identifier":"default","description":"dant local desktop","windows":["main"],"permissions":["core:default","notification:default","opener:default"]}
+{"identifier":"default","description":"dant local desktop","windows":["main"],"permissions":["core:default","core:window:allow-set-theme","notification:default","opener:default"]}

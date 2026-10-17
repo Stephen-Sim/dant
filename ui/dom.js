@@ -26,7 +26,9 @@ export function reconcile(parent, next) {
 }
 
 function patch(node, desired) {
-  if (node.isEqualNode(desired) && !node.matches?.('input, textarea, select')) return;
+  // DOM equality ignores a form control's dirty live value. Even unchanged
+  // markup must reach controls so a failed settings change can roll back.
+  if (node.isEqualNode(desired) && !node.matches?.('input, textarea, select') && !node.querySelector?.('input, textarea, select')) return;
   if (node.nodeType !== 1) {
     if (node.nodeValue !== desired.nodeValue) node.nodeValue = desired.nodeValue;
     return;

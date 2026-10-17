@@ -18,13 +18,14 @@ import {DeliverableCollector} from './deliverables.mjs';
 import {MemoryStore} from './memory.mjs';
 import {ComputerSession} from './computer-session.mjs';
 import {NativeRealtimeVoice,DEFAULT_NATIVE_VOICE} from './realtime.mjs';
+import {TelegramGateway} from './telegram.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 export function createApp(options={}){
  const dataDir=options.dataDir||process.env.DANT_DATA||path.join(root,'data');
  if(options.mode==='vm-worker'||options.mode==='test')return createWorkerApp({...options,dataDir});
  return createControllerApp({...options,dataDir,projectRoot:options.projectRoot||root,prepareOnly:options.mode==='prepare'||options.prepareOnly});
 }
-export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'data'),workerFactory=s=>new LocalWorker(s),secretFactory=dir=>createSecretStore(dir),voiceFactory=options=>new Voice(options),nativeVoiceFactory=options=>new NativeRealtimeVoice(options)}={}){
+export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'data'),workerFactory=s=>new LocalWorker(s),secretFactory=dir=>createSecretStore(dir),voiceFactory=options=>new Voice(options),nativeVoiceFactory=options=>new NativeRealtimeVoice(options),telegramFactory=options=>new TelegramGateway(options)}={}){
  const store=new Store(dataDir),worker=workerFactory(store),attachmentStore=new AttachmentStore(path.join(dataDir,'attachments')),deliverables=new DeliverableCollector(attachmentStore),memory=new MemoryStore(dataDir);
  memory.migrateLegacy?.(store);
  const engine=new Engine(store,worker,{memory,deliverables}),computer=new ComputerSession(engine,worker),app=express(),server=http.createServer(app);
@@ -36,6 +37,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  engine.voice=voice;
  const nativeVoice=nativeVoiceFactory({worker,engine});engine.nativeVoice=nativeVoice;
  nativeVoice.on('notice',message=>engine.emit('notice',message));nativeVoice.on('change',()=>engine.change());
+ const telegram=telegramFactory({dataDir,store,engine,attachments:attachmentStore});telegram.on('change',()=>engine.change());
  voice.on('closed',()=>{callScopedKey=null;if(engine.call?.provider==='api'){const callId=engine.call.id;engine.closeCall(callId);engine.emit('realtime',{method:'thread/realtime/closed',params:{callId}});}});
  voice.on('notice',message=>engine.emit('notice',message));
  const importBinding=()=>{const binding=path.join(dataDir,'vm.json');if(!store.state.settings.vm.host&&fs.existsSync(binding)){Object.assign(store.state.settings.vm,JSON.parse(fs.readFileSync(binding,'utf8').replace(/^\uFEFF/,'')));store.save();}};
@@ -47,7 +49,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  app.use(express.json({limit:'2mb'}));
  app.get('/api/session',(req,res)=>res.json({token,product:'dant',mode:'worker'}));
  app.use('/api',(req,res,next)=>{if(req.headers['x-dant-token']!==token&&req.query.token!==token)return res.sendStatus(401);next();});
- const snapshot=()=>{const key=voiceKeys.status(),native=nativeVoice.state;return {mode:'vm-worker',conversationId:store.state.conversationId,messages:store.state.messages,completions:store.state.completions||[],memory:store.state.memory,memoryFiles:memory.snapshot(),settings:store.state.settings,worker:{status:worker.status,error:worker.error||null,account:worker.account?.account,models:worker.models?.data||[],realtime:{available:native.available,reason:native.available?null:'vm-offline',provider:'subscription',billing:'subscription',subscription:{available:native.available,version:'v3',error:native.error||null},api:{available:key.configured,billing:'api'},key}},active:engine.active?{messageId:engine.active.messageId,turnId:engine.active.turnId}:nativeVoice.active||null,queue:engine.queue.map(m=>m.id),takeover:computer.state.status==='human',computer:computer.snapshot(),call:engine.call,schedules:store.state.schedules,provisioning:provisioning.snapshot()};};
+ const snapshot=()=>{const key=voiceKeys.status(),native=nativeVoice.state;return {mode:'vm-worker',conversationId:store.state.conversationId,messages:store.state.messages,completions:store.state.completions||[],memory:store.state.memory,memoryFiles:memory.snapshot(),settings:store.state.settings,telegram:telegram.status(),worker:{status:worker.status,error:worker.error||null,account:worker.account?.account,models:worker.models?.data||[],realtime:{available:native.available,reason:native.available?null:'vm-offline',provider:'subscription',billing:'subscription',subscription:{available:native.available,version:'v3',error:native.error||null},api:{available:key.configured,billing:'api'},key}},active:engine.active?{messageId:engine.active.messageId,turnId:engine.active.turnId}:nativeVoice.active||null,queue:engine.queue.map(m=>m.id),takeover:computer.state.status==='human',computer:computer.snapshot(),call:engine.call,schedules:store.state.schedules,provisioning:provisioning.snapshot()};};
  const wss=new WebSocketServer({noServer:true,maxPayload:1024*1024});
  server.on('upgrade',(req,socket,head)=>{const url=new URL(req.url,'http://localhost');if(url.pathname!=='/events'||url.searchParams.get('token')!==token){socket.destroy();return;}const origin=req.headers.origin;if(origin&&!/^http:\/\/(127\.0\.0\.1|localhost):431[78]$/.test(origin)&&origin!=='http://tauri.localhost'&&origin!=='tauri://localhost'){socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));});
  const broadcast=(type,data)=>{const payload=JSON.stringify({type,data});for(const ws of wss.clients)if(ws.readyState===1)ws.send(payload);};
@@ -55,6 +57,10 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  provisioning.on('change',progress=>{if(closing)return;importBinding();engine.change();if(progress.status==='ready'&&lastProvisionStatus!=='ready'&&!engine.active&&!engine.call){engine.loaded=false;worker.connect().catch(e=>engine.emit('notice',e.message));}lastProvisionStatus=progress.status;});
  wss.on('connection',ws=>ws.send(JSON.stringify({type:'state',data:snapshot()})));
  app.get('/api/state',(req,res)=>res.json(snapshot()));
+ app.get('/api/telegram',(req,res)=>res.json(telegram.status()));
+ app.post('/api/telegram/config',async(req,res)=>res.json(await telegram.configure({token:req.body.token,enabled:req.body.enabled})));
+ app.post('/api/telegram/pair',async(req,res)=>res.json(await telegram.pair()));
+ app.post('/api/telegram/disconnect',async(req,res)=>res.json(await telegram.disconnect({clearToken:req.body.clearToken})));
  app.post('/api/provision',(req,res)=>{if(engine.active||engine.call)throw Error('Stop active work first');res.json(provisioning.start(req.body));});
  app.post('/api/connect',async(req,res)=>{if(engine.active||engine.call)throw Error('Stop active work first');importBinding();engine.loaded=false;await worker.connect();engine.change();res.json({ok:true});});
  app.post('/api/login',async(req,res)=>res.json(await worker.request('account/login/start',{type:'chatgptDeviceCode'})));
@@ -79,7 +85,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  const uploadIndex={get:id=>attachmentStore.get(id)};const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:MAX_ATTACHMENT_BYTES,files:1}});
  app.post('/api/upload',upload.single('file'),async(req,res)=>{if(!req.file)return res.sendStatus(400);res.json(attachmentStore.put({name:req.file.originalname,type:req.file.mimetype,data:req.file.buffer}));});
  app.get('/api/files/:id',(req,res)=>{const item=attachmentStore.get(req.params.id);if(!item)return res.sendStatus(404);const {meta,data}=attachmentStore.read(req.params.id);const safeInline=/^(image\/(png|jpeg|gif|webp)|audio\/(mpeg|wav|ogg|webm))$/.test(meta.type);res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Content-Type',safeInline?meta.type:'application/octet-stream');if(!safeInline)res.attachment(meta.name);res.send(data);});
- engine.deliverFile=async guestPath=>{const item=deliverables.readExplicit({outputDir:engine.outputDir||path.join(engine.workspaceRoot,store.state.conversationId,'output'),filePath:guestPath});store.add({role:'assistant',text:'',attachments:[item],status:'completed'});engine.change();return {sent:true,name:item.name};};
+ engine.deliverFile=async guestPath=>{const item=deliverables.readExplicit({outputDir:engine.outputDir||path.join(engine.workspaceRoot,store.state.conversationId,'output'),filePath:guestPath});store.add({role:'assistant',text:'',attachments:[item],status:'completed',taskId:engine.active?.messageId});engine.change();return {sent:true,name:item.name};};
  app.post('/api/call',async(req,res)=>{if(engine.call)throw Error('A call is already active');const provider=req.body.provider||'subscription';if(provider==='api'&&req.body.apiKey)callScopedKey=validateApiKey(req.body.apiKey);try{res.json(await engine.startCall(req.body.sdp,{provider}));}catch(error){callScopedKey=null;throw error;}});
  app.post('/api/call/connected',(req,res)=>res.json(engine.confirmCallConnected(req.body.callId)));
  app.post('/api/realtime/message',async(req,res)=>{if(!engine.call||engine.call.provider!=='subscription'||req.body.callId!==engine.call.id)throw Error('The subscription voice call changed');if(req.body.attachments!==undefined&&(!Array.isArray(req.body.attachments)||req.body.attachments.length))throw Error('Attachments are not supported during a voice call');res.json(await nativeVoice.message({clientMessageId:req.body.clientMessageId,text:req.body.text,replyTo:req.body.replyTo,callId:req.body.callId}));});
@@ -91,7 +97,8 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  app.use(express.static(path.join(root,'dist')));
  app.use((err,req,res,next)=>{if(res.headersSent)return next(err);res.status(err.status||(err.unknownOutcome?502:400)).json({error:err.message,...(err.unknownOutcome?{unknownOutcome:true}:{})});});
  let closePromise;
- return {app,server,store,worker,engine,voice,nativeVoice,voiceKeys,provisioning,computer,close:()=>{if(closePromise)return closePromise;closing=true;computer.close();provisioning.close();clearInterval(scheduler);clearTimeout(broadcastTimer);closePromise=Promise.allSettled([voice.close(),nativeVoice.close()]).finally(()=>{callScopedKey=null;worker.disconnect();});for(const ws of wss.clients)ws.terminate();wss.close();server.close();return closePromise;}};
+ telegram.start();
+ return {app,server,store,worker,engine,voice,nativeVoice,telegram,voiceKeys,provisioning,computer,close:()=>{if(closePromise)return closePromise;closing=true;computer.close();provisioning.close();clearInterval(scheduler);clearTimeout(broadcastTimer);closePromise=Promise.allSettled([voice.close(),nativeVoice.close(),telegram.close()]).finally(()=>{callScopedKey=null;worker.disconnect();});for(const ws of wss.clients)ws.terminate();wss.close();server.close();return closePromise;}};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const mode=process.argv.includes('--vm-worker')?'vm-worker':process.argv.includes('--prepare')?'prepare':'vm-controller';

@@ -47,9 +47,18 @@ jobs:
       - name: Check application versions
         run: node scripts/ci/version.mjs
       - name: Test release version gate
-        run: node --test scripts/ci/version.test.mjs
-      - name: Test backend
-        run: npm test
+        run: node --test scripts/ci/version.test.mjs scripts/ci/coverage.test.mjs
+      - name: Test application and enforce coverage
+        run: npm run test:coverage
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.os }}
+          path: .cache/coverage/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - name: Test VM image, seed, desktop and SSH key helpers
         run: python -m unittest discover -s tests -p test_vm.py -v
       - name: Build frontend

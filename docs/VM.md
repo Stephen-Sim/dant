@@ -1,126 +1,142 @@
-# Windows / Hyper-V VM 初始化与排障
+# Windows / Hyper-V VM setup and troubleshooting
 
-dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Node 服务通过 stdio 启动，桌面桥只供 VM 内访问。虚拟机默认 4 个 CPU、6 GB 内存、40 GB 动态磁盘，使用 Hyper-V Default Switch 的 DHCP/NAT 网络。
+English · [简体中文](zh-CN/VM.md)
 
-## Worker 部署与运行
+dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Windows Controller reaches the VM's work API at `127.0.0.1:4317` through an SSH local tunnel. The VM Node service starts Codex over stdio; the desktop bridge is also accessible only inside the VM. The default VM has 4 CPUs, 6 GB RAM, and a 40 GB dynamic disk, using DHCP/NAT on the Hyper-V Default Switch.
 
-首次连接会同步源码允许列表，校验并安装用户目录内的 Node 22，使用锁文件安装运行依赖，以普通用户创建 `dant-worker.service` 和 `dant-guest-local.service`。启用 user lingering 后，Windows Controller 退出不终止 VM 服务。旧系统桌面桥端口 4319 保留，新 Worker 使用本机 4320 的租约桥，均不绑定 VM 外部地址。
+## Worker deployment and operation
 
-Worker 拒绝在 Windows、裸机 Linux、root 账号或缺少可用图形桌面的环境执行任务。更新前会检查活动任务与通话；正在工作时保留当前进程并推迟升级。相同源码版本复用已有健康服务。
+The first connection deploys an explicit source allowlist, verifies and installs Node 22 in the VM user's directory, installs runtime dependencies from the lockfile, and creates the ordinary user's `dant-worker.service` and `dant-guest-local.service`. With user lingering enabled, closing the Windows Controller does not stop these services. The legacy system desktop bridge on port 4319 remains available; the new Worker uses the local lease-aware bridge on port 4320. Neither listens on an external VM address.
 
-Windows 原有聊天迁移前保存完整备份，再把附件复制为 VM UUID 存储；迁移只允许进入未被另一份对话占用的目标目录。Codex 自行保存和刷新认证，部署不读取或打包认证文件。
+The Worker refuses to execute tasks on Windows, bare-metal Linux, as root, or without a working graphical desktop. Updates check for active work and calls first. An active executor is preserved and its update is deferred; an unchanged source version reuses the existing healthy services.
+
+Legacy Windows chat migration saves a complete backup first, then imports attachments into the VM's UUID storage. Migration refuses to overwrite a target that already holds another conversation. Codex maintains and refreshes its own authentication; deployment neither reads nor packages its authentication files.
 
 ```powershell
-# 已有 data/vm.json 时单独部署，不启动 Windows UI
+# Deploy using the selected data directory's existing vm.json, without a Windows UI.
 node src/server.mjs --deploy-worker
 
-# 仅展示安装准备界面，不自动连接 Worker
+# Show setup preparation only; do not automatically connect the Worker.
 node src/server.mjs --prepare
 ```
 
-VM 权威数据为 `~/dant/data/`，工作目录为 `~/dant/workspaces/<conversationId>/`，程序版本保存在 `~/dant/releases/`。诊断用户服务时使用 `systemctl --user status dant-worker dant-guest-local` 和 `journalctl --user -u dant-worker`；不要把包含私人聊天的日志原文提交仓库。
+Authoritative VM data is in `~/dant/data/`, conversation workspaces are in `~/dant/workspaces/<conversationId>/`, and deployed application versions are in `~/dant/releases/`. Inspect user services with `systemctl --user status dant-worker dant-guest-local` and `journalctl --user -u dant-worker`. Do not commit raw logs containing private conversations.
 
-## 初始化
+## Connect an existing work computer
 
-需要已启用 Hyper-V 的 Windows、OpenSSH 客户端、Python 3、可访问 Ubuntu 和 npm 软件源的网络。镜像压缩包约 810 MiB，解压后的固定 VHD 约 30 GiB；转换时还需要动态 VHDX 的额外空间。下载准备可在普通 PowerShell 中执行，创建/启动 Hyper-V VM 由 Windows 要求管理员权限，应用启动时可能出现 UAC 提示。
+The installed app and desktop launcher use `%APPDATA%\com.dant.desktop\data` by default. An explicit `DANT_DATA` selects a different directory. Earlier development runs commonly kept connection details in the project's `data` directory. Different local data directories do not mean that the VM needs to be recreated.
 
-在项目目录执行：
+The Controller checks only known local sources: the selected data directory, the known project's `data` directory, explicit `DANT_VM_PROFILE_DIR` or JSON-array `DANT_VM_PROFILE_DIRS` directories, and directories previously registered by this user's Controller. It does not recursively search disks. An existing valid `vm.json` takes precedence. A single different valid source can be imported automatically; multiple sources require an explicit choice in settings. You can also enter the absolute directory containing the old `vm.json`. Duplicate profiles with the same SSH endpoint, user, and canonical private-key path count as one source.
+
+On Windows, the user registry is `%LOCALAPPDATA%\dant\vm-profiles.json`. It records profile-directory paths and is scoped to the current account; it does not store private-key contents.
+
+Import writes only connection fields. Relative private-key and `known_hosts` paths are resolved against the original profile directory. It does not copy private-key contents, chat history, server state, or another account's data. Keep the original directory containing the key. Any newly generated AppData key and previous setup-failure record remain untouched. After an explicit import, choose Connect; importing does not recreate the VM.
+
+`GET /api/vm/profiles` returns the current profile and candidates. `POST /api/vm/import` accepts `{id}` or `{directory}` and refuses to replace an existing valid connection. A missing binding or key produces instructions to import the original directory or choose its existing key instead of a raw `ENOENT` error.
+
+A historical `failed:*` setup status does not block automatic connection to a valid existing VM. An actively preparing, creating, installing, or administrator-approval operation postpones automatic connection; old failure logs remain available. If Hyper-V reports that a VM with the same name already exists, recover its original connection profile first. Do not regenerate its seed or recreate it merely because a new local data directory lacks `vm.json`.
+
+## Initial setup
+
+Requires Windows with Hyper-V enabled, the OpenSSH client, Python 3, and network access to the Ubuntu and npm repositories. The image archive is approximately 810 MiB; its extracted fixed VHD is approximately 30 GiB. Conversion needs additional space for the dynamic VHDX. Image preparation can run in ordinary PowerShell. Windows requires administrator authorization to create/start a Hyper-V VM, and the app's setup flow may show a UAC prompt.
+
+From the project directory:
 
 ```powershell
 .\scripts\prepare-vm.ps1
-# 以下命令需要管理员 PowerShell，或由应用的 VM 安装入口调起。
+# Requires administrator PowerShell, or the app's VM setup flow.
 .\scripts\create-vm.ps1
 .\scripts\check-vm.ps1
 ```
 
-安装版可以给三个脚本传相同的 `-DataDirectory` 绝对路径，例如：
+For an installed app, pass the same absolute `-DataDirectory` to all three scripts:
 
 ```powershell
-$dantData = Join-Path $env:LOCALAPPDATA 'dant'
+$dantData = Join-Path $env:APPDATA 'com.dant.desktop\data'
 .\scripts\prepare-vm.ps1 -DataDirectory $dantData
 .\scripts\create-vm.ps1 -DataDirectory $dantData
 .\scripts\check-vm.ps1 -DataDirectory $dantData
 ```
 
-自定义数据目录内包含 `cache/vm`、`tools/python`、`vm`、`logs`、SSH 密钥和 `vm.json`。不传此参数时，继续使用项目下的 `data`、`.cache/vm`、`.tools/python`。`vm-key` 是私钥，不应上传、提交或粘贴到日志。脚本只读取公钥生成种子 ISO。
+A custom data directory contains `cache/vm`, `tools/python`, `vm`, `logs`, SSH keys, and `vm.json`. Without this argument, the scripts retain the project's `data`, `.cache/vm`, and `.tools/python` layout. `vm-key` is a private key: do not upload it, commit it, or paste it into logs. The seed script reads only the public key to build the ISO.
 
-`prepare-vm.ps1` 下载官方 Ubuntu 24.04 Azure VHD 压缩包并核对 SHA256，创建 ed25519 SSH 密钥和 NoCloud ISO。普通用户 `dant` 默认没有 sudo 权限、没有密码登录、不能 root SSH 登录。如果明确需要让 VM 内代理有 sudo 权限，首次准备时可传 `-AdminSudo`；这个选项会影响代理在 VM 内的权限。
+`prepare-vm.ps1` downloads the official Ubuntu 24.04 Azure VHD archive, verifies SHA-256, and creates an ed25519 SSH key and NoCloud ISO. The ordinary `dant` user has no sudo permission or password login by default, and root SSH login is disabled. If the VM agent explicitly needs sudo, pass `-AdminSudo` during initial preparation; this changes the agent's permissions inside the VM.
 
-种子的 `instance-id` 使用公钥的 SHA256 十六进制摘要前 20 位，保持稳定且可安全用于文件路径。不能直接使用公钥 base64 片段，因为其中可能包含 `/`。
+The seed's stable, path-safe `instance-id` uses the first 20 hexadecimal characters of the public key's SHA-256 digest. A raw public-key base64 substring is unsuitable because it can contain `/`.
 
-SSH 密钥由 `scripts/vm-key.py` 使用 Python 参数数组调用 OpenSSH，避免 PowerShell 5/7 对空口令参数的不同解释。准备阶段只打印生成/验证/修复结果。已有无口令密钥会校验私钥与公钥是否匹配；仅当文件名是 `vm-key`、私钥能用早期脚本的双引号口令解密、私钥和公钥都带 `dant-local-vm` 注释且公钥匹配时，才自动清除这个遗留口令。原密钥、公钥文件及注释保持一致。其他加密密钥、陌生注释或不匹配的公钥都会报错并保持原文件。
+`scripts/vm-key.py` invokes OpenSSH with a Python argument array to avoid PowerShell 5/7 differences when passing an empty passphrase. Preparation prints only generation, validation, or repair results. An existing unencrypted key is checked against its public key. Automatic legacy passphrase removal is restricted to a file named `vm-key` that can be decrypted with the old script's two-double-quote passphrase, whose private and public comments are both `dant-local-vm`, and whose public keys match. The key pair and comments remain unchanged. Other encrypted keys, foreign comments, and mismatched public keys are rejected without modifying the files.
 
-`create-vm.ps1` 选择已有 Default Switch，检查原始盘没有挂载或被其他 VM 注册使用，然后准备 NoCloud 配置、转换动态 VHDX、扩容、注册第一代 Hyper-V VM、挂载 ISO 并启动。获得 IP 后保存 `vm.json`。此时软件安装可能仍在进行，必须以 `check-vm.ps1` 的结果判断就绪。
+`create-vm.ps1` uses the existing Default Switch and verifies that the source disk is neither mounted nor registered to another VM. It prepares NoCloud, converts and enlarges a dynamic VHDX, registers a generation-1 Hyper-V VM, attaches the ISO, and starts it. After obtaining an IP address, it saves `vm.json`. Software installation can still be running at that point; use `check-vm.ps1` to establish readiness.
 
-Windows `tar` 可能把官方镜像解压为 NTFS 稀疏文件，而 Hyper-V 转换这类文件会报 `0xC03A001A`。脚本在 NoCloud 准备后、转换前，仅对已确认未挂载/未被 VM 使用的官方原始 VHD 执行 `fsutil sparse setflag <源VHD> 0`，把空洞分配为普通磁盘空间；不会修改宿主目录的压缩/加密设置。为避免转换中途耗尽磁盘，稀疏源盘要求预留两倍源盘逻辑大小加 1 GiB；当前镜像约需要 61 GiB 可用空间。非稀疏源盘要求预留一倍源盘逻辑大小加 1 GiB。操作后会验证文件长度、属性、VHD/文件系统配置，并再次检查空间。源文件或目标目录被压缩/加密时，脚本清楚报错，需选择合适的数据目录。
+Windows `tar` can extract the official source image as an NTFS sparse file, causing Hyper-V conversion error `0xC03A001A`. After NoCloud preparation and before conversion, the script runs `fsutil sparse setflag <sourceVHD> 0` only on the verified unused, unmounted official source VHD. This allocates its holes as ordinary disk space; it does not change compression/encryption settings on host directories. A sparse source requires twice its logical size plus 1 GiB of free space, approximately 61 GiB for the current image. A non-sparse source requires its logical size plus 1 GiB. The script then verifies length, attributes, VHD/filesystem configuration, and remaining space. Compressed or encrypted source/target locations produce an explicit error; choose a suitable data directory.
 
-VM 中 `dant-bootstrap.service` 自动安装 XFCE、Xvfb、截图和输入工具、字体、Firefox、Codex CLI。下载失败会重试，整个初始化失败后 systemd 也会重新运行。只有 X 显示可访问、三个桌面服务正常、实际截图返回 PNG、Codex 可执行时，才写 `/home/dant/work/.dant-ready`。就绪检查退出码 0 表示成功，1 表示尚未就绪。
+Inside the VM, `dant-bootstrap.service` installs XFCE, Xvfb, screenshot/input tools, fonts, Firefox, and Codex CLI. Downloads retry, and systemd retries a failed bootstrap. It writes `/home/dant/work/.dant-ready` only after the X display is accessible, all three desktop services are healthy, an actual screenshot returns PNG, and Codex is executable. The readiness check exits 0 on success and 1 when not ready.
 
-## Azure 镜像为何需要离线准备
+## Why the Azure image needs offline preparation
 
-当前官方镜像的 `/etc/cloud/cloud.cfg.d/90_dpkg.cfg` 指定 `datasource_list: [ Azure ]`。这会阻止第一次开机读取 NoCloud 光盘；把 NoCloud 设置写在光盘的 user-data 中也来不及改变数据源发现。
+The current official image's `/etc/cloud/cloud.cfg.d/90_dpkg.cfg` specifies `datasource_list: [ Azure ]`. This prevents first boot from selecting the NoCloud CD. Putting a NoCloud setting in the CD's user-data cannot change datasource discovery early enough.
 
-`scripts/patch-image.py` 在创建 VM 前，只对未挂载的原始固定 VHD 中该普通配置文件做一次等长替换：
+Before creating the VM, `scripts/patch-image.py` makes one equal-length replacement in that ordinary configuration file on the unmounted source fixed VHD:
 
 ```text
 datasource_list: [ Azure ]
 datasource_list: [NoCloud]
 ```
 
-工具验证固定 VHD footer 及校验和、保护 MBR、GPT header/table CRC、唯一 Linux 分区、ext4 block/inode/descriptor 布局、目录路径、extent 范围及文件原始全文。遇到未知布局或配置立即报错；不挂载磁盘、不修改文件长度或文件系统元数据，也不处理已有 VHDX。写入前把原字节、替换字节、物理偏移和 footer 指纹保存到 `cache/vm/image-patch-audit.json`，随后刷盘并复读验证。重复运行只接受匹配的原始审计记录。
+The tool validates the fixed VHD footer/checksum, protective MBR, GPT header/table CRCs, unique Linux partition, ext4 block/inode/descriptor layout, directory path, extent bounds, and full original file content. It rejects unknown layouts or configurations immediately. It neither mounts the disk nor changes file length/filesystem metadata, and it does not modify existing VHDX files. Before writing, it records original/replacement bytes, physical offset, and footer fingerprint in `cache/vm/image-patch-audit.json`, then flushes and rereads the result. Repeated runs require a matching original audit record.
 
-该方式针对当前官方 Azure GPT/ext4 镜像布局。后续官方镜像若更改布局，工具可能拒绝处理；应先检查新镜像，不能跳过验证或直接全盘搜索替换。
+This method targets the current official Azure GPT/ext4 layout. A future image layout may be rejected. Inspect that image first; do not bypass validation or perform an unrestricted disk-wide replacement.
 
-只读检查示例：
+Read-only inspection:
 
 ```powershell
 python .\scripts\patch-image.py .\data\vm\livecd.ubuntu-cpc.azure.vhd
 ```
 
-资料：[cloud-init 数据源配置](https://docs.cloud-init.io/en/latest/reference/datasources.html)、[NoCloud 数据源](https://docs.cloud-init.io/en/24.2/reference/datasources/nocloud.html)、[Microsoft 对 Azure 镜像数据源的说明](https://learn.microsoft.com/en-us/azure/virtual-machines/linux/create-upload-ubuntu)、[Windows 清除稀疏标记时分配空洞的行为](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/6a884fe5-3da1-4abb-84c4-f419d349d878)。
+References: [cloud-init datasource configuration](https://docs.cloud-init.io/en/latest/reference/datasources.html), [NoCloud](https://docs.cloud-init.io/en/24.2/reference/datasources/nocloud.html), [Microsoft's Azure image datasource guidance](https://learn.microsoft.com/en-us/azure/virtual-machines/linux/create-upload-ubuntu), and [Windows allocation when clearing a sparse flag](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/6a884fe5-3da1-4abb-84c4-f419d349d878).
 
-## 状态和日志
+## Progress and logs
 
-Windows 的 `data/vm-setup-status.json` 保存阶段、最近更新时间、日志路径和错误。安装版中对应所选数据目录。`data/logs/create-vm-*.log` 保存管理员脚本的完整 transcript。常见阶段：
+On Windows, `data/vm-setup-status.json` records the stage, last update, log path, and error; installed apps use the selected data directory instead. `data/logs/create-vm-*.log` contains the administrator script's full transcript. Common stages:
 
-| 阶段 | 含义 |
+| Stage | Meaning |
 | --- | --- |
-| `extracting-image` | 解压原始 VHD |
-| `configuring-nocloud` | 校验并准备初次启动配置 |
-| `allocating-source-disk` | 清除源 VHD 稀疏标记并分配其空洞 |
-| `converting-disk` / `resizing-disk` | 创建和扩容动态磁盘 |
-| `registering-vm` / `booting-vm` | 注册并启动 Hyper-V VM |
-| `waiting-for-ip` | 等待 Hyper-V 集成服务报告 IPv4 |
-| `guest-installing` | 已保存 SSH 连接，等待 VM 软件安装 |
-| `ready` | 就绪检查已实际通过 |
-| `failed:<阶段>` | 读取 error 字段及指定日志定位失败 |
+| `extracting-image` | Extract the source VHD |
+| `configuring-nocloud` | Validate and prepare first-boot configuration |
+| `allocating-source-disk` | Clear the source sparse flag and allocate its holes |
+| `converting-disk` / `resizing-disk` | Create and enlarge the dynamic disk |
+| `registering-vm` / `booting-vm` | Register and start the Hyper-V VM |
+| `waiting-for-ip` | Wait for Hyper-V integration services to report IPv4 |
+| `guest-installing` | SSH connection saved; VM software is still installing |
+| `ready` | Actual readiness checks passed |
+| `failed:<stage>` | Inspect the error field and referenced log |
 
-查看来宾安装状态：
+Inspect guest installation:
 
 ```powershell
 .\scripts\check-vm.ps1 -Diagnostics
 ```
 
-此命令会输出 cloud-init 状态、桌面和初始化服务状态、初始化 journal、`/var/log/dant-bootstrap.log` 的末尾。默认 `dant` 用户属于 `adm`，可读取这些安装日志。
+This prints cloud-init status, desktop/bootstrap service status, bootstrap journal output, and the tail of `/var/log/dant-bootstrap.log`. The default `dant` user belongs to `adm` and can read those installation logs.
 
-## 中断后恢复
+## Recover after interruption
 
-- **已有同名 VM：** 默认创建脚本立即停止并保留 VM。确认它使用该数据目录下的 `vm/dant.vhdx` 后，使用 `create-vm.ps1 -Resume` 启动或继续等待 IP、刷新 `vm.json`；不会替换磁盘或重新初始化系统。
-- **IP 超时或网络变化：** 检查 Hyper-V Manager 中该 VM 的状态和 Default Switch，再使用 `-Resume` 刷新地址，重启 dant 读取连接。
-- **只有原始 `.vhd`，没有 `.vhdx` 和 VM：** 查看旧日志确认失败点后，可以重新运行创建脚本。原始盘会先重新校验；补丁有审计，可识别已经完成的准备。
-- **已有 `.vhdx`，尚未注册 VM：** 脚本拒绝覆盖。先根据日志检查转换或扩容是否完成、磁盘是否被其他 VM 使用，再由维护者决定如何接续注册。不要删除磁盘来规避错误。
-- **网络临时失败：** 初始化服务会自动重试。查看 `-Diagnostics`，等网络恢复后再次检查。
-- **SSH 能连接但没有 ready：** 检查 `dant-bootstrap.service` 和安装日志；首次桌面安装需要时间。SSH 可用本身不能证明截图和 Codex 已可用。
-- **SSH 无法连接：** 先确认地址和 VM 是否运行，检查 Windows OpenSSH 是否在 PATH 中、私钥路径是否仍存在。若 host key 发生变化，先核实连接目标，保留 `known_hosts` 中的证据进行排查。
-- **已确认公钥一致，仍报 `Permission denied (publickey)`：** 检查 Windows 侧私钥是否意外带口令。早期脚本在 PowerShell 7 中传 `-N '""'` 会把两个双引号当作实际口令，导致 `BatchMode=yes` 无法签名。重新运行准备阶段会校验密钥并受限修复已确认的旧项目密钥；换种子 ISO不能解决 Windows 私钥加密问题。修复保持原密钥对，不需要重建 VM。
+- **VM with the same name already exists:** the creation script stops and preserves it by default. Recover an existing connection profile first. If you have confirmed that the VM uses this data directory's `vm/dant.vhdx`, `create-vm.ps1 -Resume` can start it or continue waiting for its IP and refresh `vm.json`. It does not replace the disk or reinitialize the guest.
+- **IP timeout or a network change:** check the VM and Default Switch in Hyper-V Manager. Use `-Resume` to refresh the address, then restart dant to reread the connection.
+- **Only the source `.vhd` exists, without a `.vhdx` or registered VM:** inspect the previous failure log before rerunning creation. The source is revalidated; its audit identifies an already completed patch.
+- **A `.vhdx` exists but no VM was registered:** overwrite is refused. Review whether conversion/expansion completed and whether another VM uses the disk; a maintainer must decide how to resume registration. Do not delete the disk to bypass the error.
+- **Temporary network failure:** bootstrap retries automatically. Inspect `-Diagnostics`, wait for connectivity, then check again.
+- **SSH works but readiness fails:** inspect `dant-bootstrap.service` and its logs. Initial desktop installation takes time; SSH alone does not prove that screenshots or Codex work.
+- **SSH cannot connect:** confirm the address and VM state, Windows OpenSSH on `PATH`, and the existing private-key path. If the host key changed, verify the destination and retain the `known_hosts` evidence while investigating.
+- **The public key matches but SSH reports `Permission denied (publickey)`:** check whether the Windows private key unexpectedly has a passphrase. An early script's PowerShell 7 `-N '""'` handling could set two literal double quotes as the passphrase, preventing `BatchMode=yes` signing. Preparation verifies and narrowly repairs confirmed legacy project keys. Replacing the seed ISO cannot decrypt the Windows private key. Repair preserves the original key pair and does not require rebuilding the VM.
 
-更换聊天模型或应用 mode 不会改变 Windows 对 Hyper-V/UAC 的权限要求。管理员启动失败时，以安装入口日志和 Windows 返回的具体错误为准。
+Changing the chat model or application mode does not change Windows Hyper-V/UAC authorization. For administrator-launch failures, use the setup log and the specific Windows error.
 
-## 本地验证
+## Local verification
 
 ```powershell
 python -m unittest discover -s tests -p test_vm.py -v
 python -m py_compile scripts/seed.py scripts/patch-image.py scripts/vm-key.py vm/desktop.py vm/guest.py
 ```
 
-测试使用合成 VHD 验证只修改等长配置字节、审计不被覆盖、损坏镜像和未知配置被拒绝，验证拖动中断时释放鼠标按钮，回读种子 ISO 检查路径安全的实例 ID 和禁用 sudo 时的 null 配置，并在临时目录生成机器密钥验证空口令、已确认旧密钥修复、未知加密密钥/陌生注释/公钥不匹配时拒绝修改。这些检查不能替代真实 VM 的首次启动、联网安装和桌面验证。
+Tests use a synthetic VHD to verify equal-length-only changes, an immutable audit, and rejection of corrupt/unknown images. They verify mouse-button release after interrupted dragging, reread the seed ISO to check its path-safe instance ID and null sudo setting, and generate temporary test keys to cover empty passphrases, confirmed legacy repair, and rejection of unknown encryption, foreign comments, or mismatched public keys. These checks do not replace real VM first boot, network installation, and desktop validation.

@@ -1,39 +1,53 @@
-# Windows / VM 验证记录
+# Windows / VM verification
 
-日期：2026-10-17。此记录区分自动协议测试和真实设备测试，不把模拟执行器结果当作真实语音验收。
+English · [简体中文](zh-CN/verification.md)
 
-## 自动检查
+Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
-- Node 测试：158 项，157 通过、1 项 Windows 符号链接测试跳过，0 失败。
-- Python 测试：15 项全部通过，覆盖镜像、种子、SSH 密钥、租约、MCP stdio、WAV 校验与 Windows 短路径别名。
-- 发布版本门禁：4 项全部通过。
-- 前端生产构建通过；Rust `cargo check --locked` 通过。
-- Bash 与八份 PowerShell 文件的语法检查通过；GitHub Actions 配置通过 actionlint。
+## Initial architecture acceptance
 
-测试包含启动回执前的乱序事件、串行 steer、未知提交结果、幂等消息、重启暂停、用户验收、450 ms 视口已读、五文件归档上限、不可变附件、Linux 路径锚定、MCP 结果归属、租约、准确 callId 停止、断线恢复与原生 IPC。
+The initial Windows/VM rebuild passed 157 Node tests, with one Windows symlink test explicitly skipped, and all 15 Python tests. Four version-gate tests, the frontend production build, locked Cargo checking, Bash parsing, eight PowerShell syntax checks, and actionlint passed.
 
-中英文检查包含两份界面词典的关键流程、已保存错误切换、离线语言偏好持久化与重连同步、VM 默认回复语言、只有附件时的语言，以及听写/朗读权限提示。第一次 Windows CI 的 WAV 夹具暴露临时目录 8.3 别名问题，已在测试中规范化路径并新增真实别名回归，保留 VM 的目录保护。
+These checks covered early out-of-order events, serialized steering, uncertain submissions, message idempotency, restart pause, explicit acceptance, viewport read receipts, five-file archival limits, immutable attachments, Linux path anchoring, MCP ownership, leases, exact call-ID stopping, recovery, and native IPC.
 
-## 真实 Hyper-V VM
+Bilingual tests exercised critical UI flows, retained-error translation, offline preferences, reconnect synchronization, VM response-language defaults, attachment-only inputs, and speech permission messages. A first Windows CI run exposed an 8.3 temporary-path alias in a WAV fixture. The fixture now resolves the path and has an actual short-alias regression, preserving the VM directory guard.
 
-Ubuntu 24.04 AMD64，普通 `dant` 用户，Hyper-V 虚拟环境、图形会话、SSH、两个用户服务及 user lingering 已核验。工作 API 及租约桌面桥只监听 VM 内 loopback。
+## Regression suite and coverage
 
-原 Windows 聊天及附件迁移前已备份，原有认证由 VM Codex 保留。通过 Controller 执行真实任务后，Windows 原始 `state.json` 的 SHA-256 保持不变，新增记录归 VM。
+The 0.2.0 local run executed 277 JavaScript tests: 276 passed, one Windows symlink check skipped, and none failed. Measured coverage was 96.6% lines, 81.81% branches, and 83.78% functions. All 15 Python tests, seven version/coverage-gate checks, PowerShell/Bash parsing, actionlint, the frontend build, and locked Cargo checking also passed. CI produces independent platform reports for the committed source.
 
-真实任务验收包括文本及图标附件、MCP 截图、MCP 消息恰好一次交付、`output/architecture-acceptance.txt` 自动归档、105,662 字节 PCM WAV 交付、消息执行确认、用户已读与验收、607,309 字节真实桌面截图、人工租约与键盘输入、拒绝旧会话输入。
+Run `npm run test:coverage` for the current JavaScript unit suite and coverage gate. It writes the full test log, LCOV data, machine-readable totals, and a Markdown table under `.cache/coverage/`. CI uploads reports for Windows and Ubuntu. Source percentages and the exact executed test count come from each report rather than a manually maintained claim of complete coverage.
 
-## 订阅语音
+The regression suite includes existing-VM import and discovery, protection of valid profiles, multiple-source selection, missing keys, failed setup followed by reconnect, offline appearance persistence, native/system theme behavior, actual settings handlers, and Telegram pairing, authorization, bounded attachments, deduplication, delivery uncertainty, and shutdown. Mocked API-route tests also verify account/configuration ownership, active-document downloads, memory, receipts, uncertain retry refusal, and single schedule dispatch.
 
-现有 ChatGPT 登录、Codex CLI 0.163.0、`gpt-live-1-codex`、Realtime V3：
+The browser entrypoint is exercised through rendering and handler fixtures; its CSS imports and live DOM are not included in Node's loaded-module coverage percentage. Rust compilation and Python helper tests are separate checks. A JavaScript coverage percentage is not a claim that every platform or device path was executed.
 
-1. 使用真实 WebRTC 实现生成音频 transceiver 与 `oai-events` SDP。
-2. 经 Windows Controller 调用 VM NativeRealtimeVoice，收到 V3 启动事件与 SDP answer。
-3. WebRTC 进入 connected，数据通道进入 open，随后明确上报 connected。
-4. 通话内显式文字通过相同线程真实执行、确认和交付；重复 clientMessageId 没有再次执行。
-5. 挂断得到停止确认，保存实际连接过的通话记录。
+## Real Hyper-V VM
 
-这条链路未配置 API Key。早期只测默认 WebSocket 通道并据此判断订阅语音不可用，是错误推断；已改为默认 V3 WebRTC 订阅通道。可选 API 语音未用付费 Key 实测。
+Ubuntu 24.04 AMD64, the ordinary `dant` user, Hyper-V detection, the graphical session, SSH, two user services, and user lingering were verified. Worker APIs and the leased desktop bridge listen only on VM loopback.
 
-## 尚需人工体验验收
+Original Windows conversation data and files were backed up before migration; VM Codex retained its authentication. Real Controller tasks left the SHA-256 of the original Windows `state.json` unchanged, with new conversation records owned by the VM.
 
-真实麦克风采集、扬声器播放、连续语音打断、系统通知横幅及长时间稳定运行尚未由本记录证明。Windows 本地听写仅核验识别包存在（中英文）与辅助调用逻辑，没有自动开启麦克风。UI 已按用户提供的截图重做并完成构建和交互逻辑检查；未绕过先前浏览器访问许可限制做截图预览。
+Actual task acceptance included text and icon attachments, an MCP screenshot, exactly-once MCP chat delivery, automatic archival of `output/architecture-acceptance.txt`, a 105,662-byte PCM WAV, execution confirmation, reading and explicit acceptance, a 607,309-byte real desktop screenshot, human keyboard input under a lease, and rejection of stale session input. Real Chinese and English model replies and saved language synchronization also passed.
+
+The later installed-profile defect was reproduced as a missing AppData `vm.json`, while the original VM remained SSH-accessible. Import restored connection fields by reference and preserved the independently generated AppData key and earlier failed-setup record. The VM and its disk were not recreated.
+
+After repair, the real Controller started against that installed AppData profile, reconnected despite its retained `failed` setup status, and reported both Controller and Worker online with the original conversation and all 21 messages. The deployed Telegram status route was available and remained disabled without credentials. The original Windows state hash stayed unchanged. A separate unauthenticated HTTPS check from the VM verified Telegram DNS/TLS reachability, without sending a bot message.
+
+## Subscription voice
+
+Using existing ChatGPT sign-in, Codex CLI 0.163.0, `gpt-live-1-codex`, and Realtime V3:
+
+1. A real WebRTC implementation generated an audio transceiver and `oai-events` SDP.
+2. The Windows Controller invoked VM NativeRealtimeVoice and received a V3 event and SDP answer.
+3. WebRTC reached `connected` and its data channel reached `open`, then explicitly reported connection.
+4. Explicit call text executed in the same real thread with confirmation and delivery; repeating its client ID did not execute it again.
+5. Hangup was confirmed and an actually connected call record was persisted.
+
+No API key was configured for this path. An earlier conclusion based only on the default WebSocket channel was incorrect; subscription calls now default to V3 WebRTC. The optional API channel has not been tested with a paid key.
+
+## Acceptance still requiring devices or credentials
+
+Real microphone capture, speaker playback, continuous voice interruption, notification banners, and long-running stability have not been established by these checks. Windows speech packages and helper logic were checked without automatically opening a microphone.
+
+The UI follows the supplied screenshots and passes build and interaction-logic checks. A previously declined browser preview was not bypassed for screenshot inspection. Telegram's automated suite uses invented tokens and a simulated API; real end-to-end messaging requires a user-provided token and pairing in local settings.
