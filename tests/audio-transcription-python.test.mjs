@@ -12,8 +12,11 @@ def failure(code, action):
  except asr.TranscriptionError as error: assert error.code == code, (error.code,code)
  else: raise AssertionError('Expected '+code)
 def model_dir(root):
- directory=pathlib.Path(root)/'model';directory.mkdir()
+ # Runner temp paths can contain an alias; valid fixtures must satisfy the
+ # production guard that rejects model directories reached through aliases.
+ directory=pathlib.Path(root).resolve()/'model';directory.mkdir()
  for name in asr.MODEL_FILES: (directory/name).write_bytes(b'x')
+ assert asr.local_model(directory)==directory
  return directory
 class FakeArray(list):
  def copy(self): return FakeArray(self)
