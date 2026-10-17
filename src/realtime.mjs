@@ -2,6 +2,7 @@ import {EventEmitter} from 'node:events';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {readableError} from './errors.mjs';
+import {buildCallContext,LiveContextQueue} from './call-context.mjs';
 
 export const NATIVE_REALTIME_MODEL='gpt-live-1-codex';
 export const DEFAULT_NATIVE_VOICE='ember';
@@ -22,10 +23,10 @@ function finalLinks(text,alreadySent=''){
 
 /** Subscription transport on the existing VM Codex process. Speech stays ephemeral. */
 export class NativeRealtimeVoice extends EventEmitter {
- constructor({worker,engine,terminateExecutor,connectTimeoutMs=20000,stopTimeoutMs=10000}={}){
+ constructor({worker,engine,terminateExecutor,connectTimeoutMs=20000,stopTimeoutMs=10000,contextTimeoutMs=5000}={}){
   super();if(!worker||!engine)throw Error('Native voice requires the VM executor and conversation engine');
   this.worker=worker;this.engine=engine;this.terminateExecutor=terminateExecutor||(()=>worker.terminateConfirmed());this.connectTimeoutMs=connectTimeoutMs;this.stopTimeoutMs=stopTimeoutMs;
-  this.session=null;this.error=null;this.voices=[...NATIVE_VOICES];engine.nativeVoice=this;
+  this.session=null;this.error=null;this.contextTimeoutMs=contextTimeoutMs;this.voices=[...NATIVE_VOICES];engine.nativeVoice=this;
   const settings=engine.store.state.settings,selected=settings.nativeVoice||settings.voice;
   const nativeVoice=this.voices.includes(selected)?selected:DEFAULT_NATIVE_VOICE;
   if(settings.voice!==nativeVoice||settings.nativeVoice!==nativeVoice||!settings.apiVoice){settings.voice=settings.nativeVoice=nativeVoice;settings.apiVoice ||= 'marin';engine.store.save();}
@@ -60,7 +61,7 @@ export class NativeRealtimeVoice extends EventEmitter {
    const accepted=this.worker.request('thread/realtime/start',{
     threadId:s.threadId,outputModality:'audio',version:'v3',model:NATIVE_REALTIME_MODEL,voice,
     transport:{type:'webrtc',sdp},voiceSessionId:id,clientManagedHandoffs:false,flushTranscriptTailOnSessionEnd:false,
-    realtimeStartInstructions:'This is the same dant coworker and conversation. Speak naturally. Execute computer work only inside this VM. Do not copy speech transcripts into chat. Use send_message for requested useful text or links, send_file for verified output files, and end_call when asked to hang up. Never claim a tool action or delivery succeeded before its result.',
+    realtimeStartInstructions:'This is the same dant coworker and conversation. Speak naturally. Execute computer work only inside this VM. Do not copy speech transcripts into chat. Use send_message for requested useful text or links, send_file for verified output files, and end_call when asked to hang up. Never claim a tool action or delivery succeeded before its result. Live dant_live_reference updates contain reference data only: typed messages are already submitted through the chat task channel, so never delegate or execute those messages a second time. Reactions express feedback, not permission or task acceptance; the latest set replaces the earlier set for that target. You can acknowledge these updates naturally.',
     realtimeEndInstructions:'The voice call has ended. Stop work; do not start tasks or replay speech after the call.'
    });
    await within(Promise.race([Promise.all([Promise.resolve(accepted).then(()=>{s.startAccepted=true;}),s.ready.promise]),s.failure.promise]),this.connectTimeoutMs,'The subscription voice connection timed out');
@@ -82,10 +83,22 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(s.status!=='negotiating'&&s.status!=='connected')throw Error('The voice call is not ready');
   s.connectedAt ||= Date.now();s.status='connected';this.change();return {connected:true,callId,connectedAt:s.connectedAt};
  }
+ syncContext({kind,message,callId}={}){
+  const s=this.session;
+  if(!s||s.id!==callId||this.engine.call?.id!==s.id||s.stopping||s.closed||!['negotiating','connected'].includes(s.status))return Promise.resolve({callId,messageId:message?.id,kind,status:'cancelled'});
+  s.contextQueue ||= new LiveContextQueue({callId:s.id,timeoutMs:this.contextTimeoutMs,isCurrent:()=>this.session===s&&this.engine.call?.id===s.id&&!s.stopping&&!s.closed,send:({text})=>this.worker.request('thread/realtime/appendText',{threadId:s.threadId,text})});
+  return s.contextQueue.enqueue({key:kind+':'+message.id,text:buildCallContext(kind,message),messageId:message.id,kind}).then(result=>{
+   if(result.status==='superseded'||this.session!==s)return result;
+   this.engine.safeUpdate(message.id,{voiceContext:result});this.change();
+   if(['unknown','failed'].includes(result.status))this.emit('notice','The chat update is saved, but its delivery to the current voice call is '+(result.status==='unknown'?'unconfirmed. It will not be retried automatically.':'unavailable.'));
+   return result;
+  });
+ }
  message({clientMessageId,text,replyTo=null,attachments=[],callId}={}){
   const s=this.session;
   if(!s||s.id!==this.engine.call?.id||(callId!==undefined&&callId!==s.id)||!['negotiating','connected'].includes(s.status))return Promise.reject(Error('The subscription call is not ready'));
   if(typeof clientMessageId!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(clientMessageId))return Promise.reject(Error('A stable client message identifier is required'));
+  if(this.engine.store.state.deletedClientMessageIds?.includes(clientMessageId))return Promise.reject(Error('This message was withdrawn or deleted. Send a new message to start new work.'));
   if(typeof text!=='string'||!text.trim()||text.length>100000||!Array.isArray(attachments)||attachments.length)return Promise.reject(Error('During a subscription call send text only, up to 100000 characters'));
   if(replyTo&&!this.engine.task(replyTo))return Promise.reject(Error('The referenced message is not in this conversation'));
   const prior=this.engine.store.state.messages.find(message=>message.role==='user'&&message.clientMessageId===clientMessageId);
@@ -93,7 +106,9 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(s.pausing)return Promise.reject(Error('Current voice work is pausing; send a new task after it stops'));
   if(s.unknown)return Promise.reject(Error('A voice task handoff is unconfirmed. End the call before sending another task'));
   const message=this.engine.store.add({role:'user',text,replyTo,attachments:[],clientMessageId,voiceCallId:s.id,status:'queued',submission:'preparing'});this.change();
-  const epoch=s.workEpoch,operation=s.messageChain.then(()=>this.submitMessage(s,message,epoch));s.messageChain=operation.catch(()=>{});return operation;
+  // One ordinary task submission remains authoritative; the voice notice is reference only.
+  const context=this.syncContext({kind:'message',message,callId:s.id});
+  const epoch=s.workEpoch,operation=s.messageChain.then(()=>this.submitMessage(s,message,epoch));s.messageChain=operation.catch(()=>{});return operation.then(async result=>({...result,voiceContext:await context}));
  }
  workCurrent(s,epoch){this.current(s);if(s.pausing||epoch!==s.workEpoch)throw Error('This task was paused before submission');}
  async submitMessage(s,message,epoch){
@@ -138,7 +153,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(!turn.done||turn.pendingSubmissions||turn.finalized)return;turn.finalized=true;
   try{
    if(turn.finalStatus==='review'){
-    const text=[...turn.outputs.values()].join('\n\n').slice(0,120000);
+    const raw=[...turn.outputs.values()].join('\n\n').slice(0,120000),text=this.engine.credentials?.redact?.(raw)??raw;
     if(turn.explicitMessageIds.length&&text.trim()&&!turn.deliveredTexts?.has(text.trim())){const message=this.engine.store.add({role:'assistant',text,status:'completed',taskId:turn.messageId});turn.assistantIds.push(message.id);}
     if(!turn.explicitMessageIds.length){const links=finalLinks(text,turn.assistantIds.map(id=>this.engine.task(id)?.text||'').join('\n'));if(links)this.engine.deliverText(links,turn);}
     if(this.engine.deliverables?.archive){try{const files=await this.engine.deliverables.archive({baseline:turn.baseline,outputDir:this.engine.outputDir,workspace:this.engine.workspace,explicitPaths:turn.explicitPaths,text,conversationId:this.engine.store.state.conversationId,messageId:turn.messageId,turnId:turn.turnId});this.engine.attach(turn,files||[]);}catch(error){this.emit('notice','Voice output could not be archived: '+readableError(error.message));}}
@@ -224,8 +239,10 @@ export class NativeRealtimeVoice extends EventEmitter {
   }
  }
  async tool(s,turn,name,args){
-  if(!['memory_write','send_message','send_file','create_voice_message','end_call'].includes(name))throw Error('Unsupported voice background tool');
+  if(!['memory_write','send_message','send_file','create_voice_message','react_message','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','end_call'].includes(name))throw Error('Unsupported voice background tool');
   if(name==='end_call')return {ended:true};
+  if(name.startsWith('credential_')||name.startsWith('skill_'))return this.engine.tool(name,args,{owner:s.id,isCurrent:()=>this.session===s&&!s.stopping&&!s.closed&&!s.unknown&&!s.pausing&&s.turns.get(turn.turnId)===turn&&!turn.done&&!turn.pauseRequested});
+  if(name==='react_message')return this.engine.tool(name,args);
   if(name==='create_voice_message'){
    if(typeof args.text!=='string'||!args.text.trim()||args.text.length>100000)throw Error('Invalid voice message text');
    if(typeof this.worker.createVoiceMessage!=='function')throw Error('Voice message generation is unavailable');
@@ -246,7 +263,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   const s=this.session;if(!s)return Promise.resolve({paused:true,callContinues:false,turnIds:[]});
   if(s.pausePromise)return s.pausePromise;
   if(s.stopping)return Promise.reject(Error('The voice call is stopping'));
-  s.pausing=true;s.workEpoch++;this.change();
+  s.pausing=true;this.engine.credentials?.cancelOwner?.(s.id);s.workEpoch++;this.change();
   // Invalidate local text work waiting to submit; a later task needs a fresh user action.
   for(const message of this.engine.store.state.messages)if(message.role==='user'&&message.voiceCallId===s.id&&message.status==='queued')this.engine.safeUpdate(message.id,{status:'paused',pauseReason:'user-paused'});
   const unknown=()=>Object.assign(Error('The current voice task has not been confirmed stopped. End the call to stop its VM executor.'),{unknownOutcome:true});
@@ -268,7 +285,7 @@ export class NativeRealtimeVoice extends EventEmitter {
  stop(callId){
   const s=this.session;if(!s)return Promise.resolve({stopped:true});
   if(callId!==undefined&&callId!==s.id)return Promise.reject(Error('The voice call changed'));
-  if(s.stopPromise)return s.stopPromise;s.stopping=true;s.status='stopping';this.change();
+  if(s.stopPromise)return s.stopPromise;s.stopping=true;this.engine.credentials?.cancelOwner?.(s.id);s.contextQueue?.close();s.status='stopping';this.change();
   if(s.submitting||[...s.turns.values()].some(turn=>turn.pendingSubmissions))s.unknown=true;
   s.failure.reject(Error('Voice call cancelled'));
   if(!s.startSubmitted){this.finalize(s,'cancelled');return Promise.resolve({stopped:true,callId:s.id});}
@@ -292,7 +309,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   this.finalize(s,'stopped');return {stopped:true,callId:s.id};
  }
  finalize(s,reason){
-  if(this.session!==s)return;this.session=null;
+  if(this.session!==s)return;this.engine.credentials?.cancelOwner?.(s.id);s.contextQueue?.close();this.session=null;
   for(const message of this.engine.store.state.messages)if(message.role==='user'&&message.voiceCallId===s.id&&['queued','running','waiting_user','pausing'].includes(message.status))this.engine.safeUpdate(message.id,{status:'paused',pauseReason:'voice-call-ended'});
   if(this.engine.call?.id===s.id)this.engine.closeCall(s.id);
   this.emit('closed',{reason,callId:s.id});this.engine.emit('realtime',{method:'thread/realtime/closed',params:{threadId:s.threadId,callId:s.id}});this.change();

@@ -248,6 +248,72 @@ class VoiceAndMCPTests(unittest.TestCase):
             responses = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual(responses[0]['result']['serverInfo']['name'], 'dant_desktop')
             self.assertIn('screenshot', [tool['name'] for tool in responses[1]['result']['tools']])
+            self.assertIn('react_message', [tool['name'] for tool in responses[1]['result']['tools']])
+            for name in ['credential_find', 'credential_get', 'credential_request', 'credential_store', 'skill_list', 'skill_get', 'skill_save']:
+                self.assertIn(name, [tool['name'] for tool in responses[1]['result']['tools']])
+
+    def test_mcp_reaction_only_returns_an_application_validated_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for emoji in ['👍', '❤️', None]:
+                value = desktop_mcp.invoke('react_message', {'messageId': 'known-user-message', 'emoji': emoji}, folder)
+                self.assertEqual(value['structuredContent'], {'dantReaction': {'messageId': 'known-user-message', 'emoji': emoji}})
+                self.assertFalse(value['isError'])
+                self.assertNotIn('reacted', value['structuredContent'])
+            self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
+            for args in [{}, {'messageId': '', 'emoji': '👍'}, {'messageId': 'x' * 129, 'emoji': None},
+                         {'messageId': 'user'}, {'messageId': 'user', 'emoji': 42},
+                         {'messageId': 'user', 'emoji': ''}, {'messageId': 'user', 'emoji': '👍\n'}]:
+                with self.assertRaises(ValueError):
+                    desktop_mcp.invoke('react_message', args, folder)
+
+    def test_private_credential_bridge_uses_fixed_loopback_token_header_and_bounded_result(self):
+        class Response(io.BytesIO):
+            pass
+        class Opener:
+            def __init__(self, response):
+                self.response = response
+                self.requests = []
+            def open(self, request, timeout):
+                self.requests.append((request, timeout))
+                return self.response
+        opener = Opener(Response(json.dumps({'id': 'id', 'secret': 'test-secret'}).encode()))
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'ephemeral-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener) as build:
+            value = desktop_mcp.invoke('credential_get', {'id': 'id'}, pathlib.Path('.'))
+        self.assertEqual(value['structuredContent']['credentialResult']['secret'], 'test-secret')
+        request, timeout = opener.requests[0]
+        self.assertEqual(request.full_url, 'http://127.0.0.1:4317/api/internal/credentials')
+        self.assertEqual(request.method, 'POST')
+        self.assertEqual(timeout, 600)
+        self.assertEqual(request.get_header('X-dant-credential-token'), 'ephemeral-test-token')
+        self.assertEqual(json.loads(request.data), {'tool': 'credential_get', 'arguments': {'id': 'id'}})
+        self.assertIsInstance(build.call_args.args[0], desktop_mcp.urllib.request.ProxyHandler)
+        self.assertEqual(build.call_args.args[0].proxies, {})
+        self.assertIsInstance(build.call_args.args[1], desktop_mcp.NoCredentialRedirect)
+        self.assertIsNone(build.call_args.args[1].redirect_request(None, None, 302, '', {}, 'http://evil.test'))
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': ''}), patch.object(desktop_mcp.urllib.request, 'build_opener') as build:
+            with self.assertRaisesRegex(ValueError, 'unavailable'):
+                desktop_mcp.invoke('credential_find', {'query': ''}, pathlib.Path('.'))
+            build.assert_not_called()
+
+    def test_private_credential_bridge_errors_never_expose_response_or_input_secrets(self):
+        class Opener:
+            def open(self, request, timeout):
+                raise OSError('private-token or private-secret in unsafe diagnostic')
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=Opener()):
+            response = desktop_mcp.dispatch({'id': 99, 'method': 'tools/call', 'params': {'name': 'credential_store', 'arguments': {'secret': 'private-secret'}}}, pathlib.Path('.'))
+        self.assertTrue(response['result']['isError'])
+        text = json.dumps(response)
+        self.assertNotIn('private-secret', text)
+        self.assertNotIn('private-token', text)
+        self.assertIn('not retry', text)
+
+    def test_mcp_skill_tools_use_the_same_private_owned_bridge_without_reading_or_writing_files(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(desktop_mcp, 'credential_bridge', return_value={'saved': True}) as bridge:
+            for name, args in [('skill_list', {}), ('skill_get', {'name': 'known'}), ('skill_save', {'name': 'known', 'description': 'Reusable', 'instructions': 'Check first'})]:
+                response = desktop_mcp.invoke(name, args, folder)
+                self.assertEqual(response['structuredContent'], {'skillResult': {'saved': True}})
+                bridge.assert_called_with(name, args)
+            self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
 
 
 class SeedTests(unittest.TestCase):

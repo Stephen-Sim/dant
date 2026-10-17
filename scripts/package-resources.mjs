@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {resolveBuildPaths} from './ci/build-paths.mjs';
 if(process.argv.includes('--stage-release')){
- const resources=path.resolve('src-tauri/resources'),backend=path.resolve('src-tauri/target/release/backend');
+ const {resources,backend}=resolveBuildPaths(path.resolve('.'));
  if(!fs.existsSync(path.join(resources,'node.exe')))throw Error('Prepare backend resources before staging the desktop runtime.');
  fs.cpSync(resources,backend,{recursive:true});
  console.log('Standalone desktop runtime staged beside dant.exe.');

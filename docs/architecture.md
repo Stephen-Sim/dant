@@ -89,6 +89,8 @@ sequenceDiagram
 
 Model tools and human input share `flock` and the control file. Unconfirmed interruption never grants input access. Stale session IDs, unconfirmed leases, and expired leases are rejected. Two idle minutes release ownership; paused tasks require explicit resumption afterward. The visible computer panel fetches screenshots serially and maps input to actual image bounds.
 
+Calls and acquiring human desktop control are mutually exclusive. The UI disables takeover during an active or recovering call and while hangup is unconfirmed; the Worker also enforces this rule. Desktop viewing remains available, and releasing an existing human lease is never blocked by that UI check. No takeover action automatically ends a call.
+
 These constraints cover app scheduling and desktop tools. They cannot guarantee termination of previously detached background processes or replace VM operating-system permissions.
 
 ## Voice
@@ -96,6 +98,12 @@ These constraints cover app scheduling and desktop tools. They cannot guarantee 
 The default subscription channel uses `thread/realtime/start`, V3, `gpt-live-1-codex`, and WebRTC. The frontend owns audio tracks and the `oai-events` data channel; Controller and Worker carry negotiation and work control. Call records begin only after actual media connection confirmation, not after SDP alone.
 
 Calls share the conversation thread and workspace. Explicit messages and files are saved; ordinary spoken narration and transcripts are not persisted as chat. Stopping handles both audio and delegated work. An uncertain stop requires confirmed executor termination rather than releasing ownership just because audio ended.
+
+During a subscription call, `thread/realtime/appendText` supplies typed-text visibility and reaction updates to that same realtime session. Reaction removal is an update too; feedback includes its referenced message and does not enqueue ordinary work. Explicit typed messages retain their stable identifier and existing persisted task submission; the live update must not submit a duplicate task. RPC acknowledgment establishes only submission, not a model read receipt or proof of understanding. The model may speak an acknowledgment. Unknown delivery is not automatically replayed.
+
+Model-selected reactions to user messages use a VM tool and persist as `assistantReaction` / `assistantReactionUpdatedAt`, separately from human `reactions`. The UI labels dant's badge and does not offer a human toggle for it. The same emoji can belong to both parties independently; assistant-owned feedback is not treated as human feedback. The UI never guesses a reaction from message text.
+
+Minimizing or expanding changes only the call view. It preserves the peer connection, media, call identifier, and elapsed-time clock. The clock begins at the confirmed connection timestamp, freezes on local disconnection or hangup, and reconciles its final value with the saved call record.
 
 The optional API channel is selected explicitly and has separate API billing. Its key persists only under Windows DPAPI and reaches VM call-process memory transiently over SSH. Dictation, browser read-aloud, and local WAV creation are separate helper paths.
 

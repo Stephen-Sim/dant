@@ -5,6 +5,7 @@ import os from 'node:os';
 import {Rpc} from './rpc.mjs';
 import {execFileSync,spawn} from 'node:child_process';
 import {injectReactionContext} from './reaction-context.mjs';
+import {injectMessageReferences} from './message-references.mjs';
 
 export async function assertVmRuntime({platform=process.platform,uid=process.getuid?.(),detect=()=>execFileSync('systemd-detect-virt',['--vm'],{encoding:'utf8',timeout:5000}).trim(),fetchImpl=fetch}={}){
  if(platform!=='linux'||uid===0)throw Error('The executor requires an ordinary user inside a Linux VM.');
@@ -36,8 +37,8 @@ export class LocalWorker extends EventEmitter {
    fs.mkdirSync(this.workspaceRoot,{recursive:true});
    const candidates=[path.join(this.home,'.local/bin/codex'),'/usr/local/bin/codex','/usr/bin/codex'];
    const command=candidates.find(file=>fs.existsSync(file));if(!command)throw Error('Codex is not installed in the VM.');
-   const args=['-c','features.realtime_conversation=true','-c','mcp_servers.dant_desktop.command='+JSON.stringify('/usr/bin/python3'),'-c','mcp_servers.dant_desktop.args='+JSON.stringify([path.join(this.home,'dant/vm/desktop_mcp.py'),'--output-dir',path.join(this.workspaceRoot,this.store.state.conversationId,'output')]),'app-server','--listen','stdio://'];
-   rpc=this.rpcFactory(command,args,{cwd:this.workspaceRoot,env:{...process.env,DISPLAY:':0',CODEX_HOME:path.join(this.home,'.dant-codex'),PATH:`${path.join(this.home,'.local/bin')}:${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:${process.env.PATH||''}`}});this.rpc=rpc;
+   const args=['-c','features.realtime_conversation=true','-c','mcp_servers.dant_desktop.command='+JSON.stringify('/usr/bin/python3'),'-c','mcp_servers.dant_desktop.args='+JSON.stringify([path.join(this.home,'dant/vm/desktop_mcp.py'),'--output-dir',path.join(this.workspaceRoot,this.store.state.conversationId,'output')]),'-c','mcp_servers.dant_desktop.env_vars='+JSON.stringify(['DANT_CREDENTIAL_BRIDGE_TOKEN','DANT_CONTROL_FILE']),'-c','mcp_servers.dant_desktop.tool_timeout_sec=660','app-server','--listen','stdio://'];
+   rpc=this.rpcFactory(command,args,{cwd:this.workspaceRoot,env:{...process.env,DANT_CREDENTIAL_BRIDGE_TOKEN:this.credentialBridgeToken||'',DISPLAY:':0',CODEX_HOME:path.join(this.home,'.dant-codex'),PATH:`${path.join(this.home,'.local/bin')}:${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:${process.env.PATH||''}`}});this.rpc=rpc;
    if(rpc.child){this.executorChild=rpc.child;this.executorClosed=false;this.executorClose=new Promise(resolve=>rpc.child.once('close',()=>{if(this.executorChild===rpc.child)this.executorClosed=true;resolve();}));}
    rpc.on('event',event=>{if(this.rpc===rpc)this.emit('event',event);});
    rpc.on('disconnected',error=>{if(this.rpc===rpc){this.rpc=null;this.status='offline';this.account=null;this.models=null;this.error=error.message;this.emit('status');}});
@@ -53,7 +54,7 @@ export class LocalWorker extends EventEmitter {
   finally{clearTimeout(timer);}
   if(!this.executorClosed)throw Error('The VM executor did not confirm shutdown.');return {terminated:true};
  }
- request(method,params){if(this.status!=='online')throw Error('The VM executor is offline');return this.rpc.request(method,injectReactionContext(method,params,this.store.state.messages));}
+ request(method,params){if(this.status!=='online')throw Error('The VM executor is offline');let value=injectReactionContext(method,injectMessageReferences(method,params,this.store.state.messages),this.store.state.messages);if(this.skills&&['turn/start','turn/steer','thread/realtime/start'].includes(method)){const context=this.skills.context();if(method==='thread/realtime/start')value={...value,realtimeStartInstructions:(value.realtimeStartInstructions||'')+'\n\n'+context};else if(Array.isArray(value.input))value={...value,input:[...value.input,{type:'text',text:context,text_elements:[]}]};}return this.rpc.request(method,value);}
  async guest(route,body){
   if(this.status!=='online')throw Error('The VM executor is offline');
   if(!['/screen','/input','/control','/file','/read-file'].includes(route))throw Error('Unsupported desktop operation');

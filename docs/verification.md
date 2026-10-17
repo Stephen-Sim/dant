@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
+## 0.4.0 tool and live-delivery acceptance
+
+The final Windows run executed 474 JavaScript tests: 473 passed, one Windows symlink check skipped, and none failed. Coverage was 97.78% lines, 86.88% branches and 88.95% functions. All 51 Python tests and seven CI coverage/version gate tests passed; workflow lint, Bash parsing and ten PowerShell syntax checks passed. The frontend production build and locked native release build passed. UI event tests also cover credential forms, skills, search, history actions, presence and call-preserving search navigation. A reproduced Windows file-lock failure in atomic memory/skill replacement now uses bounded retries; non-timeout voice fixtures no longer race a 100 ms CI scheduling window.
+
+On the existing authoritative VM, a synthetic credential passed the secure-request, encrypted-save and scoped-retrieval workflow, then was removed. A real model created a managed skill, executed its Python helper and archived verified stdout; the temporary skill was removed afterward. A real model also applied its own reaction to a user message. Presence activity updated, while the original conversation identity, 27 existing messages and legacy Windows state hash were preserved. See [credentials and skills](credentials-and-skills.md) for storage and tool-context boundaries.
+
+A real WebRTC call accepted typed-text and reaction add/remove updates through the same current call's supported RPC. A separate same-peer test injected an offline-generated English question as 48 kHz mono PCM16 audio. The question did not contain the answer: the model's completed output transcript correctly identified the code from the newly typed message and the added thumbs-up reaction. Remote audio was received and hangup was confirmed. No microphone, speaker device or API key was used; this verifies synthetic-audio awareness, not physical device capture/playback or long-running reliability. RPC acknowledgement alone is still not a model-read receipt. The older next-task/new-call reaction limitation in historical records does not describe the new live-delivery path.
+
 ## Initial architecture acceptance
 
 The initial Windows/VM rebuild passed 157 Node tests, with one Windows symlink test explicitly skipped, and all 15 Python tests. Four version-gate tests, the frontend production build, locked Cargo checking, Bash parsing, eight PowerShell syntax checks, and actionlint passed.

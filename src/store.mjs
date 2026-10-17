@@ -12,6 +12,8 @@ export class Store {
     this.state=fs.existsSync(this.file)?JSON.parse(fs.readFileSync(this.file,'utf8')):{version:2,messages:[],memory:'',settings:{language:'zh',voice:'marin',model:'',notifications:true,vm:{host:'',user:'dant',port:22,keyPath:'',knownHosts:''}},threadId:null,threadRuntime:null,schedules:[]};
     if(!uuidPattern.test(this.state.conversationId||''))this.state.conversationId=randomUUID();
     this.state.version=2;this.state.schedules ||= [];this.state.completions ||= [];
+    const lastActiveAt=this.state.presence?.lastActiveAt;this.state.presence={lastActiveAt:typeof lastActiveAt==='number'&&Number.isFinite(lastActiveAt)&&lastActiveAt>0&&lastActiveAt<=8640000000000000?lastActiveAt:null};
+    this.state.deletedClientMessageIds=Array.isArray(this.state.deletedClientMessageIds)?[...new Set(this.state.deletedClientMessageIds.filter(id=>typeof id==='string'&&id.length>0&&id.length<=128))].slice(-2000):[];
     for(const m of this.state.messages){
       if(m.role==='user'){
         m.receivedAt ??= m.time||Date.now();m.executorConfirmedAt ??= null;

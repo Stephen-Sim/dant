@@ -3,12 +3,11 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readVersion, projectRoot } from './version.mjs';
+import { resolveBuildPaths, assertStagingPath } from './build-paths.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows x64 artifacts must be packaged on Windows x64.');
 const version = readVersion();
-const release = path.join(projectRoot, 'src-tauri/target/release');
-const output = path.join(projectRoot, 'src-tauri/target/ci-artifacts');
-const resources = path.join(projectRoot, 'src-tauri/resources');
+const { release, output, resources, target, stagingPrefix } = resolveBuildPaths(projectRoot);
 const prefix = `dant_${version}_windows_x64`;
 
 function requireFile(file) {
@@ -63,7 +62,7 @@ const zipName = `${prefix}_portable.zip`;
 const metadataName = `${prefix}_build.json`;
 fs.copyFileSync(path.join(nsis, installer), path.join(output, setupName));
 
-const staging = fs.mkdtempSync(path.join(projectRoot, 'src-tauri/target/ci-portable-'));
+const staging = fs.mkdtempSync(stagingPrefix);
 try {
   fs.copyFileSync(path.join(release, 'dant.exe'), path.join(staging, 'dant.exe'));
   fs.cpSync(resources, path.join(staging, 'backend'), { recursive: true });
@@ -74,11 +73,7 @@ try {
     if (!entries.has(name)) throw new Error(`Portable ZIP is missing ${name}.`);
   }
 } finally {
-  const target = path.join(projectRoot, 'src-tauri/target');
-  const relative = path.relative(target, staging);
-  if (relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(staging).startsWith('ci-portable-')) {
-    throw new Error('Refusing to remove a staging directory outside src-tauri/target.');
-  }
+  assertStagingPath(target, staging);
   fs.rmSync(staging, { recursive: true, force: true });
 }
 

@@ -8,12 +8,16 @@ The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execut
 
 ## Features
 
-- Persistent chat with Markdown, files, replies, and six default standard reactions—Like 👍, Love ❤️, Haha 😆, Wow 😮, Sad 😢, and Angry 😡—plus distinct delivery, execution, and read receipts. Current reactions and their referenced messages accompany the next task or new call; changing or removing a reaction updates that context.
+- Persistent chat with Markdown, files, replies, and six default standard reactions—Like 👍, Love ❤️, Haha 😆, Wow 😮, Sad 😢, and Angry 😡—plus distinct delivery, execution, and read receipts. Current reactions accompany task and call context; changes and removals can also reach an ongoing subscription call.
+- dant can choose a reaction to a user message through its model tool. A compact **dant** badge distinguishes its reaction from your own; only your own reaction badges can be clicked to remove them.
 - Chinese and English interfaces, light/dark/system themes, font and text-size preferences, and a resizable computer panel.
 - Paired Telegram Bot private chats, sharing the VM conversation, tasks, and files with the desktop app.
 - Serial VM tasks with pause, explicit resume, review, and acceptance; uncertain submissions are never automatically replayed.
 - VM memory, scheduled tasks, shared desktop control with an expiring lease, and unread completion notifications.
 - Up to five attachments per message, each at most 10 MiB, plus automatic delivery of eligible changed files from `output/`.
+- VM-owned encrypted credentials with secure request forms, and reusable skills with instruction and supporting-file management. See [credentials and skills](docs/credentials-and-skills.md).
+- Chat search and explicit record editing, withdrawal, deletion and clearing; the model session and context remain intact. Saving an edit does not resubmit work unless you choose **Save and send again**.
+- Online and working status, with the last actual task or call activity shown as a relative time.
 - User-triggered dictation into the draft and assistant read-aloud. Windows uses local speech helpers; browser support varies. Recording an audio attachment remains a separate option.
 
 ## Run locally
@@ -68,7 +72,9 @@ The gateway runs inside the VM using outbound long polling, so no public port is
 
 The default subscription channel uses Codex Realtime V3, WebRTC, and `gpt-live-1-codex`, using your **subscription allowance** without a separate API key. Availability and limits depend on the account and executor version.
 
-The floating call panel shows elapsed time after confirmed connection. Ending or losing the connection freezes the display, and the final history record supplies the saved duration. Reaction changes during an uninterrupted voice call are included with the next explicit text task or new call; clicking an emoji does not start a task or interrupt speech.
+The call panel shows elapsed time after confirmed connection. **Minimize to chat** keeps the same call, audio connection, and timer running; **Expand call** returns to the larger view. Ending or losing the connection freezes the display, and the final history record supplies the saved duration. Viewing the computer remains available during a call. **Take control** is disabled until the call ends, including while hangup confirmation is pending; returning an existing human-control lease remains available.
+
+During a subscription call, typed text and reaction changes—including removal—are delivered to the current realtime session through the supported `appendText` operation. Typed messages still follow the existing persisted task pipeline once; live delivery does not enqueue a second copy. Clicking a reaction does not create a task, although dant may acknowledge it aloud. An accepted RPC confirms submission, not that the model has read or understood it. An unknown delivery result is not automatically resent; check its status before explicitly submitting again. Separate same-call acceptance used synthesized input audio and verified that the model correctly spoke a fact from a new typed message and identified the added reaction.
 
 Actual testing with ChatGPT sign-in and Codex CLI 0.163.0 confirmed SDP negotiation, a silent WebRTC connection, explicit text tasks during the call, and confirmed hangup. This does **not** establish real microphone capture, speaker playback, continuous interruption behavior, or long-running reliability. Local dictation packages and helper logic were checked without automatically enabling the microphone.
 

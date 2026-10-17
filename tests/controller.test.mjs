@@ -23,6 +23,11 @@ async function listen(t,dir,bridge=new FakeBridge(),options={}){
  const session=await fetch(base+'/api/session').then(response=>response.json());return {app,bridge,base,session,headers:{'X-Dant-Token':session.token,'Content-Type':'application/json'}};
 }
 
+test('the private VM credential and skill tool bridge cannot be proxied through the Controller',async t=>{
+ const {base,headers,bridge}=await listen(t,temporary(t));
+ const response=await fetch(base+'/api/internal/credentials',{method:'POST',headers,body:JSON.stringify({tool:'credential_get',arguments:{id:'target'}})});assert.equal(response.status,403);assert.equal(bridge.requests.length,0);
+});
+
 test('language changes persist offline and synchronize the VM default on reconnect',async t=>{
  const dir=temporary(t),{app,base,headers,bridge}=await listen(t,dir);
  let response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'en'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'en');assert.equal(bridge.requests.length,0);assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'controller.json'))).language,'en');

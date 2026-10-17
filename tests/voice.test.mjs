@@ -11,7 +11,7 @@ function harness(t,overrides={}){
  const requests=[],sockets=[],tasks=[],tools=[],events={closed:[],notices:[],changes:[]};
  class Socket extends EventEmitter{
   constructor(url,options){super();this.url=url;this.options=options;this.readyState=0;this.sent=[];this.closeCount=0;sockets.push(this);queueMicrotask(()=>{if(this.readyState!==0)return;if(overrides.socketError){this.readyState=3;this.emit('error',Error(`Transport exposed ${KEY}`));this.emit('close');}else if(!overrides.holdSocket){this.readyState=1;this.emit('open');}});}
-  send(value,callback){this.sent.push(JSON.parse(value));callback?.();}
+  send(value,callback){const event=JSON.parse(value);this.sent.push(event);callback?.();overrides.onSend?.(this,event);}
   close(){this.closeCount++;this.readyState=3;queueMicrotask(()=>this.emit('close'));}
   terminate(){this.close();}
  }
@@ -22,8 +22,10 @@ function harness(t,overrides={}){
   context:overrides.context|| (()=>'The current text chat is about a report.'),
   WebSocketImpl:Socket,
   fetchImpl:async(url,options)=>{requests.push({url,options});return overrides.fetchImpl?await overrides.fetchImpl(url,options):url.endsWith('/hangup')?new Response(null,{status:204}):response();},
-  connectTimeoutMs:overrides.connectTimeoutMs||100,
-  hangupTimeoutMs:100
+  // Non-timeout tests must not race a busy Windows/CI event loop. The timeout
+  // regression below opts into a deliberately short, explicit deadline.
+  connectTimeoutMs:overrides.connectTimeoutMs||5000,
+  hangupTimeoutMs:1000,contextTimeoutMs:overrides.contextTimeoutMs||5000
  });
  voice.on('closed',event=>events.closed.push(event));voice.on('notice',message=>events.notices.push(message));voice.on('change',state=>events.changes.push(state));
  t.after(()=>voice.close().catch(()=>{}));return {voice,requests,sockets,tasks,tools,events};
@@ -40,10 +42,10 @@ test('voice uses the host key only for API and sideband authentication and retur
  assert.equal(requests[0].url,'https://api.openai.com/v1/realtime/calls');assert.equal(requests[0].options.redirect,'error');
  assert.equal(requests[0].options.headers.Authorization,`Bearer ${KEY}`);assert.equal(requests[0].options.body.get('sdp'),SDP);
  assert.equal(session.model,DEFAULT_VOICE_MODEL);assert.equal(session.audio.output.voice,'marin');assert.match(session.instructions,/Prefers Chinese/);assert.match(session.instructions,/current text chat/);
- assert.deepEqual(session.tools.map(tool=>tool.name),['run_task','memory_write','send_message','send_file','end_call']);
+ assert.deepEqual(session.tools.map(tool=>tool.name),['run_task','memory_write','send_message','react_message','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','send_file','end_call']);
  assert.equal(sockets[0].url,'wss://api.openai.com/v1/realtime?call_id=rtc_test');assert.equal(sockets[0].options.headers.Authorization,`Bearer ${KEY}`);
  assert.equal(voice.call.status,'active');assert.equal(JSON.stringify({state:voice.state,events}).includes(KEY),false);
- assert.ok(VOICES.includes('cedar'));assert.equal(VOICE_TOOLS.length,5);
+ assert.ok(VOICES.includes('cedar'));assert.equal(VOICE_TOOLS.length,13);
 });
 
 test('missing keys and invalid offers fail before sending requests',async t=>{
@@ -143,4 +145,71 @@ test('a hangup network failure still closes locally once and exposes only a safe
  const h=harness(t,{fetchImpl:async url=>{if(url.endsWith('/hangup'))throw Error(KEY);return response();}});await h.voice.start({sdp:SDP});
  await assert.rejects(h.voice.stop(),/could not confirm hangup/);await h.voice.stop();
  assert.equal(h.voice.call,null);assert.equal(h.events.closed.length,1);assert.equal(JSON.stringify({state:h.voice.state,events:h.events}).includes(KEY),false);
+});
+
+const reference=(id,text='Actual typed message',reactions=[])=>({id,role:'user',text,reactions,attachments:[{name:'attached.txt',guestPath:'/not/read'}]});
+const ack=(socket,event=socket.sent.at(-1))=>emit(socket,{type:'session.updated',session:{instructions:event.session.instructions}});
+test('live API context waits for matching configuration acknowledgement and retains original instructions',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'engine-call',memory:'Original memory'});const socket=h.sockets[0],original=JSON.parse(h.requests[0].options.body.get('session')).instructions;
+ let resolved=false;const pending=h.voice.syncContext({kind:'message',message:reference('user-1','Please inspect the actual chart'),callId:'engine-call'}).then(result=>{resolved=true;return result;});await tick();
+ const event=socket.sent[0];assert.equal(event.type,'session.update');assert.deepEqual(Object.keys(event.session).sort(),['instructions','type']);assert.ok(event.session.instructions.startsWith(original+'\n\n'));assert.match(event.session.instructions,/Please inspect the actual chart/);assert.match(event.session.instructions,/attached\.txt/);assert.match(event.session.instructions,/"messageId":"user-1"/);assert.match(event.session.instructions,/do not execute or delegate them again/);
+ assert.equal(resolved,false);emit(socket,{type:'session.updated',session:{instructions:original}});await tick();assert.equal(resolved,false);
+ ack(socket,event);const result=await pending;assert.equal(result.status,'submitted');assert.equal(result.callId,'engine-call');assert.equal(result.contextId,event.event_id);assert.equal(h.tasks.length,0);assert.equal(h.tools.length,0);assert.equal(socket.sent.some(event=>event.type==='response.create'),false);
+ const second=h.voice.syncContext({kind:'message',message:reference('user-2','A second typed reference'),callId:'engine-call'});await tick();const later=socket.sent.at(-1);assert.ok(later.session.instructions.startsWith(original+'\n\n'));assert.match(later.session.instructions,/Please inspect the actual chart/);assert.match(later.session.instructions,/A second typed reference/);ack(socket);assert.equal((await second).status,'submitted');
+});
+
+test('reaction changes replace their prior live entry and include the latest complete cleared snapshot',async t=>{
+ let current='"entries":[{"reactions":["👍"]}]';const h=harness(t,{context:()=>current});await h.voice.start({sdp:SDP,callId:'call'});const socket=h.sockets[0],base=JSON.parse(h.requests[0].options.body.get('session')).instructions;
+ let pending=h.voice.syncContext({kind:'reaction',message:reference('answer','Target text',['👍']),callId:'call'});await tick();ack(socket);await pending;
+ current='"complete":true,"entries":[]';pending=h.voice.syncContext({kind:'reaction',message:reference('answer','Target text',[]),callId:'call'});await tick();const dynamic=socket.sent.at(-1).session.instructions.slice(base.length);assert.match(dynamic,/"reactions":\[\]/);assert.match(dynamic,/"complete":true,"entries":\[\]/);assert.doesNotMatch(dynamic,/👍/);ack(socket);assert.equal((await pending).status,'submitted');
+});
+
+test('an unacknowledged API context update becomes unknown and is never automatically resent',async t=>{
+ const h=harness(t,{contextTimeoutMs:5});await h.voice.start({sdp:SDP,callId:'call'});
+ assert.equal((await h.voice.syncContext({kind:'message',message:reference('first'),callId:'call'})).status,'unknown');
+ assert.equal((await h.voice.syncContext({kind:'message',message:reference('second'),callId:'call'})).status,'unknown');assert.equal(h.sockets[0].sent.length,1);assert.equal(h.voice.call.status,'active');
+});
+
+test('a correlated API rejection is failed and its unsent reference does not replay in later updates',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'call'});const socket=h.sockets[0];
+ let pending=h.voice.syncContext({kind:'message',message:reference('rejected','Must not replay this rejected reference'),callId:'call'});await tick();emit(socket,{type:'error',error:{event_id:socket.sent[0].event_id,code:'invalid_value',message:KEY}});assert.equal((await pending).status,'failed');
+ pending=h.voice.syncContext({kind:'message',message:reference('accepted','Accepted update'),callId:'call'});await tick();assert.doesNotMatch(socket.sent.at(-1).session.instructions,/Must not replay/);ack(socket);assert.equal((await pending).status,'submitted');assert.equal(JSON.stringify(h.events).includes(KEY),false);
+});
+
+test('pending reactions coalesce and a lost sideband marks only the dispatched update unknown',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'call'});const socket=h.sockets[0];
+ const first=h.voice.syncContext({kind:'message',message:reference('task'),callId:'call'});await tick();
+ const old=h.voice.syncContext({kind:'reaction',message:reference('answer','Old reference',['👍']),callId:'call'}),latest=h.voice.syncContext({kind:'reaction',message:reference('answer','New reference',['❤️']),callId:'call'});assert.equal((await old).status,'superseded');assert.equal(socket.sent.length,1);
+ ack(socket);await first;await tick();assert.equal(socket.sent.length,2);assert.match(socket.sent[1].session.instructions,/New reference/);assert.doesNotMatch(socket.sent[1].session.instructions,/Old reference/);
+ const queued=h.voice.syncContext({kind:'message',message:reference('not-sent'),callId:'call'});socket.readyState=3;socket.emit('close');assert.equal((await latest).status,'unknown');assert.equal((await queued).status,'cancelled');assert.equal(socket.sent.length,2);
+});
+
+test('closing a call cancels context updates and stale acknowledgements cannot update a later call',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP,callId:'old-call'});const oldSocket=h.sockets[0],pending=h.voice.syncContext({kind:'message',message:reference('old'),callId:'old-call'});await tick();const sent=oldSocket.sent[0];await h.voice.stop();assert.equal((await pending).status,'cancelled');
+ await h.voice.start({sdp:SDP,callId:'new-call'});ack(oldSocket,sent);assert.equal((await h.voice.syncContext({kind:'message',message:reference('stale'),callId:'old-call'})).status,'cancelled');assert.equal(h.sockets[1].sent.length,0);
+ const current=h.voice.syncContext({kind:'message',message:reference('current'),callId:'new-call'});await tick();ack(h.sockets[1]);assert.equal((await current).status,'submitted');
+});
+
+test('live history remains bounded and local context preparation errors do not expose credentials',async t=>{
+ let fail=false;const h=harness(t,{context:()=>{if(fail)throw Error(KEY);return 'Current complete reaction snapshot';},onSend:(socket,event)=>{if(event.type==='session.update')queueMicrotask(()=>ack(socket,event));}});await h.voice.start({sdp:SDP,callId:'call'});
+ const base=JSON.parse(h.requests[0].options.body.get('session')).instructions;
+ for(let index=0;index<20;index++)assert.equal((await h.voice.syncContext({kind:'message',message:reference('user-'+index,'Actual reference '+index+' '+'x'.repeat(3000)),callId:'call'})).status,'submitted');
+ const final=h.sockets[0].sent.at(-1).session.instructions;assert.ok(Buffer.byteLength(final.slice(base.length))<33000);assert.match(final,/"messageId":"user-19"/);assert.doesNotMatch(final,/"messageId":"user-0"/);
+ fail=true;const result=await h.voice.syncContext({kind:'message',message:reference('failed'),callId:'call'});assert.equal(result.status,'failed');assert.equal(JSON.stringify(result).includes(KEY),false);
+});
+
+test('API voice may explicitly set or remove a reaction through the existing tool callback',async t=>{
+ const h=harness(t);await h.voice.start({sdp:SDP});const socket=h.sockets[0];
+ emit(socket,completed([call('react_message',{messageId:'actual-user-id',emoji:'😆'},'reaction-set'),call('react_message',{messageId:'actual-user-id',emoji:null},'reaction-remove'),call('react_message',{messageId:'actual-user-id',emoji:'invalid text'},'reaction-invalid')]));await tick();
+ assert.deepEqual(h.tools,[{name:'react_message',args:{messageId:'actual-user-id',emoji:'😆'}},{name:'react_message',args:{messageId:'actual-user-id',emoji:null}}]);assert.equal(JSON.parse(socket.sent.find(event=>event.item?.call_id==='reaction-invalid').item.output).success,false);
+});
+
+test('API credential and skill tools validate required, nullable and structured fields and carry the real call scope',async t=>{
+ const received=[],h=harness(t,{tool:async(name,args,scope)=>{received.push({name,args,scope});return {saved:true};}});await h.voice.start({sdp:SDP,callId:'actual-api-session'});const socket=h.sockets[0];
+ const valid=[['credential_find',{query:''}],['credential_get',{id:'actual-vault-id'}],['credential_request',{name:'Work',service:'',reason:''}],['credential_store',{name:'Work',service:'',username:'',secret:'private-test-value'}],['skill_list',{}],['skill_get',{name:'report-review'}],['skill_save',{name:'report-review',description:'Review reports',instructions:'Read and verify the report.',files:{'scripts/check.py':'print("check")'},enabled:false}]];
+ for(const [index,[name,args]]of valid.entries())emit(socket,completed([call(name,args,'valid-'+index)]));await tick();assert.equal(received.length,valid.length);assert.deepEqual(received.map(item=>[item.name,item.args]),valid);
+ for(const item of received){assert.equal(item.scope.callId,'actual-api-session');assert.equal(item.scope.owner,'actual-api-session');assert.equal(item.scope.isCurrent(),true);assert.equal(item.scope.signal.aborted,false);}
+ const invalid=[['credential_get',{}],['credential_store',{name:'Work',service:'',username:''}],['credential_request',{name:'Work',service:'',reason:2}],['credential_find',{query:4}],['skill_get',{name:'x',extra:'forbidden'}],['skill_save',{name:'x',description:'Test',instructions:'Test',enabled:'false'}],['skill_save',{name:'x',description:'Test',instructions:'Test',files:[]}],['skill_save',{name:'x',description:'Test',instructions:'Test',files:{'scripts/check.py':false}}],['react_message',{messageId:'user'}]];
+ for(const [index,[name,args]]of invalid.entries())emit(socket,completed([call(name,args,'invalid-'+index)]));await tick();assert.equal(received.length,valid.length);for(let index=0;index<invalid.length;index++)assert.equal(JSON.parse(socket.sent.find(event=>event.item?.call_id==='invalid-'+index).item.output).success,false);
+ const scope=received[0].scope;await h.voice.stop();assert.equal(scope.isCurrent(),false);assert.equal(scope.signal.aborted,true);await h.voice.start({sdp:SDP,callId:'later-session'});assert.equal(scope.isCurrent(),false);
 });

@@ -6,6 +6,7 @@ import {EventEmitter} from 'node:events';
 import {Store} from '../src/store.mjs';
 import {Engine} from '../src/engine.mjs';
 import {NativeRealtimeVoice,NATIVE_REALTIME_MODEL} from '../src/realtime.mjs';
+import {CredentialVault,CredentialRequests} from '../src/credentials.mjs';
 
 const sdp='v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -151,7 +152,47 @@ test('explicit native text waits for turn acknowledgement, persists final, and d
  assert.equal(voice.session.turns.size,0);assert.equal(store.state.messages[0].executorConfirmedAt,null);assert.equal(store.state.messages.length,1);
  acknowledge({turn:{id:'accepted-text'}});const result=await sending;assert.equal(result.message.status,'review');assert.ok(result.message.executorConfirmedAt);assert.equal(result.message.read,false);assert.equal(store.state.messages[1].text,'The result is 42');assert.equal(store.state.completions.length,1);
  const repeated=await voice.message({clientMessageId:'explicit-one',text:'Calculate a result',callId:call.callId});assert.equal(repeated.duplicate,true);assert.equal(repeated.message.id,result.message.id);assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1);
+ const live=worker.calls.filter(call=>call.method==='thread/realtime/appendText');assert.equal(live.length,1);assert.equal(live[0].params.threadId,'thread');assert.match(live[0].params.text,/Calculate a result/);assert.equal(result.voiceContext.status,'submitted');assert.equal(store.state.messages[0].voiceContext.status,'submitted');
  await engine.stopCall(call.callId);
+});
+
+test('reaction changes reach the existing call without creating a chat task or accepting work',async t=>{
+ const {engine,voice,worker,store}=setup(t),call=await engine.startCall(sdp);engine.confirmCallConnected(call.callId);
+ const target=store.add({role:'assistant',text:'Here is your picture',attachments:[{name:'picture.png'}],reactions:['👍']});
+ const first=await voice.syncContext({kind:'reaction',message:target,callId:call.callId});assert.equal(first.status,'submitted');
+ store.update(target.id,{reactions:[]});await voice.syncContext({kind:'reaction',message:target,callId:call.callId});
+ const requests=worker.calls.filter(call=>call.method==='thread/realtime/appendText');assert.equal(requests.length,2);assert.match(requests[0].params.text,/picture\.png/);assert.match(requests[0].params.text,/👍/);assert.match(requests[1].params.text,/"reactions":\[\]/);assert.equal(worker.calls.some(call=>['turn/start','turn/steer','response.create'].includes(call.method)),false);assert.equal(store.state.messages.length,1);assert.equal(target.status,undefined);
+ const stale=await voice.syncContext({kind:'reaction',message:target,callId:'previous'});assert.equal(stale.status,'cancelled');assert.equal(requests.length,2);await engine.stopCall(call.callId);
+ assert.equal((await voice.syncContext({kind:'reaction',message:target,callId:call.callId})).status,'cancelled');
+});
+
+test('lost live acknowledgement does not duplicate or fail an accepted text task',async t=>{
+ const {engine,voice,worker,store}=setup(t,{voice:{contextTimeoutMs:10}}),call=await engine.startCall(sdp),request=worker.request.bind(worker);let acknowledge;
+ worker.request=(method,params)=>{if(method!=='thread/realtime/appendText')return request(method,params);worker.calls.push({method,params});return new Promise(resolve=>acknowledge=resolve);};
+ const result=await voice.message({clientMessageId:'live-timeout',text:'Use the blue background',callId:call.callId});assert.equal(result.submission,'confirmed');assert.equal(result.voiceContext.status,'unknown');assert.equal(store.state.messages[0].status,'running');assert.equal(voice.session.unknown,false);
+ const duplicate=await voice.message({clientMessageId:'live-timeout',text:'Use the blue background',callId:call.callId});assert.equal(duplicate.duplicate,true);assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1);assert.equal(worker.calls.filter(call=>call.method==='thread/realtime/appendText').length,1);
+ acknowledge({});await tick();assert.equal(store.state.messages[0].voiceContext.status,'unknown');await engine.stopCall(call.callId);
+});
+
+test('ending a call cancels live context immediately and never forwards it into the next call',async t=>{
+ const {engine,voice,worker,store}=setup(t),call=await engine.startCall(sdp),request=worker.request.bind(worker);let acknowledge;
+ worker.request=(method,params)=>{if(method!=='thread/realtime/appendText')return request(method,params);worker.calls.push({method,params});return new Promise(resolve=>acknowledge=resolve);};
+ const target=store.add({role:'assistant',text:'reference'}),first=voice.syncContext({kind:'reaction',message:target,callId:call.callId});await tick();
+ const second=voice.syncContext({kind:'reaction',message:{...target,reactions:['❤️']},callId:call.callId});await engine.stopCall(call.callId);assert.equal((await first).status,'cancelled');assert.equal((await second).status,'cancelled');
+ const next=await engine.startCall(sdp);acknowledge({});await tick();assert.equal(worker.calls.filter(call=>call.method==='thread/realtime/appendText').length,1);assert.equal(engine.call.id,next.callId);await engine.stopCall(next.callId);
+});
+
+test('native credential requests cancel before waiting for the voice event chain on pause',async t=>{
+ const {dir,engine,voice,worker}=setup(t);engine.credentials=new CredentialRequests({vault:new CredentialVault({dataDir:dir})});
+ const call=await engine.startCall(sdp);engine.confirmCallConnected(call.callId);await begin(engine,'credential-turn');
+ const pending=tool(engine,'credential-turn','credential_request',{name:'VM login',service:'example.test',reason:'Continue authorized work'},101);await tick();const request=engine.credentials.snapshot().requests[0];assert.ok(request);
+ const result=await engine.pause();await pending;assert.equal(result.callContinues,true);assert.equal(engine.call.id,call.callId);assert.deepEqual(engine.credentials.snapshot().requests,[]);assert.throws(()=>engine.credentials.fulfill(request.id,{secret:'late-secret'}),/no longer/);assert.equal(worker.responses.find(response=>response.id===101).result.success,false);
+ const oldTurn=voice.session.turns.get('credential-turn');await assert.rejects(voice.tool(voice.session,oldTurn,'credential_get',{id:'anything'}),/no longer/);await engine.stopCall(call.callId);
+});
+
+test('the LLM native reaction tool sets its own reaction without altering human feedback',async t=>{
+ const {engine,store}=setup(t),call=await engine.startCall(sdp),message=store.add({role:'user',text:'A milestone worth celebrating',reactions:['❤️']});await begin(engine,'reaction-turn');
+ await tool(engine,'reaction-turn','react_message',{messageId:message.id,emoji:'🎉'},102);assert.equal(message.assistantReaction,'🎉');assert.deepEqual(message.reactions,['❤️']);assert.equal(store.state.messages.length,1);await engine.stopCall(call.callId);
 });
 
 test('explicit native text steers the exact known background turn serially and preserves accepted finals',async t=>{

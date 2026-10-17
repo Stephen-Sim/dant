@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {readBounded} from './attachments.mjs';
+import {renameManaged} from './managed-path.mjs';
 
 export const MEMORY_FILES=Object.freeze(['README.md','identity.md','working-memory.md']);
 export const MEMORY_MAX_BYTES=64*1024;
@@ -29,7 +30,7 @@ export class MemoryStore {
   write(name,text){
     if(typeof text!=='string'||text.includes('\0')||Buffer.byteLength(text)>MEMORY_MAX_BYTES)throw Error('Memory must be text no larger than 64 KiB');
     const file=this.file(name);this.validateFile(file);const temporary=path.join(this.dir,'.memory-'+randomUUID()+'.tmp');let fd;
-    try{fd=fs.openSync(temporary,'wx',0o600);fs.writeFileSync(fd,text,'utf8');fs.fsyncSync(fd);fs.closeSync(fd);fd=null;fs.renameSync(temporary,file);}
+    try{fd=fs.openSync(temporary,'wx',0o600);fs.writeFileSync(fd,text,'utf8');fs.fsyncSync(fd);fs.closeSync(fd);fd=null;renameManaged(temporary,file);}
     finally{if(fd!=null)fs.closeSync(fd);try{fs.unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}}
     return {name,bytes:Buffer.byteLength(text)};
   }
