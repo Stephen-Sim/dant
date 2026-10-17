@@ -4,6 +4,10 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
+## 0.4.2 call view controls
+
+The minimize and expand controls use compact icons with transparent backgrounds and no borders. Bilingual tooltips, accessible names, keyboard focus and hover feedback remain available. Existing interaction tests verify that both controls preserve the call connection, media, identity and running timer. The Windows JavaScript run executed 484 tests: 483 passed, one Windows symlink check skipped and none failed; coverage was 97.78% lines, 86.82% branches and 89.14% functions. All seven coverage/version gate tests passed.
+
 ## 0.4.1 voice-message composer
 
 The Windows run executed 484 JavaScript tests: 483 passed, one Windows symlink check skipped, and none failed. Coverage was 97.78% lines, 86.83% branches and 89.14% functions; all seven coverage/version gate tests passed. Ten new recording regressions exercise the actual composer handlers with a simulated recorder: preserving typed text, audio-file upload and preview, explicit sending, bilingual speech-to-text separation, cancellation, late permissions, device errors, stopping read-aloud before recording and call/format guards. They do not open a physical microphone. The unchanged Python helpers retain the 51 passing checks from 0.4.0.
