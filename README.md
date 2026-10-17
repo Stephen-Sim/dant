@@ -12,7 +12,7 @@ See [the companion model and task continuity](docs/companion.md) for its product
 
 ## Features
 
-- Persistent chat with a timestamp on every ordinary message, Markdown, files, replies, and six default standard reactions—Like 👍, Love ❤️, Haha 😆, Wow 😮, Sad 😢, and Angry 😡—plus distinct delivery, execution, and read receipts. Current reactions accompany task and call context; changes and removals can also reach an ongoing subscription call.
+- Persistent chat with time dividers for new days and gaps longer than 30 minutes, Markdown, files, replies, and six default standard reactions—Like 👍, Love ❤️, Haha 😆, Wow 😮, Sad 😢, and Angry 😡—plus distinct delivery, execution, and read receipts. Current reactions accompany task and call context; changes and removals can also reach an ongoing subscription call.
 - dant can choose a reaction to a user message through its model tool. A compact **dant** badge distinguishes its reaction from your own; only your own reaction badges can be clicked to remove them.
 - Chinese and English interfaces, light/dark/system themes, font and text-size preferences, and a resizable computer panel.
 - Paired Telegram Bot private chats with two-way new-message and attachment sync, sharing the desktop app's VM conversation and task queue.
@@ -96,7 +96,7 @@ Actual testing with ChatGPT sign-in and Codex CLI 0.163.0 confirmed SDP negotiat
 
 Windows `data/` holds connection and deployment information, notification records, optional encrypted keys, and an offline cache. The VM owns chat, attachments, and memory under `~/dant/data/`, with deliverables under `~/dant/workspaces/<conversationId>/output/`. Installed builds use per-user application data; source launches use project `data/`. These locations, `.cache/`, and `.tools/` are excluded from Git.
 
-Chat keeps each message's original sent time beside its own bubble, alongside the existing day and long-gap separators. Completed dant replies show **Unread** or **Read**. The sidebar count and **unread messages** shortcut derive from saved receipts; opening a notification or restoring the app does not clear them. Reading requires the actual bubble to remain in view for 450 ms in the focused, foreground text chat. A minimized window, a full call view, another page or an open modal does not mark messages read. Native notification delivery is recorded separately.
+Chat shows a time divider at the start of the conversation, on a new day, and after gaps longer than 30 minutes. Each message's original sent time remains saved. Completed dant replies show **Unread** or **Read**. The sidebar count and **unread messages** shortcut derive from saved receipts; opening a notification or restoring the app does not clear them. Reading requires the actual bubble to remain in view for 450 ms in the focused, foreground text chat. A minimized window, a full call view, another page or an open modal does not mark messages read. Native notification delivery is recorded separately.
 
 Click a file card or a preview's download control to save the original attachment. Windows opens **Save As**, using the attachment's name and extension by default; browser mode starts a file download. Cancelling leaves the current chat or image preview open, and downloading does not navigate away from it.
 

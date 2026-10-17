@@ -12,7 +12,7 @@ Switching categories preserves local form drafts and an ongoing call. Some setti
 
 ## Chat and call controls
 
-Each ordinary chat message shows its original sent time. Day and long-gap separators remain separate from those labels; editing a message does not change its original time. Completed dant replies also show **Read** or **Unread**. The sidebar badge counts unread replies, and the **unread messages** button scrolls to the first one.
+Chat shows a time divider at the start of the conversation, on a new day, and after gaps longer than 30 minutes. Each message's original sent time remains saved and does not change when edited. Completed dant replies show **Read** or **Unread**. The sidebar badge counts unread replies, and the **unread messages** button scrolls to the first one.
 
 An actual bubble must remain in view for 450 ms in the focused foreground text chat before it is marked read. Minimizing the app, showing the full call view, switching pages or opening a modal stops that tracking. Restoring the window or receiving a notification does not mark unseen replies read. Receipts are saved in the VM conversation; native notification delivery is a separate record.
 
