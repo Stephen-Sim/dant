@@ -6,11 +6,27 @@ import {SkillLibrary} from '../src/skill-library.mjs';
 const base=path.resolve('.cache/tests');fs.mkdirSync(base,{recursive:true});
 const sample={name:'inspect-desktop',description:'Observe the VM desktop when verifying browser work.',instructions:'Use the shared desktop bridge. Read scripts/inspect.py before use.',files:{'scripts/inspect.py':'print("checked")\n','references/workflow.md':'Observe before acting.'}};
 function setup(t,options={}){const workspace=fs.mkdtempSync(path.join(base,'skills-'));t.after(()=>fs.rmSync(workspace,{recursive:true,force:true}));return {workspace,skills:new SkillLibrary({workspace,...options})};}
+
+test('import saves preserve root license documents and refuse overwriting an existing skill',t=>{
+ const {skills}=setup(t),input={...sample,files:{...sample.files,'LICENSE.txt':'Original license terms','NOTICE':'Original author notice','README.md':'How to use'}};
+ skills.save(input,{overwrite:false});assert.equal(skills.get(input.name).files['LICENSE.txt'],'Original license terms');
+ assert.throws(()=>skills.save({...input,instructions:'replacement'},{overwrite:false}),error=>error.code==='EEXIST');assert.equal(skills.get(input.name).instructions,input.instructions);
+ for(const name of ['LICENSE/escape.txt','LICENSE.txt/escape','README.md/escape','root.py','NOTICE/../root.py'])assert.throws(()=>skills.fileName(name));
+});
 test('skills save valid SKILL.md, retain helpers across restarts, disable discovery, edit and remove',t=>{
  const {workspace,skills}=setup(t);assert.deepEqual(skills.list(),[]);const item=skills.save(sample);assert.equal(item.enabled,true);assert.match(fs.readFileSync(item.path,'utf8'),/^---\nname: "inspect-desktop"\ndescription:/);assert.deepEqual(item.files,sample.files);assert.equal(item.instructions,sample.instructions);assert.match(skills.context(),/inspect-desktop/);
  const reopened=new SkillLibrary({workspace});assert.equal(reopened.list().length,1);const disabled=reopened.setEnabled(sample.name,false);assert.equal(disabled.enabled,false);assert.equal(fs.existsSync(item.path),false);assert.doesNotMatch(reopened.context(),/inspect-desktop/);assert.equal(reopened.get(sample.name).files['scripts/inspect.py'],sample.files['scripts/inspect.py']);assert.equal(reopened.setEnabled(sample.name,true).enabled,true);
  reopened.save({...sample,description:'Updated use',files:{}});assert.deepEqual(reopened.get(sample.name).files,{});assert.equal(fs.existsSync(path.join(path.dirname(item.path),'scripts/inspect.py')),false);assert.equal(reopened.remove(sample.name).removed,true);assert.deepEqual(reopened.list(),[]);assert.throws(()=>reopened.get(sample.name));assert.throws(()=>reopened.remove(sample.name));
 });
+test('the full enabled skill index remains valid JSON beyond the former context cutoff',t=>{
+ const {skills}=setup(t),saved=[];
+ for(let index=0;index<20;index++)saved.push(skills.save({name:'workflow-'+String(index).padStart(2,'0'),description:'A reusable workflow '+index+': '+ 'Reference instructions. '.repeat(40),instructions:'Observe the current desktop before applying this workflow.'}));
+ skills.save({name:'disabled-workflow',description:'This disabled skill must not be advertised.',instructions:'Keep this workflow disabled.',enabled:false});
+ const context=skills.context();assert.ok(context.length>16000);
+ const entries=JSON.parse(context.slice(context.indexOf('\n')+1));
+ assert.deepEqual(entries,saved.map(({name,description,path})=>({name,description,path})));assert.equal(entries.at(-1).name,'workflow-19');assert.equal(entries.at(-1).description,saved.at(-1).description);assert.equal(entries.some(item=>item.name==='disabled-workflow'),false);
+});
+
 test('skill validation rejects path escape, excessive content and secret embedding before replacing anything',t=>{
  const {skills}=setup(t,{containsSecret:value=>value.includes('test-vault-secret')});const before=skills.save(sample);
  const invalid=[null,{}, {...sample,name:'../escape'}, {...sample,name:'UPPER'}, {...sample,description:''}, {...sample,instructions:''}, {...sample,enabled:'yes'}, {...sample,files:[]}, {...sample,files:{'scripts/../../outside':'x'}}, {...sample,files:{'scripts\\escape.py':'x'}}, {...sample,files:{'/absolute':'x'}}, {...sample,files:{'scripts/C:/escape':'x'}}, {...sample,files:{'scripts/helper.py':42}}, {...sample,files:{'scripts/helper.py':'x'.repeat(65537)}}, {...sample,instructions:'test-vault-secret'}];

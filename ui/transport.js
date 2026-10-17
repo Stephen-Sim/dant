@@ -24,6 +24,7 @@ export function createTransport({
     if (status < 200 || status >= 300) {
       const error = new Error(typeof result.error === 'string' ? result.error : `Request failed (${status})`);
       error.status = status;
+      if(typeof result.code==='string'&&/^[a-z_]{1,64}$/.test(result.code))error.code=result.code;
       error.unknownOutcome = result.unknownOutcome === true;
       throw error;
     }
@@ -52,7 +53,10 @@ export function createTransport({
         throw error;
       }
     };
-    if (!desktop) return perform();
+    // Public-release lookups are independent reads and may wait on GitHub.
+    // Keep them outside the native work queue so they cannot delay hangup,
+    // input ownership changes or the next authoritative state poll.
+    if (!desktop || (method === 'GET' && ['/api/version', '/api/updates'].includes(route)) || (method==='POST'&&route==='/api/skills/import/preview')) return perform();
     const request = ipc.then(perform, perform);
     ipc = request.catch(() => {});
     return request;

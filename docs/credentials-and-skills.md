@@ -18,7 +18,13 @@ The VM vault uses AES-256-GCM encryption. Its master key is a separate file rest
 
 Skills have their own plugin-style library page. Search the name or description, create a skill, or use a card's controls to edit, enable, disable or remove it. The page retains cached cards while offline and disables changes until the work computer reconnects. Opening this page does not start a task or run a skill.
 
-Create or edit a lowercase skill name, description and instructions. Expand **Supporting text files (JSON)** for a mapping such as `{"scripts/check.py":"print('check')"}`. Only relative `scripts/`, `references/` and `assets/` paths are accepted. Instructions are limited to 48 KiB, the description to 1,000 UTF-8 bytes, and supporting files to 20 text files of 64 KiB each, with a combined 256 KiB limit.
+Choose **Import skill** to preview a public GitHub skill-directory or `SKILL.md` link, or a local `SKILL.md`/ZIP file. The preview shows instructions and the supporting file list before saving. Change the name if it already exists, select whether to enable it, then import. Existing skills are never overwritten by import. A preview expires after ten minutes; an unconfirmed save is not automatically repeated.
+
+GitHub files are fetched from one resolved commit through the public API; private repositories and arbitrary download URLs are not supported. A local ZIP may be at most 1 MiB; a `SKILL.md` file may be at most 64 KiB. A ZIP must contain one skill root, and imported contents must fit the same text-file limits as manually created skills. Binary files, unsafe paths, links, unsupported behavioral frontmatter and oversized contents fail explicitly. Original root `README.md`, `LICENSE` and `NOTICE` documents (including `.txt`/`.md` license/notice variants) are preserved. Import only saves the reviewed files into the VM library; helpers run later through normal authorized tasks.
+
+Choose **Download ZIP** on a managed skill card to save `<name>.zip`. The archive contains one `<name>/` directory with `SKILL.md` and the current supported text files in that managed directory, including helpers added later and license documents. Known generated cache directories are excluded; unsupported files, links, invalid text or oversized contents cause an explicit export error. Both enabled and disabled skills can be exported while the work computer is connected. Desktop **Save As** or the browser download saves it without leaving the skills page. You can import this ZIP into another dant library, preview it, and rename it if needed. Export reads and packages the skill; it does not run helpers or change its enabled state.
+
+Create or edit a lowercase skill name, description and instructions. Expand **Supporting text files (JSON)** for a mapping such as `{"scripts/check.py":"print('check')"}`. Relative `scripts/`, `references/` and `assets/` paths and the root documentation names above are accepted. Instructions are limited to 48 KiB, the description to 1,000 UTF-8 bytes, and supporting files to 20 text files of 64 KiB each. Instructions and supporting files together have a 256 KiB limit.
 
 Enabled skills live in the managed workspace's `.agents/skills/<name>/SKILL.md`; disabled skills move to `.dant-disabled-skills/` outside discovery. The list shows the actual VM path. You can edit, enable, disable or remove managed skills. Unrelated system or user skill folders are not managed by this page.
 
@@ -33,6 +39,9 @@ The model may discover and create a skill when a procedure is reusable. Saving c
 | `POST/DELETE /api/credentials/requests/:id` | Fulfill or cancel the requested credential |
 | `GET /api/skills`, `GET /api/skills/:name` | List metadata or read managed instructions and text files |
 | `POST /api/skills`, `PATCH/DELETE /api/skills/:name` | Save, edit, toggle or remove a managed skill |
+| `POST /api/skills/import/preview`, `POST /api/skills/import` | Preview a GitHub/file source, then save the selected skill without overwriting |
+| `DELETE /api/skills/import/previews/:id` | Discard an unused preview; expiry also releases it |
+| `POST /api/skills/:name/export` | Package a managed skill as a ZIP attachment; download the returned attachment through the normal file route |
 
 All routes use the existing local Controller and VM authentication boundary. An acknowledged write is not automatically repeated if the following metadata refresh fails.
 

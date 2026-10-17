@@ -40,14 +40,14 @@ export class VmBridge extends EventEmitter {
  failed(generation,message){if(generation!==this.generation||this.closed||(this.status==='offline'&&!this.child&&this.error))return;this.status='offline';this.error=message;this.token=null;this.child?.kill();this.child=null;this.ws?.terminate?.();this.ws=null;this.emit('change');if(this.reconnectDesired){clearTimeout(this.reconnectTimer);this.reconnectTimer=setTimeout(()=>void this.connect({deploy:false}).catch(()=>{}),5000);this.reconnectTimer.unref();}}
  openEvents(generation){
   const ws=new this.WebSocketImpl(`ws://127.0.0.1:${this.port}/events?token=${encodeURIComponent(this.token)}`);this.ws=ws;
-  ws.on('message',data=>{if(generation!==this.generation)return;try{const event=JSON.parse(data.toString());if(event.type==='state'){this.cached=event.data;this.cachedAt=Date.now();this.emit('state',this.cached);}else this.emit('event',event);}catch{}});
+  ws.on('message',data=>{if(generation!==this.generation)return;try{const event=JSON.parse(data.toString());if(event.type==='state'){this.cached=event.data;this.cachedAt=Date.now();this.error=null;this.emit('state',this.cached);}else this.emit('event',event);}catch{}});
   ws.on('error',()=>{});ws.on('close',()=>{if(generation===this.generation&&!this.closed&&this.status==='online')this.failed(generation,'The VM event connection was lost. Cached conversation remains available.');});
  }
  async refresh(force=false){
   if(!force&&this.cached&&Date.now()-this.cachedAt<this.cacheMs)return this.cached;
   if(this.refreshing)return this.refreshing;
   const generation=this.generation,current=()=>{if(this.closed||generation!==this.generation||this.status!=='online')throw Error('VM state refresh cancelled');};
-  const pending=(async()=>{const response=await this.request('/api/state');current();if(!response.ok)throw Error(`VM state unavailable (${response.status})`);const state=await response.json();current();this.cached=state;this.cachedAt=Date.now();this.emit('state',state);return state;})().finally(()=>{if(this.refreshing===pending)this.refreshing=null;});this.refreshing=pending;return pending;
+  const pending=(async()=>{const response=await this.request('/api/state');current();if(!response.ok)throw Error(`VM state unavailable (${response.status})`);const state=await response.json();current();this.cached=state;this.cachedAt=Date.now();this.error=null;this.emit('state',state);return state;})().finally(()=>{if(this.refreshing===pending)this.refreshing=null;});this.refreshing=pending;return pending;
  }
  async request(route,options={}){
   if(this.status!=='online'||!this.token)throw Object.assign(Error('The VM is offline. Reconnect before sending work.'),{status:503});
@@ -70,7 +70,7 @@ export class VmBridge extends EventEmitter {
  async deploy(vm){
   fs.mkdirSync(this.dataDir,{recursive:true});const temporary=fs.mkdtempSync(path.join(this.dataDir,'deploy-'));const archive=path.join(temporary,'source.tar');
   try{
-   const allowlist=['src','dist','LICENSE','package.json','package-lock.json','vm/install-worker.sh','vm/install-speech.sh','vm/migrate-state.mjs','vm/start-codex.sh','vm/guest.py','vm/desktop.py','vm/control.py','vm/voice_message.py','vm/desktop_mcp.py'];
+   const allowlist=['src','dist','LICENSE','package.json','package-lock.json','vm/install-worker.sh','vm/install-speech.sh','vm/install-transcription.sh','vm/transcription-requirements.txt','vm/migrate-state.mjs','vm/start-codex.sh','vm/guest.py','vm/desktop.py','vm/control.py','vm/voice_message.py','vm/transcribe_audio.py','vm/desktop_mcp.py'];
    for(const name of allowlist)if(!fs.existsSync(path.join(this.projectRoot,name)))throw Error(`Build resources are missing: ${name}`);
    const tar=process.platform==='win32'?path.join(process.env.SystemRoot||'C:/Windows','System32/tar.exe'):'tar';
    await this.run(tar,['-cf',archive,'-C',this.projectRoot,...allowlist]);

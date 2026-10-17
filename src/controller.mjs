@@ -13,6 +13,7 @@ import {createSecretStore} from './secrets.mjs';
 import {appearanceDefaults,appearanceKeys,readAppearance,validateAppearancePatch,listSystemFonts} from './appearance.mjs';
 import {Diagnostics} from './diagnostics.mjs';
 import {observeHttp,serviceVersion,diagnosticWorkerStatus} from './diagnostic-events.mjs';
+import {UpdateService,installUpdateRoutes} from './updates.mjs';
 
 const parse=file=>JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
 const allowedOrigin=origin=>!origin||/^https?:\/\/(127\.0\.0\.1|localhost)(:431[78])?$/.test(origin)||origin==='http://tauri.localhost'||origin==='tauri://localhost';
@@ -20,9 +21,9 @@ const emptyState=()=>({messages:[],memory:'',settings:{language:'zh',voice:'mari
 
 // No Store, Engine, LocalWorker, user command, or authoritative conversation file
 // is constructed by this process. The JSON here is explicitly an offline cache.
-export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridgeFactory=options=>new VmBridge(options),provisioningFactory=options=>new Provisioning(options),secretFactory=dir=>createSecretStore(dir),profileFactory=options=>new VmProfiles(options),profileOptions={},fontsProvider=listSystemFonts,diagnosticsFactory=options=>new Diagnostics(options)}={}){
+export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridgeFactory=options=>new VmBridge(options),provisioningFactory=options=>new Provisioning(options),secretFactory=dir=>createSecretStore(dir),profileFactory=options=>new VmProfiles(options),profileOptions={},fontsProvider=listSystemFonts,diagnosticsFactory=options=>new Diagnostics(options),updatesFactory=options=>new UpdateService(options)}={}){
  fs.mkdirSync(dataDir,{recursive:true});const configFile=path.join(dataDir,'controller.json'),cacheFile=path.join(dataDir,'state-cache.json');
- const version=serviceVersion(projectRoot),diagnostics=diagnosticsFactory({dataDir,role:'controller',version});
+ const version=serviceVersion(projectRoot),diagnostics=diagnosticsFactory({dataDir,role:'controller',version}),updates=updatesFactory({version});
  let config={language:'zh',notifications:false,...appearanceDefaults};try{config={...config,...parse(configFile)};}catch{}config={...config,...readAppearance(config)};
  let cached=emptyState();try{cached=parse(cacheFile);}catch{}
  const profiles=profileFactory({dataDir,projectRoot,...profileOptions});let profileError=null;try{profiles.autoImport();}catch(error){profileError=error.message;}
@@ -35,8 +36,24 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.use(express.json({limit:'2mb'}));app.get('/api/session',(req,res)=>res.json({token,product:'dant',mode:'controller'}));
  app.use('/api',(req,res,next)=>req.headers['x-dant-token']===token||req.query.token===token?next():res.sendStatus(401));
  app.use('/api/internal',(req,res)=>res.sendStatus(403));
+ installUpdateRoutes(app,updates);
  function binding(){try{return readVmBinding(dataDir);}catch{return {};}}
- async function connect(){try{const discovery=profiles.autoImport();if(discovery.requiresSelection)throw Object.assign(Error(discovery.error),{status:409});readVmBinding(dataDir);profileError=null;}catch(error){profileError=error.message;throw error;}await bridge.connect();if(bridge.status==='online'&&bridge.cached?.settings?.language!==config.language){const response=await bridge.request('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:config.language})});if(!response.ok)throw Error('The computer connected, but its default response language could not be updated.');}}
+ async function connect({recoverExecutor=false}={}){
+  try{const discovery=profiles.autoImport();if(discovery.requiresSelection)throw Object.assign(Error(discovery.error),{status:409});readVmBinding(dataDir);profileError=null;}catch(error){profileError=error.message;throw error;}
+  await bridge.connect();
+  if(bridge.status==='online'&&bridge.cached?.settings?.language!==config.language){const response=await bridge.request('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:config.language})});if(!response.ok)throw Error('The computer connected, but its default response language could not be updated.');}
+  // Reopening SSH after startup or a transport failure must preserve an executor
+  // intentionally stopped by voice safety. Only the explicit Reconnect action
+  // may start it again, after checking fresh authoritative VM state.
+  if(!recoverExecutor)return;
+  if(bridge.status!=='online')throw Object.assign(Error('The VM is still offline. Reconnect before starting its executor.'),{status:503});
+  const state=await bridge.refresh(true);if(state?.worker?.status!=='offline')return;
+  const computer=state.computer;
+  if(state.active||state.call||state.takeover||state.acquiring||!Array.isArray(state.queue)||state.queue.length||computer?.sessionId||computer?.pending||!['dant','agent'].includes(computer?.status))throw Object.assign(Error('Stop active work and return computer control before reconnecting the executor.'),{status:409});
+  const response=await bridge.request('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idleRecovery:true})});
+  if(!response.ok)throw Object.assign(Error('The VM connected, but its executor could not reconnect. Check its state before trying again.'),{status:response.status>=400&&response.status<600?response.status:502});
+  const refreshed=await bridge.refresh(true);if(refreshed?.worker?.status!=='online')throw Object.assign(Error('The VM connected, but its executor is still offline. Check its diagnostics before trying again.'),{status:503});
+ }
  function snapshot(){const state=structuredClone(cached),key=voiceKeys.status();state.mode='vm-controller';state.settings={...emptyState().settings,...state.settings,language:config.language,notifications:config.notifications,...readAppearance(config),vm:{...emptyState().settings.vm,...binding()}};state.worker={...state.worker,status:bridge.status==='online'?state.worker?.status||'connecting':bridge.status,error:profileError||bridge.error||state.worker?.error||null,realtime:{...state.worker?.realtime,key,api:{available:key.configured,billing:'api'}}};state.provisioning=provisioning.snapshot();state.controller={status:bridge.status,authority:'vm',cached:bridge.status!=='online',updatedAt:lastSaved||null,error:profileError||bridge.error||null};return state;}
  function broadcast(type,data){if(closing)return;const body=JSON.stringify({type,data});for(const client of wss.clients)if(client.readyState===1)client.send(body);for(const stream of streams)stream.write(`data: ${body}\n\n`);}
  function saveCache(){clearTimeout(saveTimer);saveTimer=null;const temporary=cacheFile+'.tmp';fs.writeFileSync(temporary,JSON.stringify(cached));fs.renameSync(temporary,cacheFile);lastSaved=Date.now();}
@@ -53,7 +70,8 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.get('/api/diagnostics',async(req,res)=>{let worker={available:false,reason:'worker-unavailable'};if(bridge.status==='online')try{const response=await bridge.request('/api/diagnostics');if(response.ok){const value=await response.json();if(value&&typeof value.status==='object'&&Array.isArray(value.recent))worker={available:true,status:value.status,recent:value.recent.slice(-50)};}}catch{}res.json({status:diagnostics.status(),recent:diagnostics.recent(50),worker});});
  app.all('/api/diagnostics',(req,res)=>res.status(405).json({error:'Diagnostics are read-only.'}));
  app.post('/api/provision',(req,res)=>res.json(provisioning.start(req.body)));
- app.post('/api/connect',async(req,res)=>{await connect();res.json({ok:true});});
+ let manualConnect;
+ app.post('/api/connect',async(req,res)=>{if(!manualConnect){const pending=connect({recoverExecutor:true}).finally(()=>{if(manualConnect===pending)manualConnect=null;});manualConnect=pending;}await manualConnect;res.json({ok:true});});
  app.post('/api/prepare',async(req,res)=>{await bridge.prepare();res.json({ok:true});});
  app.get('/api/vm/profiles',(req,res)=>res.json(profiles.discover()));
  app.get('/api/vm/providers',(req,res)=>res.json(provisioning.providers()));
@@ -85,5 +103,5 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.use(express.static(path.join(projectRoot,'dist')));
  app.use((error,req,res,next)=>{if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(error.unknownOutcome?{unknownOutcome:true}: {})});});
  let closePromise;
- return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
+ return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
 }

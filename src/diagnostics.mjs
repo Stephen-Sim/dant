@@ -10,7 +10,9 @@ const secretLike=/(?:^|[.:/])(?:sk[-_]|gh[pousr]_|xox[baprs]-|Bearer|eyJ[A-Za-z0
 const semver=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][A-Za-z0-9-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][A-Za-z0-9-]*))*)?(?:\+[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?$/;
 const versionString=value=>typeof value==='string'&&value.length<=64&&semver.test(value)&&!secretLike.test(value);
 const textKeys=new Set(['code','status','role','reason','provider','phase','stage','source','operation','signal','transport']);
-const idKeys=new Set(['threadId','turnId','callId','requestId','messageId','taskId']);
+const idKeys=new Set(['threadId','turnId','callId','requestId','messageId','taskId','itemId']);
+const itemTypes=new Set(['userMessage','hookPrompt','agentMessage','plan','reasoning','commandExecution','fileChange','mcpToolCall','dynamicToolCall','collabAgentToolCall','webSearch','imageView','imageGeneration','enteredReviewMode','exitedReviewMode','contextCompaction','other']);
+const itemStatuses=new Set(['inProgress','completed','failed','declined','interrupted','cancelled']);
 const numberKeys=new Set(['bytes','eventBytes','queuedBytes','queuedEvents','durationMs','count','attempt','exitCode']);
 const booleanKeys=new Set(['executorStopped','confirmed','unknownOutcome','connected','available','active','cached']);
 const routes=new Set(['/api/:unknown','/api/session','/api/events','/api/state','/api/diagnostics','/api/provision','/api/connect','/api/prepare','/api/vm/profiles','/api/vm/providers','/api/vm/import','/api/fonts','/api/notifications/pending','/api/notifications/:id/ack','/api/internal/credentials','/api/messages','/api/messages/:id','/api/messages/:id/reaction','/api/history','/api/credentials','/api/credentials/:id','/api/credentials/requests/:id','/api/skills','/api/skills/:name','/api/telegram','/api/telegram/config','/api/telegram/pair','/api/telegram/disconnect','/api/login','/api/logout','/api/voice-key','/api/settings','/api/memory','/api/memory/:name','/api/read','/api/retry/:id','/api/stop','/api/tasks/pause','/api/tasks/resume','/api/tasks/:id/accept','/api/steer','/api/takeover','/api/screen','/api/input','/api/upload','/api/files/:id','/api/call','/api/call/connected','/api/realtime/message','/api/call/stop','/api/voices','/api/schedules','/api/schedules/:id','/health','/screen','/input','/control']);
@@ -18,6 +20,7 @@ const safeString=(value,pattern=token)=>typeof value==='string'&&pattern.test(va
 const numeric=value=>typeof value==='number'&&Number.isFinite(value)&&Math.abs(value)<=Number.MAX_SAFE_INTEGER;
 const safeError=code=>Object.assign(Error(code),{diagnosticCode:code});
 const sameFile=(left,right)=>left.dev===right.dev&&left.ino===right.ino;
+routes.add('/api/version');routes.add('/api/updates');
 
 // Metadata is an explicit schema. No recursive traversal, coercion, getters,
 // messages, payloads, URLs, headers, or raw exception strings enter the file.
@@ -25,9 +28,11 @@ function metadata(value){
  if(value===null||typeof value!=='object'||Array.isArray(value))return {};
  const prototype=Object.getPrototypeOf(value);if(prototype!==Object.prototype&&prototype!==null)return {};
  const result={};
- for(const key of [...textKeys,...idKeys,...numberKeys,...booleanKeys,'method','route','version']){
+ for(const key of [...textKeys,...idKeys,...numberKeys,...booleanKeys,'method','route','version','itemType','itemStatus']){
   const descriptor=Object.getOwnPropertyDescriptor(value,key);if(!descriptor||!Object.hasOwn(descriptor,'value'))continue;const item=descriptor.value;
   if(key==='version'){if(versionString(item))result[key]=item;}
+  else if(key==='itemType'){if(itemTypes.has(item))result[key]=item;}
+  else if(key==='itemStatus'){if(itemStatuses.has(item))result[key]=item;}
   else if(key==='route'){if(routes.has(item))result[key]=item;}
   else if(key==='method'){if(safeString(item,/^[A-Za-z][A-Za-z0-9]*(?:\/[A-Za-z][A-Za-z0-9]*){0,5}$/)&&item.length<=96)result[key]=item;}
   else if(textKeys.has(key)){if(safeString(item))result[key]=item;else if(['status','code'].includes(key)&&Number.isSafeInteger(item)&&Math.abs(item)<=2147483648)result[key]=item;}

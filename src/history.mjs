@@ -17,7 +17,7 @@ export class ConversationHistory {
  edit(id,{text,resubmit=false}={}){
   this.idleGuard();const original=this.message(id);
   if(original.role!=='user')throw fail('Only user message text can be edited',400);
-  if(typeof text!=='string'||!text.trim()||text.length>100000||typeof resubmit!=='boolean')throw fail('Message text must contain 1–100000 characters',400);
+  if(typeof text!=='string'||!text.trim()||typeof resubmit!=='boolean')throw fail('Message text must be non-empty and resubmit must be a boolean',400);
   const message={...original,text:text.trim(),editedAt:Date.now()};
   if(resubmit)Object.assign(message,{status:this.engine.queue.some(item=>item.id===id)?'queued':'draft',submission:null,turnId:null,executorConfirmedAt:null,error:null,acceptedAt:null,parentTaskId:null,pauseReason:null});
   this.commit(this.store.state.messages.map(item=>item.id===id?message:item),this.store.state.completions||[]);

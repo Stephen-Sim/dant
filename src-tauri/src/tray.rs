@@ -1,0 +1,116 @@
+use serde::Deserialize;
+use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
+use tauri::{menu::{Menu, MenuItem, PredefinedMenuItem}, tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent}, AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
+
+const ID: &str = "dant-background";
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Status { language: String, connection: String, task: String, queued: u16 }
+struct NativeTray { icon: TrayIcon, open: MenuItem<tauri::Wry>, progress: MenuItem<tauri::Wry>, status: MenuItem<tauri::Wry>, exit: MenuItem<tauri::Wry>, last: Option<Status> }
+#[derive(Default)]
+pub struct BackgroundTray { ready: AtomicBool, exiting: AtomicBool, inner: Mutex<Option<NativeTray>> }
+
+fn valid(value: &Status) -> bool {
+    matches!(value.language.as_str(), "en" | "zh") && matches!(value.connection.as_str(), "online" | "offline" | "connecting")
+        && matches!(value.task.as_str(), "idle" | "running" | "background" | "waiting_user" | "pausing" | "unknown") && value.queued <= 999
+}
+fn should_hide(ready: bool, exiting: bool, main: bool) -> bool { ready && !exiting && main }
+fn labels(value: &Status) -> (&'static str, &'static str, &'static str, String) {
+    let zh = value.language == "zh";
+    let state = if value.connection != "online" && value.task != "idle" { if zh { "任务状态待确认" } else { "Work status unconfirmed" } }
+    else { match (zh, value.task.as_str()) {
+        (true, "running") => "正在工作", (false, "running") => "Working",
+        (true, "background") => "后台执行中", (false, "background") => "Working in background",
+        (true, "waiting_user") => "等待你回复", (false, "waiting_user") => "Waiting for your reply",
+        (true, "pausing") => "正在暂停", (false, "pausing") => "Pausing work",
+        (true, "unknown") => "任务结果待确认", (false, "unknown") => "Work outcome unconfirmed",
+        (true, _) => if value.connection == "online" { "在线" } else if value.connection == "connecting" { "连接中" } else { "离线" },
+        (false, _) => if value.connection == "online" { "Online" } else if value.connection == "connecting" { "Connecting" } else { "Offline" },
+    }};
+    let state = if value.queued == 0 { state.to_string() } else if zh { format!("{state} · {} 项排队", value.queued) } else { format!("{state} · {} queued", value.queued) };
+    if zh { ("打开 dant", "任务进度", "退出 dant", state) } else { ("Open dant", "Work progress", "Exit dant", state) }
+}
+
+pub fn restore(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize(); let _ = main.show(); let _ = main.set_focus();
+        crate::call_overlay::visibility_changed(app);
+    }
+}
+fn exit(app: &AppHandle) {
+    if let Some(state) = app.try_state::<BackgroundTray>() { state.exiting.store(true, Ordering::SeqCst); }
+    // AppHandle::exit delivers RunEvent::Exit, which owns the existing graceful
+    // controller shutdown. Hiding the window never enters that path.
+    app.exit(0);
+}
+pub fn setup(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "dant-open", "打开 dant", true, None::<&str>)?;
+    let progress = MenuItem::with_id(app, "dant-progress", "任务进度", true, None::<&str>)?;
+    let status = MenuItem::with_id(app, "dant-status", "连接中", false, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let exit_item = MenuItem::with_id(app, "dant-exit", "退出 dant", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &progress, &status, &separator, &exit_item])?;
+    let icon = app.default_window_icon().ok_or_else(|| tauri::Error::AssetNotFound("default app icon".into()))?.clone();
+    let icon = TrayIconBuilder::with_id(ID).icon(icon).menu(&menu).tooltip("dant · 连接中").show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "dant-open" => restore(app),
+            "dant-progress" => { restore(app); let _ = app.emit_to("main", "dant-tray-progress", ()); },
+            "dant-exit" => exit(app), _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }) { restore(tray.app_handle()); }
+        }).build(app)?;
+    let state = app.state::<BackgroundTray>();
+    *state.inner.lock().unwrap() = Some(NativeTray { icon, open, progress, status, exit: exit_item, last: None });
+    state.ready.store(true, Ordering::SeqCst); Ok(())
+}
+pub fn on_window_event(window: &tauri::Window, event: &WindowEvent) -> bool {
+    let Some(state) = window.app_handle().try_state::<BackgroundTray>() else { return false };
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        if should_hide(state.ready.load(Ordering::SeqCst), state.exiting.load(Ordering::SeqCst), window.label() == "main") && window.hide().is_ok() {
+            api.prevent_close(); crate::call_overlay::visibility_changed(window.app_handle()); return true;
+        }
+    }
+    // If creating the tray or hiding the window fails, ordinary close remains
+    // available so the user is never left with an inaccessible background app.
+    false
+}
+#[tauri::command]
+pub async fn tray_status_update(app: AppHandle, window: WebviewWindow, status: Status) -> Result<(), String> {
+    if window.label() != "main" || !valid(&status) { return Err("Invalid background status".into()) }
+    let state = app.state::<BackgroundTray>();
+    let mut inner = state.inner.lock().map_err(|_| "The system tray is unavailable")?;
+    let Some(tray) = inner.as_mut() else { return Ok(()) };
+    if tray.last.as_ref() == Some(&status) { return Ok(()) }
+    let (open, progress, exit, text) = labels(&status);
+    tray.open.set_text(open).map_err(|_| "The system tray is unavailable")?;
+    tray.progress.set_text(progress).map_err(|_| "The system tray is unavailable")?;
+    tray.exit.set_text(exit).map_err(|_| "The system tray is unavailable")?;
+    tray.status.set_text(&text).map_err(|_| "The system tray is unavailable")?;
+    tray.icon.set_tooltip(Some(format!("dant · {text}"))).map_err(|_| "The system tray is unavailable")?;
+    tray.last = Some(status); Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn status() -> Status { Status { language: "en".into(), connection: "online".into(), task: "background".into(), queued: 2 } }
+    #[test] fn close_hides_only_with_a_working_tray_and_never_during_explicit_exit() {
+        assert!(should_hide(true, false, true));
+        for values in [(false,false,true), (true,true,true), (true,false,false)] { assert!(!should_hide(values.0,values.1,values.2)); }
+    }
+    #[test] fn statuses_are_bounded_metadata_and_never_arbitrary_text() {
+        let mut value = status(); assert!(valid(&value));
+        value.task = "private task title".into(); assert!(!valid(&value)); value.task = "running".into();
+        value.queued = 1000; assert!(!valid(&value)); value.queued = 0;
+        value.connection = "private exception".into(); assert!(!valid(&value));
+        assert!(serde_json::from_value::<Status>(serde_json::json!({"language":"en","connection":"online","task":"idle","queued":0,"token":"secret"})).is_err());
+    }
+    #[test] fn tray_separates_background_waiting_and_unconfirmed_connection_states() {
+        let mut value = status(); assert_eq!(labels(&value).3,"Working in background · 2 queued");
+        value.task = "waiting_user".into(); value.queued = 0; assert_eq!(labels(&value).3,"Waiting for your reply");
+        value.connection = "offline".into(); assert_eq!(labels(&value).3,"Work status unconfirmed");
+        value.language = "zh".into(); assert_eq!(labels(&value).0,"打开 dant"); assert_eq!(labels(&value).3,"任务状态待确认");
+        value.task = "idle".into(); assert_eq!(labels(&value).3,"离线");
+    }
+}

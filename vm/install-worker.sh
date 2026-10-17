@@ -28,26 +28,39 @@ fi
 export PATH="$HOME/dant/runtime/node/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
 node --version
 cd "$source_dir"
-if [ -f "$HOME/dant/deployed-source.json" ] && \
-  cmp -s deploy-manifest.json "$HOME/dant/deployed-source.json" && \
-  systemctl --user is-active --quiet dant-worker.service dant-guest-local.service; then
-  node vm/migrate-state.mjs "$source_dir/migration" "$HOME/dant/data"
-  echo 'The current VM worker is already deployed; running work was preserved.'
-  exit 0
-fi
+prepare_transcription() {
+  if ! bash vm/install-transcription.sh; then
+    echo 'Local audio recognition is unavailable; existing chat and calls remain available.' >&2
+  fi
+}
+check_idle_worker() {
 if systemctl --user is-active --quiet dant-worker.service; then
   python3 - <<'PY'
 import json, sys, urllib.request
 base = 'http://127.0.0.1:4317'
 session = json.load(urllib.request.urlopen(base + '/api/session', timeout=3))
 state = json.load(urllib.request.urlopen(urllib.request.Request(base + '/api/state', headers={'X-Dant-Token': session['token']}), timeout=3))
-if state.get('active') or state.get('call'):
+if state.get('active') or state.get('call') or state.get('queue') or state.get('takeover'):
     print('DANT_WORK_ACTIVE: service update deferred; current VM work was preserved', file=sys.stderr)
     sys.exit(79)
 PY
 fi
+}
+if [ -f "$HOME/dant/deployed-source.json" ] && \
+  cmp -s deploy-manifest.json "$HOME/dant/deployed-source.json" && \
+  systemctl --user is-active --quiet dant-worker.service dant-guest-local.service; then
+  prepare_transcription
+  node vm/migrate-state.mjs "$source_dir/migration" "$HOME/dant/data"
+  echo 'The current VM worker is already deployed; running work was preserved.'
+  exit 0
+fi
+check_idle_worker
 npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 bash vm/install-speech.sh
+prepare_transcription
+# Dependency downloads leave the old worker running. Check again immediately
+# before changing the live app or restarting services, preserving newly begun work.
+check_idle_worker
 
 # Only an untouched VM data directory can import a host archive. The original
 # Windows files are backed up before upload and are never removed by migration.
@@ -58,7 +71,7 @@ if [ -e "$HOME/dant/app" ] && [ ! -L "$HOME/dant/app" ]; then
   exit 1
 fi
 ln -sfn "$source_dir" "$HOME/dant/app"
-install -m 700 "$source_dir/vm/guest.py" "$source_dir/vm/desktop.py" "$source_dir/vm/control.py" "$source_dir/vm/voice_message.py" "$source_dir/vm/desktop_mcp.py" "$HOME/dant/vm/"
+install -m 700 "$source_dir/vm/guest.py" "$source_dir/vm/desktop.py" "$source_dir/vm/control.py" "$source_dir/vm/voice_message.py" "$source_dir/vm/transcribe_audio.py" "$source_dir/vm/desktop_mcp.py" "$HOME/dant/vm/"
 cat > "$HOME/.config/systemd/user/dant-guest-local.service" <<EOF
 [Unit]
 Description=dant local desktop bridge with shared control lease

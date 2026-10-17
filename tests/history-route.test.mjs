@@ -24,6 +24,13 @@ test('history HTTP editing preserves identity and model context and resubmits on
  const submit=await h.request('/messages/'+message.id,{method:'PATCH',body:{text:'Explicitly submit this edit',resubmit:true}});assert.equal(submit.status,200);assert.equal((await submit.json()).resubmitted,true);assert.equal(h.enqueued.length,1);assert.equal(h.enqueued[0].id,message.id);assert.equal(h.worker.calls.length,0);
 });
 
+test('authenticated long history edits preserve the complete text and explicit resubmission while retaining the HTTP body guard',async t=>{
+ const h=await setup(t),{store,engine}=h.instance,text='中文😀'.repeat(30000)+'LONG_HTTP_EDIT_TAIL',message=store.add({role:'user',text,status:'review'}),conversationId=store.state.conversationId;store.state.threadId='long-edit-thread';engine.loaded=true;assert.ok(text.length>100000);
+ const saved=await h.request('/messages/'+message.id,{method:'PATCH',body:{text:text+' saved'}});assert.equal(saved.status,200);assert.equal((await saved.json()).message.text,text+' saved');assert.equal(h.enqueued.length,0);assert.equal(store.state.threadId,'long-edit-thread');assert.equal(store.state.conversationId,conversationId);assert.equal(engine.loaded,true);
+ const resent=await h.request('/messages/'+message.id,{method:'PATCH',body:{text:text+' resent',resubmit:true}});assert.equal(resent.status,200);assert.equal((await resent.json()).resubmitted,true);assert.equal(h.enqueued.length,1);assert.equal(h.enqueued[0].id,message.id);assert.equal(h.enqueued[0].text,text+' resent');
+ const tooLarge=await h.request('/messages/'+message.id,{method:'PATCH',body:{text:'x'.repeat(2*1024*1024),resubmit:true}});assert.equal(tooLarge.status,413);assert.equal(h.enqueued.length,1);assert.equal(store.state.messages[0].text,text+' resent');assert.equal(store.state.threadId,'long-edit-thread');assert.equal(h.worker.calls.length,0);
+});
+
 test('history routes refuse malformed changes and preserve messages and threads atomically',async t=>{
  const h=await setup(t),{store}=h.instance,message=store.add({role:'user',text:'Keep this',status:'review'});store.state.threadId='thread-to-preserve';store.save();
  for(const body of [{text:'Edited',resubmit:'yes'},{text:'Edited',attachments:[]},{text:2},{text:''},[]]){const response=await h.request('/messages/'+message.id,{method:'PATCH',body});assert.equal(response.status,400);assert.equal(message.text,'Keep this');assert.equal(store.state.threadId,'thread-to-preserve');}

@@ -20,7 +20,7 @@ test('desktop JSON requests use the native bridge serially and recover after a f
     active++; maximum = Math.max(maximum, active); requests.push(args);
     await pause(5); active--;
     return args.route === '/api/fail'
-      ? {status: 409, body: JSON.stringify({error: 'Task changed'})}
+      ? {status: 409, body: JSON.stringify({error: 'Task changed',code:'name_exists'})}
       : response({ok: true});
   }});
   transport.setToken('test-session');
@@ -35,8 +35,54 @@ test('desktop JSON requests use the native bridge serially and recover after a f
   assert.equal(requests[0].token, 'test-session');
   assert.equal(requests[2].body, null);
   assert.equal(results[1].reason.status, 409);
+  assert.equal(results[1].reason.code,'name_exists');
   assert.equal(results[2].status, 'fulfilled');
   transport.close();
+});
+
+test('a remote skill preview cannot delay native call shutdown or state polling',async()=>{
+ let finishPreview;const starts=[];
+ const transport=createTransport({desktop:true,invokeRequest:async(_command,args)=>{starts.push(args.route);if(args.route==='/api/skills/import/preview')return new Promise(resolve=>finishPreview=resolve);return response({ok:true});}});
+ const preview=transport.json('/api/skills/import/preview',{method:'POST',body:{url:'https://github.com/example/skills'}});
+ const stopping=transport.json('/api/call/stop',{method:'POST',body:{callId:'current'}}),reading=transport.json('/api/state');
+ try{await until(()=>starts.includes('/api/state'));assert.deepEqual(await stopping,{ok:true});assert.deepEqual(await reading,{ok:true});}
+ finally{finishPreview?.(response({id:'preview'}));await preview;transport.close();}
+});
+
+test('a slow update check does not delay call shutdown or state polling over native IPC', async () => {
+  let finishUpdate;const starts=[];
+  const transport=createTransport({desktop:true,invokeRequest:async(_command,args)=>{
+    starts.push(args.route);
+    if(args.route==='/api/updates')return new Promise(resolve=>{finishUpdate=resolve;});
+    return response({ok:true});
+  }});
+  const checking=transport.json('/api/updates');
+  const stopping=transport.json('/api/call/stop',{method:'POST',body:{callId:'current-call'}});
+  const reading=transport.json('/api/state');
+  try{
+    await until(()=>starts.includes('/api/state'));
+    assert.deepEqual(await stopping,{ok:true});assert.deepEqual(await reading,{ok:true});
+    assert.deepEqual(starts,['/api/updates','/api/call/stop','/api/state']);
+  }finally{finishUpdate?.(response({latestVersion:'0.4.5'}));await checking;transport.close();}
+});
+
+test('only the two exact read-only app routes bypass pending native mutations', async () => {
+  let finishMutation;const starts=[];
+  const transport=createTransport({desktop:true,invokeRequest:async(_command,args)=>{
+    starts.push(args.route);
+    if(args.route==='/api/settings')return new Promise(resolve=>{finishMutation=resolve;});
+    return response({ok:true});
+  }});
+  const saving=transport.json('/api/settings',{method:'PATCH',body:{language:'en'}});
+  await until(()=>finishMutation);
+  const version=transport.json('/api/version'),checking=transport.json('/api/updates');
+  const mutation=transport.json('/api/updates',{method:'POST'}),other=transport.json('/api/updates/other');
+  try{
+    await until(()=>starts.includes('/api/version')&&starts.includes('/api/updates'));
+    assert.deepEqual(await version,{ok:true});assert.deepEqual(await checking,{ok:true});
+    assert.deepEqual(starts,['/api/settings','/api/version','/api/updates']);
+  }finally{finishMutation(response({ok:true}));await Promise.all([saving,mutation,other]);transport.close();}
+  assert.deepEqual(starts,['/api/settings','/api/version','/api/updates','/api/updates','/api/updates/other']);
 });
 
 test('desktop state polling waits until the prior request completes and never opens browser streams', async () => {

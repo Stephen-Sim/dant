@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {parseHTML} from 'linkedom';
 import {createAppearance,normalizeAppearance,fontFamilies,resolveAppearance,appearanceDefaults} from '../ui/appearance.js';
 
 function fixture({cached,save=async()=>{}}={}){
@@ -61,4 +63,17 @@ test('native titlebar follows the chosen preference and system mode is left to W
  media.matches=true;listener();await Promise.resolve();assert.deepEqual(themes,[null]);assert.equal(root.dataset.theme,'dark');
  await appearance.update({theme:'light'});assert.equal(themes.at(-1),'light');await appearance.update({theme:'system'});assert.equal(themes.at(-1),null);
  appearance.dispose();
+});
+
+test('dant avatars use light bodies and dark eyes in resolved dark mode while every other image keeps its pixels',async()=>{
+ const css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8'),rules=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match=>match[1].trim()===selector).map(match=>match[2]).join(';'),tokens=selector=>Object.fromEntries([...rules(selector).matchAll(/(--dant-avatar-[\w-]+):([^;]+)/g)].map(match=>[match[1],match[2]]));
+ const light=tokens(':root'),dark={...light,...tokens(':root[data-theme="dark"]')};
+ assert.equal(light['--dant-avatar-logo-body'],'#202020');assert.equal(light['--dant-avatar-eyes'],'#FFFFFF');assert.equal(dark['--dant-avatar-logo-body'],'#F5F5F5');assert.equal(dark['--dant-avatar-eyes'],'#202020');assert.equal(dark['--dant-avatar-body-start'],'#FFFFFF');assert.equal(dark['--dant-avatar-body-end'],'#DEDEDE');
+ const f=fixture();const selected=()=>f.root.dataset.theme==='dark'?dark:light;assert.equal(selected()['--dant-avatar-eyes'],'#FFFFFF');f.changeSystem(true);assert.equal(selected()['--dant-avatar-eyes'],'#202020');await f.appearance.update({theme:'light'});assert.equal(selected()['--dant-avatar-eyes'],'#FFFFFF');await f.appearance.update({theme:'dark',themePreset:'custom',backgroundColor:'#123456',foregroundColor:'#FEDCBA'});assert.equal(selected()['--dant-avatar-logo-body'],'#F5F5F5');f.appearance.dispose();
+ assert.match(rules('.eyes::before'),/background:var\(--dant-avatar-logo-body\)/);assert.match(rules('.eyes::after'),/background:var\(--dant-avatar-eyes\)/);assert.match(rules('.eyes.call-avatar::before'),/radial-gradient\([^;]*var\(--dant-avatar-body-start\),var\(--dant-avatar-body-end\)/);assert.match(rules('.eyes img'),/visibility:hidden/);assert.doesNotMatch(css,/filter\s*:\s*[^;}]*invert\s*\(/);
+ const {document}=parseHTML('<nav class="rail"><div class="eyes small"><img></div></nav><div class="welcome"><div class="eyes hero"><img></div></div><div class="call-view"><div class="eyes call-avatar"><img></div></div><div class="call-view mini"><div class="eyes call-avatar"><img></div></div><img id="screen"><img class="attachment-image">');
+ assert.equal(document.querySelectorAll('.eyes').length,4);assert.equal(document.querySelector('#screen').matches('.eyes,.eyes img'),false);assert.equal(document.querySelector('.attachment-image').matches('.eyes,.eyes img'),false);
+ const shape=selector=>decodeURIComponent(rules(selector).match(/mask-image:url\("data:image\/svg\+xml,([^"\n]+)"\)/)[1]).replaceAll("'",'"');
+ const logo=fs.readFileSync(new URL('../ui/public/brand/dant-logo.svg',import.meta.url),'utf8'),avatar=fs.readFileSync(new URL('../ui/public/brand/dant-avatar.svg',import.meta.url),'utf8');
+ for(const [selector,original]of [['.eyes::before',logo],['.eyes::after',logo],['.eyes.call-avatar::before',avatar],['.eyes.call-avatar::after',avatar]])for(const node of parseHTML(shape(selector)).document.querySelectorAll('path,rect,circle'))for(const attribute of node.attributes)assert.ok(original.includes(`${attribute.name}="${attribute.value}"`),`Avatar geometry changed: ${selector} ${attribute.name}`);
 });

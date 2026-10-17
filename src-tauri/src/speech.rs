@@ -7,7 +7,8 @@ use tauri::State;
 pub struct SpeechProcess(pub Arc<Mutex<Option<Child>>>,pub Arc<AtomicU64>);
 
 #[tauri::command]
-pub async fn speech_start(mode: String, language: String, text: Option<String>, process: State<'_, SpeechProcess>) -> Result<String, String> {
+pub async fn speech_start(window: tauri::WebviewWindow, mode: String, language: String, text: Option<String>, process: State<'_, SpeechProcess>) -> Result<String, String> {
+    if window.label() != "main" { return Err("Native speech requires the main window".into()); }
     if !cfg!(windows) { return Err("Native speech is available on Windows only".into()); }
     if !matches!(mode.as_str(), "recognize" | "speak" | "capabilities") || !matches!(language.as_str(), "zh" | "en") { return Err("Invalid speech request".into()); }
     if text.as_ref().is_some_and(|value| value.chars().count() > 10000) { return Err("Read-aloud text exceeds 10000 characters".into()); }
@@ -48,4 +49,4 @@ pub async fn speech_start(mode: String, language: String, text: Option<String>, 
 
 pub fn stop(process: &SpeechProcess) { if let Ok(mut slot) = process.0.lock() { process.1.fetch_add(1,Ordering::SeqCst);if let Some(mut child) = slot.take() { let _ = child.kill(); let _ = child.wait(); } } }
 #[tauri::command]
-pub fn speech_stop(process: State<'_, SpeechProcess>) { stop(&process); }
+pub fn speech_stop(window: tauri::WebviewWindow, process: State<'_, SpeechProcess>) -> Result<(), String> { if window.label() != "main" { return Err("Native speech requires the main window".into()); } stop(&process); Ok(()) }

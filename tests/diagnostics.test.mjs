@@ -37,6 +37,16 @@ test('events, IDs, route templates, value types and lengths reject accidental ra
  assert.equal(logger.log('worker.status',Error('not serialized')),true);const proxy=new Proxy({},{getPrototypeOf(){throw Error('private proxy error');}});assert.equal(logger.log('worker.status',proxy),false);assert.equal(logger.status().lastError,'LOG_WRITE_FAILED');assert.doesNotMatch(JSON.stringify(logger.status()),/private proxy error/);
 });
 
+test('observer diagnostics retain only fixed item schema metadata and safe IDs',t=>{
+ const {logger}=setup(t);
+ assert.equal(logger.log('voice_observer_payload_omitted',{itemType:'mcpToolCall',itemStatus:'completed',itemId:'screenshot-1',eventBytes:1049077,bytes:240,output:'private-result',arguments:{secret:'private-argument'}}),true);
+ assert.deepEqual(logger.recent()[0],{at:new Date(epoch).toISOString(),event:'voice_observer_payload_omitted',role:'vm-worker',itemId:'screenshot-1',eventBytes:1049077,bytes:240,itemType:'mcpToolCall',itemStatus:'completed'});
+ for(const fields of [{itemType:'private-tool-name',itemStatus:'private-status',itemId:'private id'},{itemType:'sk-live-secret',itemStatus:'Bearer-secret',itemId:'sk-live-secret'}]){
+  assert.equal(logger.log('voice_observer_payload_omitted',fields),true);assert.deepEqual(Object.keys(logger.recent().at(-1)).sort(),['at','event','role']);
+ }
+ assert.doesNotMatch(fs.readFileSync(files(logger)[0],'utf8'),/private-|sk-live-secret|Bearer-secret/);
+});
+
 test('daily and size-based rotation keep actual file sizes below the configured maximum',t=>{
  const {logger,clock}=setup(t,{maxFileBytes:350,maxTotalBytes:5000});
  for(let index=0;index<8;index++){clock.now++;assert.equal(logger.log('worker.status',{code:'event_'+index,status:'online',requestId:index}),true);}

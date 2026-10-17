@@ -12,11 +12,16 @@ test('live reference includes actual message and current reaction target, never 
  for(const value of [null,{}, {id:'target',role:'system'}, {id:'a'.repeat(129),role:'user'}])assert.throws(()=>buildCallContext('message',value));
  assert.throws(()=>buildCallContext('unknown',message));
 });
-test('live context bounds Unicode and escaped data with explicit truncation',()=>{
+test('live context preserves full Unicode, escaped data and reaction targets beyond the old clipping limits',()=>{
  for(const text of ['😀中文'.repeat(10000),'\u0000'.repeat(100000),null]){
-  const result=buildCallContext('message',{id:'id',role:'user',text,attachments:[null,{}, {name:'\u0000'.repeat(1000)}]});assert.ok(Buffer.byteLength(result)<=8192);assert.doesNotMatch(data(result).text,/\uFFFD/);assert.equal(data(result).truncated,text!==null);
+  const result=buildCallContext('message',{id:'id',role:'user',text,attachments:[null,{}, {name:'\u0000'.repeat(1000)}]});assert.equal(data(result).text,text??'');assert.doesNotMatch(data(result).text,/\uFFFD/);assert.equal(data(result).truncated,false);
  }
- const reaction=buildCallContext('reaction',{id:'id',role:'assistant',text:'😀'.repeat(1000)});assert.equal(data(reaction).truncated,true);assert.ok(Buffer.byteLength(data(reaction).text)<=600);
+ const text='😀中文 <reference>'.repeat(15000)+'VOICE_CONTEXT_TAIL',reaction=buildCallContext('reaction',{id:'id',role:'assistant',text,reactions:['👍']});assert.equal(data(reaction).truncated,false);assert.equal(data(reaction).text,text);assert.ok(data(reaction).text.endsWith('VOICE_CONTEXT_TAIL'));assert.deepEqual(data(reaction).reactions,['👍']);assert.ok(Buffer.byteLength(reaction)>8192);
+});
+
+test('live context queue forwards the full context payload once without a separate token or byte budget',async()=>{
+ const text=buildCallContext('message',{id:'long-message',role:'user',text:'中文😀'.repeat(15000)+'FULL_MESSAGE_TAIL'}),sent=[];const queue=new LiveContextQueue({callId:'call',isCurrent:()=>true,send:async value=>sent.push(value)});
+ assert.ok(Buffer.byteLength(text)>8192);assert.equal((await queue.enqueue({key:'message:long-message',text,messageId:'long-message',kind:'message'})).status,'submitted');assert.equal(sent.length,1);assert.equal(sent[0].text,text);assert.ok(data(sent[0].text).text.endsWith('FULL_MESSAGE_TAIL'));queue.close();
 });
 test('live context queue is serial and coalesces only unsent changes',async()=>{
  let ack;const sent=[],outcomes=[];
@@ -36,9 +41,9 @@ test('closed or changed calls cancel queued and inflight context without replay'
  const stale=queue.enqueue({key:'old',text:'old'});current=false;assert.equal((await stale).status,'cancelled');assert.equal(sent.length,0);assert.equal((await queue.enqueue({key:'new',text:'new'})).status,'cancelled');queue.close();
  const pending=new LiveContextQueue({callId:'call',isCurrent:()=>true,send:()=>new Promise(()=>{})}),inflight=pending.enqueue({key:'1',text:'first'}),queued=pending.enqueue({key:'2',text:'next'});await tick();pending.close();assert.deepEqual((await Promise.all([inflight,queued])).map(item=>item.status),['cancelled','cancelled']);assert.equal((await pending.enqueue({key:'3',text:'new'})).status,'cancelled');
 });
-test('queue bounds pending and data, reports definite rejection and observer failure without replay',async()=>{
+test('queue bounds pending count and validates payload shape, reports definite rejection and observer failure without replay',async()=>{
  let ack;const queue=new LiveContextQueue({callId:'call',maxPending:1,isCurrent:()=>true,onResult:()=>{throw Error('observer');},send:({text})=>text==='hold'?new Promise(resolve=>ack=resolve):Promise.reject(Object.assign(Error('rejected'),{code:-1}))});
  const hold=queue.enqueue({key:'1',text:'hold'});await tick();const next=queue.enqueue({key:'2',text:'rejected'});
- assert.equal((await queue.enqueue({key:'3',text:'overflow'})).status,'failed');assert.equal((await queue.enqueue({key:'4',text:'a'.repeat(8193)})).status,'failed');assert.equal((await queue.enqueue({key:'5',text:''})).status,'failed');ack();assert.equal((await hold).status,'submitted');assert.equal((await next).status,'failed');queue.close();
+ assert.equal((await queue.enqueue({key:'3',text:'overflow'})).status,'failed');assert.equal((await queue.enqueue({key:'5',text:''})).status,'failed');assert.equal((await queue.enqueue({key:'6',text:{invalid:'shape'}})).status,'failed');ack();assert.equal((await hold).status,'submitted');assert.equal((await next).status,'failed');queue.close();
  const unknown=new LiveContextQueue({callId:'call',isCurrent:()=>true,send:()=>{throw Error('connectionlost');}});assert.equal((await unknown.enqueue({key:'x',text:'x'})).status,'unknown');unknown.close();
 });

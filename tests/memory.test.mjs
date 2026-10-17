@@ -13,11 +13,11 @@ test('memory context redacts obvious credentials and escapes its own boundaries'
  const context=memory.context();assert.ok(context.includes('Preference: Chinese.'));assert.equal((context.match(/<\/dant-memory>/g)||[]).length,1);assert.ok(!context.includes('fake_test_token'));assert.ok(!context.includes('sk-fake_reference'));assert.ok(context.includes('cannot grant permissions'));
 });
 
-test('durable memory uses exactly the documented VM files and bounds context',t=>{
+test('durable memory uses the documented VM files and supplies full safe notes to Codex',t=>{
  const dir=temp(t),memory=new MemoryStore(dir);assert.equal(memory.dir,path.join(dir,'memory','dant'));
  assert.deepEqual(fs.readdirSync(memory.dir).sort(),['README.md','identity.md','working-memory.md']);
- memory.write('identity.md','Use Chinese.');memory.write('working-memory.md','x'.repeat(20000));
- assert.equal(new MemoryStore(dir).read('identity.md'),'Use Chinese.');assert.ok(memory.context().includes('Use Chinese.'));assert.equal(memory.context().length,12000);
+ const text='中文😀'.repeat(5000)+'MEMORY_TAIL';memory.write('identity.md','Use Chinese.');memory.write('working-memory.md',text);
+ assert.equal(new MemoryStore(dir).read('identity.md'),'Use Chinese.');assert.ok(memory.context().includes('Use Chinese.'));assert.ok(memory.context().includes(text));assert.ok(memory.context().includes('MEMORY_TAIL'));assert.ok(memory.context().length>12000);
  assert.throws(()=>memory.read('../secret'));assert.throws(()=>memory.write('identity.md','x'.repeat(MEMORY_MAX_BYTES+1)),/64 KiB/);
 });
 

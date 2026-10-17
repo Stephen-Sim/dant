@@ -19,7 +19,7 @@ pub fn start(app: &tauri::App) {
                                 let Some(id) = notification.get("id").and_then(|value| value.as_str()) else { continue; };
                                 if id.len() > 128 || !id.bytes().all(|value| value.is_ascii_alphanumeric() || value == b'-') { continue; }
                                 // Task text, filenames and prompts never enter system banners.
-                                let body=if notification.get("language").and_then(|value|value.as_str())==Some("en"){ "Work finished. A result is ready." }else{ "工作已完成，有新的结果待查看。" };
+                                let body=if notification.get("language").and_then(|value|value.as_str())==Some("en"){ "You have an unread message from dant." }else{ "你有来自 dant 的未读消息。" };
                                 if handle.notification().builder().title("dant").body(body).show().is_ok() {
                                     let _ = local_json(&format!("/api/notifications/{id}/ack"), Some(token), Some("{}"));
                                 }

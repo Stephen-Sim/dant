@@ -46,7 +46,7 @@ function fixture(t, overrides={}) {
   return {bridge, root, dataDir, projectRoot, calls, children, requests, sockets};
 }
 function resources(directory) {
-  for (const name of ['src/server.mjs', 'dist/index.html', 'LICENSE', 'package.json', 'package-lock.json', 'vm/install-worker.sh', 'vm/install-speech.sh', 'vm/migrate-state.mjs', 'vm/start-codex.sh', 'vm/guest.py', 'vm/desktop.py', 'vm/control.py', 'vm/voice_message.py', 'vm/desktop_mcp.py']) {
+  for (const name of ['src/server.mjs', 'dist/index.html', 'LICENSE', 'package.json', 'package-lock.json', 'vm/install-worker.sh', 'vm/install-speech.sh', 'vm/install-transcription.sh', 'vm/transcription-requirements.txt', 'vm/migrate-state.mjs', 'vm/start-codex.sh', 'vm/guest.py', 'vm/desktop.py', 'vm/control.py', 'vm/voice_message.py', 'vm/transcribe_audio.py', 'vm/desktop_mcp.py']) {
     fs.mkdirSync(path.dirname(path.join(directory, name)), {recursive:true});
     fs.writeFileSync(path.join(directory, name), `fixture ${name}`);
   }
@@ -163,6 +163,13 @@ test('state refresh shares requests, retains a two second cache and reports non-
   bridge.cachedAt -= 2001; await bridge.refresh(); assert.equal(requests, 2);
   bridge.fetchImpl = async () => new Response('', {status:503});
   await assert.rejects(bridge.refresh(true), /VM state unavailable \(503\)/); assert.equal(bridge.refreshing, null);
+});
+
+test('fresh VM state clears an old connection error without reconnecting or replacing its conversation', async t => {
+ const {bridge,sockets,calls}=fixture(t);await bridge.connect({deploy:false});const before=bridge.cached;bridge.error='An earlier state request failed';
+ bridge.fetchImpl=async()=>new Response(null,{status:503});await assert.rejects(bridge.refresh(true),/503/);assert.equal(bridge.error,'An earlier state request failed');assert.equal(bridge.cached,before);
+ bridge.fetchImpl=async()=>Response.json({conversationId:'original',messages:[{id:'preserved'}]});const state=await bridge.refresh(true);assert.equal(bridge.error,null);assert.equal(state.conversationId,'original');assert.equal(bridge.status,'online');assert.equal(calls.length,1);
+ bridge.error='A later request timed out';sockets[0].emit('message',Buffer.from(JSON.stringify({type:'notice',data:{message:'Unrelated notice'}})));assert.equal(bridge.error,'A later request timed out');sockets[0].emit('message',Buffer.from(JSON.stringify({type:'state',data:state})));assert.equal(bridge.error,null);assert.deepEqual(bridge.cached.messages,[{id:'preserved'}]);assert.equal(calls.length,1);
 });
 
 test('late refresh responses cannot overwrite or publish state after a new connection succeeds', async t => {

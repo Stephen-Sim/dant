@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
+import http from 'node:http';
 import {diagnosticRoute,diagnosticRpcMethod,observeHttp,observeTasks,serviceVersion,diagnosticWorkerStatus} from '../src/diagnostic-events.mjs';
 
 test('HTTP diagnostics retain templates and fixed reasons, never route parameters or query/body/header values',()=>{
@@ -19,4 +20,23 @@ test('task and call diagnostics log transitions once without reading message tex
  const message={id:'new',role:'user',status:'queued',text:'new private text'};store.state.messages.push(message);observe();observe();message.status='running';engine.call={id:'call',provider:'subscription',status:'connected',sdp:'private-sdp'};observe();observe();engine.call=null;observe();
  assert.deepEqual(entries.map(entry=>entry.event),['task.status','task.status','call.status','call.closed']);assert.equal(JSON.stringify(entries).includes('private'),false);
  store.state.messages=[];observe();store.state.messages=[{id:'new',role:'user',status:'paused'}];observe();assert.equal(entries.at(-1).status,'paused');
+});
+
+test('an HTTP response closed before finish logs one metadata-only client abort and detaches both listeners',()=>{
+ const entries=[],logger={log:(event,metadata)=>entries.push({event,...metadata})};let now=100;const middleware=observeHttp(logger,{now:()=>now}),res=new EventEmitter();res.statusCode=200;
+ middleware({originalUrl:'/api/files/private-filename?token=private-query',method:'GET',body:{text:'private-body'},headers:{authorization:'private-header'}},res,()=>{});now=10421.4;res.emit('close');res.emit('finish');res.emit('close');
+ assert.deepEqual(entries,[{event:'http.request',method:'GET',route:'/api/files/:id',status:499,durationMs:10321,reason:'client-aborted'}]);assert.equal(res.listenerCount('finish'),0);assert.equal(res.listenerCount('close'),0);assert.equal(JSON.stringify(entries).includes('private-'),false);
+});
+
+test('ordinary response finish suppresses a later close, including fast responses intentionally omitted from diagnostics',()=>{
+ const entries=[],logger={log:(event,metadata)=>entries.push({event,...metadata})};let now=0;const middleware=observeHttp(logger,{now:()=>now});
+ for(const [status,duration]of [[200,10],[503,20],[200,2500]]){const res=new EventEmitter();res.statusCode=status;middleware({url:'/api/screen',method:'GET'},res,()=>{});now+=duration;res.emit('finish');res.emit('close');assert.equal(res.listenerCount('close'),0);}
+ assert.deepEqual(entries.map(entry=>[entry.status,entry.reason,entry.durationMs]),[[503,'server-error',20],[200,'slow-request',2500]]);
+});
+
+test('an actual client disconnect while a desktop response is pending records 499 without payload or URL parameters',async t=>{
+ const entries=[],middleware=observeHttp({log:(event,metadata)=>entries.push({event,...metadata})});let entered,closed;const pending=new Promise(resolve=>entered=resolve),disconnected=new Promise(resolve=>closed=resolve),server=http.createServer((req,res)=>middleware(req,res,()=>{res.once('close',closed);entered();}));
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const request=http.request({host:'127.0.0.1',port:server.address().port,path:'/api/screen?token=private-query',headers:{Authorization:'private-header'},method:'GET'});request.on('error',()=>{});request.end();await pending;request.destroy();await disconnected;
+ assert.equal(entries.length,1);assert.equal(entries[0].status,499);assert.equal(entries[0].reason,'client-aborted');assert.equal(entries[0].route,'/api/screen');assert.ok(entries[0].durationMs>=0);assert.equal(JSON.stringify(entries).includes('private-'),false);
 });

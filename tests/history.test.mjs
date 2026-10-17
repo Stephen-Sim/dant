@@ -23,6 +23,13 @@ test('editing changes only the stored user text by default and preserves model c
  assert.deepEqual(identity(context),before);assert.equal(engine.queue.length,0);assert.equal(worker.calls.length,0);assert.equal(new Store(dir).state.messages[0].text,'Edited text');
 });
 
+test('long message edits preserve the full text and model identity and resubmit only when explicitly requested',t=>{
+ const context=setup(t),{store,history,engine,worker}=context,before=identity(context),text='中文😀'.repeat(30000)+'LONG_EDIT_TAIL',user=store.add({role:'user',text,status:'review'});assert.ok(text.length>100000);
+ const saved=history.edit(user.id,{text:text+' saved'});assert.equal(saved.message.id,user.id);assert.equal(saved.message.text,text+' saved');assert.equal(saved.resubmitted,false);assert.equal(engine.queue.length,0);assert.equal(worker.calls.length,0);assert.deepEqual(identity(context),before);
+ const resubmitted=history.edit(user.id,{text:text+' resent',resubmit:true});assert.equal(resubmitted.message.text,text+' resent');assert.equal(resubmitted.resubmitted,true);assert.equal(engine.queue.length,1);assert.equal(engine.queue[0].id,user.id);assert.equal(engine.queue[0].text,text+' resent');assert.deepEqual(identity(context),before);
+ history.edit(user.id,{text:text+' updated pending',resubmit:true});assert.equal(engine.queue.length,1);assert.equal(engine.queue[0].text,text+' updated pending');assert.equal(worker.calls.length,0);
+});
+
 test('explicit save and resend enters the normal queue once with old execution receipts cleared',async t=>{
  const context=setup(t),{store,history,engine,worker}=context,before=identity(context),user=store.add({role:'user',text:'Old',status:'completed',turnId:'old-turn',submission:'confirmed',executorConfirmedAt:100,acceptedAt:200});
  const result=history.edit(user.id,{text:'Please run this edited task',resubmit:true});assert.equal(result.resubmitted,true);assert.equal(engine.queue.length,1);assert.equal(engine.queue[0].id,user.id);assert.equal(result.message.executorConfirmedAt,null);assert.equal(result.message.acceptedAt,null);assert.equal(result.message.turnId,null);assert.equal(result.message.submission,null);assert.deepEqual(identity(context),before);
@@ -36,10 +43,10 @@ test('editing an already queued message updates that pending task without duplic
  history.edit(user.id,{text:'Explicitly resend pending task',resubmit:true});assert.equal(engine.queue.length,1);assert.equal(engine.queue[0].text,'Explicitly resend pending task');
 });
 
-test('edits reject nonexistent/non-user targets and invalid or oversized text',t=>{
+test('edits reject nonexistent/non-user targets and invalid text',t=>{
  const {store,history}=setup(t),user=store.add({role:'user',text:'Keep'}),assistant=store.add({role:'assistant',text:'Answer'});
  assert.throws(()=>history.edit('missing',{text:'New'}),errorStatus(404));assert.throws(()=>history.edit(assistant.id,{text:'New'}),errorStatus(400));
- for(const text of [undefined,null,42,'','   ','x'.repeat(100001)])assert.throws(()=>history.edit(user.id,{text}),errorStatus(400));
+ for(const text of [undefined,null,42,'','   '])assert.throws(()=>history.edit(user.id,{text}),errorStatus(400));
  assert.throws(()=>history.edit(user.id,{text:'New',resubmit:'yes'}),errorStatus(400));assert.equal(store.state.messages[0].text,'Keep');
 });
 

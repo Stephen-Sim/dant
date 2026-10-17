@@ -6,7 +6,7 @@ import path from 'node:path';
 import {AttachmentStore,inspectContent,MAX_ATTACHMENT_BYTES} from '../src/attachments.mjs';
 import {DeliverableCollector} from '../src/deliverables.mjs';
 
-function fixture(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dant-files-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const outputDir=path.join(dir,'output'),attachments=new AttachmentStore(path.join(dir,'attachments')),collector=new DeliverableCollector(attachments);fs.mkdirSync(outputDir);return {dir,outputDir,attachments,collector};}
+function fixture(t){const parent=path.resolve(os.tmpdir()),dir=fs.mkdtempSync(path.join(parent,'dant-files-'));t.after(()=>{assert.equal(path.dirname(path.resolve(dir)),parent);assert.ok(path.basename(dir).startsWith('dant-files-'));fs.rmSync(dir,{recursive:true,force:true});});const outputDir=path.join(dir,'output'),attachments=new AttachmentStore(path.join(dir,'attachments')),collector=new DeliverableCollector(attachments);fs.mkdirSync(outputDir);return {dir,outputDir,attachments,collector};}
 
 test('attachment content is identified independently of filename and MIME',t=>{
  const {attachments}=fixture(t);
@@ -43,8 +43,11 @@ test('incomplete output scans do not partly archive earlier files',t=>{
  assert.deepEqual(collector.archive({outputDir,baseline}),[]);assert.match(warnings[0],/512/);
 });
 
-test('symlink output escape is never archived', {skip:process.platform==='win32'},t=>{
- const {dir,outputDir,collector}=fixture(t),baseline=collector.captureBaseline({outputDir});
- fs.writeFileSync(path.join(dir,'private.txt'),'private');fs.symlinkSync(path.join(dir,'private.txt'),path.join(outputDir,'visible.txt'));
- fs.symlinkSync(dir,path.join(outputDir,'nested'));assert.deepEqual(collector.archive({outputDir,baseline}),[]);
+test('symlink output escape is never archived',t=>{
+ const {dir,outputDir,attachments,collector}=fixture(t),notices=[];collector.on('notice',notice=>notices.push(notice));const baseline=collector.captureBaseline({outputDir});assert.equal(baseline.valid,true);
+ const outside=path.join(dir,'outside'),external=path.join(outside,'external.txt'),fileLink=path.join(outputDir,'visible.txt'),directoryLink=path.join(outputDir,'nested');fs.mkdirSync(outside);fs.writeFileSync(external,'outside bytes must stay private');
+ fs.symlinkSync(external,fileLink,'file');fs.symlinkSync(outside,directoryLink,'dir');assert.equal(fs.lstatSync(fileLink).isSymbolicLink(),true);assert.equal(fs.lstatSync(directoryLink).isSymbolicLink(),true);assert.equal(fs.realpathSync(fileLink),fs.realpathSync(external));assert.equal(fs.realpathSync(directoryLink),fs.realpathSync(outside));
+ fs.writeFileSync(path.join(outputDir,'report.txt'),'inside sentinel');const archived=collector.archive({outputDir,baseline});assert.deepEqual(archived.map(file=>file.name),['report.txt']);assert.equal(attachments.read(archived[0].id).data.toString(),'inside sentinel');
+ const linkedChild=path.join(directoryLink,'external.txt');assert.deepEqual(collector.archive({outputDir,baseline,onlyExplicit:true,explicitPaths:[fileLink,linkedChild,external]}),[]);for(const filePath of [fileLink,linkedChild])assert.throws(()=>collector.readExplicit({outputDir,filePath}),/missing, restricted/);assert.throws(()=>collector.readExplicit({outputDir,filePath:external}),/Only current output/);
+ assert.equal(fs.readFileSync(external,'utf8'),'outside bytes must stay private');assert.deepEqual(notices,[]);
 });

@@ -1,0 +1,1 @@
+{"identifier":"call-overlay","description":"Call metadata and controls in the local floating call window","windows":["call-overlay"],"permissions":["core:event:allow-listen","core:event:allow-unlisten"]}

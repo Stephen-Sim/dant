@@ -19,8 +19,10 @@ Use the authenticated `GET /api/diagnostics` endpoint for bounded recent metadat
 
 The VM, desktop bridge and Codex executor are separate components. A healthy VM may remain reachable while its executor has stopped. The computer panel keeps a read-only preview in this state and offers an explicit reconnect action. Reconnecting does not automatically replay paused tasks. New computer input stays blocked until the executor and ownership checks permit it.
 
+Desktop refresh publishes a frame only after the browser has fully loaded and decoded it. A failed, timed-out or obsolete frame keeps the last good image and shows a retry state. A fresh successful VM state clears an older connection error; cached state alone does not clear it. Requests whose client connection closes before the response finishes record status `499` and reason `client-aborted`, with only the route, method and elapsed time. A cancelled preview request is not evidence that the VM stopped.
+
 Voice shutdown diagnostics distinguish buffer limits, untracked handoffs, unacknowledged submissions and shutdown confirmation failures. If task ownership or shutdown is uncertain, dant may stop the old executor to prevent background work from continuing. This does not shut down the VM.
 
-Large MCP screenshot payloads remain available to the model. Their duplicate image bytes are omitted from dant's observer queue so that a normal screenshot does not consume the voice event budget.
+Large tool results remain available to the model. The voice observer retains bounded metadata for large results it does not consume, including screenshot JSON text previews, command output and generated media; normal MCP image bytes are also omitted from this duplicate queue. Validated chat-delivery results, RPC requests, ownership information and shutdown controls retain their existing checks and budget. `voice_observer_image_omitted` and `voice_observer_payload_omitted` record original/retained sizes and fixed item type/status metadata without output content. A 1 MiB limit remains in place for actual control events and unknown protocol shapes.
 
 For a failure report, include the approximate local time, whether a voice call was active, the visible status and the relevant structured records. Kernel reboot or OOM evidence is checked separately; an offline executor alone does not establish either.

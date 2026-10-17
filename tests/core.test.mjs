@@ -14,10 +14,11 @@ const testRoot=path.resolve('.cache','tests');fs.mkdirSync(testRoot,{recursive:t
 const temp=t=>{const p=fs.mkdtempSync(path.join(testRoot,'dant-test-'));t.after(()=>fs.rmSync(p,{recursive:true,force:true}));return p;};
 class FakeWorker extends EventEmitter {
  constructor(){super();this.status='online';this.calls=[];this.next=0;this.rpc={reply:()=>{},send:()=>{}};}
- async request(method,params){this.calls.push({method,params});if(method==='thread/start')return {thread:{id:'thread-test'}};if(method==='turn/start')return {turn:{id:'turn-'+ ++this.next}};if(method==='turn/interrupt')queueMicrotask(()=>this.emit('event',{method:'turn/completed',params:{threadId:'thread-test',turn:{id:params.turnId,status:'interrupted'}}}));return {};}
+ async request(method,params){this.calls.push({method,params});if(method==='thread/start')return {thread:{id:'thread-test'}};if(method==='thread/read')return {thread:{id:params.threadId,turns:[]}};if(method==='turn/start')return {turn:{id:'turn-'+ ++this.next}};if(method==='turn/interrupt')queueMicrotask(()=>this.emit('event',{method:'turn/completed',params:{threadId:'thread-test',turn:{id:params.turnId,status:'interrupted'}}}));return {};}
  disconnect(){this.status='offline';this.emit('status');}
 }
 const tick=()=>new Promise(r=>setImmediate(r));
+const waitFor=async predicate=>{for(let attempt=0;attempt<100&&!predicate();attempt++)await tick();assert.ok(predicate(),'Expected asynchronous fixture state was not reached');};
 test('restart retains messages and pauses unfinished tasks for explicit resume',t=>{const dir=temp(t);const s=new Store(dir);s.add({role:'user',text:'persist',status:'queued'});s.add({role:'assistant',text:'partial',status:'streaming'});const reopened=new Store(dir);assert.equal(reopened.state.messages.length,2);assert.deepEqual(reopened.state.messages.map(m=>m.status),['paused','paused']);});
 test('corrupt persistence is not silently overwritten',t=>{const dir=temp(t);fs.writeFileSync(path.join(dir,'state.json'),'{bad');assert.throws(()=>new Store(dir));assert.equal(fs.readFileSync(path.join(dir,'state.json'),'utf8'),'{bad');});
 test('Windows persistence retries a transient atomic rename without rewriting or losing state',t=>{
@@ -226,7 +227,7 @@ test('concurrent call starts reserve one independently billed voice session',asy
  const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);
  let finish,starts=0;e.voice={start:()=>{starts++;return new Promise(resolve=>finish=resolve);},stop:async()=>{}};
  const first=e.startCall('sdp-offer',{provider:'api'});await assert.rejects(e.startCall('second-offer',{provider:'api'}),/already active/);
- finish({sdp:'answer'});await first;assert.equal(starts,1);assert.equal(w.calls.length,0);
+ await waitFor(()=>typeof finish==='function');finish({sdp:'answer'});await first;assert.equal(starts,1);assert.deepEqual(w.calls.map(call=>call.method),['thread/start','thread/read']);assert.deepEqual(w.calls[1].params,{threadId:'thread-test',includeTurns:true});
  await e.stopCall();
 });
 
@@ -275,7 +276,7 @@ test('voice key HTTP configuration stays separate from subscription state and ne
  const response=await fetch(base+'/api/voice-key',{method:'POST',headers,body:JSON.stringify({key})});assert.equal(response.status,200);assert.equal((await response.text()).includes(key),false);
  const snapshot=await fetch(base+'/api/state',{headers}).then(r=>r.json());assert.equal(snapshot.worker.realtime.available,true);assert.equal(snapshot.worker.realtime.billing,'subscription');assert.equal(snapshot.worker.realtime.subscription.available,true);assert.equal(snapshot.worker.realtime.api.billing,'api');assert.equal(snapshot.worker.account.type,'chatgpt');assert.equal(JSON.stringify(snapshot).includes(key),false);assert.equal(fs.readFileSync(instance.store.file,'utf8').includes(key),false);
  await instance.engine.startCall('offer',{provider:'api'});instance.engine.confirmCallConnected(instance.engine.call.id);assert.equal((await fetch(base+'/api/voice-key',{method:'DELETE',headers})).status,400);await instance.engine.stopCall();
- assert.equal((await fetch(base+'/api/voice-key',{method:'DELETE',headers})).status,200);assert.equal(saved,null);assert.equal(w.calls.length,0);assert.equal(instance.store.state.messages.filter(m=>m.kind==='call').length,1);
+ assert.equal((await fetch(base+'/api/voice-key',{method:'DELETE',headers})).status,200);assert.equal(saved,null);assert.deepEqual(w.calls.map(call=>call.method),['thread/start','thread/read']);assert.deepEqual(w.calls[1].params,{threadId:'thread-test',includeTurns:true});assert.equal(instance.store.state.messages.filter(m=>m.kind==='call').length,1);
 });
 
 test('application shutdown waits for its API voice hangup and remains idempotent',async t=>{

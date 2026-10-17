@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {safeCompletionWork} from './task-progress.mjs';
 const renameRetryCodes=new Set(['EPERM','EACCES','EBUSY']);
 const pauseBuffer=new Int32Array(new SharedArrayBuffer(4));
 export const TASK_STATES=Object.freeze(['draft','queued','running','waiting_user','pausing','paused','failed','review','completed']);
@@ -35,6 +36,6 @@ export class Store {
   setTaskState(id,status,patch={}){if(!TASK_STATES.includes(status))throw Error('Invalid task state');return this.update(id,{...patch,status});}
   confirmExecution(id,patch={}){return this.update(id,{...patch,executorConfirmedAt:Date.now()});}
   markVisible(ids){const selected=new Set(ids);for(const message of this.state.messages)if(message.role==='assistant'&&selected.has(message.id)){message.read=true;message.visibleAt=Date.now();}for(const completion of this.state.completions){if(completion.messageIds.length&&completion.messageIds.every(id=>this.state.messages.find(message=>message.id===id)?.read))completion.readAt ||= Date.now();}this.save();}
-  addCompletion({turnId,messageIds,taskId}){if(this.state.completions.some(item=>item.turnId===turnId))return;const completion={id:randomUUID(),turnId,messageIds:[...messageIds],taskId,at:Date.now(),readAt:null};this.state.completions.push(completion);this.state.completions=this.state.completions.slice(-300);this.save();return completion;}
+  addCompletion({turnId,messageIds,taskId,work}){if(this.state.completions.some(item=>item.turnId===turnId))return;const completion={id:randomUUID(),turnId,messageIds:[...messageIds],taskId,at:Date.now(),readAt:null},summary=safeCompletionWork(work);if(summary)completion.work=summary;this.state.completions.push(completion);this.state.completions=this.state.completions.slice(-300);this.save();return completion;}
   confirm(id){const message=this.state.messages.find(m=>m.id===id&&m.role==='user');if(!message||message.status!=='review')throw Error('Only a task awaiting review can be accepted');return this.setTaskState(id,'completed',{acceptedAt:Date.now()});}
 }

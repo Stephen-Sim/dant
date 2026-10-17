@@ -61,11 +61,37 @@ test('API voice tool callbacks cannot borrow an unrelated active task or replay 
  h.instance.store.add({role:'user',text:'Old message containing scoped-voice-secret'});assert.equal(h.voiceOptions.context().includes('scoped-voice-secret'),false);
 });
 
+test('API media closure routes only the current call to continuation or explicit shutdown',async t=>{
+ const h=await setup(t),engine=h.instance.engine,continued=[],stopped=[];engine.continueVoiceTasks=id=>continued.push(id);engine.waitStopped=async active=>stopped.push(active);
+ for(const reason of ['user','tool','connection-lost','error','shutdown']){
+  const callId='api-'+reason;engine.call={id:callId,provider:'api'};const active=engine.active={messageId:'task-'+reason,startAcknowledged:true};engine.voiceTasks.set(active.messageId,{callId});const before=continued.length+stopped.length;
+  h.voice.emit('closed',{callId:'stale-call',reason:'user'});assert.equal(engine.call.id,callId);assert.equal(continued.length+stopped.length,before);
+  h.voice.emit('closed',{callId,reason});assert.equal(engine.call,null);if(['user','tool','connection-lost'].includes(reason))assert.equal(continued.at(-1),callId);else assert.equal(stopped.at(-1),active);engine.active=null;engine.voiceTasks.clear();
+ }
+});
+
 test('native internal tools reject unknown, paused or completed turn scopes',async t=>{
  const h=await setup(t),s={id:'native-call',status:'connected',turns:new Map()},turn={turnId:'native-turn',done:false};s.turns.set(turn.turnId,turn);h.nativeVoice.session=s;h.instance.engine.call={id:s.id,provider:'subscription'};
  assert.equal((await h.internal('credential_find',{query:''})).status,200);
  for(const [object,flag]of [[s,'unknown'],[s,'pausing'],[s,'stopping'],[s,'closed'],[turn,'done'],[turn,'pauseRequested']]){object[flag]=true;assert.equal((await h.internal('credential_find',{query:''})).status,409,flag);object[flag]=false;}
  s.turns.set('second',{turnId:'second',done:false});assert.equal((await h.internal('credential_find',{query:''})).status,409);
+});
+
+test('hanging up media preserves the exact accepted native task credential scope until completion',async t=>{
+ const h=await setup(t),s={id:'background-call',status:'connected',turns:new Map()},turn={turnId:'background-turn',done:false};s.turns.set(turn.turnId,turn);h.nativeVoice.session=s;h.instance.engine.call={id:s.id,provider:'subscription'};
+ const pending=h.internal('credential_request',{name:'Background login',service:'example.test'});let request;
+ while(!(request=h.instance.credentials.snapshot().requests[0]))await tick();
+ s.continueWork=true;s.stopping=true;s.status='stopping';assert.equal((await h.internal('credential_find',{query:''})).status,200);
+ s.closed=true;s.stopping=false;s.background=true;s.status='background';h.instance.engine.call=null;h.nativeVoice.emit('closed',{callId:s.id,workContinues:true});assert.equal(h.instance.credentials.snapshot().requests.length,1);
+ assert.equal((await h.internal('credential_find',{query:''})).status,200);
+ const secret='background-secure-form-only';assert.equal((await h.request('/credentials/requests/'+request.id,{method:'POST',body:{username:'test-user',secret}})).status,200);const result=await pending;assert.equal(result.status,200);assert.equal((await result.text()).includes(secret),false);
+ for(const [object,flag]of [[s,'unknown'],[s,'pausing'],[turn,'done'],[turn,'pauseRequested']]){object[flag]=true;assert.equal((await h.internal('credential_find',{query:''})).status,409,flag);object[flag]=false;}
+ s.background=false;s.continueWork=false;assert.equal((await h.internal('credential_find',{query:''})).status,409);assert.equal(JSON.stringify((await(await h.request('/state')).json())).includes(secret),false);
+});
+
+test('safety shutdown still cancels a pending native task credential form',async t=>{
+ const h=await setup(t),s={id:'unsafe-call',status:'connected',turns:new Map()},turn={turnId:'unsafe-turn',done:false};s.turns.set(turn.turnId,turn);h.nativeVoice.session=s;h.instance.engine.call={id:s.id,provider:'subscription'};
+ const pending=h.internal('credential_request',{name:'Cancel on shutdown'});while(!h.instance.credentials.snapshot().requests.length)await tick();h.nativeVoice.emit('closed',{callId:s.id,workContinues:false});const response=await pending;assert.equal(response.status,400);assert.deepEqual(h.instance.credentials.snapshot().requests,[]);
 });
 
 test('managed skill HTTP APIs save real files, preserve helpers, reload discovery and remain usable offline',async t=>{

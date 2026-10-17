@@ -4,6 +4,10 @@ use tauri::Manager;
 mod transport;
 mod notifications;
 mod speech;
+mod downloads;
+mod call_overlay;
+mod tray;
+mod text_editor;
 #[cfg(windows)] use std::os::windows::process::CommandExt;
 struct Backend(Mutex<Option<Child>>);
 fn runtime_path(path:PathBuf)->PathBuf{
@@ -25,11 +29,18 @@ fn startup_error(message: &str){
 }
 fn main(){
  let app=tauri::Builder::default()
+ .plugin(tauri_plugin_single_instance::init(|app,_,_|tray::restore(app)))
  .plugin(tauri_plugin_notification::init())
  .plugin(tauri_plugin_opener::init())
+ .plugin(tauri_plugin_dialog::init())
  .manage(speech::SpeechProcess::default())
- .invoke_handler(tauri::generate_handler![transport::api_request,speech::speech_start,speech::speech_stop])
+ .manage(call_overlay::CallOverlay::default())
+ .manage(tray::BackgroundTray::default())
+ .on_window_event(|window,event|{if !tray::on_window_event(window,event){call_overlay::on_window_event(window,event);}})
+ .invoke_handler(tauri::generate_handler![transport::api_request,speech::speech_start,speech::speech_stop,downloads::save_attachment,call_overlay::call_overlay_update,call_overlay::call_overlay_get,call_overlay::call_overlay_action,call_overlay::call_overlay_drag,tray::tray_status_update,text_editor::editor_preferences,text_editor::choose_text_editor,text_editor::reset_text_editor,text_editor::open_attachment_in_editor])
  .setup(|app|{
+   call_overlay::setup(app);
+   if tray::setup(app).is_err(){eprintln!("The system tray is unavailable; closing dant will exit normally.");}
    if transport::existing_controller(){app.manage(Backend(Mutex::new(None)));notifications::start(app);return Ok(());}
    let backend_root=runtime_path(if cfg!(debug_assertions){PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()}else{app.path().resource_dir()?.join("backend")});
    let data=runtime_path(if let Some(value)=std::env::var_os("DANT_DATA"){PathBuf::from(value)}else if cfg!(debug_assertions){backend_root.join("data")}else{app.path().app_data_dir()?.join("data")});

@@ -9,7 +9,7 @@ The Telegram gateway runs inside the Ubuntu VM and uses the same persistent conv
 1. Open the official [@BotFather](https://t.me/BotFather), create a bot using `/newbot`, and copy its Bot Token. See Telegram's [official tutorial](https://core.telegram.org/bots/tutorial#obtain-your-bot-token).
 2. Connect dant to its existing VM. Open **Settings → Telegram**, enter the token in the password field, and enable the gateway. Do not paste the token into dant chat, source files, or an issue.
 3. Generate a pairing link. Open it in your own private Telegram chat and press **Start**. The one-time code expires after ten minutes. The app should then show a paired account.
-4. Send a message in Chinese or English. Eligible images, documents, and audio attachments enter the same conversation. Replies and delivered files for those Telegram tasks return to that private chat.
+4. Send a message in Chinese or English. Eligible images, documents, and audio attachments enter the same conversation. Voice attachments are recognized locally inside the VM and supplied internally to the shared model thread; both interfaces retain the original audio. New desktop messages and completed dant replies also appear in the paired private chat.
 
 Only one private account is paired. Both its Telegram user ID and chat ID must match. Groups, channels, forwarded automation requests, and other users cannot gain task access just by discovering the bot's username. Keep the pairing link private until it has been used.
 
@@ -23,7 +23,15 @@ Ordinary input goes through the same queue, human-control lease, and call restri
 
 Attachments use the app's content inspection and 10 MiB per-file limit. Unsupported content or oversized downloads fail explicitly. Outgoing files are read from immutable app attachments; arbitrary VM paths are not uploaded.
 
-The gateway sends completed results belonging to Telegram tasks, not streaming fragments, past chat history, or unrelated desktop replies. Long text is split into Telegram-sized plain-text messages. Duplicate updates use stable input IDs and do not execute the same task again. Restart recovery does not automatically resume interrupted model work.
+## One conversation on both devices
+
+The desktop app and paired Telegram chat use one VM conversation, context, attachments, and serial task queue. A Telegram instruction creates one task and appears on the desktop. It is not echoed back to Telegram as a second user message. Desktop user messages are mirrored by the bot with a **You · desktop** prefix; Telegram bots send these copies under the bot's identity.
+
+New completed dant messages and their attachments are mirrored regardless of whether the request started on the desktop, in Telegram, or was explicitly delivered during a call. Streaming fragments and the live call audio are not mirrored. Long text is split into Telegram-sized plain-text messages.
+
+Sync starts from pairing, or from the first upgrade that enables conversation mirroring for an existing pairing. Existing history is not bulk-exported. Restarting the VM does not resend the baseline history. Editing, deleting, clearing history, quoted-reply links, and reactions are not currently synchronized between Telegram and the desktop; clearing the desktop history also does not reset the model conversation.
+
+Duplicate updates use stable input IDs and do not execute the same task again. Restart recovery does not automatically resume interrupted model work.
 
 An outbound request may reach Telegram even if its response is lost. Such deliveries are marked **unknown** and are not blindly resent. Check Telegram before repeating an operation. Explicit failures remain visible in gateway status.
 

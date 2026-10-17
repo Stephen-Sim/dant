@@ -2,26 +2,33 @@
 
 English · [简体中文](docs/zh-CN/README.md)
 
-A digital companion for Windows, with its own Ubuntu computer. This rebuild follows the original UI and architecture, using Tauri/Rust, Node.js, Hyper-V or VMware Workstation, and Codex App Server.
+A digital companion for Windows, with its own Ubuntu computer, continuing memories and a personality that grows through shared experience. This rebuild follows the original UI and architecture, using Tauri/Rust, Node.js, Hyper-V or VMware Workstation, and Codex App Server.
 
 Download the installer or complete portable package from [GitHub Releases](https://github.com/Stephen-Sim/dant/releases/latest). Windows x64 packages are unsigned; checksums and build metadata are included. Extract the whole portable archive before opening `dant.exe`.
 
 The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execution and conversation data inside the VM. Windows provides the interface, VM setup, SSH forwarding, offline display cache, and native notifications. It does not run the agent’s work commands.
 
+See [the companion model and task continuity](docs/companion.md) for its product direction and current behavior.
+
 ## Features
 
-- Persistent chat with Markdown, files, replies, and six default standard reactions—Like 👍, Love ❤️, Haha 😆, Wow 😮, Sad 😢, and Angry 😡—plus distinct delivery, execution, and read receipts. Current reactions accompany task and call context; changes and removals can also reach an ongoing subscription call.
+- Persistent chat with a timestamp on every ordinary message, Markdown, files, replies, and six default standard reactions—Like 👍, Love ❤️, Haha 😆, Wow 😮, Sad 😢, and Angry 😡—plus distinct delivery, execution, and read receipts. Current reactions accompany task and call context; changes and removals can also reach an ongoing subscription call.
 - dant can choose a reaction to a user message through its model tool. A compact **dant** badge distinguishes its reaction from your own; only your own reaction badges can be clicked to remove them.
 - Chinese and English interfaces, light/dark/system themes, font and text-size preferences, and a resizable computer panel.
-- Paired Telegram Bot private chats, sharing the VM conversation, tasks, and files with the desktop app.
+- Paired Telegram Bot private chats with two-way new-message and attachment sync, sharing the desktop app's VM conversation and task queue.
 - Serial VM tasks with pause, explicit resume, review, and acceptance; uncertain submissions are never automatically replayed.
-- VM memory, scheduled tasks, shared desktop control with an expiring lease, and unread completion notifications.
+- VM memory, scheduled tasks, shared desktop control with an expiring lease, and unread message notifications for results or requests for input. A sidebar badge and first-unread shortcut keep unseen dant replies available; a reply becomes read after it is visible in the foreground chat.
 - Up to five attachments per message, each at most 10 MiB, plus automatic delivery of eligible changed files from `output/`.
-- VM-owned encrypted credentials with secure request forms, and a plugin-style **Skills** library in the left sidebar for searching, creating, editing and enabling reusable skills. See [credentials and skills](docs/credentials-and-skills.md).
+- Attachment downloads use a desktop Save As dialog, or a browser file download, while keeping chat and image previews open.
+- VM-owned encrypted credentials with secure request forms, and a plugin-style **Skills** library for searching, creating, editing and enabling reusable skills. Import supported text skills from public GitHub links or local `SKILL.md`/ZIP files with a preview, and download a managed skill as a portable ZIP. See [credentials and skills](docs/credentials-and-skills.md).
 - Chat search and explicit record editing, withdrawal, deletion and clearing; the model session and context remain intact. Saving an edit does not resubmit work unless you choose **Save and send again**.
 - Online and working status, with the last actual task or call activity shown as a relative time.
 - Structured diagnostics with automatic three-day retention and bounded disk usage. See [diagnostics](docs/diagnostics.md).
-- The composer microphone records a voice attachment: click again to stop, preview it in the draft, then choose **Send**. It preserves the audio file and existing typed text. **Speech to text** is a separate attachment-menu option; the header phone starts a realtime call. Assistant read-aloud remains available. Windows text-speech helpers are local; browser support varies.
+- Application version and a manual **Check for updates** action in Settings, with links to newer GitHub releases. See [updates](docs/updates.md).
+- Categorized Settings with bilingual search that opens the matching control. See [settings](docs/settings.md).
+- Codex-managed context windows and automatic compaction, without an extra dant token budget. See [context management](docs/context.md).
+- The composer microphone opens a voice-message recorder with elapsed time, pause/resume, preview, cancellation and explicit sending. Original audio stays playable in chat; the VM recognizes Chinese and English speech locally and sends it internally to the same model conversation. Telegram voice messages use this path too, without an extra API key. **Speech to text** remains a separate attachment-menu option; the header phone starts a realtime call. See [audio processing](docs/architecture.md#voice).
+- A draggable horizontal call bar stays available inside the app. Minimizing the Windows app during a call shows a separate floating desktop bar with the same call controls.
 
 ## Run locally
 
@@ -67,7 +74,7 @@ The desktop launcher uses the same per-user data directory as the installed appl
 
 Settings offers visual previews for light, dark, and system modes; theme presets; accent, background and foreground colors; searchable local fonts; separate interface/content/code text sizes; and reduced-motion preferences. Appearance can be exported and imported as JSON. Changes apply immediately and persist on Windows, including while the VM is offline. Fonts retain Chinese and English fallbacks.
 
-For Telegram, connect the VM and enter a Bot Token obtained from the official [@BotFather](https://t.me/BotFather) into the local Telegram settings. Enable the bot, generate a pairing link, and open it in your own private Telegram chat. Only the paired account can send work; group messages are ignored. Text, attachments, and replies use the same VM conversation. See [Telegram setup](docs/TELEGRAM.md).
+For Telegram, connect the VM and enter a Bot Token obtained from the official [@BotFather](https://t.me/BotFather) into the local Telegram settings. Enable the bot, generate a pairing link, and open it in your own private Telegram chat. Only the paired account can send work; group messages are ignored. New messages, completed replies, and attachments synchronize with the desktop's VM conversation. Existing history is not bulk-exported. See [Telegram setup and sync scope](docs/TELEGRAM.md).
 
 The gateway runs inside the VM using outbound long polling, so no public port is required. It can keep receiving messages after the Windows window closes while the VM remains online. It is disabled until configured.
 
@@ -75,7 +82,9 @@ The gateway runs inside the VM using outbound long polling, so no public port is
 
 The default subscription channel uses Codex Realtime V3, WebRTC, and `gpt-live-1-codex`, using your **subscription allowance** without a separate API key. Availability and limits depend on the account and executor version.
 
-The call panel shows elapsed time after confirmed connection. **Minimize to chat** keeps the same call, audio connection, and timer running; **Expand call** returns to the larger view. Ending or losing the connection freezes the display, and the final history record supplies the saved duration. Viewing the computer remains available during a call. **Take control** is disabled until the call ends, including while hangup confirmation is pending; returning an existing human-control lease remains available.
+The call panel shows elapsed time after confirmed connection. **Minimize to chat** opens a draggable horizontal bar with the avatar on the left, status and duration in the middle, and call controls on the right. **Expand call** returns to the larger view. Minimizing the Windows app during an active call shows a separate desktop bar, initially at the bottom right above the taskbar. Drag it to move it, or use its expand control to restore the app. Restoring the main window or ending the call hides that bar. Both views control the same audio connection and timer; the desktop bar does not open a second microphone or WebRTC session.
+
+Ending or losing the connection freezes the displayed duration, and the final history record supplies the saved duration. Viewing the computer remains available during a call. **Take control** is disabled until the call ends, including while hangup confirmation is pending; returning an existing human-control lease remains available.
 
 During a subscription call, typed text and reaction changes—including removal—are delivered to the current realtime session through the supported `appendText` operation. Typed messages still follow the existing persisted task pipeline once; live delivery does not enqueue a second copy. Clicking a reaction does not create a task, although dant may acknowledge it aloud. An accepted RPC confirms submission, not that the model has read or understood it. An unknown delivery result is not automatically resent; check its status before explicitly submitting again. Separate same-call acceptance used synthesized input audio and verified that the model correctly spoke a fact from a new typed message and identified the added reaction.
 
@@ -86,6 +95,10 @@ Actual testing with ChatGPT sign-in and Codex CLI 0.163.0 confirmed SDP negotiat
 ## Data, checks, and downloads
 
 Windows `data/` holds connection and deployment information, notification records, optional encrypted keys, and an offline cache. The VM owns chat, attachments, and memory under `~/dant/data/`, with deliverables under `~/dant/workspaces/<conversationId>/output/`. Installed builds use per-user application data; source launches use project `data/`. These locations, `.cache/`, and `.tools/` are excluded from Git.
+
+Chat keeps each message's original sent time beside its own bubble, alongside the existing day and long-gap separators. Completed dant replies show **Unread** or **Read**. The sidebar count and **unread messages** shortcut derive from saved receipts; opening a notification or restoring the app does not clear them. Reading requires the actual bubble to remain in view for 450 ms in the focused, foreground text chat. A minimized window, a full call view, another page or an open modal does not mark messages read. Native notification delivery is recorded separately.
+
+Click a file card or a preview's download control to save the original attachment. Windows opens **Save As**, using the attachment's name and extension by default; browser mode starts a file download. Cancelling leaves the current chat or image preview open, and downloading does not navigate away from it.
 
 VM user services can continue submitted work after the Windows window closes; native notifications require the Windows app. Run `npm test` and `npm run build` for local checks. Simulated protocol tests do not replace device acceptance.
 

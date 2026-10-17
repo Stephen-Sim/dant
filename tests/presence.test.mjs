@@ -11,7 +11,7 @@ import {formatPresence} from '../ui/presence.js';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 class Worker extends EventEmitter{
  constructor(){super();this.status='online';this.calls=[];this.rpc={send(){},reply(){}};}
- async request(method,params){this.calls.push({method,params});if(method==='thread/start')return {thread:{id:'thread'}};if(method==='turn/start')return {turn:{id:'turn'}};return {};}
+ async request(method,params){this.calls.push({method,params});if(method==='thread/start')return {thread:{id:'thread'}};if(method==='thread/read')return {thread:{id:params.threadId,turns:[]}};if(method==='turn/start')return {turn:{id:'turn'}};return {};}
 }
 function setup(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dant-presence-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=new Store(dir),worker=new Worker(),engine=new Engine(store,worker);return {dir,store,worker,engine};}
 const completed={method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',status:'completed'}}};
@@ -63,8 +63,8 @@ test('failed activity persistence does not drop an acknowledged running task',as
 });
 
 test('negotiation does not count as activity, connected confirmation counts exactly once',async t=>{
- const {engine}=setup(t);engine.voice={async start(){return {sdp:'answer'};},async stop(){}};
- const call=await engine.startCall('offer',{provider:'api'});assert.equal(engine.presence.lastActiveAt,null);assert.throws(()=>engine.confirmCallConnected('stale'),/changed/);
+ const {engine,worker}=setup(t);engine.voice={async start(){return {sdp:'answer'};},async stop(){}};
+ const call=await engine.startCall('offer',{provider:'api'});assert.deepEqual(worker.calls.map(call=>call.method),['thread/start','thread/read']);assert.deepEqual(worker.calls[1].params,{threadId:'thread',includeTurns:true});assert.equal(engine.presence.lastActiveAt,null);assert.throws(()=>engine.confirmCallConnected('stale'),/changed/);
  const connected=engine.confirmCallConnected(call.callId),at=engine.presence.lastActiveAt;assert.equal(at,connected.connectedAt);
  let touches=0;const touch=engine.touchActivity.bind(engine);engine.touchActivity=(...args)=>{touches++;return touch(...args);};engine.confirmCallConnected(call.callId);assert.equal(touches,0);
  engine.call.connectedAt=at-7200000;engine.store.state.presence={lastActiveAt:at-7200000};await engine.stopCall(call.callId);assert.equal(touches,1);assert.ok(engine.presence.lastActiveAt>=at);

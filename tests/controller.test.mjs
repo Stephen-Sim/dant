@@ -188,3 +188,44 @@ test('invalid persisted appearance values fall back to safe defaults and font en
  assert.deepEqual(Object.fromEntries(appearanceKeys.map(key=>[key,app.snapshot().settings[key]])),appearanceDefaults);
  const response=await fetch(base+'/api/fonts',{headers});assert.equal(response.status,503);assert.equal((await response.json()).error,'Windows font list is unavailable.');assert.equal(bridge.requests.length,0);
 });
+
+const idleRecoveryState=()=>({conversationId:'preserved-conversation',messages:[{id:'paused-task',role:'user',text:'Existing work',status:'paused',pauseReason:'executor-disconnected'}],settings:{language:'zh'},worker:{status:'offline',error:'Worker stopped'},active:null,queue:[],call:null,takeover:false,computer:{status:'dant',sessionId:null,expiresAt:0}});
+class RecoveryBridge extends FakeBridge{
+ constructor(state=idleRecoveryState()){super();this.state=state;this.connections=0;this.refreshes=[];}
+ async connect(){this.connections++;this.status='online';this.cached=this.state;this.emit('state',this.state);return this.state;}
+ async refresh(force){this.refreshes.push(force);this.cached=this.state;this.emit('state',this.state);return this.state;}
+ async request(route,options){this.requests.push({route,...options});assert.equal(route,'/api/connect');assert.deepEqual(JSON.parse(options.body),{idleRecovery:true});assert.equal(options.method,'POST');if(this.wait)await this.wait();if(this.failure)throw this.failure;if(this.responseStatus)return new Response('{"error":"not forwarded"}',{status:this.responseStatus});this.state.worker={...this.state.worker,status:'online',error:null};return new Response('{"ok":true}',{headers:{'Content-Type':'application/json'}});}
+}
+async function recoveryFixture(t,state=idleRecoveryState(),options={}){const dir=temporary(t);writeProfile(dir,'192.0.2.90');return listen(t,dir,new RecoveryBridge(state),options);}
+
+test('explicit Controller Reconnect starts an idle stopped VM executor once and refreshes its authoritative state without replaying paused history',async t=>{
+ const {app,base,headers,bridge}=await recoveryFixture(t),messages=structuredClone(bridge.state.messages);
+ const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);assert.equal(bridge.connections,1);assert.equal(bridge.requests.length,1);assert.deepEqual(bridge.refreshes,[true,true]);assert.equal(app.snapshot().worker.status,'online');assert.equal(app.snapshot().conversationId,'preserved-conversation');assert.deepEqual(app.snapshot().messages,messages);assert.deepEqual(app.snapshot().queue,[]);
+});
+
+test('automatic Controller startup and provisioning reconnect preserve a deliberately stopped executor',async t=>{
+ const provisioning=new FakeProvisioning(),{app,bridge}=await recoveryFixture(t,idleRecoveryState(),{provisioningFactory:()=>provisioning});
+ await app.start();assert.equal(bridge.connections,1);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().worker.status,'offline');
+ provisioning.emit('change',{status:'ready',running:false});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));assert.equal(bridge.connections,2);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().worker.status,'offline');assert.equal(app.snapshot().messages[0].status,'paused');
+});
+
+test('explicit executor recovery is blocked by fresh active work, queues, calls, leases or handover state',async t=>{
+ for(const [name,busy]of [['task',{active:{messageId:'working'}}],['queue',{queue:['queued-task']}],['call',{call:{id:'live-call'}}],['takeover',{takeover:true}],['acquiring',{acquiring:true}],['human',{computer:{status:'human',sessionId:'lease'}}],['taking-over',{computer:{status:'taking-over'}}],['returning',{computer:{status:'returning'}}],['lease',{computer:{status:'dant',sessionId:'lease'}}],['pending',{computer:{status:'dant',pending:true}}],['unknown-control',{computer:{status:'unknown'}}],['unknown-queue',{queue:null}]]){
+  await t.test(name,async t=>{const state={...idleRecoveryState(),...busy},{app,base,headers,bridge}=await recoveryFixture(t,state);bridge.cached=idleRecoveryState();const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,409);assert.match((await response.json()).error,/Stop active work and return computer control/);assert.equal(bridge.requests.length,0);assert.deepEqual(bridge.refreshes,[true]);assert.equal(app.snapshot().worker.status,'offline');assert.deepEqual(bridge.state,state);});
+ }
+});
+
+test('an online or already connecting executor is never restarted by Controller Reconnect',async t=>{
+ for(const status of ['online','connecting'])await t.test(status,async t=>{const state=idleRecoveryState();state.worker.status=status;const {base,headers,bridge}=await recoveryFixture(t,state);const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);assert.equal(bridge.requests.length,0);assert.deepEqual(bridge.refreshes,[true]);assert.equal(bridge.state.worker.status,status);});
+});
+
+test('simultaneous explicit reconnect clicks share one executor recovery and do not send duplicate mutations',async t=>{
+ const {app,base,headers,bridge}=await recoveryFixture(t);let release,started,secondArrived,incoming=0;const entered=new Promise(resolve=>started=resolve),bothArrived=new Promise(resolve=>secondArrived=resolve);bridge.wait=()=>{started();return new Promise(resolve=>release=resolve);};app.server.on('request',req=>{if(req.url==='/api/connect'&&++incoming===2)req.once('end',()=>setImmediate(secondArrived));});
+ const first=fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});await entered;const second=fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});await bothArrived;release();const responses=await Promise.all([first,second]);assert.deepEqual(responses.map(response=>response.status),[200,200]);assert.equal(bridge.connections,1);assert.equal(bridge.requests.length,1);assert.deepEqual(bridge.refreshes,[true,true]);
+});
+
+test('executor recovery failures are surfaced once without replay or an automatic retry',async t=>{
+ for(const [name,setup,status]of [['rejected',bridge=>bridge.responseStatus=409,409],['transport-unknown',bridge=>bridge.failure=Object.assign(Error('Unknown recovery outcome'),{status:502,unknownOutcome:true}),502],['not-online',bridge=>bridge.refresh=async()=>{bridge.refreshes.push(true);return {...bridge.state,worker:{status:'offline'}};},503]]){
+  await t.test(name,async t=>{const {base,headers,bridge}=await recoveryFixture(t);setup(bridge);const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,status);const body=await response.json();assert.equal(bridge.requests.length,1);assert.equal(bridge.state.messages[0].status,'paused');assert.deepEqual(bridge.state.queue,[]);if(name==='transport-unknown')assert.equal(body.unknownOutcome,true);else assert.match(body.error,/executor/);});
+ }
+});

@@ -6,7 +6,8 @@ use std::{io::{Read, Write}, net::TcpStream, time::Duration};
 pub struct ApiResponse { status: u16, content_type: String, body: String }
 
 #[tauri::command]
-pub async fn api_request(route: String, method: Option<String>, body: Option<String>, token: Option<String>) -> Result<ApiResponse, String> {
+pub async fn api_request(window: tauri::WebviewWindow, route: String, method: Option<String>, body: Option<String>, token: Option<String>) -> Result<ApiResponse, String> {
+    if window.label() != "main" { return Err("Local API requests require the main window".into()); }
     if !route.starts_with("/api/") || route.len() > 2048 || route.contains(['\r', '\n', '#', '\\']) {
         return Err("Invalid local API route".into());
     }
