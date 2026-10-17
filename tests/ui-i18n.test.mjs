@@ -4,12 +4,15 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {SpeechHelper,speechMessages} from '../ui/speech.js';
 import {formatCallDuration} from '../ui/call-duration.js';
+import {defaultReactions} from '../src/reactions.mjs';
+import {parseHTML} from 'linkedom';
+import {reconcile} from '../ui/dom.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 function fixture(selected='zh'){
  const storage=new Map(),requests=[];
- const context={formatCallDuration,callDuration:{snapshot:{callId:null,confirmed:false,seconds:0,finalized:false}},document:{documentElement:{dataset:{theme:'light'}}},appearance:{preferences:{theme:'system',font:'system',fontSize:13}},fontInventory:null,fontLoading:false,fontError:'',fontSearch:'',fontMenuOpen:false,appearanceAdvanced:false,vmProviderInfo:null,vmProvidersBusy:false,vmProvidersError:'',vmProfiles:null,vmProfilesVisible:false,vmProfilesBusy:false,vmProfilesError:'',selectedVMProfile:'',legacyVMDirectory:'',telegramStatus:null,telegramLoading:false,telegramError:'',telegramPairing:null,telegramPairTimer:null,fallbackLanguage:'zh',state:{settings:{language:selected,vm:{host:'',user:'dant',port:22,keyPath:''},nativeVoice:'ember',apiVoice:'marin',notifications:false,model:''},worker:{status:'online',account:null,models:[],realtime:{subscription:{available:true},key:{configured:false}}},messages:[],queue:[],schedules:[],active:null,call:null,memory:''},page:'chat',chatMode:'text',showComputer:false,eventConnected:true,pc:null,stream:null,callStarting:false,callMini:false,callMuted:false,callConnected:false,callChannel:null,callProvider:'subscription',callStops:{pending:false},messageSubmissions:{unknown:null},pendingActions:new Set(),voiceChoices:['ember'],apiVoiceChoices:['marin'],voiceApiExpanded:false,voiceError:'',vmDraft:null,manualVMExpanded:false,provisionDraft:{provider:'auto',cpu:4,memoryGB:6,diskGB:40,adminSudo:false},provisionExpanded:false,steerExpectedTurn:null,steerDraft:'',progressExpanded:false,scheduleDraft:{text:'',at:''},composerDraft:'',replyTo:null,attachments:[],uploading:0,sending:false,recording:null,recordStarting:false,dictating:false,speakingId:null,attachmentMenu:false,screenURL:'',screenError:'',innerWidth:1440,modal:null,
+ const context={defaultReactions,emojiFor:null,formatCallDuration,callDuration:{snapshot:{callId:null,confirmed:false,seconds:0,finalized:false}},document:{documentElement:{dataset:{theme:'light'}}},appearance:{preferences:{theme:'system',font:'system',fontSize:13}},fontInventory:null,fontLoading:false,fontError:'',fontSearch:'',fontMenuOpen:false,appearanceAdvanced:false,vmProviderInfo:null,vmProvidersBusy:false,vmProvidersError:'',vmProfiles:null,vmProfilesVisible:false,vmProfilesBusy:false,vmProfilesError:'',selectedVMProfile:'',legacyVMDirectory:'',telegramStatus:null,telegramLoading:false,telegramError:'',telegramPairing:null,telegramPairTimer:null,fallbackLanguage:'zh',state:{settings:{language:selected,vm:{host:'',user:'dant',port:22,keyPath:''},nativeVoice:'ember',apiVoice:'marin',notifications:false,model:''},worker:{status:'online',account:null,models:[],realtime:{subscription:{available:true},key:{configured:false}}},messages:[],queue:[],schedules:[],active:null,call:null,memory:''},page:'chat',chatMode:'text',showComputer:false,eventConnected:true,pc:null,stream:null,callStarting:false,callMini:false,callMuted:false,callConnected:false,callChannel:null,callProvider:'subscription',callStops:{pending:false},messageSubmissions:{unknown:null},pendingActions:new Set(),voiceChoices:['ember'],apiVoiceChoices:['marin'],voiceApiExpanded:false,voiceError:'',vmDraft:null,manualVMExpanded:false,provisionDraft:{provider:'auto',cpu:4,memoryGB:6,diskGB:40,adminSudo:false},provisionExpanded:false,steerExpectedTurn:null,steerDraft:'',progressExpanded:false,scheduleDraft:{text:'',at:''},composerDraft:'',replyTo:null,attachments:[],uploading:0,sending:false,recording:null,recordStarting:false,dictating:false,speakingId:null,attachmentMenu:false,screenURL:'',screenError:'',innerWidth:1440,modal:null,
  localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},api:async(route,options)=>{requests.push({route,options});return {ok:true};},render:()=>{},esc:value=>String(value??''),ico:name=>`<svg>${name}</svg>`,button:(action,icon,label)=>`<button data-action="${action}" aria-label="${label}">${label}</button>`,eyes:()=>'',md:text=>text,formatTime:()=>'',humanControl:()=>false,unknownTask:message=>message?.submission==='unknown',speechBlocked:()=>false,renderLoginDetails:()=>'',fileURL:file=>'/fixture/'+file.id,
  };
  vm.createContext(context);vm.runInContext([
@@ -17,7 +20,7 @@ function fixture(selected='zh'){
  section('const subscriptionVoiceUnavailable=','const esc='),
  section('function renderHeader(status){','function renderAttachmentOptions(){'),
  section('function renderAttachmentOptions(){','function speechBlocked(){'),
- section('function renderMessages(){','function renderComputer(){'),
+ section('function renderAttachment(file){','function renderComputer(){'),
  section('function renderComputer(){','function openModal('),
  ].join('\n')+'\nglobalThis.words={zh,en,t};',context);
  return {context,storage,requests};
@@ -79,4 +82,38 @@ test('live and completed call durations use the same clock format and localized 
   c.pc=null;c.state.call=null;c.callDuration.snapshot.finalized=true;assert.ok(c.renderCallReady().includes((language==='zh'?'通话已结束':'Call ended')+' · 1:15'));
   c.state.messages=[{id:'history',role:'system',kind:'call',callId:'call-test',seconds:75,time:1}];assert.match(c.renderMessages(),/1:15/);
  }
+});
+
+test('the rendered reaction picker contains the six standard reactions with Chinese and English names',()=>{
+ const expectedEmoji=['👍','❤️','😆','😮','😢','😡'],expectedIds=['like','love','haha','wow','sad','angry'],names={zh:['赞','爱','大笑','惊讶','难过','生气'],en:['Like','Love','Haha','Wow','Sad','Angry']};
+ for(const language of ['zh','en']){
+  const {context:c}=fixture(language);c.emojiFor='reaction-message';c.state.messages=[{id:'reaction-message',role:'assistant',status:'completed',text:'A completed reply',time:1,attachments:[],reactions:['👍','😂','👀','🎉']}];
+  const {document}=parseHTML('<main>'+c.renderMessages()+'</main>'),buttons=[...document.querySelectorAll('.reaction-menu button')];assert.equal(document.querySelector('.reaction-menu').parentNode,document.querySelector('.message-actions'),'the picker must anchor to the adjacent toolbar');
+  assert.deepEqual(buttons.map(button=>button.dataset.emoji),expectedEmoji);assert.deepEqual(buttons.map(button=>button.dataset.reactionId),expectedIds);assert.deepEqual(buttons.map(button=>button.title),names[language]);assert.deepEqual(buttons.map(button=>button.getAttribute('aria-label')),names[language]);assert.equal(buttons[0].getAttribute('aria-pressed'),'true');assert.equal(buttons[2].getAttribute('aria-pressed'),'false');
+  const historical=[...document.querySelectorAll('.reactions button')];assert.deepEqual(historical.map(button=>button.dataset.emoji),['👍','😂','👀','🎉']);for(const button of historical){assert.equal(button.dataset.react,'reaction-message');assert.match(button.getAttribute('aria-label'),language==='zh'?/^取消表情: /:/^Remove reaction: /);assert.equal(button.getAttribute('aria-pressed'),'true');}
+ }
+});
+
+test('message actions sit beside each bubble while reactions, receipts and attachments keep their own controls',()=>{
+ const {context:c}=fixture();c.state.messages=[{id:'assistant-layout',role:'assistant',status:'completed',text:'A long reply '.repeat(80),time:1,reactions:['❤️'],attachments:[{id:'picture',name:'Picture.png',type:'image/png',size:1200},{id:'report',name:'Long-report-name.txt',type:'text/plain',size:100}]},{id:'user-layout',role:'user',status:'review',text:'User message',time:2,reactions:[],executorConfirmedAt:2,attachments:[]}];
+ const {document,Event}=parseHTML('<main>'+c.renderMessages()+'</main>');
+ for(const article of document.querySelectorAll('article.message')){
+  const content=article.querySelector('.message-content'),row=content.querySelector('.message-bubble-row'),bubble=row.querySelector('.bubble'),actions=row.querySelector('.message-actions'),meta=content.querySelector('.message-meta');
+  assert.equal(bubble.parentNode,row);assert.equal(actions.parentNode,row);assert.equal(bubble.nextElementSibling,actions);assert.equal(actions.getAttribute('role'),'toolbar');assert.equal(actions.getAttribute('aria-label'),'消息操作');assert.equal(meta.querySelector('.message-actions'),null);assert.equal(meta.previousElementSibling,row);assert.equal(actions.querySelector('[data-reply]').dataset.reply,article.dataset.id);assert.equal(actions.querySelector('[data-picker]').dataset.picker,article.dataset.id);
+ }
+ const assistant=document.querySelector('.assistant'),user=document.querySelector('.user');assert.equal(assistant.querySelector('.message-meta .reactions button').dataset.emoji,'❤️');assert.ok(user.querySelector('.message-meta .delivery-state'));assert.ok(user.querySelector('.message-meta .task-status'));
+ const image=assistant.querySelector('[data-preview="picture"]'),download=assistant.querySelector('a[download="Long-report-name.txt"]');assert.equal(image.closest('.bubble'),assistant.querySelector('.bubble'));assert.equal(download.closest('.bubble'),assistant.querySelector('.bubble'));assert.equal(download.getAttribute('href'),'/fixture/report');assert.equal(download.querySelector('.message-actions'),null);
+ const reply=assistant.querySelector('[data-reply]');let clicked=0;reply.addEventListener('click',()=>clicked++);c.state.messages[0].text+=' New streamed text';const next=document.createElement('main');next.innerHTML=c.renderMessages();reconcile(document.querySelector('main'),next);assert.equal(document.querySelector('.assistant [data-reply]'),reply);reply.dispatchEvent(new Event('click'));assert.equal(clicked,1);
+ const css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');assert.match(css,/\.message-bubble-row\{[^}]*display:flex;align-items:center/);assert.match(css,/\.user \.message-bubble-row\{flex-direction:row-reverse/);assert.match(css,/@media\(hover:none\),\(pointer:coarse\)\{\.message-bubble-row>\.message-actions\{opacity:1;pointer-events:auto/);assert.match(css,/\.message-bubble-row \.file-card\{min-width:0/);assert.match(css,/\.message-bubble-row>\.bubble\{[^}]*min-width:0/);
+ const actionRules=[...css.matchAll(/([^{}]*\.message-actions[^{}]*)\{([^{}]*)\}/g)].map(match=>match[2]).join(';');assert.doesNotMatch(actionRules,/position\s*:\s*(?:absolute|fixed)/);
+});
+
+test('reaction popups expand from the adjacent toolbar and remain within the chat viewport',()=>{
+ const {context:c}=fixture(),properties=new Map(),menu={dataset:{},style:{setProperty:(key,value)=>properties.set(key,value)},getBoundingClientRect:()=>rect},viewport={getBoundingClientRect:()=>({left:44,right:364,top:20,width:320}),querySelectorAll:()=>[menu]};let rect={left:-78,right:112,top:60};c.document.querySelector=selector=>selector==='#messages'?viewport:null;
+ c.positionReactionMenus();assert.equal(properties.get('--reaction-shift'),'130px');assert.equal(menu.style.maxWidth,'304px');assert.equal(menu.dataset.placement,'above');assert.equal(rect.left+130,52,'short assistant bubbles cannot place the menu over the sidebar');
+ rect={left:300,right:490,top:0};c.positionReactionMenus();assert.equal(properties.get('--reaction-shift'),'-134px');assert.equal(menu.dataset.placement,'below');assert.equal(rect.right-134,356,'right-aligned user bubbles cannot push the menu outside chat');
+ rect={left:100,right:290,top:70};c.positionReactionMenus();assert.equal(properties.get('--reaction-shift'),'0px');assert.equal(menu.dataset.placement,'above');
+ c.document.querySelector=()=>null;assert.doesNotThrow(()=>c.positionReactionMenus());c.document.querySelector=()=>({getBoundingClientRect:()=>({width:0})});assert.doesNotThrow(()=>c.positionReactionMenus());
+ c.emojiFor='user-menu';c.state.messages=[{id:'user-menu',role:'user',text:'Hi',status:'review',time:1,attachments:[],reactions:[]}];const {document}=parseHTML('<main>'+c.renderMessages()+'</main>');assert.equal(document.querySelector('.reaction-menu').parentNode,document.querySelector('.user .message-actions'));
+ const css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');assert.match(css,/\.message-bubble-row>\.message-actions\{position:relative;display:flex/);assert.match(css,/\.reaction-menu\{position:absolute;left:auto;right:0;bottom:calc\(100% \+ 8px\)/);assert.match(css,/\.user \.reaction-menu\{left:0;right:auto/);assert.doesNotMatch(css,/\.reaction-menu\{[^}]*left:22px/);
 });

@@ -4,13 +4,23 @@
 
 日期：2026-10-17。此记录区分自动协议测试和真实设备测试，不把模拟执行器结果当作真实语音验收。
 
+## 0.3.1 表情与操作位置
+
+JavaScript 共 339 项：338 项通过，1 项 Windows 符号链接测试跳过，无失败。覆盖率为行 96.94%、分支 84.01%、函数 85.47%。默认六反应使用共享定义，并有标准单个 emoji 校验、历史兼容、中英标签、气泡旁操作栏及聊天区边界定位的单元或 DOM 事件回归。表情反馈不触发新任务。
+
 ## 0.3.0 更新
 
 本地 JavaScript 共执行 331 项测试：330 项通过，1 项 Windows 符号链接测试跳过，无失败。覆盖率为行 96.92%、分支 84.01%、函数 85.43%。47 项 Python 测试全部通过。新增范围包括虚拟化平台选择、VMware 配置归属元数据、外观严格校验、字体枚举与主题导入导出、真实通话事件中的计时器清理，以及表情反馈的更新和取消。本机实际枚举得到 198 种字体。
 
 已有 Hyper-V VM 在空闲时通过正常 SSH 部署路径更新，并重新连接在线，保留同一个会话及当时全部 24 条消息；没有新增验收对话或改变已有表情。表情反馈在后续任务或新通话时进入模型上下文，持续语音没有新文字请求时不会即时推送，也不会因点赞自动执行任务。
 
-VMware Workstation 17.0.2 实机完成官方镜像校验、磁盘转换和扩容至 40 GiB。首次启动发现 VMXNET3 缺少 PCIe 桥，改为 E1000 后测试 VM 已成功启动。原 Hyper-V VM 保留。由于本机 VMware DHCP 服务停止，且当前进程没有启动该 Windows 服务的权限，尚未完成 VMware IP、SSH 和桌面就绪验收。创建流程已加入 NAT/DHCP 服务检查，在改变 VM 文件前报告具体原因。
+VMware Workstation 17.0.2 实机完成官方镜像校验、磁盘转换和扩容至 40 GiB。首次启动发现 VMXNET3 缺少 PCIe 桥，改为 E1000 后隔离测试 VM 已成功启动。最初地址发现失败是因为 VMnetDHCP 服务停止；随后通过正常 Windows RunAs 管理员授权成功启动服务。测试 VM 软重启后，DHCP 与 NAT 服务均运行，`dant@192.168.163.138` 的 SSH 连接成功，`systemd-detect-virt` 返回 `vmware`，`df` 显示根文件系统已扩展为 38G。`create-vmware.ps1 -Resume` 已在隔离测试目录写入包含 `provider: vmware` 与 `vmwareId` 的顶层连接资料，并进入 `guest-installing`。
+
+随后桌面安装完成，`check-vm.ps1` 的 SSH、XFCE、截图服务和 Codex CLI 0.163.0 检查全部通过。正常 Controller 部署及连接后，VM 服务与 Worker 均在线；实测 PNG 为 1440 × 900、607,408 字节。取得桌面租约、发送 Escape、交还控制和拒绝过期输入均通过。新 VMware VM 尚未登录 ChatGPT，没有对话消息，因此未在新 VM 上测试模型回复或语音；原 AppData Hyper-V 连接未被替换。创建流程也已加入只读 NAT/DHCP 服务检查，在改变 VM 文件前报告具体原因。
+
+验收后仅正常关闭了隔离的 VMware 测试 VM，保留磁盘、种子、归属清单和 SSH 配置，之后可以显式 Resume。原有 Hyper-V VM 没有停止。
+
+0.3.0 Windows 安装已成功，67 个安装源码文件的 SHA-256 均与当前源码一致。安装版 AppData 继续保留原 Hyper-V 绑定，VM Worker 在线且原有 24 条消息保留。[CI 39021107415](https://github.com/Stephen-Sim/dant/actions/runs/39021107415) 与 [Windows 构建 39021107410](https://github.com/Stephen-Sim/dant/actions/runs/39021107410) 均成功。
 
 ## 初版架构验收的自动检查
 

@@ -14,6 +14,8 @@ Bilingual tests exercised critical UI flows, retained-error translation, offline
 
 ## Regression suite and coverage
 
+The 0.3.1 reaction update executed 339 JavaScript tests: 338 passed, one Windows symlink check skipped, and none failed. Coverage was 96.94% lines, 84.01% branches, and 85.47% functions. The shared six-reaction catalog, single-standard-emoji validation, legacy compatibility, bilingual labels, adjacent message actions and chat-boundary positioning have direct unit or DOM-handler regressions. Reactions remain feedback and do not start tasks.
+
 The 0.3.0 local JavaScript run executed 331 tests: 330 passed, one Windows symlink check skipped, and none failed. Coverage was 96.92% lines, 84.01% branches, and 85.43% functions. All 47 Python tests passed. New cases cover provider detection and selection, VMware profile ownership metadata, strict local appearance validation, installed-font enumeration, theme import/export, real call-handler timer cleanup, and bounded reaction snapshots including cancellation of older feedback. Actual Windows font discovery returned 198 families. VM reaction-route tests verify persistence and voice-context inclusion without starting tasks.
 
 The 0.2.0 local run executed 277 JavaScript tests: 276 passed, one Windows symlink check skipped, and none failed. Measured coverage was 96.6% lines, 81.81% branches, and 83.78% functions. All 15 Python tests, seven version/coverage-gate checks, PowerShell/Bash parsing, actionlint, the frontend build, and locked Cargo checking also passed. CI produces independent platform reports for the committed source.
@@ -38,11 +40,21 @@ After repair, the real Controller started against that installed AppData profile
 
 For 0.3.0, the idle existing Hyper-V Worker was updated through the normal SSH deployment path and reconnected online. Its conversation identity and all 24 messages present at that time were preserved. The reaction context runs inside this authoritative VM Worker; this check did not add a synthetic task or alter an existing reaction.
 
-## Real VMware attempt
+## Installed desktop and CI
+
+The Windows 0.3.0 installer completed successfully. SHA-256 comparisons of all 67 installed source files matched the current checkout. The installed AppData profile retained its original Hyper-V binding; its authoritative VM Worker remained online with the existing 24 messages. This installation check did not replace that binding with the isolated VMware test profile.
+
+Both the [CI run 39021107415](https://github.com/Stephen-Sim/dant/actions/runs/39021107415) and [Windows build 39021107410](https://github.com/Stephen-Sim/dant/actions/runs/39021107410) completed successfully.
+
+## Real VMware progress
 
 Workstation 17.0.2 was detected on the Windows host. The official Ubuntu VMDK checksum, disk conversion and expansion to 40 GiB passed. A first boot exposed a generated VMX network-adapter defect; switching the managed adapter from VMXNET3 to E1000 fixed startup. The isolated test VM then ran successfully without altering the existing Hyper-V VM.
 
-Guest IP/SSH and full desktop readiness were not established: the host's VMware DHCP service was stopped and the current process could not start that Windows service. The NAT service and VMnet8 adapter were present. This is boot acceptance, not complete VMware task or network acceptance. Creation now checks the required NAT/DHCP services before changing managed VM files and reports an actionable failure when they are stopped.
+The initial address-discovery failure was traced to a stopped VMnetDHCP service. A subsequent normal Windows RunAs administrator authorization successfully started that service. After a soft reboot of the isolated VM, both DHCP and NAT services were running and SSH succeeded as `dant@192.168.163.138`. `systemd-detect-virt` returned `vmware`, and `df` reported a grown 38G root filesystem. `create-vmware.ps1 -Resume` saved the top-level binding with `provider: vmware` and its `vmwareId`, then reported `guest-installing`.
+
+Installation subsequently completed. `check-vm.ps1` passed the SSH, XFCE display, screenshot service and Codex CLI 0.163.0 checks. Normal Controller deployment and connection reported both the VM service and Worker online. A real PNG screenshot measured 1440 × 900 and 607,408 bytes. Acquiring a desktop lease, sending Escape, releasing the lease, and rejecting stale input all passed. The fresh VMware VM has no ChatGPT account signed in and contains no chat messages; model replies and voice were not tested on this new VM. The existing AppData Hyper-V binding remained unchanged. Creation also checks the required NAT/DHCP services before changing managed VM files and reports an actionable failure when they are stopped.
+
+After acceptance, only the isolated VMware test VM was gracefully powered off. Its disk, seed, ownership manifest and SSH binding were retained for an explicit future Resume; the existing Hyper-V VM was not stopped.
 
 ## Subscription voice
 

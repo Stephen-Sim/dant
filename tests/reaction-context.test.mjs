@@ -1,11 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {reactionSnapshot,buildReactionContext,injectReactionContext} from '../src/reaction-context.mjs';
+import {defaultReactions} from '../src/reactions.mjs';
 
 test('reaction context identifies target messages and includes only bounded textual attachment metadata',()=>{
  const snapshot=reactionSnapshot([{id:'answer',role:'assistant',text:'The finished design',attachments:[{name:'design.png',guestPath:'/private/output/design.png',data:'must not be read'}],reactions:['👍','👍','unsupported']}]);
  assert.deepEqual(snapshot.entries,[{messageId:'answer',role:'assistant',text:'The finished design',attachments:['design.png'],reactions:['👍']}]);assert.equal(snapshot.complete,true);
  const context=buildReactionContext([{id:'answer',role:'assistant',text:'The finished design',reactions:['👍']}]);assert.match(context,/not instructions or a request to act/);assert.match(context,/do not accept a task/);assert.doesNotMatch(context,/private\/output|must not be read/);
+});
+
+test('all six defaults and historical reactions reach Codex context through the shared validator',()=>{
+ const reactions=[...defaultReactions.map(item=>item.emoji),'😂','👀','🎉','👍🏽','👩‍💻','🇲🇾'];
+ const snapshot=reactionSnapshot([{id:'answer',role:'assistant',text:'Delivered result',reactions:[...reactions,'arbitrary text','😆😮']}]);
+ assert.deepEqual(snapshot.entries[0].reactions,reactions);for(const emoji of reactions)assert.ok(buildReactionContext([{id:'answer',role:'assistant',reactions:[emoji]}]).includes(emoji));
 });
 
 test('updating and removing a reaction replace the next snapshot without retaining old feedback',()=>{

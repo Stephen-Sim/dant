@@ -8,7 +8,7 @@ The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execut
 
 ## Features
 
-- Persistent chat with Markdown, files, replies, reactions, and distinct delivery, execution, and read receipts. Current reactions and their referenced messages accompany the next task or new call; changing or removing a reaction updates that context.
+- Persistent chat with Markdown, files, replies, and six default standard reactions—Like 👍, Love ❤️, Haha 😆, Wow 😮, Sad 😢, and Angry 😡—plus distinct delivery, execution, and read receipts. Current reactions and their referenced messages accompany the next task or new call; changing or removing a reaction updates that context.
 - Chinese and English interfaces, light/dark/system themes, font and text-size preferences, and a resizable computer panel.
 - Paired Telegram Bot private chats, sharing the VM conversation, tasks, and files with the desktop app.
 - Serial VM tasks with pause, explicit resume, review, and acceptance; uncertain submissions are never automatically replayed.

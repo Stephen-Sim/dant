@@ -53,4 +53,6 @@ $dantData = Join-Path $env:APPDATA 'com.dant.desktop\data'
 
 工具检测和确定性测试覆盖 provider 选择、只读 NAT 服务检查、文件验证、拒绝覆盖已有状态与恢复行为。
 
-2026-10-17 的隔离 Windows Workstation 17.0.2 实测已验证官方镜像摘要、磁盘转换和扩容、种子生成，以及修复为 e1000 网卡后的真实来宾启动。**SSH 和完整安装尚未验证**：当时 VMnetDHCP 已停止、VMware NAT Service 正在运行，地址发现与 SSH 探测超时，Windows 也拒绝当前进程启动 DHCP 服务。测试 VM 和磁盘已保留。来宾能启动不代表网络、桌面或执行器已经可用。其他 Windows/VM 实机结果见 [验证记录](verification.md)。订阅语音的静默连接检查同样不代表已验证麦克风和扬声器。
+2026-10-17 的隔离 Windows Workstation 17.0.2 实测已验证官方镜像摘要、磁盘转换和扩容、种子生成，以及修复为 e1000 网卡后的真实来宾启动。最初 DHCP 服务停止的问题，已通过正常 Windows RunAs 管理员授权启动 VMnetDHCP 解决。测试 VM 软重启后，DHCP 与 NAT 服务均运行，`dant@192.168.163.138` 的 SSH 连接成功，`systemd-detect-virt` 返回 `vmware`，`df` 显示根文件系统已扩展为 38G。Resume 已为隔离测试配置写入包含 `provider: vmware`、`vmwareId` 的顶层连接资料，并进入 `guest-installing`。
+
+随后安装完成，`check-vm.ps1` 的 SSH、XFCE、截图服务与 Codex CLI 0.163.0 就绪检查全部通过。正常 Controller 部署连接后，VM 服务与 Worker 均在线；实测 1440 × 900 截图、租约键盘输入、交还控制和拒绝过期输入通过。新 VMware VM 尚未登录 ChatGPT，未在其中测试模型回复或语音。安装版原有 Hyper-V 连接保持不变。最新实机结果见 [验证记录](verification.md)。订阅语音的静默连接检查同样不代表已验证麦克风和扬声器。
