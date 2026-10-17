@@ -2,13 +2,13 @@
 
 English · [简体中文](docs/zh-CN/README.md)
 
-A digital companion for Windows, with its own Ubuntu computer. This rebuild follows the original UI and architecture, using Tauri/Rust, Node.js, Hyper-V, and Codex App Server.
+A digital companion for Windows, with its own Ubuntu computer. This rebuild follows the original UI and architecture, using Tauri/Rust, Node.js, Hyper-V or VMware Workstation, and Codex App Server.
 
 The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execution and conversation data inside the VM. Windows provides the interface, VM setup, SSH forwarding, offline display cache, and native notifications. It does not run the agent’s work commands.
 
 ## Features
 
-- Persistent chat with Markdown, files, replies, reactions, and distinct delivery, execution, and read receipts.
+- Persistent chat with Markdown, files, replies, reactions, and distinct delivery, execution, and read receipts. Current reactions and their referenced messages accompany the next task or new call; changing or removing a reaction updates that context.
 - Chinese and English interfaces, light/dark/system themes, font and text-size preferences, and a resizable computer panel.
 - Paired Telegram Bot private chats, sharing the VM conversation, tasks, and files with the desktop app.
 - Serial VM tasks with pause, explicit resume, review, and acceptance; uncertain submissions are never automatically replayed.
@@ -18,7 +18,7 @@ The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execut
 
 ## Run locally
 
-Requires Windows 11, Node.js 22+, Python 3.11+, and enabled Hyper-V. VM management requires Windows administrator authorization.
+Requires Windows 11, Node.js 22+, Python 3.11+, and OpenSSH. To create a computer automatically, use enabled Hyper-V or an existing VMware Workstation installation with `vmrun` and `vmware-vdiskmanager`. Hyper-V creation requires Windows administrator authorization; the VMware flow does not request Hyper-V elevation. An existing Ubuntu VM can connect over SSH regardless of its hypervisor.
 
 ```powershell
 npm ci
@@ -28,7 +28,7 @@ npm start
 
 Open <http://127.0.0.1:4317>, or use `start.cmd`.
 
-In Settings, choose **Create work computer**. Setup downloads and verifies Ubuntu, requests Windows authorization, reports progress, and connects when ready. Defaults are four CPU cores, 6 GB RAM, and a 40 GB dynamic disk. Equivalent scripts are:
+In Settings, choose **Create work computer**, then **Automatic**, **Hyper-V**, or **VMware Workstation**. Automatic keeps a configured provider; otherwise it prefers available Hyper-V, then VMware. An explicitly selected provider never silently switches after failure. Setup verifies Ubuntu, reports preparation/boot/install progress, and connects after readiness checks pass. Defaults are four CPU cores, 6 GB RAM, and a 40 GB disk. The Hyper-V script equivalent is:
 
 ```powershell
 ./scripts/prepare-vm.ps1
@@ -39,9 +39,11 @@ In Settings, choose **Create work computer**. Setup downloads and verifies Ubunt
 ./scripts/check-vm.ps1
 ```
 
+For VMware, use `prepare-vmware.ps1` followed by `create-vmware.ps1` in ordinary PowerShell, then the same `check-vm.ps1`. Workstation is reused rather than installed by dant. See [VMware setup](docs/vmware.md) for exact commands and current verification limits.
+
 The `dant` VM account uses SSH keys. After connecting, initiate ChatGPT device-code sign-in from Settings and authenticate on the official page. Codex credentials remain inside the VM. See [VM setup](docs/VM.md).
 
-Already have a VM? Choose **Use existing computer** in Settings. A single valid connection found in your registered local profiles is imported automatically; multiple connections require selection. You can also import the directory containing an old `vm.json`, or enter the host, SSH user, port, and private-key path manually. Existing disks, VM chat, and ChatGPT sign-in remain in place. An earlier setup failure does not prevent connecting.
+Already have an Ubuntu VM, including a VMware VM? Choose **Use existing computer** in Settings. SSH connection and profile import do not create or convert disks. The guest needs a working graphical desktop and the VM runtime prerequisites described in [VM setup](docs/VM.md). A single valid connection found in your registered local profiles is imported automatically; multiple connections require selection. You can also import the directory containing an old `vm.json`, or enter the host, SSH user, port, and private-key path manually. Existing disks, VM chat, and ChatGPT sign-in remain in place. An earlier setup failure does not prevent connecting.
 
 For the Windows desktop build, install Visual Studio C++ Build Tools and Windows SDK, then run:
 
@@ -56,7 +58,7 @@ The desktop launcher uses the same per-user data directory as the installed appl
 
 ## Appearance and Telegram
 
-Settings offers light, dark, and system themes; system, sans-serif, and monospace fonts; and text sizes from 12 to 18. Changes apply immediately and persist on Windows, including while the VM is offline. Fonts include Chinese and English fallbacks.
+Settings offers visual previews for light, dark, and system modes; theme presets; accent, background and foreground colors; searchable local fonts; separate interface/content/code text sizes; and reduced-motion preferences. Appearance can be exported and imported as JSON. Changes apply immediately and persist on Windows, including while the VM is offline. Fonts retain Chinese and English fallbacks.
 
 For Telegram, connect the VM and enter a Bot Token obtained from the official [@BotFather](https://t.me/BotFather) into the local Telegram settings. Enable the bot, generate a pairing link, and open it in your own private Telegram chat. Only the paired account can send work; group messages are ignored. Text, attachments, and replies use the same VM conversation. See [Telegram setup](docs/TELEGRAM.md).
 
@@ -65,6 +67,8 @@ The gateway runs inside the VM using outbound long polling, so no public port is
 ## Voice channels and verification
 
 The default subscription channel uses Codex Realtime V3, WebRTC, and `gpt-live-1-codex`, using your **subscription allowance** without a separate API key. Availability and limits depend on the account and executor version.
+
+The floating call panel shows elapsed time after confirmed connection. Ending or losing the connection freezes the display, and the final history record supplies the saved duration. Reaction changes during an uninterrupted voice call are included with the next explicit text task or new call; clicking an emoji does not start a task or interrupt speech.
 
 Actual testing with ChatGPT sign-in and Codex CLI 0.163.0 confirmed SDP negotiation, a silent WebRTC connection, explicit text tasks during the call, and confirmed hangup. This does **not** establish real microphone capture, speaker playback, continuous interruption behavior, or long-running reliability. Local dictation packages and helper logic were checked without automatically enabling the microphone.
 

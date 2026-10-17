@@ -341,7 +341,7 @@ export class Engine extends EventEmitter {
   const call=this.call;if(!call||call.id!==callId)throw Error('The voice call changed');
   if(!['negotiating','connected'].includes(call.status))throw Error('The voice call is not ready');
   if(call.provider==='subscription')this.nativeVoice.confirmConnected(callId);
-  call.connectedAt ||= Date.now();call.status='connected';this.change();return {connected:true,callId};
+  call.connectedAt ||= Date.now();call.status='connected';this.change();return {connected:true,callId,connectedAt:call.connectedAt};
  }
  closeCall(callId){
   const call=this.call;if(!call||(callId!==undefined&&call.id!==callId))return;

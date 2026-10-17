@@ -63,7 +63,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Test VM image, seed, desktop and SSH key helpers
-        run: python -m unittest discover -s tests -p test_vm.py -v
+        run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
       - name: Restore Rust compilation cache

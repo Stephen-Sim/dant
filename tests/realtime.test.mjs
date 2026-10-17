@@ -40,7 +40,7 @@ test('subscription uses exact V3 WebRTC RPC and counts only confirmed connected 
  assert.equal(result.provider,'subscription');assert.equal(request.params.version,'v3');assert.equal(request.params.model,NATIVE_REALTIME_MODEL);assert.equal(request.params.voice,'ember');assert.deepEqual(request.params.transport,{type:'webrtc',sdp});assert.equal(engine.call.status,'negotiating');
  assert.equal(store.state.messages.filter(message=>message.kind==='call').length,0);
  await assert.rejects(engine.stopCall('old-call'),/changed/);assert.throws(()=>engine.confirmCallConnected('old-call'),/changed/);
- engine.confirmCallConnected(result.callId);assert.equal(engine.call.status,'connected');engine.call.connectedAt-=2100;
+ const connected=engine.confirmCallConnected(result.callId);assert.equal(engine.call.status,'connected');assert.equal(connected.connectedAt,engine.call.connectedAt);assert.equal(engine.confirmCallConnected(result.callId).connectedAt,connected.connectedAt);engine.call.connectedAt-=2100;
  await engine.stopCall(result.callId);assert.equal(engine.call,null);assert.equal(voice.call,null);assert.equal(worker.terminated,0);
  const records=store.state.messages.filter(message=>message.kind==='call');assert.equal(records.length,1);assert.equal(records[0].provider,'subscription');assert.equal(records[0].seconds,2);assert.equal(records[0].text,'');
 });

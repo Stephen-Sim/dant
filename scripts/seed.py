@@ -4,6 +4,7 @@ parser.add_argument('root',type=pathlib.Path)
 parser.add_argument('admin_sudo',choices=['true','false'])
 parser.add_argument('--data-directory',type=pathlib.Path)
 parser.add_argument('--cache-directory',type=pathlib.Path)
+parser.add_argument('--provider',choices=['hyperv','vmware'],default='hyperv')
 args=parser.parse_args()
 root=args.root;admin=args.admin_sudo=='true'
 data=args.data_directory or root/'data';cache=args.cache_directory or root/'.cache/vm'
@@ -82,5 +83,5 @@ network=json.dumps({'version':2,'ethernets':{'dant':{'match':{'name':'e*'},'dhcp
 for name,content,iso_name in [('user-data',user_data,'USERDATA.;1'),('meta-data',meta,'METADATA.;1'),('network-config',network,'NETWORK.;1')]:
     iso.add_fp(io.BytesIO(content),len(content),iso_path='/'+iso_name,rr_name=name,joliet_path='/'+name)
 iso.write(str(cache/'seed.iso'));iso.close()
-(cache/'seed-summary.json').write_text(json.dumps({'adminSudo':admin,'cpu':4,'memoryGB':6,'diskGB':40,'sshPasswordLogin':False,'desktop':'XFCE / Xvfb 1440x900','image':'Ubuntu 24.04 amd64 Azure VHD'},indent=2))
+(cache/'seed-summary.json').write_text(json.dumps({'adminSudo':admin,'cpu':4,'memoryGB':6,'diskGB':40,'sshPasswordLogin':False,'desktop':'XFCE / Xvfb 1440x900','provider':args.provider,'image':'Ubuntu 24.04 amd64 VMware VMDK' if args.provider=='vmware' else 'Ubuntu 24.04 amd64 Azure VHD'},indent=2))
 print('Created cloud-init seed. VM sudo:',admin)

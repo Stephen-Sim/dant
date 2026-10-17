@@ -1,8 +1,8 @@
-# Windows / Hyper-V VM 初始化与排障
+# Windows VM 初始化与排障
 
 [English](../VM.md) · 简体中文
 
-dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Node 服务通过 stdio 启动，桌面桥只供 VM 内访问。虚拟机默认 4 个 CPU、6 GB 内存、40 GB 动态磁盘，使用 Hyper-V Default Switch 的 DHCP/NAT 网络。
+dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Node 服务通过 stdio 启动，桌面桥只供 VM 内访问。新建虚拟机默认 4 个 CPU、6 GB 内存、40 GB 磁盘；Hyper-V 使用 Default Switch，VMware Workstation 使用 NAT。两者采用相同的 Worker 边界和 SSH 连接。
 
 ## Worker 部署与运行
 
@@ -22,7 +22,15 @@ node src/server.mjs --prepare
 
 VM 权威数据为 `~/dant/data/`，工作目录为 `~/dant/workspaces/<conversationId>/`，程序版本保存在 `~/dant/releases/`。诊断用户服务时使用 `systemctl --user status dant-worker dant-guest-local` 和 `journalctl --user -u dant-worker`；不要把包含私人聊天的日志原文提交仓库。
 
+## 选择创建方式
+
+设置 →“创建工作电脑”提供自动选择、Hyper-V、VMware Workstation。检测只读取本机可用软件。自动选择保留已有配置，否则先选可用的 Hyper-V，再选 VMware；显式选择失败后不会切换另一软件。Hyper-V 创建需要 Windows 管理员授权，VMware 复用本机 Workstation 工具，无需 Hyper-V 提权。两种流程都不会覆盖有效的已有连接来创建另一台 VM。
+
+VMware 的命令、目录和恢复步骤见 [VMware 说明](vmware.md)。下文镜像离线准备细节适用于 Hyper-V。已有电脑直接使用 SSH 连接路径。
+
 ## 连接已有工作电脑
+
+已有 Ubuntu VM 可运行在 VMware、Hyper-V 或其他虚拟化软件中。导入或手动连接只使用 SSH，不创建 VM、不转换磁盘。来宾需提供 SSH 密钥访问、Python 3、可用图形桌面，以及通过 VM 运行检查的普通用户；部署 Worker 不会把纯服务器系统自动变成图形桌面。
 
 安装版和桌面启动器默认使用 `%APPDATA%\com.dant.desktop\data`；显式设置 `DANT_DATA` 时使用所选目录。旧版开发环境通常把连接资料保存在项目的 `data` 目录。数据目录不一致不表示 VM 需要重建。
 
@@ -30,13 +38,13 @@ Controller 只从当前目录、已知项目的 `data`、显式指定的 `DANT_V
 
 Windows 用户注册表文件为 `%LOCALAPPDATA%\dant\vm-profiles.json`，仅记录当前账户的配置目录路径，不保存私钥内容。
 
-导入只保存 SSH 连接字段，并将相对私钥与 `known_hosts` 路径解析为原目录的绝对路径；不会复制私钥内容、聊天记录、服务状态或其他账户资料。请保留原目录中的私钥。AppData 中已有的新密钥、旧安装失败记录均不会被删除。显式导入后点击连接，不会自动重新创建 VM。
+导入只保存 SSH 连接字段，并将相对私钥与 `known_hosts` 路径解析为原目录的绝对路径；不会复制私钥内容、聊天记录、服务状态或其他账户资料。请保留原目录中的私钥。AppData 中已有的新密钥、旧安装失败记录均不会被删除。界面在显式导入成功后继续连接；导入 API 本身不启动连接，也不重新创建 VM。
 
 `GET /api/vm/profiles` 返回当前配置与候选；`POST /api/vm/import` 接受 `{id}` 或 `{directory}`，已有有效连接时拒绝覆盖。未配置连接或密钥丢失时，连接操作会提示导入旧目录或选择现有密钥，不再直接显示裸 `ENOENT`。
 
-过去的 `failed:*` 安装状态不阻止已有效配置的 VM 自动连接。只有仍在准备、创建、安装或等待管理员授权的过程会推迟自动连接；失败日志仍保留用于排障。如果 Hyper-V 提示同名 VM 已存在，应先找回原来的连接资料，不要因为新数据目录缺少 `vm.json` 就重新生成种子或重建电脑。
+过去的 `failed:*` 安装状态不阻止已有效配置的 VM 自动连接。只有仍在准备、创建、安装或等待管理员授权的过程会推迟自动连接；失败日志仍保留用于排障。如果所选虚拟化软件提示同名 VM 已存在，应先找回原来的连接资料，不要因为新数据目录缺少 `vm.json` 就重新生成种子或重建电脑。
 
-## 初始化
+## Hyper-V 初始化
 
 需要已启用 Hyper-V 的 Windows、OpenSSH 客户端、Python 3、可访问 Ubuntu 和 npm 软件源的网络。镜像压缩包约 810 MiB，解压后的固定 VHD 约 30 GiB；转换时还需要动态 VHDX 的额外空间。下载准备可在普通 PowerShell 中执行，创建/启动 Hyper-V VM 由 Windows 要求管理员权限，应用启动时可能出现 UAC 提示。
 
@@ -97,7 +105,7 @@ python .\scripts\patch-image.py .\data\vm\livecd.ubuntu-cpc.azure.vhd
 
 ## 状态和日志
 
-Windows 的 `data/vm-setup-status.json` 保存阶段、最近更新时间、日志路径和错误。安装版中对应所选数据目录。`data/logs/create-vm-*.log` 保存管理员脚本的完整 transcript。常见阶段：
+Windows 的 `data/vm-setup-status.json` 保存阶段、最近更新时间、日志路径和错误。安装版中对应所选数据目录。Hyper-V 的 `data/logs/create-vm-*.log` 保存管理员脚本完整 transcript，VMware 日志位于 `data/vmware/logs/`。状态记录包含 provider。Hyper-V 常见阶段：
 
 | 阶段 | 含义 |
 | --- | --- |

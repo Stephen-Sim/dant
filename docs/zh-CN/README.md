@@ -4,13 +4,13 @@
 
 Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Tauri 桌面壳、Node.js 本地服务和 VM 内的 Codex App Server。
 
-按原版 UI 与架构重建，适配 Windows + Hyper-V。Windows 负责界面、VM 安装管理、本机通知和 API 代理；Ubuntu VM 持有聊天、任务、记忆、附件与 Codex 执行器。职责与 Mac / UTM 原版对应，通信改为 SSH 本地隧道。详见 [实现架构](architecture.md)。
+按原版 UI 与架构重建，适配 Windows + Hyper-V / VMware Workstation。Windows 负责界面、VM 安装管理、本机通知和 API 代理；Ubuntu VM 持有聊天、任务、记忆、附件与 Codex 执行器。职责与 Mac / UTM 原版对应，通信改为 SSH 本地隧道。详见 [实现架构](architecture.md)。
 
 订阅语音采用 Codex Realtime V3、WebRTC 与 `gpt-live-1-codex`。已用现有 ChatGPT 登录实测 SDP 协商及静默 WebRTC 连接，无需 API Key；麦克风、扬声器和连续对话仍需人工实机验收。独立 API 语音保留为可选通道。
 
 ## 功能
 
-- 单一持续聊天，Markdown、链接、附件、引用回复、表情和消息状态。
+- 单一持续聊天，Markdown、链接、附件、引用回复、表情和消息状态。点赞及目标消息会进入后续任务或新通话的上下文，取消与更换表情也会更新。
 - 中英文界面，浅色 / 深色 / 跟随系统主题，字体与字号设置，以及可调宽度的电脑面板。
 - Telegram Bot 私聊接入，与桌面共享 VM 对话、任务和文件；通过一次性配对限制可操作账号。
 - VM 内串行执行任务，暂停、继续、待验收和明确验收；消息送达、执行确认、用户已读分别记录。
@@ -20,7 +20,7 @@ Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Ta
 
 ## 本地启动
 
-需要 Windows 11、Node.js 22+、Python 3.11+。VM 默认使用已启用的 Hyper-V，管理 VM 需要管理员权限。
+需要 Windows 11、Node.js 22+、Python 3.11+ 和 OpenSSH。自动创建可使用已启用的 Hyper-V，或已安装且包含 `vmrun`、`vmware-vdiskmanager` 的 VMware Workstation。Hyper-V 创建需要 Windows 管理员授权；VMware 流程无需 Hyper-V 提权。已有 Ubuntu VM 可通过 SSH 连接，不限制其虚拟化软件。
 
 ```powershell
 npm ci
@@ -34,9 +34,9 @@ npm start
 
 已有 VM 时，在设置里选择“连接已有电脑”。应用会查找当前用户已登记的有效连接配置：只有一个时自动导入，多个时由你选择。也可以填写旧 `vm.json` 所在目录进行导入，或手动填写 VM 地址、SSH 用户、端口和私钥路径。导入保留已有虚拟磁盘、ChatGPT 登录和 VM 聊天，不会重新创建电脑；先前创建失败的记录也不会阻止连接。
 
-在设置中点击“创建工作电脑”，可调整 CPU、内存、磁盘与 VM 内管理权限。应用会下载并校验镜像，调起 Windows 管理员授权，显示安装进度，并在桌面就绪后连接。关闭后再次打开应用，会继续检查已有安装进度。
+在设置中点击“创建工作电脑”，选择“自动选择”、Hyper-V 或 VMware Workstation，可调整 CPU、内存、磁盘与 VM 内管理权限。自动选择优先保留已有配置，否则依次选择可用的 Hyper-V、VMware；显式选择失败时不会悄悄切换。应用会下载校验镜像、显示准备与启动安装进度，通过就绪检查后连接。只有 Hyper-V 流程请求 Windows 管理员授权。关闭后再次打开应用，会继续检查已有安装进度。
 
-也可以通过 PowerShell 执行相同流程：
+也可以通过 PowerShell 执行 Hyper-V 流程：
 
 ```powershell
 # 普通 PowerShell：下载官方 Ubuntu 镜像、校验 SHA-256、创建 SSH 密钥与 cloud-init 种子
@@ -52,7 +52,9 @@ npm start
 ./scripts/check-vm.ps1
 ```
 
-默认 4 核、6 GB 内存、40 GB 动态磁盘。VM 用户 `dant` 使用 SSH 密钥，不启用密码登录。完整流程和排障见 [VM 说明](VM.md)。已有 Ubuntu VM 也可以安装 `vm/` 中的执行器后手动填写 SSH 连接信息。
+VMware 可在普通 PowerShell 中依次运行 `prepare-vmware.ps1`、`create-vmware.ps1`，再用相同的 `check-vm.ps1` 检查。dant 复用本机 Workstation，不代为安装虚拟化软件。精确命令与验收边界见 [VMware 说明](vmware.md)。
+
+默认 4 核、6 GB 内存、40 GB 磁盘。VM 用户 `dant` 使用 SSH 密钥，不启用密码登录。完整流程和排障见 [VM 说明](VM.md)。已有 Ubuntu VM（包括 VMware）也可以通过导入或填写 SSH 连接接入，不转换磁盘或重新创建系统；来宾需有可用图形桌面和 VM 运行依赖，详见 VM 说明。
 
 连接 VM 后，在设置中发起 ChatGPT 设备码登录，使用 OpenAI 官方页面完成认证。凭据由 VM 内 Codex 管理，dant 不复制宿主机 ChatGPT 凭据。文字模型和额度取决于订阅账号及 Codex 版本。
 
@@ -73,7 +75,7 @@ npm start
 
 ## 外观
 
-设置中可以选择浅色、深色或跟随系统主题，以及系统默认、无衬线或等宽字体，字号为 12–18。选项立即生效并保存在 Windows Controller 的配置中，VM 离线时也能修改；中英文分别使用本机可用字体回退。
+设置中通过缩略预览选择浅色、深色或跟随系统，支持主题预设、强调色、背景和文字颜色、本机字体搜索，以及分别调整界面、正文和代码字号；可减少动态效果，并导入或导出外观 JSON。选项立即生效并保存在 Windows Controller 的配置中，VM 离线时也能修改；字体保留中英文回退。
 
 ## Telegram
 

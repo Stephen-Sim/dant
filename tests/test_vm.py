@@ -273,6 +273,14 @@ class SeedTests(unittest.TestCase):
                        "--data-directory", str(data), "--cache-directory", str(cache)]
             result = subprocess.run(command, env=env, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode())
+            summary = json.loads((cache / 'seed-summary.json').read_text())
+            self.assertEqual(summary['provider'], 'hyperv')
+            self.assertIn('Azure VHD', summary['image'])
+            vmware_result = subprocess.run(command + ['--provider', 'vmware'], env=env, capture_output=True)
+            self.assertEqual(vmware_result.returncode, 0, vmware_result.stderr.decode())
+            summary = json.loads((cache / 'seed-summary.json').read_text())
+            self.assertEqual(summary['provider'], 'vmware')
+            self.assertIn('VMware VMDK', summary['image'])
             iso = pycdlib.PyCdlib()
             iso.open(str(cache / "seed.iso"))
             try:

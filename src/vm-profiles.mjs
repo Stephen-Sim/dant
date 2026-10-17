@@ -15,6 +15,14 @@ function absoluteFile(value,directory){
  if(typeof value!=='string'||!value.trim()||value.includes('\0'))throw configurationError('The VM SSH key path is missing. Choose its original data directory or an existing private key.');
  return path.resolve(directory,value);
 }
+function bindingMetadata(value){
+ const metadata={},printable=text=>typeof text==='string'&&!/[\x00-\x1f\x7f-\x9f]/.test(text);
+ if(value.provider!==undefined){if(!['hyperv','vmware','ssh'].includes(value.provider))throw configurationError('The VM provider must be hyperv, vmware or ssh.');metadata.provider=value.provider;}
+ if(value.name!==undefined){if(!printable(value.name)||!value.name.trim()||value.name.length>128)throw configurationError('The VM name must contain 1 to 128 printable characters.');metadata.name=value.name.trim();}
+ if(value.vmxPath!==undefined){if(!printable(value.vmxPath)||value.vmxPath.length>4096||!path.isAbsolute(value.vmxPath)||path.extname(value.vmxPath).toLowerCase()!=='.vmx')throw configurationError('The VMX reference must be an absolute .vmx path with at most 4096 printable characters.');metadata.vmxPath=path.resolve(value.vmxPath);}
+ if(value.vmwareId!==undefined){if(typeof value.vmwareId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.vmwareId))throw configurationError('The VMware ownership identifier must be a valid UUID.');metadata.vmwareId=value.vmwareId.toLowerCase();}
+ return metadata;
+}
 
 export function normalizeVmBinding(value,directory){
  if(!value||typeof value!=='object'||Array.isArray(value))throw configurationError('The VM connection file is invalid. Import the original data directory or enter its connection details.');
@@ -24,7 +32,7 @@ export function normalizeVmBinding(value,directory){
  let key;try{key=fs.statSync(keyPath);fs.accessSync(keyPath,fs.constants.R_OK);}catch{throw configurationError('The VM SSH private key is missing or unreadable. Import the original data directory or choose its existing key.','DANT_VM_KEY_MISSING');}
  if(!key.isFile()||!key.size||key.size>1024*1024)throw configurationError('The VM SSH key must be an existing private-key file.');
  try{const info=fs.statSync(knownHosts,{throwIfNoEntry:false});if(info&&!info.isFile())throw Error();if(!info&&!fs.statSync(path.dirname(knownHosts)).isDirectory())throw Error();}catch{throw configurationError('The SSH known-hosts directory is missing or invalid. Restore the original connection directory.');}
- return {host,user,port,keyPath:fs.realpathSync(keyPath),knownHosts:fs.existsSync(knownHosts)?fs.realpathSync(knownHosts):knownHosts};
+ return {host,user,port,keyPath:fs.realpathSync(keyPath),knownHosts:fs.existsSync(knownHosts)?fs.realpathSync(knownHosts):knownHosts,...bindingMetadata(value)};
 }
 
 export function readVmBinding(directory){
@@ -54,7 +62,7 @@ export class VmProfiles{
  }
  descriptor(directory,source){
   const vm=readVmBinding(directory),resolved=canonical(directory),key=JSON.stringify([vm.host.toLowerCase(),vm.user,vm.port,vm.keyPath]);
-  return {id:createHash('sha256').update(key).digest('hex').slice(0,24),label:path.basename(resolved)||resolved,directory:resolved,host:vm.host,user:vm.user,port:vm.port,source,vm};
+  return {id:createHash('sha256').update(key).digest('hex').slice(0,24),label:path.basename(resolved)||resolved,directory:resolved,host:vm.host,user:vm.user,port:vm.port,source,...bindingMetadata(vm),vm};
  }
  public(profile){if(!profile)return null;const {vm,...result}=profile;return result;}
  discover(){

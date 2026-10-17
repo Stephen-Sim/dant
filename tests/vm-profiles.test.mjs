@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {VmProfiles,readVmBinding} from '../src/vm-profiles.mjs';
+import {VmProfiles,readVmBinding,normalizeVmBinding} from '../src/vm-profiles.mjs';
 
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
 function setup(t){const directory=fs.mkdtempSync(path.join(root,'profiles-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));const target=path.join(directory,'installed'),workspace=path.join(directory,'workspace');fs.mkdirSync(target);fs.mkdirSync(workspace);return {directory,target,workspace,registryFile:path.join(directory,'user-registry.json')};}
@@ -46,4 +46,30 @@ test('stale candidates are ignored, missing current binding has a friendly diagn
 test('explicit import backs up an invalid binding and imports no non-connection fields',t=>{
  const data=setup(t),source=profile(path.join(data.directory,'manually-selected'),{account:'not copied',memory:'not copied'});fs.writeFileSync(path.join(data.target,'vm.json'),'{broken');const profiles=manager(data,{includeProject:false});profiles.import({directory:source});
  const binding=JSON.parse(fs.readFileSync(path.join(data.target,'vm.json'),'utf8'));assert.deepEqual(Object.keys(binding).sort(),['host','keyPath','knownHosts','port','user']);const backup=fs.readdirSync(data.target).find(name=>name.startsWith('vm.json.invalid-'));assert.equal(fs.readFileSync(path.join(data.target,backup),'utf8'),'{broken');
+});
+
+test('provider metadata and VMware ownership survive discovery and import without reading the VMX file',t=>{
+ const data=setup(t),vmxPath=path.resolve(data.directory,'not-created','..','not-created','dant.VMX'),vmwareId='79C8D5A0-7E49-49C1-8248-F671BD891320';
+ const source=profile(path.join(data.directory,'vmware-profile'),{provider:'vmware',name:'  dant 工作电脑  ',vmxPath,vmwareId,unexpected:'not copied'});
+ assert.equal(fs.existsSync(vmxPath),false);const profiles=manager(data,{includeProject:false,candidateDirs:[source]});
+ const candidate=profiles.discover().candidates[0];for(const item of [candidate,profiles.import({id:candidate.id}).profile,profiles.discover().current]){assert.equal(item.provider,'vmware');assert.equal(item.name,'dant 工作电脑');assert.equal(item.vmxPath,vmxPath);assert.equal(item.vmwareId,vmwareId.toLowerCase());assert.equal(Object.hasOwn(item,'keyPath'),false);assert.equal(Object.hasOwn(item,'unexpected'),false);}
+ const imported=readVmBinding(data.target);assert.equal(imported.provider,'vmware');assert.equal(imported.vmxPath,vmxPath);assert.equal(imported.vmwareId,vmwareId.toLowerCase());assert.equal(imported.name,'dant 工作电脑');assert.equal(Object.hasOwn(imported,'unexpected'),false);assert.equal(fs.existsSync(vmxPath),false);
+});
+
+test('legacy bindings keep five fields and all supported provider metadata survives connection edits',t=>{
+ const data=setup(t);profile(data.target);assert.deepEqual(Object.keys(readVmBinding(data.target)).sort(),['host','keyPath','knownHosts','port','user']);
+ for(const provider of ['hyperv','vmware','ssh']){
+  profile(data.target,{provider,name:'existing computer',vmxPath:path.join(data.directory,'existing.vmx'),vmwareId:'79c8d5a0-7e49-49c1-8248-f671bd891320'});
+  const original=readVmBinding(data.target),changed=normalizeVmBinding({...original,host:'192.0.2.55',port:2222},data.target);
+  for(const key of ['provider','name','vmxPath','vmwareId'])assert.equal(changed[key],original[key]);assert.equal(changed.host,'192.0.2.55');assert.equal(changed.port,2222);assert.equal(changed.keyPath,original.keyPath);
+ }
+});
+
+test('invalid provider, display name, VMX references and ownership IDs reject before import',t=>{
+ const data=setup(t),source=path.join(data.directory,'invalid-profile'),absoluteVMX=path.join(data.directory,'missing.vmx');
+ const invalid=[{provider:'other'},{provider:null},{name:''},{name:' '},{name:'x'.repeat(129)},{name:'bad\nname'},{name:'bad\u0085name'},{vmxPath:'relative.vmx'},{vmxPath:absoluteVMX+'.txt'},{vmxPath:path.join(data.directory,'bad\nname.vmx')},{vmxPath:path.join(data.directory,'x'.repeat(4096)+'.vmx')},{vmxPath:null},{vmwareId:'not-a-uuid'},{vmwareId:'00000000-0000-0000-0000-000000000000'},{vmwareId:'79c8d5a0-7e49-49c1-1248-f671bd891320'},{vmwareId:123}];
+ for(const metadata of invalid){
+  profile(source,metadata);const profiles=manager(data,{includeProject:false,candidateDirs:[source]});
+  assert.throws(()=>readVmBinding(source),error=>error.status===409&&error.code==='DANT_VM_CONFIG_INVALID');assert.deepEqual(profiles.discover().candidates,[]);assert.throws(()=>profiles.import({directory:source}),error=>error.status===409);assert.equal(fs.existsSync(path.join(data.target,'vm.json')),false);
+ }
 });

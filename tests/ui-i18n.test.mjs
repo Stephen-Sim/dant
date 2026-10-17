@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {SpeechHelper,speechMessages} from '../ui/speech.js';
+import {formatCallDuration} from '../ui/call-duration.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 function fixture(selected='zh'){
  const storage=new Map(),requests=[];
- const context={appearance:{preferences:{theme:'system',font:'system',fontSize:13}},vmProfiles:null,vmProfilesVisible:false,vmProfilesBusy:false,vmProfilesError:'',selectedVMProfile:'',legacyVMDirectory:'',telegramStatus:null,telegramLoading:false,telegramError:'',telegramPairing:null,telegramPairTimer:null,fallbackLanguage:'zh',state:{settings:{language:selected,vm:{host:'',user:'dant',port:22,keyPath:''},nativeVoice:'ember',apiVoice:'marin',notifications:false,model:''},worker:{status:'online',account:null,models:[],realtime:{subscription:{available:true},key:{configured:false}}},messages:[],queue:[],schedules:[],active:null,call:null,memory:''},page:'chat',chatMode:'text',showComputer:false,eventConnected:true,pc:null,stream:null,callStarting:false,callMini:false,callMuted:false,callConnected:false,callChannel:null,callProvider:'subscription',callStops:{pending:false},messageSubmissions:{unknown:null},pendingActions:new Set(),voiceChoices:['ember'],apiVoiceChoices:['marin'],voiceApiExpanded:false,voiceError:'',vmDraft:null,manualVMExpanded:false,provisionDraft:{cpu:4,memoryGB:6,diskGB:40,adminSudo:false},provisionExpanded:false,steerExpectedTurn:null,steerDraft:'',progressExpanded:false,scheduleDraft:{text:'',at:''},composerDraft:'',replyTo:null,attachments:[],uploading:0,sending:false,recording:null,recordStarting:false,dictating:false,speakingId:null,attachmentMenu:false,screenURL:'',screenError:'',innerWidth:1440,modal:null,
+ const context={formatCallDuration,callDuration:{snapshot:{callId:null,confirmed:false,seconds:0,finalized:false}},document:{documentElement:{dataset:{theme:'light'}}},appearance:{preferences:{theme:'system',font:'system',fontSize:13}},fontInventory:null,fontLoading:false,fontError:'',fontSearch:'',fontMenuOpen:false,appearanceAdvanced:false,vmProviderInfo:null,vmProvidersBusy:false,vmProvidersError:'',vmProfiles:null,vmProfilesVisible:false,vmProfilesBusy:false,vmProfilesError:'',selectedVMProfile:'',legacyVMDirectory:'',telegramStatus:null,telegramLoading:false,telegramError:'',telegramPairing:null,telegramPairTimer:null,fallbackLanguage:'zh',state:{settings:{language:selected,vm:{host:'',user:'dant',port:22,keyPath:''},nativeVoice:'ember',apiVoice:'marin',notifications:false,model:''},worker:{status:'online',account:null,models:[],realtime:{subscription:{available:true},key:{configured:false}}},messages:[],queue:[],schedules:[],active:null,call:null,memory:''},page:'chat',chatMode:'text',showComputer:false,eventConnected:true,pc:null,stream:null,callStarting:false,callMini:false,callMuted:false,callConnected:false,callChannel:null,callProvider:'subscription',callStops:{pending:false},messageSubmissions:{unknown:null},pendingActions:new Set(),voiceChoices:['ember'],apiVoiceChoices:['marin'],voiceApiExpanded:false,voiceError:'',vmDraft:null,manualVMExpanded:false,provisionDraft:{provider:'auto',cpu:4,memoryGB:6,diskGB:40,adminSudo:false},provisionExpanded:false,steerExpectedTurn:null,steerDraft:'',progressExpanded:false,scheduleDraft:{text:'',at:''},composerDraft:'',replyTo:null,attachments:[],uploading:0,sending:false,recording:null,recordStarting:false,dictating:false,speakingId:null,attachmentMenu:false,screenURL:'',screenError:'',innerWidth:1440,modal:null,
  localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},api:async(route,options)=>{requests.push({route,options});return {ok:true};},render:()=>{},esc:value=>String(value??''),ico:name=>`<svg>${name}</svg>`,button:(action,icon,label)=>`<button data-action="${action}" aria-label="${label}">${label}</button>`,eyes:()=>'',md:text=>text,formatTime:()=>'',humanControl:()=>false,unknownTask:message=>message?.submission==='unknown',speechBlocked:()=>false,renderLoginDetails:()=>'',fileURL:file=>'/fixture/'+file.id,
  };
  vm.createContext(context);vm.runInContext([
@@ -16,6 +17,7 @@ function fixture(selected='zh'){
  section('const subscriptionVoiceUnavailable=','const esc='),
  section('function renderHeader(status){','function renderAttachmentOptions(){'),
  section('function renderAttachmentOptions(){','function speechBlocked(){'),
+ section('function renderMessages(){','function renderComputer(){'),
  section('function renderComputer(){','function openModal('),
  ].join('\n')+'\nglobalThis.words={zh,en,t};',context);
  return {context,storage,requests};
@@ -66,5 +68,15 @@ test('speech fallback failures and microphone permissions follow the requested l
   const helper=new SpeechHelper({desktop:false,recognizer:null,synthesis:null});await assert.rejects(helper.dictate(language),language==='zh'?/当前浏览器不支持听写/:/Dictation is not supported/);await assert.rejects(helper.speak('fixture',language),language==='zh'?/当前浏览器不支持朗读/:/Read aloud is not supported/);
   let recognition;class Recognizer{constructor(){recognition=this;}start(){}abort(){this.onend?.();}}
   const recognizer=new SpeechHelper({desktop:false,recognizer:Recognizer,synthesis:null});const listening=recognizer.dictate(language);await Promise.resolve();recognition.onerror({error:'not-allowed'});recognition.onend();await assert.rejects(listening,language==='zh'?/麦克风权限未获准/:/Microphone permission was not granted/);
+ }
+});
+
+test('live and completed call durations use the same clock format and localized labels',()=>{
+ for(const language of ['zh','en']){
+  const {context:c}=fixture(language);c.state.call={id:'call-test',provider:'subscription',connectedAt:null};c.callStarting=true;assert.doesNotMatch(c.renderCall(),/data-call-duration/);
+  c.callStarting=false;c.callConnected=true;c.pc={connectionState:'connected'};c.callChannel={readyState:'open'};c.callDuration.snapshot={callId:'call-test',confirmed:true,seconds:75,finalized:false};
+  const live=c.renderCall();assert.match(live,/data-call-duration[^>]*>1:15/);assert.ok(live.includes(language==='zh'?'通话时长':'Call duration'));assert.ok(live.includes(language==='zh'?'正在通话':'In a call'));
+  c.pc=null;c.state.call=null;c.callDuration.snapshot.finalized=true;assert.ok(c.renderCallReady().includes((language==='zh'?'通话已结束':'Call ended')+' · 1:15'));
+  c.state.messages=[{id:'history',role:'system',kind:'call',callId:'call-test',seconds:75,time:1}];assert.match(c.renderMessages(),/1:15/);
  }
 });

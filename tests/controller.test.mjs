@@ -6,10 +6,11 @@ import {EventEmitter} from 'node:events';
 import {createControllerApp} from '../src/controller.mjs';
 import {VmBridge} from '../src/vm-bridge.mjs';
 import {assertVmRuntime} from '../src/local-worker.mjs';
+import {appearanceDefaults,appearanceKeys} from '../src/appearance.mjs';
 
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
 const temporary=t=>{const dir=fs.mkdtempSync(path.join(root,'controller-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return dir;};
-class FakeProvisioning extends EventEmitter{snapshot(){return {status:'idle',running:false};}resumeMonitoring(){return this.snapshot();}close(){}}
+class FakeProvisioning extends EventEmitter{snapshot(){return {status:'idle',running:false};}providers(){return {selected:'auto',provider:'vmware',availableProviders:[{id:'hyperv',available:false},{id:'vmware',available:true}]};}resumeMonitoring(){return this.snapshot();}close(){}}
 class FakeBridge extends EventEmitter{
  constructor(){super();this.status='offline';this.error=null;this.requests=[];}
  async refresh(){return this.cached;}
@@ -143,4 +144,42 @@ test('idle connection changes save the new VM binding and disconnect the previou
  const state={messages:[],active:null,call:null,takeover:false,computer:{status:'agent'},settings:{},worker:{status:'online'}};bridge.status='online';bridge.cached=state;bridge.emit('state',state);
  const response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({vm:{host:'192.0.2.70'},theme:'dark'})});assert.equal(response.status,200);assert.equal(disconnects,1);assert.equal(bridge.status,'offline');assert.equal(bridge.requests.length,0);
  assert.equal(app.snapshot().settings.vm.host,'192.0.2.70');assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'vm.json'))).host,'192.0.2.70');assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'controller.json'))).theme,'dark');
+});
+
+test('hypervisor and font discovery remain on the Controller and do not start or contact the VM',async t=>{
+ let enumerations=0;const inventory={fonts:['Aptos','Cascadia Code','微软雅黑'],source:'windows'};
+ const {base,headers,bridge,app}=await listen(t,temporary(t),new FakeBridge(),{fontsProvider:async()=>{enumerations++;return inventory;}});
+ assert.equal(enumerations,0);assert.equal((await fetch(base+'/api/fonts')).status,401);assert.equal(enumerations,0);
+ const fonts=await fetch(base+'/api/fonts',{headers});assert.equal(fonts.status,200);assert.deepEqual(await fonts.json(),inventory);assert.equal(enumerations,1);
+ const providers=await fetch(base+'/api/vm/providers',{headers});assert.equal(providers.status,200);assert.deepEqual(await providers.json(),app.provisioning.providers());assert.equal(bridge.requests.length,0);assert.equal(bridge.status,'offline');
+});
+
+test('expanded appearance settings persist locally, normalize colors and never reach VM settings',async t=>{
+ const dir=temporary(t),{app,base,headers,bridge}=await listen(t,dir);
+ assert.deepEqual(Object.fromEntries(appearanceKeys.map(key=>[key,app.snapshot().settings[key]])),appearanceDefaults);
+ const patch={theme:'dark',themePreset:'custom',accentColor:'#ab12ef',backgroundColor:'#102030',foregroundColor:'#f1f2f3',font:'sans',fontFamily:'Aptos',fontSize:16,contentFontSize:22,codeFontSize:19,reduceMotion:'reduce'};
+ let response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify(patch)});assert.equal(response.status,200);assert.equal(bridge.requests.length,0);
+ const expected={...patch,accentColor:'#AB12EF',foregroundColor:'#F1F2F3'},saved=JSON.parse(fs.readFileSync(path.join(dir,'controller.json')));
+ for(const [key,value]of Object.entries(expected)){assert.equal(app.snapshot().settings[key],value);assert.equal(saved[key],value);}
+ bridge.status='online';response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({themePreset:'warm',fontFamily:'Cascadia Code',language:'en',model:'fixture-model'})});assert.equal(response.status,200);
+ assert.equal(bridge.requests.length,1);assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'en',model:'fixture-model'});
+ assert.equal(app.snapshot().settings.themePreset,'warm');assert.equal(app.snapshot().settings.fontFamily,'Cascadia Code');
+ const reloaded=createControllerApp({dataDir:dir,projectRoot:path.resolve('.'),bridgeFactory:()=>new FakeBridge(),provisioningFactory:()=>new FakeProvisioning(),profileOptions:{registryFile:path.join(dir,'registry.json'),includeProject:false,env:{}}});t.after(()=>reloaded.close());assert.equal(reloaded.snapshot().settings.themePreset,'warm');assert.equal(reloaded.snapshot().settings.codeFontSize,19);assert.equal(reloaded.snapshot().settings.fontFamily,'Cascadia Code');
+});
+
+test('invalid expanded appearance patches reject all changes before writing VM or host preferences',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.40');const {app,base,headers,bridge}=await listen(t,dir);
+ await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({theme:'dark',fontFamily:'Aptos'})});bridge.status='online';let disconnects=0;bridge.disconnect=()=>{disconnects++;};
+ const beforeConfig=fs.readFileSync(path.join(dir,'controller.json')),beforeVM=fs.readFileSync(path.join(dir,'vm.json'));
+ for(const invalid of [{themePreset:'unsupported'},{accentColor:'red'},{backgroundColor:'#123'},{foregroundColor:'url(https://example.com)'},{fontFamily:'name; color:red'},{contentFontSize:25},{codeFontSize:10},{reduceMotion:true}]){
+  const response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({theme:'light',language:'en',notifications:true,vm:{host:'192.0.2.41'},...invalid})});assert.equal(response.status,400);
+  assert.deepEqual(fs.readFileSync(path.join(dir,'controller.json')),beforeConfig);assert.deepEqual(fs.readFileSync(path.join(dir,'vm.json')),beforeVM);assert.equal(app.snapshot().settings.theme,'dark');assert.equal(app.snapshot().settings.language,'zh');assert.equal(app.snapshot().settings.fontFamily,'Aptos');assert.equal(disconnects,0);assert.equal(bridge.requests.length,0);
+ }
+});
+
+test('invalid persisted appearance values fall back to safe defaults and font enumeration failures are local',async t=>{
+ const dir=temporary(t);fs.writeFileSync(path.join(dir,'controller.json'),JSON.stringify({themePreset:'invalid',accentColor:'red',fontFamily:'unsafe;name',fontSize:99,contentFontSize:0,codeFontSize:'13',reduceMotion:'invalid'}));
+ const {app,base,headers,bridge}=await listen(t,dir,new FakeBridge(),{fontsProvider:async()=>{throw Object.assign(Error('Windows font list is unavailable.'),{status:503});}});
+ assert.deepEqual(Object.fromEntries(appearanceKeys.map(key=>[key,app.snapshot().settings[key]])),appearanceDefaults);
+ const response=await fetch(base+'/api/fonts',{headers});assert.equal(response.status,503);assert.equal((await response.json()).error,'Windows font list is unavailable.');assert.equal(bridge.requests.length,0);
 });

@@ -19,6 +19,7 @@ import {MemoryStore} from './memory.mjs';
 import {ComputerSession} from './computer-session.mjs';
 import {NativeRealtimeVoice,DEFAULT_NATIVE_VOICE} from './realtime.mjs';
 import {TelegramGateway} from './telegram.mjs';
+import {buildReactionContext} from './reaction-context.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 export function createApp(options={}){
  const dataDir=options.dataDir||process.env.DANT_DATA||path.join(root,'data');
@@ -33,7 +34,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  const provisioning=new Provisioning({projectRoot:root,dataDir});
  const voiceKeys=secretFactory(dataDir);
  let callScopedKey=null;
- const voice=voiceFactory({getKey:()=>callScopedKey||voiceKeys.get(),runTask:text=>engine.runVoiceTask(text),tool:(name,args)=>engine.tool(name,args),context:()=>store.state.messages.filter(m=>['user','assistant'].includes(m.role)&&m.text).slice(-12).map(m=>m.role+': '+m.text).join('\n').slice(-16000),hangupTimeoutMs:2000});
+ const voice=voiceFactory({getKey:()=>callScopedKey||voiceKeys.get(),runTask:text=>engine.runVoiceTask(text),tool:(name,args)=>engine.tool(name,args),context:()=>store.state.messages.filter(m=>['user','assistant'].includes(m.role)&&m.text).slice(-12).map(m=>m.role+': '+m.text).join('\n').slice(-16000)+'\n\n'+buildReactionContext(store.state.messages),hangupTimeoutMs:2000});
  engine.voice=voice;
  const nativeVoice=nativeVoiceFactory({worker,engine});engine.nativeVoice=nativeVoice;
  nativeVoice.on('notice',message=>engine.emit('notice',message));nativeVoice.on('change',()=>engine.change());
@@ -71,7 +72,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  app.post('/api/messages',(req,res)=>{const text=String(req.body.text||'').trim(),replyTo=req.body.replyTo||null,clientMessageId=req.body.clientMessageId;const ids=req.body.attachments??[];if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string')||ids.length>MAX_MESSAGE_ATTACHMENTS||new Set(ids).size!==ids.length)throw Error('Attach at most five distinct files');if(clientMessageId!==undefined&&(typeof clientMessageId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientMessageId)))throw Error('Invalid client message ID');if(clientMessageId){const existing=store.state.messages.find(message=>message.role==='user'&&message.clientMessageId===clientMessageId);if(existing){if(existing.text!==text||(existing.replyTo||null)!==replyTo||JSON.stringify((existing.attachments||[]).map(file=>file.id))!==JSON.stringify(ids))return res.status(409).json({error:'This client message ID already belongs to a different request'});return res.json(existing);}}const attachments=ids.map(id=>{const item=uploadIndex.get(id);if(!item)throw Error('Attachment not found; please upload again');return item;});if(replyTo&&!store.state.messages.some(message=>message.id===replyTo))throw Error('The referenced message is not in this conversation');if(!text&&!attachments.length)return res.status(400).json({error:'Empty message'});if(text.length>100000)return res.sendStatus(413);if(worker.status!=='online')return res.status(409).json({error:'请先在设置中连接工作电脑 / Connect your VM in settings first'});const m=store.add({role:'user',text,attachments,replyTo,clientMessageId,status:'queued'});engine.enqueue(m);res.json(m);});
  app.get('/api/memory',(req,res)=>res.json({files:memory.snapshot()}));
  app.patch('/api/memory/:name',(req,res)=>{const result=memory.write(req.params.name,req.body.text);store.state.memory=memory.read('working-memory.md');store.save();engine.loaded=false;engine.change();res.json(result);});
- app.post('/api/messages/:id/reaction',(req,res)=>{const emoji=req.body.emoji;if(!['👍','❤️','😂','👀','🎉'].includes(emoji))return res.sendStatus(400);const m=store.state.messages.find(m=>m.id===req.params.id);if(!m)return res.sendStatus(404);store.update(m.id,{reactions:m.reactions.includes(emoji)?m.reactions.filter(x=>x!==emoji):[...m.reactions,emoji]});engine.change();res.json({ok:true});});
+ app.post('/api/messages/:id/reaction',(req,res)=>{const emoji=req.body.emoji;if(!['👍','❤️','😂','👀','🎉'].includes(emoji))return res.sendStatus(400);const m=store.state.messages.find(m=>m.id===req.params.id);if(!m)return res.sendStatus(404);store.update(m.id,{reactions:m.reactions.includes(emoji)?m.reactions.filter(x=>x!==emoji):[...m.reactions,emoji],reactionUpdatedAt:Date.now()});engine.change();res.json({ok:true});});
  app.post('/api/read',(req,res)=>{if(!Array.isArray(req.body.ids)||req.body.ids.length>1000)throw Error('Invalid visible message IDs');store.markVisible(req.body.ids);engine.change();res.json({ok:true});});
  app.post('/api/retry/:id',(req,res)=>{const m=store.state.messages.find(x=>x.id===req.params.id);if(!m||m.role!=='user'||!['failed','paused'].includes(m.status))return res.sendStatus(409);engine.resumePaused([m.id],{confirmUnknown:req.body.confirmUnknown===true});res.json({ok:true});});
  app.post('/api/stop',async(req,res)=>{await engine.pause();res.json({ok:true});});

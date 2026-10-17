@@ -1,8 +1,8 @@
-# Windows / Hyper-V VM setup and troubleshooting
+# Windows VM setup and troubleshooting
 
 English · [简体中文](zh-CN/VM.md)
 
-dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Windows Controller reaches the VM's work API at `127.0.0.1:4317` through an SSH local tunnel. The VM Node service starts Codex over stdio; the desktop bridge is also accessible only inside the VM. The default VM has 4 CPUs, 6 GB RAM, and a 40 GB dynamic disk, using DHCP/NAT on the Hyper-V Default Switch.
+dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Windows Controller reaches the VM's work API at `127.0.0.1:4317` through an SSH local tunnel. The VM Node service starts Codex over stdio; the desktop bridge is also accessible only inside the VM. New VMs default to 4 CPUs, 6 GB RAM, and a 40 GB disk. Hyper-V uses its Default Switch; VMware Workstation uses NAT. The Worker boundary and SSH connection are the same for both.
 
 ## Worker deployment and operation
 
@@ -22,7 +22,15 @@ node src/server.mjs --prepare
 
 Authoritative VM data is in `~/dant/data/`, conversation workspaces are in `~/dant/workspaces/<conversationId>/`, and deployed application versions are in `~/dant/releases/`. Inspect user services with `systemctl --user status dant-worker dant-guest-local` and `journalctl --user -u dant-worker`. Do not commit raw logs containing private conversations.
 
+## Choose a creation provider
+
+Settings → **Create work computer** offers Automatic, Hyper-V, and VMware Workstation. Detection is read only. Automatic retains the configured provider, otherwise selects available Hyper-V before VMware. A selected provider failure is reported without falling back to another provider. Hyper-V creation requests Windows administrator authorization; VMware reuses installed Workstation tools without Hyper-V elevation. Neither flow changes a valid existing connection to create a different VM.
+
+See [VMware setup](vmware.md) for that provider’s commands, storage layout and recovery. The detailed image preparation below applies to Hyper-V. To connect a computer you already own, use the SSH path instead.
+
 ## Connect an existing work computer
+
+Existing Ubuntu VMs can run on VMware, Hyper-V, or another hypervisor. Import/manual connection uses SSH and does not create a VM or convert its disks. The guest must provide SSH key access, Python 3, a working graphical desktop, and an ordinary user accepted by the VM runtime checks. Installing the Worker does not turn a server-only guest into a graphical desktop.
 
 The installed app and desktop launcher use `%APPDATA%\com.dant.desktop\data` by default. An explicit `DANT_DATA` selects a different directory. Earlier development runs commonly kept connection details in the project's `data` directory. Different local data directories do not mean that the VM needs to be recreated.
 
@@ -30,13 +38,13 @@ The Controller checks only known local sources: the selected data directory, the
 
 On Windows, the user registry is `%LOCALAPPDATA%\dant\vm-profiles.json`. It records profile-directory paths and is scoped to the current account; it does not store private-key contents.
 
-Import writes only connection fields. Relative private-key and `known_hosts` paths are resolved against the original profile directory. It does not copy private-key contents, chat history, server state, or another account's data. Keep the original directory containing the key. Any newly generated AppData key and previous setup-failure record remain untouched. After an explicit import, choose Connect; importing does not recreate the VM.
+Import writes only connection fields. Relative private-key and `known_hosts` paths are resolved against the original profile directory. It does not copy private-key contents, chat history, server state, or another account's data. Keep the original directory containing the key. Any newly generated AppData key and previous setup-failure record remain untouched. The UI connects after an explicit import succeeds; the import API itself does not start a connection or recreate the VM.
 
 `GET /api/vm/profiles` returns the current profile and candidates. `POST /api/vm/import` accepts `{id}` or `{directory}` and refuses to replace an existing valid connection. A missing binding or key produces instructions to import the original directory or choose its existing key instead of a raw `ENOENT` error.
 
-A historical `failed:*` setup status does not block automatic connection to a valid existing VM. An actively preparing, creating, installing, or administrator-approval operation postpones automatic connection; old failure logs remain available. If Hyper-V reports that a VM with the same name already exists, recover its original connection profile first. Do not regenerate its seed or recreate it merely because a new local data directory lacks `vm.json`.
+A historical `failed:*` setup status does not block automatic connection to a valid existing VM. An actively preparing, creating, installing, or administrator-approval operation postpones automatic connection; old failure logs remain available. If the selected provider reports that a VM with the same name already exists, recover its original connection profile first. Do not regenerate its seed or recreate it merely because a new local data directory lacks `vm.json`.
 
-## Initial setup
+## Hyper-V initial setup
 
 Requires Windows with Hyper-V enabled, the OpenSSH client, Python 3, and network access to the Ubuntu and npm repositories. The image archive is approximately 810 MiB; its extracted fixed VHD is approximately 30 GiB. Conversion needs additional space for the dynamic VHDX. Image preparation can run in ordinary PowerShell. Windows requires administrator authorization to create/start a Hyper-V VM, and the app's setup flow may show a UAC prompt.
 
@@ -97,7 +105,7 @@ References: [cloud-init datasource configuration](https://docs.cloud-init.io/en/
 
 ## Progress and logs
 
-On Windows, `data/vm-setup-status.json` records the stage, last update, log path, and error; installed apps use the selected data directory instead. `data/logs/create-vm-*.log` contains the administrator script's full transcript. Common stages:
+On Windows, `data/vm-setup-status.json` records the stage, last update, log path, and error; installed apps use the selected data directory instead. Hyper-V `data/logs/create-vm-*.log` contains the administrator script's full transcript; VMware uses `data/vmware/logs/`. The setup record includes the provider. Common Hyper-V stages:
 
 | Stage | Meaning |
 | --- | --- |

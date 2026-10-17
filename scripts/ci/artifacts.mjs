@@ -44,7 +44,8 @@ async function describe(name) {
 
 // The resource directory is built from this checkout on Windows. Never include data,
 // keys, local caches, or an executable copied from a different operating system.
-for (const name of ['LICENSE', 'package.json', 'src/server.mjs', 'dist/index.html', 'scripts/prepare-vm.ps1', 'scripts/create-vm.ps1', 'scripts/check-vm.ps1', 'scripts/seed.py', 'scripts/patch-image.py', 'scripts/vm-key.py', 'vm/bootstrap.sh', 'vm/guest.py', 'vm/desktop.py', 'node_modules/express/package.json']) {
+const requiredFiles = ['LICENSE', 'package.json', 'src/server.mjs', 'src/hypervisors.mjs', 'dist/index.html', 'scripts/prepare-vm.ps1', 'scripts/create-vm.ps1', 'scripts/check-vm.ps1', 'scripts/prepare-vmware.ps1', 'scripts/create-vmware.ps1', 'scripts/vmware.py', 'scripts/seed.py', 'scripts/patch-image.py', 'scripts/vm-key.py', 'vm/bootstrap.sh', 'vm/guest.py', 'vm/desktop.py', 'node_modules/express/package.json'];
+for (const name of requiredFiles) {
   requireFile(path.join(resources, name));
 }
 for (const name of ['data', '.cache', '.tools', '.env']) {
@@ -69,7 +70,7 @@ try {
   const tar = path.join(process.env.SystemRoot ?? 'C:/Windows', 'System32/tar.exe');
   run(tar, ['-a', '-c', '-f', path.join(output, zipName), '-C', staging, 'dant.exe', 'backend']);
   const entries = new Set(run(tar, ['-t', '-f', path.join(output, zipName)]).split(/\r?\n/).map(name => name.replaceAll('\\', '/')));
-  for (const name of ['dant.exe', 'backend/node.exe', 'backend/src/server.mjs', 'backend/dist/index.html', 'backend/vm/bootstrap.sh']) {
+  for (const name of ['dant.exe', 'backend/node.exe', ...requiredFiles.map(name => `backend/${name}`)]) {
     if (!entries.has(name)) throw new Error(`Portable ZIP is missing ${name}.`);
   }
 } finally {

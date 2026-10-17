@@ -80,7 +80,7 @@ export class NativeRealtimeVoice extends EventEmitter {
  confirmConnected(callId){
   const s=this.session;if(!s||s.id!==callId)throw Error('The voice call changed');
   if(s.status!=='negotiating'&&s.status!=='connected')throw Error('The voice call is not ready');
-  s.connectedAt ||= Date.now();s.status='connected';this.change();return {connected:true,callId};
+  s.connectedAt ||= Date.now();s.status='connected';this.change();return {connected:true,callId,connectedAt:s.connectedAt};
  }
  message({clientMessageId,text,replyTo=null,attachments=[],callId}={}){
   const s=this.session;

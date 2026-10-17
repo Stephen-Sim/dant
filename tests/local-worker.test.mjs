@@ -190,6 +190,18 @@ test('desktop operations are local, allowlisted, carry lease bodies and upload e
   worker.fetchImpl = async () => new Response('', {status:409}); await assert.rejects(worker.guest('/control', {action:'renew'}), /Desktop operation failed \(409\)/);
 });
 
+test('only an explicit task or call request receives fresh reactions from the authoritative VM Store', async t => {
+  const {worker,rpc}=fixture(t);await worker.connect();const message={id:'answer',role:'assistant',text:'Result',reactions:['👍'],attachments:[{name:'output.txt'}]};worker.store.state.messages=[message];
+  const params={threadId:'thread',input:[{type:'text',text:'Continue',text_elements:[]}]};await worker.request('turn/start',params);
+  assert.match(rpc.requests.at(-1).params.input[0].text,/👍/);assert.equal(params.input.length,1);const requestCount=rpc.requests.length;
+  message.reactions=['❤️'];await nextTurn();assert.equal(rpc.requests.length,requestCount);await worker.request('turn/steer',{...params,expectedTurnId:'owned-turn'});
+  assert.match(rpc.requests.at(-1).params.input[0].text,/❤️/);assert.doesNotMatch(rpc.requests.at(-1).params.input[0].text,/👍/);assert.equal(rpc.requests.at(-1).params.expectedTurnId,'owned-turn');
+  message.reactions=[];await nextTurn();assert.equal(rpc.requests.length,requestCount+1);await worker.request('turn/start',params);
+  assert.match(rpc.requests.at(-1).params.input[0].text,/"entries":\[\]/);assert.doesNotMatch(rpc.requests.at(-1).params.input[0].text,/👍|❤️/);
+  await worker.request('thread/realtime/start',{threadId:'thread',realtimeStartInstructions:'Call policy'});assert.match(rpc.requests.at(-1).params.realtimeStartInstructions,/empty complete list clears/);
+  const thread={developerInstructions:'Stable policy'};await worker.request('thread/resume',thread);assert.strictEqual(rpc.requests.at(-1).params,thread);assert.equal(thread.developerInstructions,'Stable policy');
+});
+
 test('voice generation rejects host execution, invalid output directories and oversized text before spawn', async t => {
   let spawned = 0; replaceSpawn(t, () => { spawned++; assert.fail('Invalid voice requests must never spawn'); });
   const {worker, home} = fixture(t); await assert.rejects(worker.createVoiceMessage({text:'hello'}), /connected VM/); await worker.connect();

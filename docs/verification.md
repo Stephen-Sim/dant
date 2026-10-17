@@ -14,6 +14,8 @@ Bilingual tests exercised critical UI flows, retained-error translation, offline
 
 ## Regression suite and coverage
 
+The 0.3.0 local JavaScript run executed 331 tests: 330 passed, one Windows symlink check skipped, and none failed. Coverage was 96.92% lines, 84.01% branches, and 85.43% functions. All 47 Python tests passed. New cases cover provider detection and selection, VMware profile ownership metadata, strict local appearance validation, installed-font enumeration, theme import/export, real call-handler timer cleanup, and bounded reaction snapshots including cancellation of older feedback. Actual Windows font discovery returned 198 families. VM reaction-route tests verify persistence and voice-context inclusion without starting tasks.
+
 The 0.2.0 local run executed 277 JavaScript tests: 276 passed, one Windows symlink check skipped, and none failed. Measured coverage was 96.6% lines, 81.81% branches, and 83.78% functions. All 15 Python tests, seven version/coverage-gate checks, PowerShell/Bash parsing, actionlint, the frontend build, and locked Cargo checking also passed. CI produces independent platform reports for the committed source.
 
 Run `npm run test:coverage` for the current JavaScript unit suite and coverage gate. It writes the full test log, LCOV data, machine-readable totals, and a Markdown table under `.cache/coverage/`. CI uploads reports for Windows and Ubuntu. Source percentages and the exact executed test count come from each report rather than a manually maintained claim of complete coverage.
@@ -33,6 +35,14 @@ Actual task acceptance included text and icon attachments, an MCP screenshot, ex
 The later installed-profile defect was reproduced as a missing AppData `vm.json`, while the original VM remained SSH-accessible. Import restored connection fields by reference and preserved the independently generated AppData key and earlier failed-setup record. The VM and its disk were not recreated.
 
 After repair, the real Controller started against that installed AppData profile, reconnected despite its retained `failed` setup status, and reported both Controller and Worker online with the original conversation and all 21 messages. The deployed Telegram status route was available and remained disabled without credentials. The original Windows state hash stayed unchanged. A separate unauthenticated HTTPS check from the VM verified Telegram DNS/TLS reachability, without sending a bot message.
+
+For 0.3.0, the idle existing Hyper-V Worker was updated through the normal SSH deployment path and reconnected online. Its conversation identity and all 24 messages present at that time were preserved. The reaction context runs inside this authoritative VM Worker; this check did not add a synthetic task or alter an existing reaction.
+
+## Real VMware attempt
+
+Workstation 17.0.2 was detected on the Windows host. The official Ubuntu VMDK checksum, disk conversion and expansion to 40 GiB passed. A first boot exposed a generated VMX network-adapter defect; switching the managed adapter from VMXNET3 to E1000 fixed startup. The isolated test VM then ran successfully without altering the existing Hyper-V VM.
+
+Guest IP/SSH and full desktop readiness were not established: the host's VMware DHCP service was stopped and the current process could not start that Windows service. The NAT service and VMnet8 adapter were present. This is boot acceptance, not complete VMware task or network acceptance. Creation now checks the required NAT/DHCP services before changing managed VM files and reports an actionable failure when they are stopped.
 
 ## Subscription voice
 
