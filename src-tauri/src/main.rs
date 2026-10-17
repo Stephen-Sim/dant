@@ -1,0 +1,38 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use std::{io::{BufRead,BufReader},process::{Child,Command,Stdio},sync::{Mutex,mpsc},time::Duration};
+use tauri::Manager;
+#[cfg(windows)] use std::os::windows::process::CommandExt;
+struct Backend(Mutex<Option<Child>>);
+fn startup_error(message: &str){
+ #[cfg(windows)] {
+  #[link(name="user32")] extern "system" {fn MessageBoxW(hwnd:*mut std::ffi::c_void,text:*const u16,title:*const u16,kind:u32)->i32;}
+  let text:Vec<u16>=message.encode_utf16().chain(Some(0)).collect();
+  let title:Vec<u16>="dant".encode_utf16().chain(Some(0)).collect();
+  unsafe{MessageBoxW(std::ptr::null_mut(),text.as_ptr(),title.as_ptr(),0x10);}
+ }
+ #[cfg(not(windows))] eprintln!("{message}");
+}
+fn main(){
+ let app=tauri::Builder::default()
+ .plugin(tauri_plugin_notification::init())
+ .plugin(tauri_plugin_opener::init())
+ .setup(|app|{
+   let backend_root=if cfg!(debug_assertions){std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()}else{app.path().resource_dir()?.join("backend")};
+   let data=if let Some(value)=std::env::var_os("DANT_DATA"){std::path::PathBuf::from(value)}else if cfg!(debug_assertions){backend_root.join("data")}else{app.path().app_data_dir()?.join("data")};
+   std::fs::create_dir_all(&data)?;
+   let node=if cfg!(debug_assertions){std::path::PathBuf::from("node")}else{backend_root.join("node.exe")};
+   let mut command=Command::new(node);
+   let log=std::fs::OpenOptions::new().create(true).append(true).open(data.join("startup.log"))?;
+   command.arg(backend_root.join("src/server.mjs")).current_dir(&backend_root).env("DANT_DATA",&data).env("DANT_MANAGED","1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::from(log));
+   #[cfg(windows)] command.creation_flags(0x08000000);
+   let mut child=command.spawn()?;
+   let (sender,receiver)=mpsc::channel();
+   let output=child.stdout.take().ok_or("Missing backend output")?;
+   std::thread::spawn(move||{for line in BufReader::new(output).lines().map_while(Result::ok){if line=="dant listening at http://127.0.0.1:4317"{let _=sender.send(());}}});
+   if receiver.recv_timeout(Duration::from_secs(15)).is_err(){let _=child.kill();let _=child.wait();return Err(format!("dant backend could not start. Close other dant instances and check {}",data.join("startup.log").display()).into());}
+   app.manage(Backend(Mutex::new(Some(child))));
+   Ok(())
+ }).build(tauri::generate_context!());
+ let app=match app{Ok(app)=>app,Err(error)=>{startup_error(&format!("Unable to start dant: {error}"));std::process::exit(1);}};
+ app.run(|handle,event|{if let tauri::RunEvent::Exit=event {if let Some(state)=handle.try_state::<Backend>(){if let Some(mut child)=state.0.lock().unwrap().take(){drop(child.stdin.take());for _ in 0..30{if child.try_wait().ok().flatten().is_some(){break;}std::thread::sleep(Duration::from_millis(100));}let _=child.kill();let _=child.wait();}}}});
+}
