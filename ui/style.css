@@ -54,6 +54,11 @@
 .call-view.mini{position:fixed;z-index:20;cursor:grab;touch-action:none;user-select:none}.call-view.mini[data-call-dragging]{cursor:grabbing}.call-view.mini button,.call-view.mini a{cursor:pointer}
 .header-work{position:relative;gap:5px;color:var(--text-soft);border-color:transparent;background:transparent}
 .work-review-marker{position:absolute;top:3px;right:3px;width:5px;height:5px;border-radius:50%;background:var(--warning-text);pointer-events:none}
+.work-summary{display:flex;align-items:center;gap:11px;flex-shrink:0;width:calc(100% - 56px);max-width:748px;margin:12px auto 8px;padding:10px 13px;border:1px solid var(--border-soft);border-radius:10px;background:var(--surface-subtle);color:var(--text-soft);text-align:left;cursor:pointer}
+.work-summary:hover{background:var(--hover);border-color:var(--border)}.work-summary:focus-visible{outline:2px solid var(--accent-color);outline-offset:2px}
+.work-summary-content{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}.work-summary-content small{font-size:calc(var(--app-font-size) * 10 / 13);line-height:1.4;color:var(--text-muted)}.work-summary-content strong{font-size:calc(var(--app-font-size) * 11 / 13);line-height:1.5;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-summary-chevron{flex-shrink:0;font-size:20px;line-height:1;color:var(--text-faint)}.continuing .work-status-dot{background:var(--presence-online)}.pausing .work-status-dot,.queued .work-status-dot{background:var(--text-muted)}
+@media(max-width:600px){.work-summary{width:calc(100% - 24px)}}
 .progress-item>div{flex:1;min-width:0}
 .progress-dismiss{width:24px;height:24px;margin-left:5px;color:var(--text-faint);align-self:flex-start;font-size:16px}
 .progress-dismiss svg{width:13px;height:13px}

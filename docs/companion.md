@@ -16,6 +16,8 @@ After hangup, results and problems go to the existing chat. Credential requests 
 
 **Work progress** opens from the chat header, where a small mark highlights results awaiting review. Task status and details appear in its panel. It shows confirmed chat and call work, including speech-only requests without a user text bubble. Running, continuing in the background, waiting for a reply, stopping and unconfirmed states are separate from call status. The current card shows the task title, execution stage, elapsed time and last update. Explicit public checklists remain available in current and recent work; step counts do not predict remaining time or override the executor's task status.
 
+An optional compact progress card above chat is controlled by **General → Show work progress in chat**, off by default. The saved display preference does not change task execution or call media.
+
 Recent work includes text tasks and final call results. Its **×** control dismisses an inactive entry from Work progress without deleting chat, changing task status or read receipts, or resetting model context. Active work keeps the separate **Stop work** action. Viewing a result follows the same visibility-based unread tracking as chat.
 
 If the connection is stale, the interface keeps the last known task and labels its status unconfirmed. It does not decide that a quiet task has finished, cancel it, or replay it. Resuming an uncertain text task still requires an explicit human decision.

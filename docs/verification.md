@@ -4,6 +4,12 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.5 optional chat progress card follow-up
+
+The final local JavaScript coverage run passed **1,202 tests, zero failures and zero skips**. Coverage is **98.76% lines, 91.12% branches and 91.49% functions**; every configured gate passed. The frontend production build passed.
+
+**General → Show work progress in chat** defaults to off. The Controller persists this strict boolean locally, including offline, and its value takes precedence over VM snapshots. Standalone Worker mode persists its own preference. Tests cover restart, malformed values, atomic rejection, mixed proxy requests, active calls and unchanged executor ownership. The bilingual searchable toggle saves with a request lock and rolls back on failure. Enabled cards appear above messages, open the existing progress panel, and show active, ongoing or queued work without creating tasks. Tests preserve the peer, audio, elapsed time and composer draft, and retain the header entry when the card is hidden. No native GUI or live call was operated; these changes remain local source until separately installed.
+
 ## 0.4.5 unified conversation, ongoing work and scheduled tasks follow-up
 
 The final local JavaScript coverage run passed **1,189 tests, zero failures and zero skips**. Coverage is **98.75% lines, 91.02% branches and 91.48% functions**, with every configured gate satisfied. The seven separate coverage/version checks and **22 mocked Python VM/MCP tests** also passed. The frontend production build and all 102 local documentation links passed validation.

@@ -18,6 +18,8 @@ Your message shows one check after it is saved, and two after the executor ackno
 
 While a call is connected, typed text goes to that same call and dant responds aloud. Quoted replies carry the original message and speaker; both voice providers share the same conversation memory. Work progress remains available from its header button, and task checklist expansion survives status refreshes and reopening the panel.
 
+In **General → Show work progress in chat**, enable the compact progress card above the conversation. It is off by default and remembers your choice after restart. The card opens the same Work progress panel; its visibility preference does not start, pause or finish work, or change the current call. The header button remains available.
+
 An actual bubble must remain in view for 450 ms in the focused foreground text chat before it is marked read. Minimizing the app, showing the full call view, switching pages or opening a modal stops that tracking. Restoring the window or receiving a notification does not mark unseen replies read. Receipts are saved in the VM conversation; native notification delivery is a separate record.
 
 Enable **Message notifications** in General to receive alerts for unread results or requests for input. A notification means dant has a message for you; it does not necessarily mean the task has finished. Native alerts require the Windows app to remain running and notification permission to be granted.

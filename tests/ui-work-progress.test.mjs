@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {workProgress,renderWorkEntry,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,updateWorkTimers} from '../ui/work-progress.js';
+import {workProgress,renderWorkEntry,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,updateWorkTimers} from '../ui/work-progress.js';
 
 const state=()=>({worker:{status:'online'},controller:{status:'online'},messages:[],queue:[],completions:[]});
 test('accepted call conversation inputs are not phantom tasks while registered call work remains visible',()=>{
@@ -157,7 +157,7 @@ test('quiet work elapsed time updates in place without replacing focused drafts 
  updateWorkTimers(document,0);assert.equal(document.querySelector('time').textContent,'0:00');
 });
 
-test('chat keeps messages and the composer free of an inline work card in every task state',()=>{
+test('chat keeps messages and the composer free of an inline work card by default in every task state',()=>{
  const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderChat(){'),end=source.indexOf('function renderDraftAttachment(',start);
  const data=state(),context={state:data,renderMessages:()=>'<article class="message">Saved chat</article>',renderUnreadControl:()=>'',managedSettings:{renderRequests:()=>''},replyTo:null,attachments:[],renderUnconfirmedMessage:()=>'',renderVoiceRecorder:()=>'',recordDraft:null,recordStarting:false,composerDraft:'Draft stays here',esc:value=>String(value??''),t:value=>value,renderAttachmentOptions:()=>'',speechBlocked:()=>false,dictating:false,recording:null,sending:false,uploading:false,eventConnected:true,speakingId:null,ico:()=>'',button:(action)=>`<button data-action="${action}"></button>`};
  data.messages=[{id:'saved',role:'assistant',text:'Saved chat'}];vm.createContext(context);vm.runInContext(source.slice(start,end),context);
@@ -166,7 +166,25 @@ test('chat keeps messages and the composer free of an inline work card in every 
   const {document}=parseHTML('<main>'+context.renderChat()+'</main>'),main=document.querySelector('main');
   assert.equal(main.firstElementChild.id,'messages');assert.equal(document.querySelectorAll('.message').length,1);assert.equal(document.querySelector('#composer').textContent,'Draft stays here');assert.equal(document.querySelector('.work-summary,.current-work,[data-action="progress"]'),null);assert.equal(Boolean(document.querySelector('[data-action="stop"]')),Boolean(activeStatus));
  }
- assert.doesNotMatch(source,/renderWorkSummary/);
+ assert.match(source,/settings\?\.showWorkSummary===true\?renderWorkSummary/);
+});
+
+test('optional chat work summary shows only actual active, ongoing or queued work and keeps titles inert',()=>{
+ const data=state();assert.equal(renderWorkSummary(workProgress(data)),'');data.messages=[{id:'review',role:'user',text:'Review only',status:'review'}];assert.equal(renderWorkSummary(workProgress(data)),'','review history alone never creates a blank summary');
+ data.active={turnId:'speech',source:'voice',status:'running',visible:false};assert.equal(renderWorkSummary(workProgress(data)),'','ordinary conversation stays hidden');
+ for(const language of ['en','zh']){
+  data.active={turnId:'owned',source:'voice',background:true,status:'running',title:'Verify <img src=x onerror=alert(1)> & output'};let model=workProgress(data,{language}),document=parseHTML(renderWorkSummary(model)).document;
+  assert.equal(document.querySelector('button').dataset.action,'progress');assert.equal(document.querySelector('img'),null);assert.match(document.querySelector('strong').textContent,/<img/);assert.match(document.querySelector('small').textContent,language==='en'?/Continuing in the background/:/后台继续/);assert.equal(document.querySelector('progress'),null);
+  for(const status of ['unknown','pausing','waiting_user']){data.active.status=status;document=parseHTML(renderWorkSummary(workProgress(data,{language}))).document;assert.equal(document.querySelector('button').classList.contains(status),true);}
+  data.active.status='running';data.controller={status:'online',cached:true};document=parseHTML(renderWorkSummary(workProgress(data,{language}))).document;assert.equal(document.querySelector('button').classList.contains('unknown'),true);assert.match(document.querySelector('button').title,language==='en'?/Reconnect/:/重新连接/);data.controller={status:'online'};
+ }
+ data.active=null;data.messages=[];data.workTasks=[{id:'ongoing',turnId:'past-turn',source:'voice',title:'Continue verification',status:'continuing'}];assert.match(renderWorkSummary(workProgress(data)),/Continue verification/);data.workTasks=[];data.messages=[{id:'queued',role:'user',text:'Queued <script>work</script>',status:'queued'}];data.queue=['queued'];const document=parseHTML(renderWorkSummary(workProgress(data))).document;assert.match(document.querySelector('small').textContent,/Queued/);assert.equal(document.querySelector('script'),null);assert.match(document.querySelector('strong').textContent,/<script>/);
+});
+
+test('chat summary is strictly opt-in and switching it on and off preserves rendered messages and draft',()=>{
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderChat(){'),end=source.indexOf('function renderDraftAttachment(',start),data=state(),context={state:data,workProgress,renderWorkSummary,language:()=>'en',renderMessages:()=>'<article class="message">Saved chat</article>',renderUnreadControl:()=>'',managedSettings:{renderRequests:()=>''},replyTo:null,attachments:[],renderUnconfirmedMessage:()=>'',renderVoiceRecorder:()=>'',recordDraft:null,recordStarting:false,composerDraft:'Draft stays here',esc:value=>String(value??''),t:value=>value,renderAttachmentOptions:()=>'',speechBlocked:()=>false,dictating:false,recording:null,sending:false,uploading:false,eventConnected:true,speakingId:null,ico:()=>'',button:(action)=>`<button data-action="${action}"></button>`};
+ data.messages=[{id:'saved',role:'assistant',text:'Saved chat'}];data.active={turnId:'owned',status:'running',title:'Inspect the project'};vm.createContext(context);vm.runInContext(source.slice(start,end),context);
+ for(const enabled of [undefined,false,'true',true,false,true]){data.settings={showWorkSummary:enabled};const document=parseHTML(context.renderChat()).document;assert.equal(Boolean(document.querySelector('.work-summary')),enabled===true);assert.equal(document.querySelector('.message').textContent,'Saved chat');assert.equal(document.querySelector('#composer').value,'Draft stays here');assert.equal(document.querySelector('#messages').previousElementSibling,document.querySelector('.work-summary'));}
 });
 
 test('main renders first-class task access and voice result navigation without changing read state itself',()=>{

@@ -99,6 +99,47 @@ test('host appearance defaults and changes persist offline without proxying to t
  const reloaded=createControllerApp({dataDir:dir,projectRoot:path.resolve('.'),bridgeFactory:()=>new FakeBridge(),provisioningFactory:()=>new FakeProvisioning(),profileOptions:{registryFile:path.join(dir,'registry.json'),includeProject:false,env:{}}});t.after(()=>reloaded.close());assert.equal(reloaded.snapshot().settings.theme,'dark');assert.equal(reloaded.snapshot().settings.font,'sans');assert.equal(reloaded.snapshot().settings.fontSize,14);
 });
 
+test('inline work summaries default hidden and persist offline independently of cached VM settings',async t=>{
+ const dir=temporary(t),{app,base,headers,bridge}=await listen(t,dir),patch=showWorkSummary=>fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({showWorkSummary})});
+ assert.equal(app.snapshot().settings.showWorkSummary,false);
+ const cached={messages:[],settings:{showWorkSummary:true},worker:{status:'online'},queue:[]};bridge.cached=cached;bridge.emit('state',cached);
+ assert.equal(app.snapshot().settings.showWorkSummary,false,'a VM preference cannot enable this host UI setting');
+ for(const showWorkSummary of [true,false,true]){assert.equal((await patch(showWorkSummary)).status,200);assert.equal(app.snapshot().settings.showWorkSummary,showWorkSummary);assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'controller.json'),'utf8')).showWorkSummary,showWorkSummary);}
+ assert.equal(bridge.requests.length,0);
+ cached.settings.showWorkSummary=false;bridge.emit('state',cached);assert.equal(app.snapshot().settings.showWorkSummary,true);
+ await app.close();
+ const reloaded=createControllerApp({dataDir:dir,projectRoot:path.resolve('.'),bridgeFactory:()=>new FakeBridge(),provisioningFactory:()=>new FakeProvisioning(),profileOptions:{registryFile:path.join(dir,'registry.json'),includeProject:false,candidateDirs:[],env:{}}});t.after(()=>reloaded.close());
+ assert.equal(reloaded.snapshot().settings.showWorkSummary,true,'the host preference survives a Controller restart');assert.equal(reloaded.snapshot().settings.showWorkSummary!==cached.settings.showWorkSummary,true);
+});
+
+test('work summary changes stay local during a call and are removed from mixed proxied settings',async t=>{
+ const {app,base,headers,bridge}=await listen(t,temporary(t)),call={id:'ongoing-call',provider:'subscription'},active={turnId:'existing-work'};
+ const state={messages:[],settings:{showWorkSummary:false},worker:{status:'online'},call,active,queue:['queued-task']};bridge.status='online';bridge.cached=state;bridge.emit('state',state);
+ let disconnects=0;bridge.disconnect=()=>{disconnects++;};
+ const patch=body=>fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify(body)});
+ assert.equal((await patch({showWorkSummary:true})).status,200);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().settings.showWorkSummary,true);
+ assert.equal((await patch({showWorkSummary:false,language:'en',model:'unchanged-proxy-behavior'})).status,200);
+ assert.deepEqual(bridge.requests.map(request=>JSON.parse(request.body)),[{language:'en',model:'unchanged-proxy-behavior'}]);assert.equal(app.snapshot().settings.showWorkSummary,false);
+ assert.equal(state.call,call);assert.equal(state.active,active);assert.deepEqual(state.queue,['queued-task']);assert.equal(disconnects,0);assert.equal(bridge.status,'online');
+});
+
+test('invalid work summary values reject a whole Controller settings patch before any local or VM mutation',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.40');const {app,base,headers,bridge}=await listen(t,dir),patch=body=>fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify(body)});
+ assert.equal((await patch({showWorkSummary:true,theme:'dark'})).status,200);bridge.status='online';let disconnects=0;bridge.disconnect=()=>{disconnects++;};
+ const config=fs.readFileSync(path.join(dir,'controller.json')),vm=fs.readFileSync(path.join(dir,'vm.json')),settings=structuredClone(app.snapshot().settings);
+ for(const showWorkSummary of ['true',1,0,null,[],{}]){
+  const response=await patch({showWorkSummary,theme:'light',language:'en',notifications:true,vm:{host:'192.0.2.41'},model:'must-not-forward'});assert.equal(response.status,400);assert.match((await response.json()).error,/work summary preference/);
+  assert.deepEqual(fs.readFileSync(path.join(dir,'controller.json')),config);assert.deepEqual(fs.readFileSync(path.join(dir,'vm.json')),vm);assert.deepEqual(app.snapshot().settings,settings);assert.equal(disconnects,0);assert.equal(bridge.requests.length,0);
+ }
+});
+
+test('invalid persisted Controller work summary values normalize to the hidden default',t=>{
+ for(const showWorkSummary of ['true',1,null,[],{}]){
+  const dir=temporary(t);fs.writeFileSync(path.join(dir,'controller.json'),JSON.stringify({showWorkSummary}));
+  const app=createControllerApp({dataDir:dir,projectRoot:path.resolve('.'),bridgeFactory:()=>new FakeBridge(),provisioningFactory:()=>new FakeProvisioning(),profileOptions:{registryFile:path.join(dir,'registry.json'),includeProject:false,candidateDirs:[],env:{}}});t.after(()=>app.close());assert.equal(app.snapshot().settings.showWorkSummary,false);
+ }
+});
+
 test('missing VM Connect returns actionable guidance and profile APIs stay local',async t=>{
  const {app,base,headers,bridge}=await listen(t,temporary(t));bridge.connect=()=>assert.fail('Missing configuration must not start a transport');
  const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'}),body=await response.json();assert.equal(response.status,409);assert.match(body.error,/Import an existing/);assert.doesNotMatch(body.error,/ENOENT/);

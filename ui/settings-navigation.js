@@ -6,6 +6,7 @@ const categories=[
 const entries=[
  ['language','general','Language','语言','English Chinese 中文 英文','[data-language]'],
  ['notifications','general','Message notifications','消息通知','notify alert 提醒','#notifications'],
+ ['work-summary','general','Show work progress in chat','在聊天中显示任务进度','task work summary progress card show hide 任务 工作 进度 摘要 卡片 显示 隐藏','#showWorkSummary'],
  ['text-editor','general','Default text editor','默认文本编辑器','VS Code Notepad Sublime source code open 编辑器 记事本 源码 打开','.text-editor-settings'],
  ['mode','appearance','Light, dark or system mode','浅色、深色或跟随系统','theme light dark 主题 模式','[data-theme]'],
  ['theme','appearance','Theme preset','主题预设','visual style 视觉 风格','#appearance-preset'],

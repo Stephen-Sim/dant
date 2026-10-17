@@ -5,6 +5,7 @@ import path from 'node:path';
 import {EventEmitter} from 'node:events';
 import {randomUUID} from 'node:crypto';
 import {createWorkerApp} from '../src/server.mjs';
+import {Store} from '../src/store.mjs';
 
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
 class Worker extends EventEmitter{
@@ -38,6 +39,38 @@ test('VM account and configuration APIs preserve ownership and reject changes du
  assert.equal(store.state.settings.model,'fixture-model');engine.call=null;
  assert.equal((await api('/voice-key',{key:'test-only'})).status,200);assert.equal((await api('/state').then(r=>r.json())).worker.realtime.key.configured,true);
  assert.equal((await api('/voice-key',{},'DELETE')).status,200);assert.equal((await api('/logout',{})).status,200);assert.equal(worker.calls.at(-1).method,'account/logout');
+});
+
+test('standalone Worker work summaries default hidden and persist both toggle values across Store reloads',async t=>{
+ const {api,store,dir}=await fixture(t);assert.equal((await api('/state').then(response=>response.json())).settings.showWorkSummary,false);
+ for(const showWorkSummary of [true,false,true]){
+  assert.equal((await api('/settings',{showWorkSummary},'PATCH')).status,200);assert.equal(store.state.settings.showWorkSummary,showWorkSummary);assert.equal((await api('/state').then(response=>response.json())).settings.showWorkSummary,showWorkSummary);
+  assert.equal(new Store(dir).state.settings.showWorkSummary,showWorkSummary);
+ }
+});
+
+test('standalone work summary changes leave a running call and its executor untouched',async t=>{
+ const {api,store,worker,engine}=await fixture(t),call={id:'existing-call',provider:'api',status:'connected'},active={turnId:'already-running',messageIds:[],voiceOutput:true};
+ engine.call=call;engine.active=active;engine.loaded=true;
+ try{for(const showWorkSummary of [true,false]){
+  assert.equal((await api('/settings',{showWorkSummary},'PATCH')).status,200);assert.equal(store.state.settings.showWorkSummary,showWorkSummary);assert.equal(engine.call,call);assert.equal(engine.active,active);assert.equal(engine.loaded,true);assert.equal(worker.calls.length,0);assert.equal(worker.connections,0);
+ }}finally{engine.call=null;engine.active=null;}
+});
+
+test('invalid standalone work summary preferences reject other settings before mutating state or disk',async t=>{
+ const {api,store,engine,worker}=await fixture(t);engine.loaded=true;const state=structuredClone(store.state),saved=fs.readFileSync(store.file);
+ for(const showWorkSummary of ['false',1,0,null,[],{}]){
+  const response=await api('/settings',{showWorkSummary,language:'en',notifications:false,model:'not-applied',timeZone:'Asia/Kuala_Lumpur'},'PATCH');assert.equal(response.status,400);assert.match((await response.json()).error,/work summary preference/);
+  assert.deepEqual(store.state,state);assert.deepEqual(fs.readFileSync(store.file),saved);assert.equal(engine.loaded,true);assert.equal(worker.calls.length,0);
+ }
+});
+
+test('legacy and invalid stored work summary values normalize to false while an explicit true survives restart',t=>{
+ for(const showWorkSummary of [undefined,false,true,'true',1,null,[],{}]){
+  const dir=fs.mkdtempSync(path.join(root,'work-summary-store-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const original=new Store(dir);
+  if(showWorkSummary===undefined)delete original.state.settings.showWorkSummary;else original.state.settings.showWorkSummary=showWorkSummary;
+  original.state.settings.language='en';original.save();const restored=new Store(dir);assert.equal(restored.state.settings.showWorkSummary,showWorkSummary===true);assert.equal(restored.state.settings.language,'en');assert.equal(JSON.parse(fs.readFileSync(restored.file,'utf8')).settings.showWorkSummary,showWorkSummary===true);
+ }
 });
 
 test('background native work blocks executor and model replacement even after media hangup',async t=>{

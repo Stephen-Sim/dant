@@ -66,6 +66,12 @@ export function renderWorkEntry(model,icon=''){
  const {labels,reviewCount}=model,label=labels.title+(reviewCount?' · '+labels.reviewCount(reviewCount):'');
  return `<button type="button" class="text-btn header-work" data-action="progress" title="${escape(label)}" aria-label="${escape(label)}">${icon}<span>${escape(labels.title)}</span>${reviewCount?'<i class="work-review-marker" data-work-review-marker aria-hidden="true"></i>':''}</button>`;
 }
+export function renderWorkSummary(model){
+ const {active,ongoing=[],queue=[],labels,reliable}=model,item=active||ongoing[0]||queue[0];if(!item)return '';
+ const state=reliable?active?.status||ongoing[0]?.status||'queued':'unknown',label=state==='running'&&active?.background?labels.background:labels[state]||labels.unknown;
+ const hint=!reliable?labels.stale:labels.title;
+ return `<button type="button" class="work-summary ${escape(state)}" data-key="work-summary" data-action="progress" title="${escape(hint)}" aria-label="${escape(labels.title+': '+label+' · '+item.title)}"><i class="work-status-dot" aria-hidden="true"></i><span class="work-summary-content"><small>${escape(label)}</small><strong>${escape(item.title)}</strong></span><span class="work-summary-chevron" aria-hidden="true">›</span></button>`;
+}
 function renderPlan(plan,labels,{history=false,workId,expanded=false}={}){
  if(!plan)return '';
  const count=`${plan.completed} / ${plan.total} ${escape(labels.steps)}`;

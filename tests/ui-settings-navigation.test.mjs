@@ -9,7 +9,7 @@ function fixture({language='en'}={}){
  const {document,Event}=parseHTML('<main id="app"></main>'),app=document.querySelector('#app'),loads=[],errors=[],focus=[],scroll=[];let host='',fontOpen=false,voiceDisabled=false,handler=async()=>{};
  const ui=createSettingsNavigation({document,getLanguage:()=>language,onChange:render,onCategory:async category=>{loads.push(category);await handler(category);},onError:error=>errors.push(error)});
  function sections(){return {
-  general:'<section class="settings-section"><button data-language="zh">中文</button><input type="checkbox" id="notifications"></section><section class="settings-section text-editor-settings"><button data-editor-choose>Choose editor</button></section>',
+  general:'<section class="settings-section"><button data-language="zh">中文</button><input type="checkbox" id="notifications"><input type="checkbox" id="showWorkSummary"></section><section class="settings-section text-editor-settings"><button data-editor-choose>Choose editor</button></section>',
   appearance:`<section class="settings-section"><button data-theme="light">Light</button><details id="appearance-font-picker" ${fontOpen?'open':''}><summary>System font</summary><input id="font-local-search" value="Arial"></details><details id="appearance-advanced"><summary>Advanced</summary><input id="appearance-size" type="number" value="13"></details></section>`,
   voice:`<section class="settings-section"><select id="nativeVoice" ${voiceDisabled?'disabled':''}><option>Ember</option></select><details><summary>API</summary><input type="password" id="voice-api-key"></details></section>`,
   computer:`<section class="settings-section vm-settings"><input id="vm-host-draft" value="${host}"></section>`,
@@ -44,6 +44,10 @@ test('search result selection expands advanced details and focuses and scrolls t
 
 test('English and Chinese editor searches reveal the fixed General setting without indexing a configured private path',async()=>{
  const f=fixture();for(const query of ['VS Code','text editor','编辑器','记事本']){await f.search(query);assert.ok(f.document.querySelector('[data-settings-result="text-editor"]'));await f.click('[data-settings-result="text-editor"]');assert.equal(f.ui.category,'general');assert.equal(f.scroll.at(-1).node,f.document.querySelector('.text-editor-settings'));}
+});
+
+test('work summary search finds its General preference and focuses the actual checkbox in either language',async()=>{
+ const f=fixture();for(const query of ['work progress','show work','任务进度','隐藏']){await f.search(query);assert.ok(f.document.querySelector('[data-settings-result="work-summary"]'));await f.click('[data-settings-result="work-summary"]');assert.equal(f.ui.category,'general');assert.equal(f.focus.at(-1),f.document.querySelector('#showWorkSummary'));}
 });
 
 test('category switches and settings search preserve real DOM nodes, unsaved VM and secret inputs, and an open font picker',async()=>{
