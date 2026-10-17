@@ -6,7 +6,7 @@ const ID: &str = "dant-background";
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Status { language: String, connection: String, task: String, queued: u16 }
-struct NativeTray { icon: TrayIcon, open: MenuItem<tauri::Wry>, progress: MenuItem<tauri::Wry>, status: MenuItem<tauri::Wry>, exit: MenuItem<tauri::Wry>, last: Option<Status> }
+struct NativeTray { icon: TrayIcon, open: MenuItem<tauri::Wry>, progress: MenuItem<tauri::Wry>, call_window: MenuItem<tauri::Wry>, call_active: bool, call_language: String, status: MenuItem<tauri::Wry>, exit: MenuItem<tauri::Wry>, last: Option<Status> }
 #[derive(Default)]
 pub struct BackgroundTray { ready: AtomicBool, exiting: AtomicBool, inner: Mutex<Option<NativeTray>> }
 
@@ -15,6 +15,7 @@ fn valid(value: &Status) -> bool {
         && matches!(value.task.as_str(), "idle" | "running" | "background" | "waiting_user" | "pausing" | "unknown") && value.queued <= 999
 }
 fn should_hide(ready: bool, exiting: bool, main: bool) -> bool { ready && !exiting && main }
+fn call_window_label(language: &str) -> &'static str { if language == "zh" { "显示通话窗口" } else { "Show call window" } }
 fn labels(value: &Status) -> (&'static str, &'static str, &'static str, String) {
     let zh = value.language == "zh";
     let state = if value.connection != "online" && value.task != "idle" { if zh { "任务状态待确认" } else { "Work status unconfirmed" } }
@@ -37,6 +38,14 @@ pub fn restore(app: &AppHandle) {
         crate::call_overlay::visibility_changed(app);
     }
 }
+pub fn call_window_changed(app: &AppHandle, active: bool, language: Option<&str>) {
+    let Some(state) = app.try_state::<BackgroundTray>() else { return };
+    let Ok(mut inner) = state.inner.lock() else { return };
+    let Some(tray) = inner.as_mut() else { return };
+    let language = language.or_else(|| tray.last.as_ref().map(|value| value.language.as_str())).unwrap_or(&tray.call_language).to_string();
+    if tray.call_active != active { if tray.call_window.set_enabled(active).is_ok() { tray.call_active = active; } }
+    if tray.call_language != language { if tray.call_window.set_text(call_window_label(&language)).is_ok() { tray.call_language = language; } }
+}
 fn exit(app: &AppHandle) {
     if let Some(state) = app.try_state::<BackgroundTray>() { state.exiting.store(true, Ordering::SeqCst); }
     // AppHandle::exit delivers RunEvent::Exit, which owns the existing graceful
@@ -46,22 +55,24 @@ fn exit(app: &AppHandle) {
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "dant-open", "打开 dant", true, None::<&str>)?;
     let progress = MenuItem::with_id(app, "dant-progress", "任务进度", true, None::<&str>)?;
+    let call_window = MenuItem::with_id(app, "dant-call-window", call_window_label("zh"), false, None::<&str>)?;
     let status = MenuItem::with_id(app, "dant-status", "连接中", false, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let exit_item = MenuItem::with_id(app, "dant-exit", "退出 dant", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &progress, &status, &separator, &exit_item])?;
+    let menu = Menu::with_items(app, &[&open, &progress, &call_window, &status, &separator, &exit_item])?;
     let icon = app.default_window_icon().ok_or_else(|| tauri::Error::AssetNotFound("default app icon".into()))?.clone();
     let icon = TrayIconBuilder::with_id(ID).icon(icon).menu(&menu).tooltip("dant · 连接中").show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "dant-open" => restore(app),
             "dant-progress" => { restore(app); let _ = app.emit_to("main", "dant-tray-progress", ()); },
+            "dant-call-window" => crate::call_overlay::show_call_window(app),
             "dant-exit" => exit(app), _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }) { restore(tray.app_handle()); }
         }).build(app)?;
     let state = app.state::<BackgroundTray>();
-    *state.inner.lock().unwrap() = Some(NativeTray { icon, open, progress, status, exit: exit_item, last: None });
+    *state.inner.lock().unwrap() = Some(NativeTray { icon, open, progress, call_window, call_active: false, call_language: "zh".into(), status, exit: exit_item, last: None });
     state.ready.store(true, Ordering::SeqCst); Ok(())
 }
 pub fn on_window_event(window: &tauri::Window, event: &WindowEvent) -> bool {
@@ -85,6 +96,8 @@ pub async fn tray_status_update(app: AppHandle, window: WebviewWindow, status: S
     let (open, progress, exit, text) = labels(&status);
     tray.open.set_text(open).map_err(|_| "The system tray is unavailable")?;
     tray.progress.set_text(progress).map_err(|_| "The system tray is unavailable")?;
+    tray.call_window.set_text(call_window_label(&status.language)).map_err(|_| "The system tray is unavailable")?;
+    tray.call_language = status.language.clone();
     tray.exit.set_text(exit).map_err(|_| "The system tray is unavailable")?;
     tray.status.set_text(&text).map_err(|_| "The system tray is unavailable")?;
     tray.icon.set_tooltip(Some(format!("dant · {text}"))).map_err(|_| "The system tray is unavailable")?;
@@ -95,6 +108,10 @@ pub async fn tray_status_update(app: AppHandle, window: WebviewWindow, status: S
 mod tests {
     use super::*;
     fn status() -> Status { Status { language: "en".into(), connection: "online".into(), task: "background".into(), queued: 2 } }
+    #[test] fn call_window_restore_labels_are_localized_and_separate_from_exit() {
+        assert_eq!(call_window_label("en"), "Show call window"); assert_eq!(call_window_label("zh"), "显示通话窗口");
+        assert_ne!(call_window_label("en"), labels(&status()).2);
+    }
     #[test] fn close_hides_only_with_a_working_tray_and_never_during_explicit_exit() {
         assert!(should_hide(true, false, true));
         for values in [(false,false,true), (true,true,true), (true,false,false)] { assert!(!should_hide(values.0,values.1,values.2)); }

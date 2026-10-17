@@ -265,8 +265,18 @@ class VoiceAndMCPTests(unittest.TestCase):
             self.assertEqual(responses[0]['result']['serverInfo']['name'], 'dant_desktop')
             self.assertIn('screenshot', [tool['name'] for tool in responses[1]['result']['tools']])
             self.assertIn('react_message', [tool['name'] for tool in responses[1]['result']['tools']])
-            for name in ['credential_find', 'credential_get', 'credential_request', 'credential_store', 'skill_list', 'skill_get', 'skill_save']:
+            for name in ['task_plan', 'credential_find', 'credential_get', 'credential_request', 'credential_store', 'skill_list', 'skill_get', 'skill_save']:
                 self.assertIn(name, [tool['name'] for tool in responses[1]['result']['tools']])
+
+    def test_mcp_task_plan_waits_for_private_application_save(self):
+        args = {'title': 'Verify the project', 'steps': [{'step': 'Inspect', 'status': 'inProgress'}]}
+        with patch.object(desktop_mcp, 'credential_bridge', return_value={'saved': True, 'workId': 'owned'}) as bridge:
+            response = desktop_mcp.invoke('task_plan', args, pathlib.Path('.'))
+            self.assertEqual(json.loads(response['content'][0]['text'])['taskPlanResult']['workId'], 'owned')
+            bridge.assert_called_once_with('task_plan', args)
+        with patch.object(desktop_mcp, 'credential_bridge', side_effect=ValueError('Not saved')):
+            response = desktop_mcp.dispatch({'id': 98, 'method': 'tools/call', 'params': {'name': 'task_plan', 'arguments': args}}, pathlib.Path('.'))
+            self.assertTrue(response['result']['isError'])
 
     def test_mcp_reaction_only_returns_an_application_validated_request(self):
         with tempfile.TemporaryDirectory() as folder:

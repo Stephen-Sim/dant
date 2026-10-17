@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
+## 0.4.5 task registration, file cards and hidden call window follow-up
+
+The final local JavaScript run passed **1,020 tests, zero failures and zero skips**. Coverage is **98.57% lines, 90.67% branches and 90.84% functions**, with every configured gate satisfied. All **16 native Rust tests**, 21 mocked Python VM/MCP tests and seven separate coverage/version gate tests passed without ignored or skipped tests.
+
+The shared `task_plan` workflow records an owned task title and public checklist before acknowledging the save, without creating a user message or another executor. Regressions cover native and typed ownership, the private MCP bridge, persistence failure, restart, exact-turn history and dismissal, atomic acceptance, and terminal status even when an earlier result save fails. The model is instructed to register before entrusted work; this is not a command-level sandbox gate. File-card checks cover consistent compact rows and intact preview/download actions. Call-window tests cover hiding without media actions, same-call visibility, tray restoration and rejection of stale controls. Native GUI interaction and a new live-model call remain for user testing.
+
+Read-only inspection found newer TETR.IO helpers while the user continued working. The refreshed complete candidate contains 21 files, with the current source, tests, dependency manifests, original licenses and provenance. Its **23 offline tests**, 15 JavaScript syntax checks and ZIP import/export byte comparison passed. No live game was run. The candidate's newer versus helper remains an unverified prototype; packaging does not establish live reliability. Installation checks must preserve newer VM edits rather than overwrite a changed source snapshot.
+
 ## 0.4.5 in-call control, recent work and complete skills follow-up
 
 The local JavaScript coverage run passed **996 tests, zero failures and zero skips**. Coverage is **98.57% lines, 90.54% branches and 90.66% functions**; all configured gates passed. The seven separate coverage/version gate tests and 20 mocked Python VM/MCP tests also passed. No native window, microphone or live user task was operated for these checks.

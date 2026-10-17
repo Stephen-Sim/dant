@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {parseHTML} from 'linkedom';
-import {workProgress,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory} from '../ui/work-progress.js';
+import {workProgress,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory} from '../ui/work-progress.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 function fixture(){
  const requests=[],toasts=[],state={active:{source:'voice',messageId:'active',turnId:'voice-turn'},call:{id:'call',provider:'subscription'},queue:[],messages:[{id:'active',role:'user',text:'Current task',status:'running'},{id:'paused',role:'user',text:'Paused task',status:'paused'},{id:'unknown',role:'user',text:'Unknown task',status:'paused',submission:'unknown'}]};
- const context={workProgress,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory,language:()=>'en',eventConnected:true,state,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',progressExpanded:false,t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:message=>message?.submission==='unknown',taskRequest:async(id,route,body)=>requests.push({id,route,body}),toast:value=>toasts.push(value),openModal:()=>{}};
+ const context={workProgress,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,language:()=>'en',eventConnected:true,state,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',progressExpanded:false,t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:message=>message?.submission==='unknown',taskRequest:async(id,route,body)=>requests.push({id,route,body}),toast:value=>toasts.push(value),openModal:()=>{}};
  vm.createContext(context);vm.runInContext(section('function renderProgress(){','function renderModal(){')+'\n'+section('function resumeTask(id,confirmUnknown){','function bindSteer(){'),context);
  return {context,state,requests,toasts};
 }
@@ -37,4 +37,11 @@ test('only inactive recent task rows have close controls, including while anothe
  const {context,state}=fixture();state.queue=['queued'];state.messages.push({id:'queued',role:'user',text:'Queued work',status:'queued'},{id:'review',role:'user',text:'Result',status:'review'},{id:'completed',role:'user',text:'Done',status:'completed'},{id:'draft',role:'user',text:'Still preparing attachment',status:'draft'});
  const {document}=parseHTML(context.renderProgress()),dismiss=[...document.querySelectorAll('[data-task-dismiss]')];assert.deepEqual(dismiss.map(button=>button.dataset.taskDismiss),['paused','unknown','review','completed']);assert.ok(dismiss.every(button=>button.dataset.progressKind==='task'&&!button.hasAttribute('disabled')));assert.ok(document.querySelector('[data-task-accept="review"]'));assert.ok(document.querySelector('[data-action="stop"]'));
  context.pendingActions.add('task:paused');const pending=parseHTML(context.renderProgress()).document;assert.equal(pending.querySelector('[data-task-dismiss="paused"]').hasAttribute('disabled'),true);
+});
+test('registered work keeps the existing task actions and uses its own persistent dismissal identity',()=>{
+ const {context,state}=fixture();state.messages.push({id:'review',role:'user',text:'Original request',status:'review',turnId:'review-turn'},{id:'answer',role:'assistant',text:'Actual result',status:'completed'});
+ state.workTasks=[{id:'record-paused',turnId:'paused-turn',messageId:'unknown',source:'chat',title:'Check the browser',status:'paused',updatedAt:10,plan:{steps:[{step:'Inspect current state',status:'inProgress'}]}},{id:'record-review',turnId:'review-turn',messageId:'review',source:'chat',title:'Verify the requested change',status:'review',updatedAt:20}];state.completions=[{turnId:'review-turn',messageIds:['answer'],taskId:'review'}];
+ const {document}=parseHTML(context.renderProgress()),paused=document.querySelector('[data-key="registered-work-record-paused"]'),review=document.querySelector('[data-key="registered-work-record-review"]');assert.ok(paused);assert.ok(review);assert.equal(document.querySelector('[data-key="progress-review"]'),null);assert.equal(document.querySelector('[data-key="progress-unknown"]'),null);
+ assert.equal(paused.querySelector('[data-task-unknown]').dataset.taskUnknown,'unknown');assert.equal(paused.querySelector('[data-task-unknown]').hasAttribute('disabled'),true);assert.match(paused.textContent,/unknownOutcome/);assert.equal(paused.querySelector('[data-task-dismiss]').dataset.taskDismiss,'record-paused');assert.equal(paused.querySelector('[data-task-dismiss]').dataset.progressKind,'work');assert.equal(paused.querySelector('[data-task-dismiss]').hasAttribute('disabled'),false);assert.equal(review.querySelector('[data-task-accept]').dataset.taskAccept,'review');assert.equal(review.querySelector('[data-progress-message]').dataset.progressMessage,'answer');
+ context.pendingActions.add('task:record-paused');const pending=parseHTML(context.renderProgress()).document;assert.equal(pending.querySelector('[data-task-dismiss="record-paused"]').hasAttribute('disabled'),true);
 });

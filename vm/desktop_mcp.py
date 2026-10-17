@@ -20,6 +20,7 @@ def tool(name, description, properties, required=()):
 NUMBER = {'type': 'integer', 'minimum': 0, 'maximum': 4096}
 TEXT = {'type': 'string'}
 TOOLS = [
+    tool('task_plan', 'Register the current entrusted task in Work progress before computer, command, file-changing or multistep work. Wait for the saved acknowledgement, then update the same title and actual steps as work advances. Ordinary conversation needs no plan. This never starts another task, grants permission, or completes execution.', {'title': {'type': 'string', 'minLength': 1, 'maxLength': 240}, 'steps': {'type': 'array', 'minItems': 1, 'maxItems': 128, 'items': {'type': 'object', 'properties': {'step': {'type': 'string', 'minLength': 1, 'maxLength': 5000}, 'status': {'type': 'string', 'enum': ['pending', 'inProgress', 'completed']}}, 'required': ['step', 'status'], 'additionalProperties': False}}}, ['title', 'steps']),
     tool('screenshot', 'Observe the current VM desktop.', {}),
     tool('click', 'Click the VM desktop at screenshot coordinates.', {'x': NUMBER, 'y': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['x', 'y']),
     tool('drag', 'Drag on the VM desktop.', {'startX': NUMBER, 'startY': NUMBER, 'endX': NUMBER, 'endY': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['startX', 'startY', 'endX', 'endY']),
@@ -77,6 +78,8 @@ def credential_bridge(name, args):
 def invoke(name, args, output_dir):
     if not isinstance(args, dict):
         raise ValueError('Tool arguments must be an object')
+    if name == 'task_plan':
+        return result({'taskPlanResult': credential_bridge(name, args)})
     if name in ('credential_find', 'credential_get', 'credential_request', 'credential_store'):
         return result({'credentialResult': credential_bridge(name, args)})
     if name in ('skill_list', 'skill_get', 'skill_save'):

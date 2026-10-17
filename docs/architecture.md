@@ -41,6 +41,8 @@ The VM owns `~/dant/data/state.json`, immutable UUID attachment files and metada
 
 A permanent UUID identifies the conversation, workspace, and reused Codex thread. User receipt is saved before execution. Only a valid `turn/start` acknowledgment establishes executor confirmation. Early events are bounded by count and size and replayed only after matching the acknowledged turn.
 
+`task_plan {title, steps}`, available through the model tools and `dant_desktop` MCP, registers the current acknowledged turn's public task plan. The Worker saves a durable `workTasks` record before acknowledging it; later updates reuse that turn's record. Public titles and step states appear in Work progress, without a synthetic user message or another execution queue. Plans never grant permission or declare execution complete: the actual executor remains authoritative. Records survive restart, with unfinished work restored as paused, and only inactive history can be dismissed.
+
 Codex owns the model context window, token accounting and automatic compaction. dant does not override its context-window size, maximum output tokens or compaction threshold, and does not reconstruct the model thread from a shortened UI transcript. Live call message text, safe memory notes and enabled skill descriptions are passed without an additional dant context-character budget. The optional API voice channel likewise leaves token/truncation settings to its provider and keeps complete supplied chat references. Upstream model/service limits still apply. Supplemental message-ID/reaction lookup labels, storage validation and bounded observer/control queues serve separate purposes; they do not shorten Codex's original conversation.
 
 ```mermaid

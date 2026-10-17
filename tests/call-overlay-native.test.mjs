@@ -29,7 +29,7 @@ test('browser mode is inert and desktop snapshots contain call metadata only',as
 
 test('latest call ownership, allowed actions, desired mute state and request IDs guard parent actions',async()=>{
  const f=parentFixture();f.bridge.update(call());await settle();
- for(const value of [null,{callId:'old',action:'hangup',requestId:'a'},{callId:'call-a',action:'exec',requestId:'b'},{callId:'call-a',action:'mute',requestId:'c'},{callId:'call-a',action:'mute',requestId:'d',muted:false},{callId:'call-a',action:'hangup',requestId:'bad\nID'}])await f.event(value);assert.equal(f.actions.length,0);
+ for(const value of [null,{callId:'old',action:'hangup',requestId:'a'},{callId:'call-a',action:'exec',requestId:'b'},{callId:'call-a',action:'hide',requestId:'hide-only-native'},{callId:'call-a',action:'mute',requestId:'c'},{callId:'call-a',action:'mute',requestId:'d',muted:false},{callId:'call-a',action:'hangup',requestId:'bad\nID'}])await f.event(value);assert.equal(f.actions.length,0);
  const request={callId:'call-a',action:'mute',requestId:'mute-1',muted:true};await f.event(request);await f.event(request);assert.deepEqual(f.actions,[{callId:'call-a',action:'mute',muted:true}]);await f.event({callId:'call-a',action:'restore',requestId:'restore-1'});assert.equal(f.actions.at(-1).action,'restore');
  f.bridge.update(call({callId:'call-b',canMute:false}));await f.event({callId:'call-a',action:'hangup',requestId:'late'});await f.event({callId:'call-b',action:'mute',requestId:'mute-b',muted:true});assert.equal(f.actions.length,2);f.bridge.dispose();await f.event({callId:'call-b',action:'hangup',requestId:'ended'});assert.equal(f.actions.length,2);
 });
@@ -61,6 +61,26 @@ test('child uses idempotent desired mute and clock-only updates cannot unlock pe
 
 test('child native dragging ignores controls and only starts from its background',async()=>{
  const f=childFixture(),dispose=await f.ready;let prevented=0;const event=(button,target)=>({button,target,preventDefault(){prevented++;}});f.root.onpointerdown(event(2,f.root));f.root.onpointerdown(event(0,f.document.querySelector('#call-mute svg')));assert.equal(f.calls.length,1);f.root.onpointerdown(event(0,f.document.querySelector('.call-details')));await settle();assert.equal(f.calls.at(-1).command,'call_overlay_drag');assert.equal(prevented,1);dispose();assert.equal(f.root.onpointerdown,null);assert.equal(f.document.querySelector('#call-mute').onclick,null);
+});
+
+test('hide uses a call-scoped native visibility action with localized controls and leaves pending media actions alone',async()=>{
+ for(const language of ['en','zh']){
+  const f=childFixture({state:call({language})}),dispose=await f.ready,hide=f.document.querySelector('#call-hide');
+  assert.equal(hide.title,language==='en'?'Hide call window':'隐藏通话窗口');assert.equal(hide.getAttribute('aria-label'),hide.title);
+  await f.click('#call-mute');assert.equal(f.document.querySelector('#call-mute').disabled,true);
+  await f.click('#call-hide');assert.deepEqual(f.calls.at(-1),{command:'call_overlay_action',args:{callId:'call-a',action:'hide',requestId:'request-2'}});
+  f.event(call({language,seconds:12}));assert.equal(f.document.querySelector('#call-mute').disabled,true,'hiding must not acknowledge an unfinished microphone action');
+  assert.equal(f.calls.filter(value=>value.args?.action==='hangup').length,0);assert.equal(f.timers.size,1,'the call duration clock remains active');
+  f.event(null);await f.click('#call-hide');assert.equal(f.calls.length,3);dispose();assert.equal(hide.onclick,null);
+ }
+});
+
+test('late hide failure cannot alter a different call and a current failure stays localized',async()=>{
+ const wait=deferred(),f=childFixture({state:call({language:'zh'}),invoke:command=>command==='call_overlay_get'?call({language:'zh'}):wait.promise}),dispose=await f.ready;
+ const hiding=f.click('#call-hide');f.event(call({callId:'call-b'}));wait.reject(Error('Private native error'));await hiding;
+ assert.equal(f.document.querySelector('#call-status').textContent,'In a call');dispose();
+ const g=childFixture({invoke:command=>{if(command==='call_overlay_get')return call({language:'zh'});throw Error('Private native error');}}),stop=await g.ready;
+ await g.click('#call-hide');assert.equal(g.document.querySelector('#call-status').textContent,'操作未确认，请返回 dant。');stop();
 });
 
 test('initial read success or rejection cannot replace a newer call-state event',async()=>{

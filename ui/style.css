@@ -76,6 +76,14 @@
 .current-work-status small{margin-left:auto;color:var(--text-faint);font-size:calc(var(--app-font-size) * 10 / 13)}
 .current-work h3{font-size:calc(var(--app-font-size) * 14 / 13);line-height:1.65;overflow-wrap:anywhere;margin:14px 0 8px}
 .work-step,.work-plan p{font-size:calc(var(--app-font-size) * 11 / 13);line-height:1.7;color:var(--text-soft);margin:5px 0;overflow-wrap:anywhere}
+.work-checklist{list-style:none;padding:0;margin:12px 0 0;display:flex;flex-direction:column;gap:8px;font-size:calc(var(--app-font-size) * 11 / 13);line-height:1.65;color:var(--text-soft)}
+.work-checklist li{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.work-checklist li>span:nth-child(2){flex:1;min-width:0;overflow-wrap:anywhere}
+.work-checklist .work-step-icon{width:14px;flex-shrink:0;text-align:center;color:var(--text-faint)}
+.work-checklist [data-work-step-status=inProgress] .work-step-icon{color:var(--accent-color)}
+.work-checklist li>small{color:var(--text-faint);font-size:calc(var(--app-font-size) * 9 / 13);flex-shrink:0;padding-top:1px}
+.work-history-plan{margin-top:10px;font-size:calc(var(--app-font-size) * 10 / 13);color:var(--text-muted)}
+.work-history-plan>summary{cursor:pointer;line-height:1.7}
 .work-time{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:14px;color:var(--text-faint);font-size:calc(var(--app-font-size) * 10 / 13)}
 .work-plan{margin-top:13px}
 .work-plan>div{font-size:calc(var(--app-font-size) * 10 / 13);color:var(--text-muted)}
@@ -91,13 +99,14 @@
 .attachment-image-loading,.attachment-image-error{color:var(--text-faint);font-size:calc(var(--app-font-size) * 10 / 13);line-height:1.6;padding:12px}
 .attachment-image-error,.image-attachment[data-image-state="ready"] .attachment-image-loading,.image-attachment[data-image-state="error"] .attachment-image-loading{display:none}
 .image-attachment[data-image-state="error"] .attachment-image-error{display:block}
-.file-attachment{display:flex;align-items:center;width:100%;max-width:100%;min-width:0;border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
-.file-attachment>.file-card{flex:1;min-width:0;text-align:left;border:0;border-radius:0;background:transparent;padding:10px 12px;gap:10px}
+.file-attachment{display:flex;align-items:center;width:100%;max-width:100%;min-width:0;min-height:64px;border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
+.file-attachment>.file-card{flex:1;min-width:0;min-height:64px;text-align:left;border:0;border-radius:0;background:transparent;padding:11px 12px;gap:10px}
 .file-attachment>.file-card:hover{background:var(--hover)}
-.file-card>.file-description{flex:1;min-width:0;overflow-wrap:anywhere}
-.file-attachment-name{display:block}
-.file-card>.file-view-label{margin-left:4px;color:var(--text-muted);font-size:calc(var(--app-font-size) * 10 / 13);flex:0 0 auto}
-.file-attachment>.file-download{align-self:center;flex:0 0 31px;margin-right:6px}
+.file-card>.file-description{flex:1;min-width:0;overflow:hidden}
+.file-attachment-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-card .file-attachment-meta{margin-top:3px;line-height:1.4;text-align:left;white-space:nowrap}
+.file-card>.file-view-label{margin-left:4px;color:var(--text-muted);font-size:calc(var(--app-font-size) * 10 / 13);flex:0 0 auto;white-space:nowrap}
+.file-attachment>.file-download{align-self:center;flex:0 0 32px;width:32px;height:32px;margin-right:8px}
 .file-preview-dialog{width:min(900px,100%);max-height:88dvh}
 .file-preview-dialog .dialog-header{gap:12px}
 .file-preview-dialog .dialog-header h2{min-width:0;overflow-wrap:anywhere}

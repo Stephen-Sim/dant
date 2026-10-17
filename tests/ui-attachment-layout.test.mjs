@@ -55,6 +55,26 @@ test('audio-only attachments keep their existing compact width and non-preview f
  assert.equal(render([]).children.length,0);assert.equal(render(undefined).children.length,0);
 });
 
+test('long text and binary filenames share consistent metadata without losing their full name or actions',()=>{
+ const {render}=fixture('zh'),files=[
+  {...textFile,name:'tetrio-2026-10-17T15-43-29.987Z-"final".json'},
+  {id:'pixels',name:'tetrio-2026-10-17T15-43-29.987Z.ppm',type:'application/octet-stream',size:841728},
+  {id:'archive',name:'tetrio-2026-10-17T15-44-08.732Z.zip',type:'application/zip',size:4096},
+  {id:'notes',name:'README',type:'text/plain',size:52}
+ ];
+ const root=render(files),cards=[...root.querySelectorAll('.file-attachment')];
+ assert.equal(cards.length,4);
+ for(const [index,card]of cards.entries()){
+  const file=files[index],primary=card.querySelector('.file-card'),name=primary.querySelector('.file-attachment-name'),download=card.querySelector('.file-download');
+  assert.equal(name.textContent,file.name);assert.equal(name.getAttribute('title'),file.name);
+  assert.ok(primary.getAttribute('aria-label').endsWith(file.name));assert.ok(download.getAttribute('aria-label').endsWith(file.name));assert.equal(download.getAttribute('title'),download.getAttribute('aria-label'));
+  assert.equal(primary.parentNode,card);assert.equal(download.parentNode,card);assert.equal(card.children.length,2);assert.equal(primary.querySelectorAll('small').length,1);
+  assert.equal(primary.querySelector('.file-attachment-meta').textContent,['JSON · 1 KB','PPM · 822 KB','ZIP · 4 KB','1 KB'][index]);
+  assert.equal(primary.getAttribute(index===0||index===3?'data-file-preview':'data-download'),file.id);
+ }
+ assert.equal(cards[0].querySelector('.file-view-label').textContent,'查看');assert.equal(cards[1].querySelector('.file-view-label'),null);assert.equal(root.querySelector('a'),null);
+});
+
 test('attachment spacing and file actions have bounded responsive layout rules',()=>{
- const css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');assert.match(css,/\.attachment-list\{[^}]*flex-direction:column[^}]*gap:8px[^}]*max-width:100%/);assert.match(css,/\.attachment-list-wide\{width:440px\}/);assert.match(css,/\.file-card>\.file-view-label\{[^}]*flex:0 0 auto/);assert.match(css,/\.file-attachment\{[^}]*width:100%[^}]*border:1px/);assert.match(css,/\.attachment-list>\.image-attachment\{[^}]*aspect-ratio:var\(--attachment-ratio,16 \/ 10\)/);assert.match(css,/\.attachment-list \.attachment-image\{[^}]*opacity:0/);assert.match(css,/\[data-image-state="ready"\] \.attachment-image\{opacity:1\}/);
+ const css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');assert.match(css,/\.attachment-list\{[^}]*flex-direction:column[^}]*gap:8px[^}]*max-width:100%/);assert.match(css,/\.attachment-list-wide\{width:440px\}/);assert.match(css,/\.file-card>\.file-view-label\{[^}]*flex:0 0 auto/);assert.match(css,/\.file-attachment\{[^}]*width:100%[^}]*min-height:64px[^}]*border:1px/);assert.match(css,/\.file-attachment-name\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);assert.match(css,/\.attachment-list>\.image-attachment\{[^}]*aspect-ratio:var\(--attachment-ratio,16 \/ 10\)/);assert.match(css,/\.attachment-list \.attachment-image\{[^}]*opacity:0/);assert.match(css,/\[data-image-state="ready"\] \.attachment-image\{opacity:1\}/);
 });
