@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.5 final local installation
+
+After the user exited dant, the latest Windows installer was built from runtime source matching clean commit `4a0451d` and installed silently. All **5,406 runtime files** matched the package; the executable matched apart from the expected NSIS bundle marker. File/product versions and the installed version API reported **0.4.5**, and the existing connection-profile hash was unchanged. The local installer SHA-256 is `d5d860b0265a75f7819def5b98fa888c8b1630b962d6a985e7dc5b6b5b8f5d2b`; this identifies the local build, separately from GitHub-built release assets.
+
+The idle VM service was updated from the installed backend and reconnected online. All **135 existing message IDs**, registered work IDs and schedule IDs were preserved in the same conversation. A temporary installed Controller confirmed both sides online and three-day diagnostics retention, then closed without opening a native window or starting model work. Telegram is not configured on this device; no live bot acceptance is claimed.
+
+All **18 native Windows tests** passed with no ignored tests, and seven separate version/coverage gate checks passed. The previous 1,202-test JavaScript coverage result below still describes the unchanged runtime. Nine targeted speech-fixture tests passed after canonicalizing their temporary model directories; the production path-security guard is unchanged. Both Windows and Ubuntu CI, and Windows packaging, then passed for exact commit `4a0451d`. This installation verification does not add a real microphone, new live-call or native-window acceptance result.
+
 ## 0.4.5 optional chat progress card follow-up
 
 The final local JavaScript coverage run passed **1,202 tests, zero failures and zero skips**. Coverage is **98.76% lines, 91.12% branches and 91.49% functions**; every configured gate passed. The frontend production build passed.
