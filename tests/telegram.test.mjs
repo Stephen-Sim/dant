@@ -155,7 +155,79 @@ test('a crash while accepting an update leaves an unknown receipt without replay
 });
 
 test('/status and /help return owner-only plain responses without account details',async t=>{
- const context=setup(t);await paired(context);await context.gateway.receive(update(2,'/status'));await context.gateway.receive(update(3,'/help'));await context.gateway.flush();assert.ok(context.api.calls.some(call=>call.method==='sendMessage'&&call.body.text.includes('Telegram tasks:')));assert.ok(context.api.calls.filter(call=>call.method==='sendMessage').every(call=>call.body.chat_id==='11'));
+ const context=setup(t);await paired(context);await context.gateway.receive(update(2,'/status'));await context.gateway.receive(update(3,'/help'));await context.gateway.flush();assert.ok(context.api.calls.some(call=>call.method==='sendMessage'&&call.body.text.includes('Computer / 电脑: Online / 在线')));assert.ok(context.api.calls.filter(call=>call.method==='sendMessage').every(call=>call.body.chat_id==='11'));
+});
+
+test('shared progress includes registered desktop and call plans, timestamps, queue and actual recent states',async t=>{
+ const context=setup(t),{store,engine,gateway}=context;await paired(context);const now=200000;gateway.now=()=>now;
+ const current=store.add({id:'current-task',role:'user',text:'An older chat title',status:'running',turnId:'current-turn'}),steer=store.add({id:'steered-task',role:'user',text:'Refine the same task',status:'running',turnId:'current-turn'}),queued=store.add({id:'queued-task',role:'user',text:'Queued desktop work',status:'queued'}),paused=store.add({id:'paused-task',role:'user',text:'Paused earlier',status:'paused'});
+ const plan={total:3,completed:1,currentStep:'Verify the result',steps:[{step:'Prepare files',status:'completed'},{step:'Verify the result',status:'inProgress'},{step:'Deliver files',status:'pending'}]};
+ store.state.workTasks=[{id:'current-record',turnId:'current-turn',messageId:current.id,source:'voice',title:'Verified call work',plan,status:'running',startedAt:100000,updatedAt:190000},{id:'voice-record',turnId:'voice-only-turn',messageId:null,source:'voice',title:'Earlier voice task',plan,status:'paused',updatedAt:180000}];
+ engine.progress={workId:'current-record',messageId:current.id,turnId:'current-turn',source:'voice',status:'waiting_user',background:true,startedAt:100000,updatedAt:190000};engine.queue=[queued];engine.call={provider:'api',id:'existing-call'};
+ await gateway.receive(update(2,'/progress'));await gateway.flush();const output=context.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text.startsWith('Work progress')).at(-1).body.text;
+ for(const value of ['Verified call work','Waiting for your reply','1:40','1970-01-01T00:03:10.000Z','✓ Prepare files','◉ Verify the result','○ Deliver files','Queued desktop work','Earlier voice task','Paused / 已暂停','/resume paused-task','Continue with a new instruction in chat'])assert.ok(output.includes(value),value);
+ assert.equal(output.includes('/resume voice-record'),false);assert.equal(output.includes(steer.text),false);assert.equal(output.match(/Verified call work/g).length,1);assert.equal(gateway.workState().recent.some(item=>item.taskId===current.id||item.taskId===steer.id),false);assert.equal(paused.status,'paused');assert.equal(engine.call.id,'existing-call');assert.equal(store.state.messages.length,4);
+});
+
+test('/porgress alias is read-only, and offline status never implies cached work is still running',async t=>{
+ const context=setup(t);await paired(context);const {engine,gateway,store}=context;engine.worker.status='offline';engine.progress={source:'voice',status:'running',title:'Cached public title',updatedAt:1000};store.state.voiceHistory=[{text:'Private speech should not be included'}];
+ await gateway.receive(update(2,'/porgress'));await gateway.receive(update(3,'/status'));await gateway.flush();const replies=context.api.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text).filter(text=>text.startsWith('Work progress'));
+ assert.equal(replies.length,2);for(const output of replies){assert.match(output,/Offline or connecting/);assert.match(output,/Status unconfirmed/);assert.equal(output.includes('Private speech'),false);}assert.equal(engine.enqueued.length,0);assert.equal(store.state.messages.length,0);
+});
+
+test('public progress redacts known secrets and excludes dismissed records, blockers, reasoning and tool output',async t=>{
+ const context=setup(t);await paired(context);const {engine,gateway,store}=context;engine.redact=text=>text.replaceAll('stored-secret','[redacted]');engine.progress={title:'Public stored-secret title '+TOKEN,status:'running',source:'voice',plan:{total:2,completed:0,currentStep:'Current stored-secret step'},reasoning:'PRIVATE_REASONING',output:'PRIVATE_OUTPUT'};
+ store.state.workTasks=[{id:'dismissed-record',turnId:'old-turn',messageId:null,source:'voice',status:'review',title:'HIDDEN_RECORD',progressDismissedAt:1000}];store.add({role:'user',status:'paused',text:'HIDDEN_MESSAGE',progressDismissedAt:1000});const blocker=store.add({role:'assistant',status:'completed',text:'PRIVATE_BLOCKER'});store.state.completions=[{id:'blocker-receipt',turnId:'old-turn:input:1',messageIds:[blocker.id]}];
+ const output=gateway.progressText();assert.match(output,/\[redacted\]/);assert.match(output,/Steps \/ 步骤: 0\/2/);for(const secret of ['stored-secret',TOKEN,'PRIVATE_REASONING','PRIVATE_OUTPUT','HIDDEN_RECORD','HIDDEN_MESSAGE','PRIVATE_BLOCKER'])assert.equal(output.includes(secret),false,secret);
+});
+
+test('progress reports only final voice receipts and never their speech or reply contents',async t=>{
+ const context=setup(t);await paired(context);const {store,gateway}=context,reply=store.add({role:'assistant',status:'completed',text:'PRIVATE_RESULT'});store.state.completions=[{id:'final',turnId:'voice-final',messageIds:[reply.id],work:{source:'voice',status:'review',updatedAt:2000}},{id:'duplicate',turnId:'voice-final',messageIds:[reply.id],work:{source:'voice',status:'failed'}},{id:'not-final',turnId:'voice-input',messageIds:[reply.id]}];
+ assert.equal(gateway.workState().recent.length,1);assert.match(gateway.progressText(),/Task from a call.*Awaiting review/);assert.equal(gateway.progressText().includes('PRIVATE_RESULT'),false);
+});
+
+test('/pause pauses shared work and queue through the engine without hanging up or disconnecting Telegram',async t=>{
+ const context=setup(t);await paired(context);const {engine,gateway,store}=context,task=store.add({role:'user',text:'Desktop work',status:'running'}),queued=store.add({role:'user',text:'Next work',status:'queued'}),call={id:'keep-this-call',provider:'subscription'};engine.call=call;engine.active={messageId:task.id,messageIds:[task.id]};engine.queue=[queued];let pauses=0;engine.pause=async()=>{pauses++;await engine.waitStopped(engine.active);for(const entry of engine.queue)store.update(entry.id,{status:'paused'});engine.queue=[];};
+ await gateway.receive(update(2,'/pause'));await gateway.receive(update(2,'/pause'));await gateway.flush();assert.equal(pauses,1);assert.equal(task.status,'paused');assert.equal(queued.status,'paused');assert.equal(engine.call,call);assert.equal(gateway.status().enabled,true);assert.equal(gateway.status().paired,true);assert.ok(context.api.calls.some(call=>call.method==='sendMessage'&&call.body.text.includes('call was left unchanged')));
+});
+
+test('/pause handles idle work, arguments and unconfirmed stopping without claiming success',async t=>{
+ const context=setup(t);await paired(context);const {gateway,engine}=context;await gateway.receive(update(2,'/pause'));await gateway.receive(update(3,'/pause anything'));engine.active={messageId:'current'};let attempts=0;engine.pause=async()=>{attempts++;throw Error(TOKEN+' private executor details');};await gateway.receive(update(4,'/pause'));await gateway.flush();const replies=context.api.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text).join('\n');assert.match(replies,/no current or queued work/i);assert.match(replies,/Usage: \/pause/);assert.match(replies,/not confirmed it stopped/);assert.equal(replies.includes('private executor details'),false);assert.equal(attempts,1);
+});
+
+test('/resume requires one exact eligible user task and never guesses among paused tasks',async t=>{
+ const context=setup(t);await paired(context);const {gateway,engine,store}=context,first=store.add({id:'full-task-id-one',role:'user',text:'First task',status:'paused'}),second=store.add({id:'full-task-id-two',role:'user',text:'Second task',status:'paused'});const resumes=[];engine.resumePaused=(ids,options)=>{resumes.push({ids,options});for(const id of ids)store.update(id,{status:'queued'});};
+ await gateway.receive(update(2,'/resume'));await gateway.flush();const ambiguous=context.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text.includes('Choose a paused task explicitly')).at(-1).body.text;assert.match(ambiguous,/\/resume full-task-id-one/);assert.equal(resumes.length,0);
+ await gateway.receive(update(3,'/resume full-task'));assert.equal(resumes.length,0);await gateway.receive(update(4,'/resume full-task-id-two'));assert.deepEqual(resumes,[{ids:[second.id],options:{confirmUnknown:false}}]);assert.equal(first.status,'paused');assert.equal(second.status,'queued');await gateway.receive(update(5,'/resume'));assert.deepEqual(resumes[1],{ids:[first.id],options:{confirmUnknown:false}});
+});
+
+test('/resume preserves unknown submissions, worker, human, subscription and executor ownership guards',async t=>{
+ const context=setup(t);await paired(context);const {gateway,engine,store}=context,task=store.add({id:'guarded-task',role:'user',text:'Guarded work',status:'paused'});let resumes=0;engine.resumePaused=()=>resumes++;let updateId=2;
+ for(const setupGuard of [()=>{engine.worker.status='offline';},()=>{engine.worker.status='online';engine.takeover=true;},()=>{engine.takeover=false;engine.acquiring=true;},()=>{engine.acquiring=false;engine.call={provider:'subscription'};},()=>{engine.call=null;engine.active={messageId:task.id};},()=>{engine.active=null;engine.nativeVoice={session:{unknown:true,turns:new Map()}};},()=>{engine.nativeVoice={session:{turns:new Map([['unfinished',{done:true,resultSaved:false}]])}};},()=>{engine.nativeVoice=null;store.update(task.id,{unknownOutcome:true});},()=>{store.update(task.id,{unknownOutcome:false,submission:'unknown'});}]){setupGuard();await gateway.receive(update(updateId++,'/resume '+task.id));}
+ assert.equal(resumes,0);assert.equal(task.submission,'unknown');await gateway.flush();const replies=context.api.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text).join('\n');for(const expected of ['Connect the work computer','Return computer control','End the subscription call','Current work is still active or unconfirmed','submission is unconfirmed'])assert.ok(replies.includes(expected),expected);
+});
+
+test('/resume gives voice-only tasks no fabricated chat ID and failed tasks require an explicit ID',async t=>{
+ const context=setup(t);await paired(context);const {gateway,engine,store}=context;store.state.workTasks=[{id:'voice-only-record-id',turnId:'voice-turn',messageId:null,source:'voice',title:'Voice-only work',status:'paused'}];const task=store.add({id:'failed-chat-task',role:'user',status:'failed',text:'A failed chat task'}),resumes=[];engine.resumePaused=ids=>resumes.push(ids);
+ await gateway.receive(update(2,'/resume'));await gateway.receive(update(3,'/resume voice-only-record-id'));assert.equal(resumes.length,0);await gateway.receive(update(4,'/resume '+task.id));assert.deepEqual(resumes,[[task.id]]);engine.resumePaused=()=>{throw Error(TOKEN+' private failure');};await gateway.receive(update(5,'/resume '+task.id));await gateway.flush();const output=context.api.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text).join('\n');assert.match(output,/Continue voice-only work with a new chat instruction/);assert.match(output,/No paused or failed task matches/);assert.match(output,/task could not resume/);assert.equal(output.includes('private failure'),false);
+});
+
+test('/resume never replays a submitting task restored as paused after a crash, while preparing remains eligible',async t=>{
+ const context=setup(t);await paired(context);const submitting=context.store.add({id:'interrupted-submission',role:'user',text:'May already have started',status:'running',submission:'submitting'}),preparing=context.store.add({id:'interrupted-preparation',role:'user',text:'Not submitted yet',status:'running',submission:'preparing'});await context.gateway.close();
+ const restarted=setup(t,{dir:context.dir}),resumes=[];restarted.engine.resumePaused=(ids,options)=>resumes.push({ids,options});const restored=restarted.store.state.messages.find(message=>message.id===submitting.id);assert.equal(restored.status,'paused');assert.equal(restored.submission,'unknown');
+ await restarted.gateway.receive(update(2,'/resume '+submitting.id));assert.equal(resumes.length,0);assert.equal(restored.submission,'unknown');assert.equal(restored.status,'paused');assert.ok(restarted.gateway.config.outbox.some(item=>item.text.includes('submission is unconfirmed')));
+ await restarted.gateway.receive(update(3,'/resume '+preparing.id));assert.deepEqual(resumes,[{ids:[preparing.id],options:{confirmUnknown:false}}]);assert.equal(restarted.engine.enqueued.length,0);
+});
+
+test('commands reveal no task data or control to unpaired users, other owners, groups or bots',async t=>{
+ const context=setup(t),{gateway,engine,store}=context;store.add({role:'user',text:'PRIVATE_DESKTOP_TASK',status:'running'});await gateway.configure({token:TOKEN,enabled:true});let controls=0;engine.pause=()=>controls++;engine.resumePaused=()=>controls++;engine.active={messageId:'private'};
+ let id=1;for(const command of ['/progress','/porgress','/status','/pause','/resume','/help'])await gateway.receive(update(id++,command));assert.equal(gateway.config.outbox.length,0);const pairing=await gateway.pair();await gateway.receive(update(id++,'/start '+pairing.code));assert.equal(gateway.status().paired,true);
+ for(const command of ['/progress','/status','/pause','/resume'])for(const extra of [{chat:{id:22,type:'private'},from:{id:22}},{from:{id:22}},{chat:{id:11,type:'group'}},{from:{id:11,is_bot:true}}])await gateway.receive(update(++id,command,extra));
+ assert.equal(controls,0);assert.equal(engine.enqueued.length,0);assert.equal(gateway.config.outbox.some(item=>item.text.includes('PRIVATE_DESKTOP_TASK')),false);
+});
+
+test('shared control commands persist receipt identity across restart and /help lists only supported commands',async t=>{
+ const context=setup(t);await paired(context);const {gateway,engine,store}=context,task=store.add({id:'resumable',role:'user',text:'Run once',status:'paused'});let resumes=0;engine.resumePaused=()=>resumes++;await gateway.receive(update(2,'/resume '+task.id));assert.equal(resumes,1);await gateway.close();const again=setup(t,{dir:context.dir});again.engine.resumePaused=()=>resumes++;await again.gateway.receive(update(2,'/resume '+task.id));assert.equal(resumes,1);await again.gateway.receive(update(3,'/help'));await again.gateway.flush();const help=again.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text.includes('/help')).at(-1).body.text;for(const command of ['/progress','/porgress','/status','/pause','/resume','/stop','/help'])assert.ok(help.includes(command),command);assert.match(help,/Stop only this Telegram/);assert.equal(help.includes('/disconnect'),false);
 });
 
 test('polling uses bounded backoff after a read failure and aborts its idle delay on close',async t=>{

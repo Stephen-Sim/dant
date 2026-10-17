@@ -120,7 +120,7 @@ const computerExecutorReady=()=>computerReachable()&&state.worker?.status==='onl
 const callControlBusy=()=>Boolean(callStarting||callStops.pending||state?.call&&state.call.status!=='connected'||pc&&!state?.call);
 const computerInputReady=()=>humanControl()&&computerExecutorReady()&&!callControlBusy();
 const callBlocksControl=()=>!humanControl()&&callControlBusy();
-const unknownTask=message=>Boolean(message?.unknownOutcome||message?.submission==='unknown');
+const unknownTask=message=>Boolean(message?.unknownOutcome||['unknown','submitting'].includes(message?.submission));
 const voiceKeyConfigured=()=>state?.worker.realtime?.key?.configured??(state?.worker.realtime?.provider==='openai'&&state?.worker.realtime?.available===true);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const iconCache=new Map();

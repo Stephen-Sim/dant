@@ -28,6 +28,9 @@ export class Store {
       if(m.role==='user'){
         m.receivedAt ??= m.time||Date.now();m.executorConfirmedAt ??= null;
         if(m.status==='read')m.status='review';
+        // A crash can occur after turn/start was sent but before its reply was
+        // recorded. That submission must never become an ordinary safe retry.
+        if(m.submission==='submitting'){m.submission='unknown';if(!['review','completed'].includes(m.status)){m.status='paused';m.pauseReason='restart';}}
         if(['queued','running','waiting_user','pausing','interrupted'].includes(m.status)){m.status='paused';m.pauseReason='restart';}
         m.status ||= 'draft';
       }else if(m.status==='streaming'){m.status='paused';m.pauseReason='restart';}

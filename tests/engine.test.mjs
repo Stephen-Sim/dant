@@ -50,6 +50,23 @@ test('restart pauses every leftover runnable task without replay and preserves r
  const worker=new FakeWorker(dir),engine=new Engine(reopened,worker);assert.equal(engine.queue.length,0);assert.equal(worker.calls.length,0);assert.equal(engine.active,null);
 });
 
+test('crash during submission becomes unknown and needs explicit confirmation, while preparation remains safe to resume',t=>{
+ const dir=temp(t),store=new Store(dir),submitting=store.add({role:'user',text:'May already have run',status:'running',submission:'submitting'}),preparing=store.add({role:'user',text:'Not submitted yet',status:'running',submission:'preparing'});
+ store.state.threadId='shared-context';store.state.voiceHistory=[{role:'user',text:'Keep shared call context'}];store.save();const restored=new Store(dir),worker=new FakeWorker(dir);worker.status='offline';const engine=new Engine(restored,worker),uncertain=restored.state.messages.find(message=>message.id===submitting.id),safe=restored.state.messages.find(message=>message.id===preparing.id);
+ assert.equal(uncertain.status,'paused');assert.equal(uncertain.submission,'unknown');assert.equal(uncertain.pauseReason,'restart');assert.equal(safe.status,'paused');assert.equal(safe.submission,'preparing');
+ assert.throws(()=>engine.resumePaused([uncertain.id]),/explicitly confirm/);assert.throws(()=>engine.resumePaused([uncertain.id],{confirmUnknown:'true'}),/explicitly confirm/);assert.equal(engine.queue.length,0);assert.equal(worker.calls.length,0);
+ engine.resumePaused([safe.id]);assert.equal(engine.queue.length,1);engine.resumePaused([uncertain.id],{confirmUnknown:true});assert.equal(engine.queue.length,2);assert.equal(uncertain.submission,null);assert.equal(worker.calls.length,0);assert.equal(restored.state.threadId,'shared-context');assert.equal(restored.state.voiceHistory[0].text,'Keep shared call context');
+});
+
+test('resume guards submitting and legacy unknown-outcome tasks even without a Store restart',t=>{
+ const {store,worker,engine}=setup(t);worker.status='offline';
+ for(const patch of [{submission:'submitting'},{submission:'unknown'},{submission:'confirmed',unknownOutcome:true}]){
+  const message=store.add({role:'user',text:'Explicit retry required',status:'paused',...patch}),before=structuredClone(message);
+  assert.throws(()=>engine.resumePaused([message.id]),/explicitly confirm/);assert.deepEqual(message,before);assert.equal(worker.calls.length,0);engine.resumePaused([message.id],{confirmUnknown:true});assert.equal(message.status,'queued');assert.equal(message.submission,null);assert.ok(!message.unknownOutcome);
+ }
+ assert.equal(engine.queue.length,3);
+});
+
 test('submission acknowledgement, assistant visibility and user acceptance are distinct',async t=>{
  const {store,worker,engine}=setup(t),message=store.add({role:'user',text:'Create a note'});assert.ok(message.receivedAt);assert.equal(message.executorConfirmedAt,null);
  engine.enqueue(message);await tick();assert.ok(message.executorConfirmedAt);assert.equal(message.read,false);

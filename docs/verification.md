@@ -2,7 +2,17 @@
 
 English · [简体中文](zh-CN/verification.md)
 
-Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
+Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
+
+## 0.4.5 Telegram controls and notification previews follow-up
+
+The final JavaScript run passed **1,039 tests, zero failures and zero skips**. Coverage is **98.59% lines, 90.55% branches and 90.93% functions**, with all configured gates satisfied. All **18 native Rust tests** passed with no ignored tests; the seven separate coverage/version gate tests also passed. No real Telegram message, native notification banner or GUI interaction was used for these checks.
+
+The paired Telegram owner can inspect shared work with `/progress` (also `/porgress`) and `/status`, pause shared work without hanging up, and explicitly resume eligible message tasks. Tests cover ownership, duplicate commands, shared plans and history, active or unknown work, human control, and restart. A crash during submission now restores an unknown outcome instead of a safe retry; desktop confirmation must be explicitly true, and Telegram cannot bypass it. Preparing work remains resumable.
+
+Windows notifications now use the latest completed assistant text from the exact delivery, or attachment filenames. Previews strip formatting and controls, bound Unicode length, stay out of persisted notification records, and follow chat edits or deletion. Existing unread grace, notification preferences and acknowledgements remain separate from message reading. The native notification pump consumes this body rather than replacing it with a generic sentence.
+
+After the user exited dant, the idle Worker was updated and reconnected online with all 100 existing message IDs preserved and three-day diagnostics retention. The complete 21-file TETR.IO skill was then saved through the normal authenticated API; its downloaded ZIP matched the verified candidate byte for byte. Chat content, read receipts, registered work, completion records, schedules, shared memory, model thread and voice history were unchanged, and the original external helper sources were preserved. No model turn or desktop action was started.
 
 ## 0.4.5 task registration, file cards and hidden call window follow-up
 

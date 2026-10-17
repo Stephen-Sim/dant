@@ -16,8 +16,15 @@ Only one private account is paired. Both its Telegram user ID and chat ID must m
 ## Commands and delivery
 
 - `/help`: show available commands.
-- `/status`: report the gateway and task state.
+- `/status`: report the shared executor, call, current work and queue state.
+- `/progress` (also `/porgress`): show the same current and recent work as desktop Work progress, including registered titles, step states and task IDs.
+- `/pause`: request confirmed interruption of current shared work and pause queued work. The voice call stays connected.
+- `/resume <task-id>`: explicitly resume a known paused or failed message task, using its full task ID from `/progress`. Without an ID, `/resume` only selects a single eligible paused task; multiple candidates require an explicit ID.
 - `/stop`: request interruption of an active task owned by this Telegram connection. It cannot interrupt unrelated desktop work or a subscription call.
+
+These commands are available only to the paired private owner. `/pause` controls the shared work, including work requested from desktop or a call; `/stop` keeps its narrower Telegram ownership rule. They do not reset the conversation or create another executor. Plan checkmarks do not override the actual task status.
+
+Resume never bypasses unknown submissions, active work, disconnected executors, human control or subscription-call restrictions. Resolve the reported condition first. A task requested only by speech has no user-message task ID to resume; give a new explicit instruction in chat or the connected call instead.
 
 Ordinary input goes through the same queue, human-control lease, and call restrictions as desktop input. A finished turn awaits review; delivery does not automatically accept a task. Group messages do not create work.
 

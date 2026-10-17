@@ -9,8 +9,8 @@ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 function fixture(){
  const requests=[],toasts=[],state={active:{source:'voice',messageId:'active',turnId:'voice-turn'},call:{id:'call',provider:'subscription'},queue:[],messages:[{id:'active',role:'user',text:'Current task',status:'running'},{id:'paused',role:'user',text:'Paused task',status:'paused'},{id:'unknown',role:'user',text:'Unknown task',status:'paused',submission:'unknown'}]};
- const context={workProgress,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,language:()=>'en',eventConnected:true,state,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',progressExpanded:false,t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:message=>message?.submission==='unknown',taskRequest:async(id,route,body)=>requests.push({id,route,body}),toast:value=>toasts.push(value),openModal:()=>{}};
- vm.createContext(context);vm.runInContext(section('function renderProgress(){','function renderModal(){')+'\n'+section('function resumeTask(id,confirmUnknown){','function bindSteer(){'),context);
+ const context={workProgress,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,language:()=>'en',eventConnected:true,state,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',progressExpanded:false,t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,taskRequest:async(id,route,body)=>requests.push({id,route,body}),toast:value=>toasts.push(value),openModal:()=>{}};
+ vm.createContext(context);vm.runInContext(source.match(/^const unknownTask=.*$/m)[0]+'\n'+section('function renderProgress(){','function renderModal(){')+'\n'+section('function resumeTask(id,confirmUnknown){','function bindSteer(){'),context);
  return {context,state,requests,toasts};
 }
 
@@ -32,6 +32,12 @@ test('native background work exposes an adjustment only when the owned task can 
 test('direct resume handlers cannot submit while a subscription call is active',async()=>{
  const {context,state,requests,toasts}=fixture();await context.resumeTask('paused',false);await context.resumeTask('unknown',true);assert.equal(requests.length,0);assert.deepEqual(toasts,['resumeAfterCall','resumeAfterCall']);
  state.call=null;await context.resumeTask('paused',false);assert.equal(requests.length,1);assert.equal(requests[0].route,'/tasks/resume');assert.equal(requests[0].body.ids[0],'paused');
+});
+
+test('submitting and unknown-outcome work use explicit retry controls instead of ordinary resume',async()=>{
+ const {context,state,requests}=fixture();state.call=null;state.active=null;state.messages.push({id:'submitting',role:'user',text:'Submission reply not recorded',status:'paused',submission:'submitting'},{id:'flagged',role:'user',text:'Uncertain outcome',status:'failed',unknownOutcome:true},{id:'preparing',role:'user',text:'Not submitted yet',status:'paused',submission:'preparing'});
+ const {document}=parseHTML(context.renderProgress());for(const id of ['submitting','flagged']){assert.ok(document.querySelector('[data-task-unknown="'+id+'"]'));assert.equal(document.querySelector('[data-task-resume="'+id+'"]'),null);await context.resumeTask(id,false);}assert.equal(requests.length,0);
+ assert.ok(document.querySelector('[data-task-resume="preparing"]'));await context.resumeTask('preparing',false);await context.resumeTask('submitting',true);assert.equal(requests.length,2);assert.equal(requests[0].id,'preparing');assert.equal(requests[0].body.confirmUnknown,undefined);assert.equal(requests[1].id,'submitting');assert.equal(requests[1].body.confirmUnknown,true);
 });
 test('only inactive recent task rows have close controls, including while another call is active',()=>{
  const {context,state}=fixture();state.queue=['queued'];state.messages.push({id:'queued',role:'user',text:'Queued work',status:'queued'},{id:'review',role:'user',text:'Result',status:'review'},{id:'completed',role:'user',text:'Done',status:'completed'},{id:'draft',role:'user',text:'Still preparing attachment',status:'draft'});

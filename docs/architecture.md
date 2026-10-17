@@ -60,7 +60,7 @@ stateDiagram-v2
   failed --> queued: Explicit retry
 ```
 
-Review, completion, and reading are separate. An assistant message is read only after remaining in the viewport of a visible, focused page for about 450 ms. A successful ordinary turn creates a Completion record; Windows waits three seconds before checking unread state and displaying a fixed-content notification.
+Review, completion, and reading are separate. An assistant message is read only after remaining in the viewport of a visible, focused page for about 450 ms. A successful ordinary turn creates a Completion record; Windows waits three seconds before checking unread state and displaying a notification with the latest completed assistant message from that delivery. The preview is plain text, limited to 240 Unicode characters; attachment-only deliveries use filenames. Preview content stays in memory, and notification delivery does not mark the message read.
 
 Steering is serialized against an acknowledged `expectedTurnId`; requests arriving before startup acknowledgment wait. Uncertain submissions pause without automatic replay. Restart recovery pauses queued, running, stopping, or input-waiting tasks so external actions are not repeated unintentionally.
 
@@ -132,6 +132,8 @@ Recorded audio from the composer, uploads and Telegram shares one backend recogn
 The gateway runs with the VM Worker and is disabled by default. Fixed HTTPS Bot API endpoints provide outbound long polling without a public inbound port. A short-lived one-time pairing code binds both private-chat ID and user ID. Groups and unpaired users cannot submit tasks.
 
 Telegram inputs have stable external IDs and use the same Store and serial Engine. The paired chat mirrors new desktop user messages, completed assistant messages, and controlled attachments. Incoming Telegram messages are not echoed, and each instruction enters the task engine once. A pairing epoch marks existing messages as historical, preventing a bulk export when pairing or upgrading. Per-message delivery markers and a bounded durable outbox prevent duplicate copies across restart; old-owner Telegram task results do not flow to a new owner. Edits, deletions, quoted-reply links, and reactions are outside this mirroring scope.
+
+Paired-owner commands read shared work state through `/status` and `/progress` (`/porgress` is an alias). `/pause` uses the shared confirmed interruption path without ending call media. `/resume` selects a known paused message task and retains ownership, call and human-control checks; ambiguous selection requires its full task ID. The older `/stop` command remains restricted to this Telegram connection's own tasks. Commands do not create another executor or reset context.
 
 The Bot Token stays in a separate restricted VM data file, never a state snapshot, offline cache, memory note, or chat. Unconfirmed outbound results are recorded without blind replay. Poll offsets and deduplication survive restart; previously paused tasks do not resume automatically. See [Telegram setup](TELEGRAM.md).
 

@@ -227,8 +227,8 @@ export class Engine extends EventEmitter {
   if(this.takeover||this.acquiring)throw Error('Return the computer before resuming tasks');
   const selected=ids||this.store.state.messages.filter(message=>message.role==='user'&&message.status==='paused').map(message=>message.id);
   if(!Array.isArray(selected))throw Error('Task IDs must be an array');
-  const messages=selected.map(id=>{const message=this.task(id);if(!message||message.role!=='user'||!['paused','failed'].includes(message.status))throw Error('Task cannot be resumed');if(message.submission==='unknown'&&!confirmUnknown)throw Error('This task may already have been submitted; explicitly confirm before retrying');return message;});
-  for(const message of messages){this.store.update(message.id,{error:null,submission:null});this.enqueue(message);}return messages;
+  const messages=selected.map(id=>{const message=this.task(id);if(!message||message.role!=='user'||!['paused','failed'].includes(message.status))throw Error('Task cannot be resumed');if((message.unknownOutcome||['unknown','submitting'].includes(message.submission))&&confirmUnknown!==true)throw Error('This task may already have been submitted; explicitly confirm before retrying');return message;});
+  for(const message of messages){this.store.update(message.id,{error:null,submission:null,...(message.unknownOutcome?{unknownOutcome:false}:{})});this.enqueue(message);}return messages;
  }
  confirm(id){const result=this.store.confirm(id);this.change();return result;}
  dismissProgress(id,kind){
