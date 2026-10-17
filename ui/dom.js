@@ -38,7 +38,8 @@ function patch(node, desired) {
     if (node.getAttribute(attribute.name) !== attribute.value) node.setAttribute(attribute.name, attribute.value);
   }
   if (node.matches('input, textarea')) {
-    if (node.type !== 'file' && node.id !== 'vm-ime' && node.value !== desired.value) node.value = desired.value;
+    // Passwords live only in the user's current field, never in render templates.
+    if (!['file', 'password'].includes(node.type) && node.id !== 'vm-ime' && node.value !== desired.value) node.value = desired.value;
     if (node.type === 'checkbox') node.checked = desired.checked;
     return;
   }

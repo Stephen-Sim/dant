@@ -9,7 +9,7 @@
     "build": "vite build",
     "test": "node --test tests/*.test.mjs",
     "desktop": "npm run build && node scripts/package-resources.mjs && tauri dev",
-    "desktop:build": "npm run build && node scripts/package-resources.mjs && tauri build"
+    "desktop:build": "npm run build && node scripts/package-resources.mjs && tauri build && node scripts/package-resources.mjs --stage-release"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

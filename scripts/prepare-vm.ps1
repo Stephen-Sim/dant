@@ -7,14 +7,8 @@ $cache = if ($DataDirectory) { Join-Path $data 'cache\vm' } else { Join-Path $pr
 $pythonTools = if ($DataDirectory) { Join-Path $data 'tools\python' } else { Join-Path $projectRoot '.tools\python' }
 New-Item -ItemType Directory -Force $cache,$data | Out-Null
 $key = Join-Path $data 'vm-key'
-if (!(Test-Path $key)) {
-  if ($PSVersionTable.PSVersion -ge [version]'7.3') {
-    & ssh-keygen -t ed25519 -f $key -N '' -C 'dant-local-vm'
-  } else {
-    & ssh-keygen -t ed25519 -f $key -N '""' -C 'dant-local-vm'
-  }
-  if ($LASTEXITCODE) { throw 'SSH key generation failed' }
-}
+& python (Join-Path $PSScriptRoot 'vm-key.py') $key
+if ($LASTEXITCODE) { throw 'SSH machine-key preparation failed; see the diagnostic above.' }
 $baseUrl = 'https://cloud-images.ubuntu.com/releases/noble/release'
 $filename = 'ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz'
 $archive = Join-Path $cache $filename

@@ -14,7 +14,7 @@ test -f /home/dant/work/.dant-ready
 systemctl is-active dant-display.service dant-desktop.service dant-guest.service
 DISPLAY=:0 xdpyinfo >/dev/null
 python3 -c 'import urllib.request; assert urllib.request.urlopen("http://127.0.0.1:4319/screen", timeout=10).read(8)==b"\x89PNG\r\n\x1a\n"'
-/usr/local/bin/codex --version
+if [ -x "$HOME/.local/bin/codex" ]; then "$HOME/.local/bin/codex" --version; else /usr/local/bin/codex --version; fi
 '@
 & ssh @sshArgs $command
 $ready = $LASTEXITCODE -eq 0

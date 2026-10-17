@@ -1,5 +1,11 @@
 """VM setup guards and desktop input tests; no hypervisor or Linux required."""
 import importlib.util
+import base64
+import hashlib
+import io
+import json
+import os
+import shutil
 import pathlib
 import struct
 import subprocess
@@ -21,6 +27,7 @@ def load(name, file):
 
 image = load("patch_image", "scripts/patch-image.py")
 desktop = load("desktop", "vm/desktop.py")
+vm_key = load("vm_key", "scripts/vm-key.py")
 
 
 def fixture():
@@ -130,6 +137,94 @@ class DesktopTests(unittest.TestCase):
                 desktop.act({"type": "drag", "startX": 12, "startY": 34, "endX": 300, "endY": 500, "button": 2})
         self.assertEqual(calls[1], ("xdotool", "mousedown", "3"))
         self.assertEqual(calls[-1], ("xdotool", "mouseup", "3"))
+
+
+class SeedTests(unittest.TestCase):
+    def test_public_key_with_slashes_produces_path_safe_instance_id(self):
+        dependency = ROOT / ".tools/python"
+        if dependency.exists():
+            sys.path.insert(0, str(dependency))
+        try:
+            import pycdlib
+        except ImportError:
+            self.skipTest("pycdlib is installed by prepare-vm.ps1")
+        encoded = base64.b64encode(struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32) + b"\xff" * 32).decode()
+        public = "ssh-ed25519 " + encoded + " dant-test"
+        self.assertIn("/", encoded[-12:])
+        with tempfile.TemporaryDirectory() as folder:
+            data = pathlib.Path(folder) / "data"
+            cache = pathlib.Path(folder) / "cache"
+            data.mkdir()
+            (data / "vm-key.pub").write_text(public)
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(dependency)
+            command = [sys.executable, str(ROOT / "scripts/seed.py"), str(ROOT), "false",
+                       "--data-directory", str(data), "--cache-directory", str(cache)]
+            result = subprocess.run(command, env=env, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            iso = pycdlib.PyCdlib()
+            iso.open(str(cache / "seed.iso"))
+            try:
+                output = io.BytesIO()
+                iso.get_file_from_iso_fp(output, joliet_path="/meta-data")
+                identifier = json.loads(output.getvalue())["instance-id"]
+                self.assertRegex(identifier, r"^dant-[0-9a-f]{20}$")
+                self.assertEqual(identifier, "dant-" + hashlib.sha256(public.encode()).hexdigest()[:20])
+                output = io.BytesIO()
+                iso.get_file_from_iso_fp(output, joliet_path="/user-data")
+                config = json.loads(output.getvalue().split(b"\n", 1)[1])
+                self.assertEqual(config["users"][0]["ssh_authorized_keys"], [public])
+                self.assertIsNone(config["users"][0]["sudo"])
+            finally:
+                iso.close()
+
+
+@unittest.skipUnless(shutil.which("ssh-keygen"), "OpenSSH ssh-keygen is required")
+class KeyTests(unittest.TestCase):
+    def generate(self, path, passphrase, comment=vm_key.COMMENT):
+        result = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-f", str(path),
+                                 "-N", passphrase, "-C", comment], capture_output=True)
+        self.assertEqual(result.returncode, 0, "Test SSH key generation failed")
+
+    def test_generate_and_revalidate_without_changing_key_or_comment(self):
+        with tempfile.TemporaryDirectory(prefix="dant-key-test-", dir=ROOT) as folder:
+            path = pathlib.Path(folder) / "vm-key"
+            self.assertEqual(vm_key.ensure_key(path), "generated and validated")
+            original = path.read_bytes()
+            public = pathlib.Path(str(path) + ".pub").read_bytes()
+            self.assertEqual(vm_key.ensure_key(path), "validated (no passphrase)")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(pathlib.Path(str(path) + ".pub").read_bytes(), public)
+            self.assertEqual(vm_key.public_parts(public.decode())[2], vm_key.COMMENT)
+
+    def test_known_legacy_key_is_repaired_with_identical_public_key_and_comment(self):
+        with tempfile.TemporaryDirectory(prefix="dant-key-test-", dir=ROOT) as folder:
+            path = pathlib.Path(folder) / "vm-key"
+            self.generate(path, vm_key.LEGACY_PASSPHRASE)
+            public = pathlib.Path(str(path) + ".pub").read_bytes()
+            self.assertIn("repaired legacy", vm_key.ensure_key(path))
+            self.assertEqual(pathlib.Path(str(path) + ".pub").read_bytes(), public)
+            self.assertEqual(vm_key.ensure_key(path), "validated (no passphrase)")
+
+    def test_unknown_passphrase_foreign_comment_or_mismatched_public_key_are_unchanged(self):
+        cases = [("user-chosen-passphrase", vm_key.COMMENT, False),
+                 (vm_key.LEGACY_PASSPHRASE, "foreign-tool", False),
+                 (vm_key.LEGACY_PASSPHRASE, vm_key.COMMENT, True)]
+        for passphrase, comment, mismatch in cases:
+            with self.subTest(comment=comment, mismatch=mismatch):
+                with tempfile.TemporaryDirectory(prefix="dant-key-test-", dir=ROOT) as folder:
+                    path = pathlib.Path(folder) / "vm-key"
+                    self.generate(path, passphrase, comment)
+                    public_path = pathlib.Path(str(path) + ".pub")
+                    if mismatch:
+                        parts = public_path.read_text().split(maxsplit=2)
+                        parts[1] = "AAAA"
+                        public_path.write_text(" ".join(parts) + "\n")
+                    original, public = path.read_bytes(), public_path.read_bytes()
+                    with self.assertRaises(vm_key.KeyError):
+                        vm_key.ensure_key(path)
+                    self.assertEqual(path.read_bytes(), original)
+                    self.assertEqual(public_path.read_bytes(), public)
 
 
 if __name__ == "__main__":

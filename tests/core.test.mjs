@@ -39,6 +39,17 @@ test('thread parameters match the generated app-server protocol and refresh dura
  assert.match(resume.params.developerInstructions,/Updated memory/);
 });
 
+test('resumed threads and every queued turn retain the VM execution policy and selected model',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);
+ Object.assign(s.state,{threadId:'thread-test',threadHost:'172.16.0.2'});s.state.settings.vm.host='172.16.0.2';s.state.settings.model='gpt-6.1-sol';
+ e.enqueue(s.add({role:'user',text:'first'}));e.enqueue(s.add({role:'user',text:'second'}));await tick();
+ const resumed=w.calls.find(call=>call.method==='thread/resume');assert.ok(resumed);assert.equal(w.calls.some(call=>call.method==='thread/start'),false);
+ assert.equal(resumed.params.cwd,'/home/dant/work');assert.equal(resumed.params.approvalPolicy,'never');assert.equal(resumed.params.sandbox,'danger-full-access');assert.equal(resumed.params.model,'gpt-6.1-sol');
+ await e.handle({method:'turn/completed',params:{threadId:'thread-test',turn:{id:'turn-1',status:'completed'}}});await tick();
+ const turns=w.calls.filter(call=>call.method==='turn/start');assert.equal(turns.length,2);
+ for(const {params} of turns){assert.equal(params.cwd,'/home/dant/work');assert.equal(params.approvalPolicy,'never');assert.deepEqual(params.sandboxPolicy,{type:'dangerFullAccess'});assert.equal(params.model,'gpt-6.1-sol');}
+});
+
 test('disconnect preserves queued work until reconnect instead of failing every message',async t=>{
  const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);
  const first=s.add({role:'user',text:'one'}),second=s.add({role:'user',text:'two',status:'queued'});
@@ -104,17 +115,78 @@ test('worker exposes a concise connection error when setup is invalid',async t=>
  assert.equal(w.status,'offline');assert.equal(w.error,'Invalid VM connection settings');
 });
 
-test('concurrent call starts reserve one session before opening a thread',async t=>{
+test('worker bootstraps the user-scoped Codex runtime while retaining SSH forwarding and initialization',async t=>{
+ const s=new Store(temp(t)),key=path.join(s.dir,'key');fs.writeFileSync(key,'test');
+ Object.assign(s.state.settings.vm,{host:'172.16.0.2',user:'dant',port:22,keyPath:key});
+ const rpc=new EventEmitter(),requests=[];let invocation;
+ rpc.request=async(method,params)=>{requests.push({method,params});return method==='account/read'?{account:{type:'chatgpt',planType:'pro'}}:method==='model/list'?{data:[]}:{}};
+ rpc.send=message=>requests.push(message);rpc.close=()=>{rpc.closed=true;rpc.emit('disconnected',Error('Stopped'));};
+ const w=new Worker(s,{rpcFactory:(command,args)=>{invocation={command,args};return rpc;}});t.after(()=>w.disconnect());
+ await w.connect();assert.equal(w.status,'online');assert.equal(invocation.command,'ssh');
+ assert.ok(invocation.args.includes('-T'));assert.ok(invocation.args.includes('ExitOnForwardFailure=yes'));assert.ok(invocation.args.includes('dant@172.16.0.2'));
+ const remote=invocation.args.at(-1);assert.match(remote,/if \[ -x "\$HOME\/\.local\/bin\/codex" \]/);assert.match(remote,/CODEX_HOME="\$HOME\/\.dant-codex"/);assert.match(remote,/cd "\$HOME\/work"/);assert.match(remote,/else exec \/opt\/dant\/start-codex\.sh; fi$/);
+ assert.deepEqual(requests.map(request=>request.method),['initialize','initialized','account/read','model/list']);
+});
+
+test('concurrent call starts reserve one independently billed voice session',async t=>{
  const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);
+ let finish,starts=0;e.voice={start:()=>{starts++;return new Promise(resolve=>finish=resolve);},stop:async()=>{}};
  const first=e.startCall('sdp-offer');await assert.rejects(e.startCall('second-offer'),/already active/);
- await first;assert.equal(w.calls.filter(c=>c.method==='thread/realtime/start').length,1);
+ finish({sdp:'answer'});await first;assert.equal(starts,1);assert.equal(w.calls.length,0);
  await e.stopCall();
 });
 
 test('realtime errors close the backend call so it does not block reconnect or the next call',async t=>{
  const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);
+ let stops=0;e.voice={start:async()=>({sdp:'answer'}),stop:async()=>{stops++;}};
  await e.startCall('sdp-offer');
- await e.handle({method:'thread/realtime/error',params:{threadId:'thread-test',message:'Voice unavailable'}});
- assert.equal(e.call,null);assert.equal(w.calls.filter(c=>c.method==='thread/realtime/stop').length,1);
+ await e.handle({method:'thread/realtime/error',params:{message:'Voice unavailable'}});
+ assert.equal(e.call,null);assert.equal(stops,1);
  assert.equal(s.state.messages.filter(m=>m.kind==='call').length,1);
+});
+
+test('voice requires a separately configured provider before creating a session or call record',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);w.account={account:{type:'chatgpt'}};
+ await assert.rejects(e.startCall('unused-offer'),/separate voice API key/);
+ assert.equal(w.calls.length,0);assert.equal(e.call,null);assert.equal(s.state.messages.length,0);
+});
+
+test('voice tasks use the subscription serial queue without writing speech transcripts into chat',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);
+ const message=s.add({role:'user',text:'First typed task',status:'queued'});e.enqueue(message);await tick();
+ const voice=e.runVoiceTask('Check the work directory');assert.equal(e.queue.length,1);assert.equal(s.state.messages.length,1);
+ await e.handle({method:'turn/completed',params:{threadId:'thread-test',turn:{id:'turn-1',status:'completed'}}});await tick();
+ assert.match(w.calls.filter(c=>c.method==='turn/start')[1].params.input[0].text,/Check the work directory/);
+ await e.handle({method:'item/agentMessage/delta',params:{threadId:'thread-test',turnId:'turn-2',itemId:'voice-item',delta:'The work directory '}});
+ await e.handle({method:'item/completed',params:{threadId:'thread-test',turnId:'turn-2',item:{type:'agentMessage',id:'voice-item',text:'The work directory is ready.'}}});
+ await e.handle({method:'turn/completed',params:{threadId:'thread-test',turn:{id:'turn-2',status:'completed'}}});
+ assert.deepEqual(await voice,{result:'The work directory is ready.'});assert.equal(s.state.messages.length,1);assert.equal(e.voiceTasks.size,0);
+});
+
+test('voice task failure and cancellation do not strand a promise or mutate a stored message',async t=>{
+ const s=new Store(temp(t)),w=new FakeWorker(),e=new Engine(s,w);e.takeover=true;
+ await assert.rejects(e.runVoiceTask('test'),/Return the desktop/);e.takeover=false;
+ const first=e.runVoiceTask('first'),firstRejected=assert.rejects(first,/VM disconnected/);await tick();
+ const queued=e.runVoiceTask('queued'),queuedRejected=assert.rejects(queued,/VM disconnected/);
+ w.disconnect();await Promise.all([firstRejected,queuedRejected]);assert.equal(e.queue.length,0);assert.equal(e.voiceTasks.size,0);assert.equal(s.state.messages.length,0);
+});
+
+test('voice key HTTP configuration stays separate from subscription state and never returns the secret',async t=>{
+ let saved=null;const provider=new EventEmitter();provider.start=async()=>({sdp:'answer'});provider.stop=async()=>provider.emit('closed');provider.close=async()=>{};
+ const keys={get:async()=>saved,set:async value=>{saved=value;},clear:async()=>{saved=null;},status:()=>({configured:!!saved,source:saved?'stored':null,storage:'windows-dpapi'})};
+ const w=new FakeWorker();w.account={account:{type:'chatgpt',planType:'pro'}};
+ const instance=createApp({dataDir:temp(t),workerFactory:()=>w,secretFactory:()=>keys,voiceFactory:()=>provider});t.after(()=>instance.close());
+ await new Promise(resolve=>instance.server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+instance.server.address().port;
+ const {token}=await fetch(base+'/api/session').then(r=>r.json()),headers={'X-Dant-Token':token,'Content-Type':'application/json'},key='test-only-key-not-a-real-credential';
+ const response=await fetch(base+'/api/voice-key',{method:'POST',headers,body:JSON.stringify({key})});assert.equal(response.status,200);assert.equal((await response.text()).includes(key),false);
+ const snapshot=await fetch(base+'/api/state',{headers}).then(r=>r.json());assert.equal(snapshot.worker.realtime.available,true);assert.equal(snapshot.worker.account.type,'chatgpt');assert.equal(JSON.stringify(snapshot).includes(key),false);assert.equal(fs.readFileSync(instance.store.file,'utf8').includes(key),false);
+ await instance.engine.startCall('offer');assert.equal((await fetch(base+'/api/voice-key',{method:'DELETE',headers})).status,400);await instance.engine.stopCall();
+ assert.equal((await fetch(base+'/api/voice-key',{method:'DELETE',headers})).status,200);assert.equal(saved,null);assert.equal(w.calls.length,0);assert.equal(instance.store.state.messages.filter(m=>m.kind==='call').length,1);
+});
+
+test('application shutdown waits for its API voice hangup and remains idempotent',async t=>{
+ const provider=new EventEmitter();let finish,closed=0;provider.close=()=>{closed++;return new Promise(resolve=>finish=resolve);};
+ const instance=createApp({dataDir:temp(t),workerFactory:()=>new FakeWorker(),voiceFactory:()=>provider});
+ const shutdown=instance.close();assert.equal(instance.close(),shutdown);let completed=false;shutdown.then(()=>completed=true);await tick();assert.equal(completed,false);
+ finish();await shutdown;assert.equal(completed,true);assert.equal(closed,1);
 });

@@ -1,8 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use std::{io::{BufRead,BufReader},process::{Child,Command,Stdio},sync::{Mutex,mpsc},time::Duration};
+use std::{io::{BufRead,BufReader,Write},path::PathBuf,process::{Child,Command,Stdio},sync::{Mutex,mpsc},time::Duration};
 use tauri::Manager;
 #[cfg(windows)] use std::os::windows::process::CommandExt;
 struct Backend(Mutex<Option<Child>>);
+fn runtime_path(path:PathBuf)->PathBuf{
+ #[cfg(windows)] {
+  let value=path.to_string_lossy();
+  if let Some(rest)=value.strip_prefix(r"\\?\UNC\"){return PathBuf::from(format!(r"\\{}",rest));}
+  if let Some(rest)=value.strip_prefix(r"\\?\"){return PathBuf::from(rest);}
+ }
+ path
+}
 fn startup_error(message: &str){
  #[cfg(windows)] {
   #[link(name="user32")] extern "system" {fn MessageBoxW(hwnd:*mut std::ffi::c_void,text:*const u16,title:*const u16,kind:u32)->i32;}
@@ -17,13 +25,14 @@ fn main(){
  .plugin(tauri_plugin_notification::init())
  .plugin(tauri_plugin_opener::init())
  .setup(|app|{
-   let backend_root=if cfg!(debug_assertions){std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()}else{app.path().resource_dir()?.join("backend")};
-   let data=if let Some(value)=std::env::var_os("DANT_DATA"){std::path::PathBuf::from(value)}else if cfg!(debug_assertions){backend_root.join("data")}else{app.path().app_data_dir()?.join("data")};
+   let backend_root=runtime_path(if cfg!(debug_assertions){PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()}else{app.path().resource_dir()?.join("backend")});
+   let data=runtime_path(if let Some(value)=std::env::var_os("DANT_DATA"){PathBuf::from(value)}else if cfg!(debug_assertions){backend_root.join("data")}else{app.path().app_data_dir()?.join("data")});
    std::fs::create_dir_all(&data)?;
    let node=if cfg!(debug_assertions){std::path::PathBuf::from("node")}else{backend_root.join("node.exe")};
    let mut command=Command::new(node);
-   let log=std::fs::OpenOptions::new().create(true).append(true).open(data.join("startup.log"))?;
-   command.arg(backend_root.join("src/server.mjs")).current_dir(&backend_root).env("DANT_DATA",&data).env("DANT_MANAGED","1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::from(log));
+   let mut log=std::fs::OpenOptions::new().create(true).append(true).open(data.join("startup.log"))?;
+   writeln!(log,"Starting dant backend in {}",backend_root.display())?;
+   command.arg("src/server.mjs").current_dir(&backend_root).env("DANT_DATA",&data).env("DANT_MANAGED","1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::from(log));
    #[cfg(windows)] command.creation_flags(0x08000000);
    let mut child=command.spawn()?;
    let (sender,receiver)=mpsc::channel();

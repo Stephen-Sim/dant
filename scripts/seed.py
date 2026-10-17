@@ -1,4 +1,4 @@
-import argparse,pathlib,json,io,pycdlib
+import argparse,pathlib,json,io,hashlib,pycdlib
 parser=argparse.ArgumentParser(description='Create a dant NoCloud seed ISO')
 parser.add_argument('root',type=pathlib.Path)
 parser.add_argument('admin_sudo',choices=['true','false'])
@@ -70,11 +70,13 @@ WantedBy=multi-user.target
 files=[{'path':'/opt/dant/'+f,'permissions':'0755','content':(root/'vm'/f).read_text(encoding='utf-8')} for f in ['desktop.py','guest.py','start-codex.sh','bootstrap.sh']]
 files += [{'path':'/etc/systemd/system/'+name,'content':text} for name,text in units.items()]
 files += [{'path':'/etc/cloud/cloud.cfg.d/99-dant-datasource.cfg','content':'datasource_list: [ NoCloud, None ]\n'}]
-user={'name':'dant','shell':'/bin/bash','groups':['adm'],'lock_passwd':True,'ssh_authorized_keys':[public],'sudo':'ALL=(ALL) NOPASSWD:ALL' if admin else False}
+user={'name':'dant','shell':'/bin/bash','groups':['adm'],'lock_passwd':True,'ssh_authorized_keys':[public],'sudo':'ALL=(ALL) NOPASSWD:ALL' if admin else None}
 config={'hostname':'dant','manage_etc_hosts':True,'users':[user],'ssh_pwauth':False,'disable_root':True,'write_files':files,'runcmd':[['systemctl','daemon-reload'],['systemctl','enable','--now','--no-block','dant-bootstrap.service']]}
 # JSON is valid YAML and avoids escaping errors in embedded shell/Python.
 user_data=('#cloud-config\n'+json.dumps(config,ensure_ascii=False,indent=2)).encode()
-meta=json.dumps({'instance-id':'dant-'+public.split()[1][-12:],'local-hostname':'dant'}).encode()
+# cloud-init uses instance-id in filesystem paths and cache names. Raw public
+# key base64 may contain '/', so derive a stable path-safe identifier instead.
+meta=json.dumps({'instance-id':'dant-'+hashlib.sha256(public.encode()).hexdigest()[:20],'local-hostname':'dant'}).encode()
 iso=pycdlib.PyCdlib();iso.new(interchange_level=3,joliet=3,vol_ident='cidata',rock_ridge='1.09')
 network=json.dumps({'version':2,'ethernets':{'dant':{'match':{'name':'e*'},'dhcp4':True}}}).encode()
 for name,content,iso_name in [('user-data',user_data,'USERDATA.;1'),('meta-data',meta,'METADATA.;1'),('network-config',network,'NETWORK.;1')]:

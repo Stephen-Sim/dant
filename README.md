@@ -2,7 +2,7 @@
 
 Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Tauri 桌面壳、Node.js 本地服务和 VM 内的 Codex App Server。
 
-项目正在从零重建。当前核心代码、界面和 Windows 可执行文件已构建验证；真实 VM、订阅推理和双向语音需要在完成部署后验收。接口接入不代表实机测试通过。
+项目正在从零重建。当前已实机验证 Windows 原生窗口、Hyper-V VM、真实桌面与接管、SSH、ChatGPT 订阅回复、VM 内命令执行、文件交付、图片/文本附件和独立记忆。实时通话可单独配置 OpenAI API Key；文字聊天继续使用 ChatGPT 订阅。通话的真实麦克风、播放和模型连接需要配置有效 Key 后验收。
 
 ## 功能
 
@@ -11,7 +11,7 @@ Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Ta
 - VM 内串行执行任务，停止、接管、交还；聊天与长期记忆保存在本地。
 - SSH 转发桌面画面及输入，不在宿主机执行 Agent 的工作命令。
 - 图片、文件和录音消息；Agent 可分享工作目录中的文件。
-- 未读消息通知、定时任务，以及 Codex 实验实时通话接入。
+- 未读消息通知、定时任务，以及可选的 API 计费实时语音通话。
 
 ## 本地启动
 
@@ -47,7 +47,9 @@ npm start
 
 默认 4 核、6 GB 内存、40 GB 动态磁盘。VM 用户 `dant` 使用 SSH 密钥，不启用密码登录。完整流程和排障见 [VM 说明](docs/VM.md)。已有 Ubuntu VM 也可以安装 `vm/` 中的执行器后手动填写 SSH 连接信息。
 
-连接 VM 后，在设置中发起 ChatGPT 设备码登录，使用 OpenAI 官方页面完成认证。凭据由 VM 内 Codex 管理，dant 不复制宿主机 ChatGPT 凭据。模型、额度和实时通话可用性取决于账号及 Codex 版本。
+连接 VM 后，在设置中发起 ChatGPT 设备码登录，使用 OpenAI 官方页面完成认证。凭据由 VM 内 Codex 管理，dant 不复制宿主机 ChatGPT 凭据。文字模型和额度取决于订阅账号及 Codex 版本。
+
+执行器固定为经验证的 Codex CLI `0.163.0`。模型列表来自实际执行器；目录不是账号权限证明，须以成功完成推理为准。升级执行器时优先使用 VM 用户目录中的 `$HOME/.local/bin/codex`，无需给用户 sudo。模型退休和订阅兼容边界见 [官方模型说明](https://learn.chatgpt.com/docs/models)。
 
 ## Windows 桌面构建
 
@@ -59,6 +61,14 @@ npm start
 ```
 
 输出位于 `src-tauri/target/release/`，安装包位于其 `bundle/nsis/` 子目录。安装版把用户数据保存在每个用户自己的应用数据目录；源码启动默认使用项目下 `data/`。开发验收时可以通过进程环境变量 `DANT_DATA` 显式指定数据目录。
+
+双击项目中的 `start-desktop.cmd`，即可使用项目已有的聊天和 VM 连接启动桌面版。
+
+## 可选语音通话
+
+在设置中的“语音 API Key”填写自己的 OpenAI API Key 并保存。Key 使用 Windows 当前用户的 DPAPI 加密保存在应用数据目录；不会发送给 VM、进入聊天记录或纳入 Git。保存仅表示本地已配置，是否有效及是否有额度在建立通话时由官方 API 验证。
+
+通话通过官方 Realtime WebRTC 接口，使用 `gpt-realtime-2.1`，费用由 API 项目单独承担，不包含在 ChatGPT 订阅内。通话中交代的电脑任务通过工具交给现有的订阅执行器，仍使用同一串行队列；语音转录不写入聊天，明确分享的链接和文件正常交付。录音附件不需要语音 Key。配置和验证方法见 [语音 Key 说明](docs/VOICE-KEY.md)。
 
 ## 验证
 
@@ -76,12 +86,14 @@ python -m py_compile vm/guest.py vm/desktop.py scripts/seed.py
 - `.cache/` 和 `.tools/`：下载镜像、协议参考和项目构建工具；不纳入 Git。
 - VM 内 Agent 拥有所选 VM 权限；宿主机只运行管理应用和 SSH 连接。
 - 任务调度需要应用正在运行；目前没有安装 Windows 后台服务。
-- 录音附件可上传、交付和播放；内容理解取决于模型工具。实时语音依赖 Codex 的实验接口，不使用未公开的 ChatGPT 网页音频接口。
+- 录音附件可上传、交付和播放；内容理解取决于模型工具。Codex 的订阅登录无法建立实时通话；可选语音 Key 直接连接官方 Realtime API，单独计费。没有使用未公开的 ChatGPT 网页音频接口。
 - 桌面面板通过 SSH 隧道获取截图与发送输入，适合文档、浏览器和开发工作，不是高帧率视频串流。
 
 ## 官方接口参考
 
 - [Codex App Server](https://learn.chatgpt.com/docs/app-server)
+- [Realtime WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc)
+- [Realtime 服务端工具控制](https://developers.openai.com/api/docs/guides/realtime-server-controls)
 - [Hyper-V New-VM](https://learn.microsoft.com/en-us/powershell/module/hyper-v/new-vm)
 - [Ubuntu 24.04 官方镜像](https://cloud-images.ubuntu.com/releases/noble/release/)
 - [Tauri](https://v2.tauri.app/)

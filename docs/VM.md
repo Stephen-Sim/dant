@@ -28,6 +28,10 @@ $dantData = Join-Path $env:LOCALAPPDATA 'dant'
 
 `prepare-vm.ps1` 下载官方 Ubuntu 24.04 Azure VHD 压缩包并核对 SHA256，创建 ed25519 SSH 密钥和 NoCloud ISO。普通用户 `dant` 默认没有 sudo 权限、没有密码登录、不能 root SSH 登录。如果明确需要让 VM 内代理有 sudo 权限，首次准备时可传 `-AdminSudo`；这个选项会影响代理在 VM 内的权限。
 
+种子的 `instance-id` 使用公钥的 SHA256 十六进制摘要前 20 位，保持稳定且可安全用于文件路径。不能直接使用公钥 base64 片段，因为其中可能包含 `/`。
+
+SSH 密钥由 `scripts/vm-key.py` 使用 Python 参数数组调用 OpenSSH，避免 PowerShell 5/7 对空口令参数的不同解释。准备阶段只打印生成/验证/修复结果。已有无口令密钥会校验私钥与公钥是否匹配；仅当文件名是 `vm-key`、私钥能用早期脚本的双引号口令解密、私钥和公钥都带 `dant-local-vm` 注释且公钥匹配时，才自动清除这个遗留口令。原密钥、公钥文件及注释保持一致。其他加密密钥、陌生注释或不匹配的公钥都会报错并保持原文件。
+
 `create-vm.ps1` 选择已有 Default Switch，检查原始盘没有挂载或被其他 VM 注册使用，然后准备 NoCloud 配置、转换动态 VHDX、扩容、注册第一代 Hyper-V VM、挂载 ISO 并启动。获得 IP 后保存 `vm.json`。此时软件安装可能仍在进行，必须以 `check-vm.ps1` 的结果判断就绪。
 
 Windows `tar` 可能把官方镜像解压为 NTFS 稀疏文件，而 Hyper-V 转换这类文件会报 `0xC03A001A`。脚本在 NoCloud 准备后、转换前，仅对已确认未挂载/未被 VM 使用的官方原始 VHD 执行 `fsutil sparse setflag <源VHD> 0`，把空洞分配为普通磁盘空间；不会修改宿主目录的压缩/加密设置。为避免转换中途耗尽磁盘，稀疏源盘要求预留两倍源盘逻辑大小加 1 GiB；当前镜像约需要 61 GiB 可用空间。非稀疏源盘要求预留一倍源盘逻辑大小加 1 GiB。操作后会验证文件长度、属性、VHD/文件系统配置，并再次检查空间。源文件或目标目录被压缩/加密时，脚本清楚报错，需选择合适的数据目录。
@@ -90,6 +94,7 @@ Windows 的 `data/vm-setup-status.json` 保存阶段、最近更新时间、日�
 - **网络临时失败：** 初始化服务会自动重试。查看 `-Diagnostics`，等网络恢复后再次检查。
 - **SSH 能连接但没有 ready：** 检查 `dant-bootstrap.service` 和安装日志；首次桌面安装需要时间。SSH 可用本身不能证明截图和 Codex 已可用。
 - **SSH 无法连接：** 先确认地址和 VM 是否运行，检查 Windows OpenSSH 是否在 PATH 中、私钥路径是否仍存在。若 host key 发生变化，先核实连接目标，保留 `known_hosts` 中的证据进行排查。
+- **已确认公钥一致，仍报 `Permission denied (publickey)`：** 检查 Windows 侧私钥是否意外带口令。早期脚本在 PowerShell 7 中传 `-N '""'` 会把两个双引号当作实际口令，导致 `BatchMode=yes` 无法签名。重新运行准备阶段会校验密钥并受限修复已确认的旧项目密钥；换种子 ISO不能解决 Windows 私钥加密问题。修复保持原密钥对，不需要重建 VM。
 
 更换聊天模型或应用 mode 不会改变 Windows 对 Hyper-V/UAC 的权限要求。管理员启动失败时，以安装入口日志和 Windows 返回的具体错误为准。
 
@@ -97,7 +102,7 @@ Windows 的 `data/vm-setup-status.json` 保存阶段、最近更新时间、日�
 
 ```powershell
 python -m unittest discover -s tests -p test_vm.py -v
-python -m py_compile scripts/seed.py scripts/patch-image.py vm/desktop.py vm/guest.py
+python -m py_compile scripts/seed.py scripts/patch-image.py scripts/vm-key.py vm/desktop.py vm/guest.py
 ```
 
-测试使用合成 VHD 验证只修改等长配置字节、审计不被覆盖、损坏镜像和未知配置被拒绝，并验证拖动中断时释放鼠标按钮。这些检查不能替代真实 VM 的首次启动、联网安装和桌面验证。
+测试使用合成 VHD 验证只修改等长配置字节、审计不被覆盖、损坏镜像和未知配置被拒绝，验证拖动中断时释放鼠标按钮，回读种子 ISO 检查路径安全的实例 ID 和禁用 sudo 时的 null 配置，并在临时目录生成机器密钥验证空口令、已确认旧密钥修复、未知加密密钥/陌生注释/公钥不匹配时拒绝修改。这些检查不能替代真实 VM 的首次启动、联网安装和桌面验证。

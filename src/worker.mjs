@@ -4,6 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import {Rpc} from './rpc.mjs';
+// A user-scoped Codex upgrade works without guest sudo. This is a fixed remote
+// POSIX command: connection settings and other user input never enter its text.
+const remoteCodexCommand='if [ -x "$HOME/.local/bin/codex" ]; then export DISPLAY=:0 CODEX_HOME="$HOME/.dant-codex" PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"; mkdir -p "$CODEX_HOME" "$HOME/work" && cd "$HOME/work" && exec "$HOME/.local/bin/codex" app-server --listen stdio://; else exec /opt/dant/start-codex.sh; fi';
 export function sshArgs(vm){
  if(!/^[a-zA-Z0-9][a-zA-Z0-9.:-]*$/.test(vm.host)||!/^[a-z_][a-z0-9_-]*$/i.test(vm.user)||!Number.isInteger(Number(vm.port))||vm.port<1||vm.port>65535)throw Error('Invalid VM connection settings');
  if(!vm.keyPath||!fs.existsSync(vm.keyPath))throw Error('SSH private key not found');
@@ -11,7 +14,7 @@ export function sshArgs(vm){
 }
 async function freePort(){return await new Promise((res,rej)=>{const s=net.createServer();s.once('error',rej);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>res(p));});});}
 export class Worker extends EventEmitter{
- constructor(store){super();this.store=store;this.status='offline';this.error=null;this.generation=0;}
+ constructor(store,{rpcFactory=(command,args)=>new Rpc(command,args)}={}){super();this.store=store;this.rpcFactory=rpcFactory;this.status='offline';this.error=null;this.generation=0;}
  async connect(){
   if(this.connecting)return this.connecting;
   this.disconnect();const generation=this.generation;
@@ -23,7 +26,7 @@ export class Worker extends EventEmitter{
   try{
    const vm=this.store.state.settings.vm;vm.knownHosts ||= path.join(this.store.dir,'known_hosts');this.store.save();
    const args=sshArgs(vm);const port=await freePort();current();this.port=port;
-   rpc=new Rpc('ssh',[...args,'-L',`127.0.0.1:${port}:127.0.0.1:4319`,'-o','ExitOnForwardFailure=yes',`${vm.user}@${vm.host}`,'/opt/dant/start-codex.sh']);this.rpc=rpc;
+   rpc=this.rpcFactory('ssh',[...args,'-L',`127.0.0.1:${port}:127.0.0.1:4319`,'-o','ExitOnForwardFailure=yes',`${vm.user}@${vm.host}`,remoteCodexCommand]);this.rpc=rpc;
    rpc.on('event',e=>{if(this.rpc===rpc)this.emit('event',e);});rpc.on('diagnostic',e=>{if(this.rpc===rpc)this.lastDiagnostic=e;});
    rpc.on('disconnected',e=>{if(this.rpc===rpc){this.rpc=null;this.status='offline';this.account=null;this.models=null;this.error=e.message;this.emit('status');}});
    await rpc.request('initialize',{clientInfo:{name:'dant',title:'dant',version:'0.1.0'},capabilities:{experimentalApi:true}});current();rpc.send({method:'initialized'});
