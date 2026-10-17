@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.5 task priority and completed-history cleanup follow-up
+
+The final local JavaScript coverage run passed **1,232 tests, zero failures and zero skips**. Coverage is **98.78% lines, 91.06% branches and 91.67% functions**; every configured gate passed. The frontend production build and all 102 local documentation links passed validation.
+
+High/Normal/Low display priorities persist across restart, initial task registration and related continuation. Tests preserve executor order, ownership, actual task timestamps and shared conversation state. Inactive unfinished removal uses a separate inline confirmation; the service rechecks current state and requires an explicit confirmation flag. Stale completed results that become unfinished prompt again without automatic replay, and closing the panel prevents late responses from restoring its confirmation.
+
+The completed section retains a full count beyond its bounded visible list. Clear all selects only authoritative completed records, excludes work still owned, queued or unconfirmed, and applies dismissal markers in one atomic save with rollback. Acceptance, message contents, read receipts, memory, schedules and model context are preserved. Large-history checks cover indexed UI lookups and bounded reads for 3,000 legacy records. These are protocol, API and simulated DOM checks; this follow-up changes local source and does not replace the installed application or the already published release.
+
 ## 0.4.5 final local installation
 
 After the user exited dant, the latest Windows installer was built from runtime source matching clean commit `4a0451d` and installed silently. All **5,406 runtime files** matched the package; the executable matched apart from the expected NSIS bundle marker. File/product versions and the installed version API reported **0.4.5**, and the existing connection-profile hash was unchanged. The local installer SHA-256 is `d5d860b0265a75f7819def5b98fa888c8b1630b962d6a985e7dc5b6b5b8f5d2b`; this identifies the local build, separately from GitHub-built release assets.

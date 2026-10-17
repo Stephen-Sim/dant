@@ -327,14 +327,33 @@ export class Engine extends EventEmitter {
  }
  assertCurrentWorkMessage(message){if(!message?.turnId)return;const record=(this.store.state.workTasks||[]).find(record=>record.id===message.workId||record.turnIds?.includes(message.turnId));if(record&&record.turnId!==message.turnId)throw Error('This message belongs to an earlier task step. Use the current task result or send a new instruction.');}
  confirm(id){this.assertCurrentWorkMessage(this.task(id));const result=this.store.confirm(id);this.change();return result;}
- dismissProgress(id,kind){
-  const entry=this.store.progressEntry(id,kind),ids=new Set(kind==='task'?[entry.id,entry.parentTaskId].filter(Boolean):kind==='work'?[entry.messageId].filter(Boolean):[entry.taskId,...entry.messageIds].filter(Boolean));
+ progressOwnership(){
   const session=this.nativeVoice?.session,owners=[this.active,this.nativeVoice?.active,this.nativeVoice?.progress,...(session?.turns?.values?.()||[])].filter(owner=>owner&&(owner===this.active||!owner.done||!owner.resultSaved||owner.pendingSubmissions));
-  const owned=owners.some(owner=>entry.turnId&&entry.turnId===owner.turnId||(kind!=='work'||!owner.turnId)&&[owner.messageId,...(owner.messageIds||[]),...(owner.explicitMessageIds||[]),...(owner.assistantIds||[])].some(messageId=>messageId&&ids.has(messageId)));
-  const queued=this.queue.some(message=>entry.turnId&&entry.turnId===message.turnId||(kind!=='work'||!message.turnId)&&ids.has(message.id));
+  const ids=owner=>[owner.messageId,...(owner.messageIds||[]),...(owner.explicitMessageIds||[]),...(owner.assistantIds||[])].filter(Boolean);
+  return {session,turns:new Set(owners.map(owner=>owner.turnId).filter(Boolean)),ids:new Set(owners.flatMap(ids)),unboundIds:new Set(owners.filter(owner=>!owner.turnId).flatMap(ids)),queuedTurns:new Set(this.queue.map(message=>message.turnId).filter(Boolean)),queuedIds:new Set(this.queue.map(message=>message.id)),unboundQueuedIds:new Set(this.queue.filter(message=>!message.turnId).map(message=>message.id))};
+ }
+ progressOwned(entry,kind,ownership=this.progressOwnership()){
+  const ids=kind==='task'?[entry.id,entry.parentTaskId].filter(Boolean):kind==='work'?[entry.messageId].filter(Boolean):[entry.taskId,...entry.messageIds].filter(Boolean),{session}=ownership;
+  const owned=ownership.turns.has(entry.turnId)||ids.some(id=>(kind==='work'?ownership.unboundIds:ownership.ids).has(id));
+  const queued=ownership.queuedTurns.has(entry.turnId)||ids.some(id=>(kind==='work'?ownership.unboundQueuedIds:ownership.queuedIds).has(id));
   const unresolvedVoice=kind==='task'&&entry.submission==='unknown'&&entry.voiceCallId&&entry.voiceCallId===session?.id&&(session.unknown||session.submitting||this.nativeVoice?.active);
-  if(owned||queued||unresolvedVoice)throw Object.assign(Error('Active work cannot be dismissed. Wait for it to stop or finish.'),{status:409});
-  const result=this.store.dismissProgress(id,kind);this.change();return result;
+  return owned||queued||unresolvedVoice;
+ }
+ dismissProgress(id,kind,options={}){
+  const entry=this.store.progressEntry(id,kind);
+  if(this.progressOwned(entry,kind))throw Object.assign(Error('Active work cannot be dismissed. Wait for it to stop or finish.'),{status:409});
+  const result=this.store.dismissProgress(id,kind,options);this.change();return result;
+ }
+ setProgressPriority(id,kind,priority){const result=this.store.setProgressPriority(id,kind,priority);this.emit('change');return result;}
+ clearCompletedProgress(){
+  const candidates=[],ownership=this.progressOwnership(),pendingIds=new Set([...this.pendingFollowups.keys(),...this.callReferences.keys()]),pendingTurns=new Set(this.store.state.messages.filter(message=>pendingIds.has(message.id)).map(message=>message.turnId).filter(Boolean));
+  for(const [kind,entries] of [['task',this.store.state.messages],['work',this.store.state.workTasks],['completion',this.store.state.completions]])for(const entry of entries){
+   if(!this.store.isProgressCompleted(entry,kind)||kind==='completion'&&!this.store.isProgressCompletion(entry)||this.progressOwned(entry,kind,ownership))continue;
+   const ids=kind==='task'?[entry.id]:kind==='work'?[entry.messageId]:[entry.id,entry.taskId,...entry.messageIds];
+   if(pendingTurns.has(entry.turnId)||ids.some(id=>pendingIds.has(id)))continue;
+   candidates.push({id:entry.id,kind});
+  }
+  const result=this.store.clearCompletedProgress(candidates);if(result.cleared)this.emit('change');return result;
  }
  async prepareInput(message,{signal}={}){
   const speech=new Map(),call=this.call;

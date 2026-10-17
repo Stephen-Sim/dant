@@ -8,6 +8,8 @@ export const TASK_STATES=Object.freeze(['draft','accepted','queued','running','w
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const progressError=(status,message)=>Object.assign(Error(message),{status});
 const dismissibleStates=new Set(['continuing','paused','failed','review','completed']);
+const progressPriorities=new Set(['high','normal','low']);
+const unconfirmedProgress=entry=>entry?.unknownOutcome===true||['unknown','submitting'].includes(entry?.submission);
 export class Store {
   constructor(dir,{renameSync=fs.renameSync,platform=process.platform,pause=ms=>Atomics.wait(pauseBuffer,0,0,ms)}={}) {
     this.renameSync=renameSync;this.platform=platform;this.pause=pause;
@@ -22,13 +24,16 @@ export class Store {
       const status=entry.status==='review'&&plan.steps.some(step=>step.status!=='completed')?'continuing':entry.status;
       const restored={id:entry.id,turnId:entry.turnId,turnIds,messageId:typeof entry.messageId==='string'?entry.messageId:null,source:entry.source,title,plan,status,startedAt:entry.startedAt,updatedAt:entry.updatedAt};
       if(typeof entry.progressDismissedAt==='number'&&entry.progressDismissedAt>0)restored.progressDismissedAt=entry.progressDismissedAt;
+      if(Object.hasOwn(entry,'progressPriority'))restored.progressPriority=progressPriorities.has(entry.progressPriority)?entry.progressPriority:'normal';
       if(typeof entry.executionEndedAt==='number'&&Number.isFinite(entry.executionEndedAt)&&entry.executionEndedAt>0)restored.executionEndedAt=entry.executionEndedAt;
       if(['running','pausing','unknown'].includes(restored.status)||restored.status==='waiting_user'&&!restored.executionEndedAt){restored.status='paused';restored.pauseReason='restart';restored.updatedAt=Date.now();}else if(entry.pauseReason)restored.pauseReason=entry.pauseReason;
       return [restored];}catch{return [];}
     }).slice(-300);
     const lastActiveAt=this.state.presence?.lastActiveAt;this.state.presence={lastActiveAt:typeof lastActiveAt==='number'&&Number.isFinite(lastActiveAt)&&lastActiveAt>0&&lastActiveAt<=8640000000000000?lastActiveAt:null};
     this.state.deletedClientMessageIds=Array.isArray(this.state.deletedClientMessageIds)?[...new Set(this.state.deletedClientMessageIds.filter(id=>typeof id==='string'&&id.length>0&&id.length<=128))].slice(-2000):[];
+    for(const entry of this.state.completions)if(Object.hasOwn(entry,'progressPriority')&&!progressPriorities.has(entry.progressPriority))entry.progressPriority='normal';
     for(const m of this.state.messages){
+      if(Object.hasOwn(m,'progressPriority')&&!progressPriorities.has(m.progressPriority))m.progressPriority='normal';
       if(m.role==='user'){
         m.receivedAt ??= m.time||Date.now();m.executorConfirmedAt ??= null;
         if(m.status==='read')m.status='review';
@@ -71,7 +76,8 @@ export class Store {
     if(previous&&previous.turnId!==turnId){if(!['continuing','waiting_user','paused'].includes(previous.status))throw Error('Only inactive unfinished work can continue in a different turn.');if(previous.turnIds?.includes(turnId))throw Error('A previous task turn cannot replace its current turn.');}
     if(!previous&&before.some(entry=>entry.turnIds?.includes(turnId)))throw Error('This turn already belongs to a different task.');
     const turnIds=[...new Set([...(previous?.turnIds||[]),...(previous?[previous.turnId]:[]),turnId])];
-    const record={...(previous||{id:randomUUID(),source,startedAt:typeof startedAt==='number'&&Number.isFinite(startedAt)&&startedAt>0?startedAt:now}),turnId,turnIds,messageId:previous?.messageId||messageId||null,...safe,status:['running','waiting_user','pausing','unknown'].includes(status)?status:'running',updatedAt:now};
+    const priority=this.state.messages.find(message=>message.id===messageId&&message.role==='user')?.progressPriority;
+    const record={...(previous||{id:randomUUID(),source,startedAt:typeof startedAt==='number'&&Number.isFinite(startedAt)&&startedAt>0?startedAt:now,...(progressPriorities.has(priority)?{progressPriority:priority}:{})}),turnId,turnIds,messageId:previous?.messageId||messageId||null,...safe,status:['running','waiting_user','pausing','unknown'].includes(status)?status:'running',updatedAt:now};
     delete record.progressDismissedAt;delete record.pauseReason;delete record.executionEndedAt;const next=[...before];if(index<0)next.push(record);else next[index]=record;this.state.workTasks=next.slice(-300);
     try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;
   }
@@ -84,24 +90,57 @@ export class Store {
     const record={...previous,...patch,updatedAt:Date.now()},next=[...before];next[index]=record;this.state.workTasks=next;
     try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;
   }
-  progressEntry(id,kind){
+  progressRecord(id,kind){
     if(typeof id!=='string'||!id||id.length>128||!['task','completion','work'].includes(kind))throw progressError(400,'Invalid work progress request.');
     const entry=(kind==='task'?this.state.messages:kind==='work'?this.state.workTasks:this.state.completions).find(item=>item.id===id);
     if(!entry)throw progressError(404,'Work progress entry not found.');
-    if(kind==='work'){
-      if(!dismissibleStates.has(entry.status))throw progressError(409,'Only inactive task history can be dismissed.');
-    }else if(kind==='task'){
-      if(entry.role!=='user'||!dismissibleStates.has(entry.status))throw progressError(409,'Only inactive task history can be dismissed.');
-    }else if(!safeCompletionWork(entry.work)||typeof entry.turnId!=='string'||/:(input|credential):/.test(entry.turnId)||!Array.isArray(entry.messageIds)||!entry.messageIds.some(messageId=>this.state.messages.some(message=>message.id===messageId&&message.role==='assistant'&&message.status!=='streaming'))){
+    if(kind==='task'&&entry.role!=='user')throw progressError(409,'Only user task progress can be changed.');
+    if(kind==='completion'&&!this.isProgressCompletion(entry)){
       throw progressError(409,'Only final voice task history can be dismissed.');
     }
     return entry;
   }
-  dismissProgress(id,kind){
+  isProgressCompletion(entry){return Boolean(safeCompletionWork(entry.work)&&typeof entry.turnId==='string'&&!/:(input|credential):/.test(entry.turnId)&&Array.isArray(entry.messageIds)&&entry.messageIds.some(messageId=>this.state.messages.some(message=>message.id===messageId&&message.role==='assistant'&&message.status!=='streaming')));}
+  progressEntry(id,kind){
+    const entry=this.progressRecord(id,kind);
+    if(kind!=='completion'&&!dismissibleStates.has(entry.status))throw progressError(409,'Only inactive task history can be dismissed.');
+    return entry;
+  }
+  isProgressCompleted(entry,kind){
+    if(kind==='task')return entry.role==='user'&&entry.status==='completed'&&!unconfirmedProgress(entry);
+    const related=this.state.messages.filter(message=>message.role==='user'&&(message.turnId&&message.turnId===entry.turnId||kind==='completion'&&message.id===entry.taskId));
+    if(unconfirmedProgress(entry)||related.some(unconfirmedProgress))return false;
+    if(kind!=='completion')return entry.status==='completed';
+    const records=this.state.workTasks.filter(record=>record.turnId===entry.turnId||record.turnIds?.includes(entry.turnId));
+    if(records.length)return records.some(record=>record.turnId===entry.turnId&&record.status==='completed');
+    return related.some(message=>message.turnId===entry.turnId&&message.status==='completed'&&(!entry.taskId||message.id===entry.taskId));
+  }
+  setProgressPriority(id,kind,priority){
+    if(!progressPriorities.has(priority))throw progressError(400,'Invalid work progress priority.');
+    const entry=this.progressRecord(id,kind);
+    if(entry.progressPriority===priority)return {ok:true,progressPriority:priority};
+    const hadValue=Object.hasOwn(entry,'progressPriority'),previous=entry.progressPriority;entry.progressPriority=priority;
+    try{this.save();}catch(error){if(hadValue)entry.progressPriority=previous;else delete entry.progressPriority;throw error;}
+    return {ok:true,progressPriority:priority};
+  }
+  dismissProgress(id,kind,{confirmUnfinished=false}={}){
     const entry=this.progressEntry(id,kind);
+    if(!this.isProgressCompleted(entry,kind)&&confirmUnfinished!==true)throw Object.assign(progressError(409,'Confirm before hiding unfinished work.'),{confirmationRequired:true});
     if(typeof entry.progressDismissedAt==='number'&&Number.isFinite(entry.progressDismissedAt)&&entry.progressDismissedAt>0)return {ok:true};
     const hadValue=Object.hasOwn(entry,'progressDismissedAt'),previous=entry.progressDismissedAt;entry.progressDismissedAt=Date.now();
     try{this.save();}catch(error){if(hadValue)entry.progressDismissedAt=previous;else delete entry.progressDismissedAt;throw error;}
     return {ok:true};
+  }
+  clearCompletedProgress(candidates=[]){
+    const requested={task:new Set(),work:new Set(),completion:new Set()},selected=[];
+    for(const {id,kind} of candidates)requested[kind]?.add(id);
+    for(const [kind,entries] of [['task',this.state.messages],['work',this.state.workTasks],['completion',this.state.completions]])for(const entry of entries){
+      if(!requested[kind].has(entry.id)||kind==='completion'&&!this.isProgressCompletion(entry)||!this.isProgressCompleted(entry,kind)||typeof entry.progressDismissedAt==='number'&&Number.isFinite(entry.progressDismissedAt)&&entry.progressDismissedAt>0)continue;
+      selected.push(entry);
+    }
+    if(!selected.length)return {ok:true,cleared:0};
+    const before=selected.map(entry=>({entry,hadValue:Object.hasOwn(entry,'progressDismissedAt'),value:entry.progressDismissedAt})),at=Date.now();for(const entry of selected)entry.progressDismissedAt=at;
+    try{this.save();}catch(error){for(const {entry,hadValue,value} of before){if(hadValue)entry.progressDismissedAt=value;else delete entry.progressDismissedAt;}throw error;}
+    return {ok:true,cleared:selected.length};
   }
 }

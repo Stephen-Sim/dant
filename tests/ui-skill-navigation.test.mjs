@@ -26,6 +26,7 @@ function fixture({language='en',online=true,live=false}={}){
  c.createElement=definition=>{const previous=globalThis.document;globalThis.document=document;try{return lucide.createElement(definition);}finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}};
  c.renderWorkSummary=renderWorkSummary;
  c.appearance=createAppearance({document,storage:null,matchMedia:()=>null});c.floatingCall={sync(){}};c.nativeCallOverlay={update(){}};
+ c.progressActions={bind(){},renderConfirmation:()=>'',onClose(){},busy:false};
  c.workDisclosures=createWorkDisclosures({getState:()=>c.state,document});c.scheduledTasks=createSchedules({getState:()=>c.state,document,connected:()=>c.eventConnected,render:()=>c.render(),request:async()=>({items:c.state.schedules||[]})});c.renderSchedules=()=>c.scheduledTasks.renderPage();
  c.callDuration=createCallDuration({now:()=>18000,schedule:fn=>{timers.set(++nextTimer,fn);return nextTimer;},cancel:id=>timers.delete(id)});if(live)c.callDuration.start(call.id,call.connectedAt);
  c.renderChat=()=>`<div id="messages"></div><textarea id="composer">${c.composerDraft}</textarea>`;

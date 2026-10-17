@@ -20,6 +20,8 @@ An optional compact progress card above chat is controlled by **General → Show
 
 Recent work includes text tasks and final call results. Its **×** control dismisses an inactive entry from Work progress without deleting chat, changing task status or read receipts, or resetting model context. Active work keeps the separate **Stop work** action. Viewing a result follows the same visibility-based unread tracking as chat.
 
+Tasks have **High**, **Normal** and **Low** display priorities, saved across restarts and related follow-ups. Ongoing and recent tasks sort by priority, then completion state and newest update; current execution stays first and the execution queue retains its actual order. Removing an unfinished entry requires a separate confirmation. **Completed tasks → Clear all** clears every eligible completed progress entry, including those beyond the visible list. Work awaiting review, unfinished plans, unconfirmed outcomes and entries still in use are kept; clearing progress does not accept results or erase chat.
+
 If the connection is stale, the interface keeps the last known task and labels its status unconfirmed. It does not decide that a quiet task has finished, cancel it, or replay it. Resuming an uncertain text task still requires an explicit human decision.
 
 The shared instructions encourage initiative through useful ideas, reactions, and creating or improving relevant skills. This build runs work from messages, call requests and existing scheduled tasks. It does not yet run a separate idle-life scheduler for self-selected projects. Persistent personal projects and proactive idle activities are a further product capability, distinct from keeping an already accepted task alive.

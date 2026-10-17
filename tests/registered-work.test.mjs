@@ -95,8 +95,8 @@ test('accepting registered work persists message and work state atomically and l
 test('dismissing a finished registered turn never hides or mutates a distinct retry using the same user message',async t=>{
  const f=setup(t),{message,active}=activeTask(f);await f.engine.tool('task_plan',plan());await f.engine.finish('failed');const old=f.store.state.workTasks[0];
  const retry={...active,turnId:'retry-turn',finishing:false,finalStatus:undefined,workRecord:undefined};f.engine.active=retry;message.turnId=retry.turnId;message.status='running';await f.engine.tool('task_plan',{...plan(),title:'Retry this project'});const current=f.store.state.workTasks[1];
- assert.deepEqual(f.engine.dismissProgress(old.id,'work'),{ok:true});assert.equal(message.status,'running');assert.throws(()=>f.engine.dismissProgress(current.id,'work'),error=>error.status===409);assert.equal(current.progressDismissedAt,undefined);
- const before=old.progressDismissedAt;f.engine.active=null;f.engine.queue=[{id:message.id,turnId:'retry-turn'}];assert.deepEqual(f.engine.dismissProgress(old.id,'work'),{ok:true});assert.equal(old.progressDismissedAt,before);
+ assert.deepEqual(f.engine.dismissProgress(old.id,'work',{confirmUnfinished:true}),{ok:true});assert.equal(message.status,'running');assert.throws(()=>f.engine.dismissProgress(current.id,'work'),error=>error.status===409);assert.equal(current.progressDismissedAt,undefined);
+ const before=old.progressDismissedAt;f.engine.active=null;f.engine.queue=[{id:message.id,turnId:'retry-turn'}];assert.deepEqual(f.engine.dismissProgress(old.id,'work',{confirmUnfinished:true}),{ok:true});assert.equal(old.progressDismissedAt,before);
  f.engine.queue=[{id:message.id}];assert.throws(()=>f.engine.dismissProgress(old.id,'work'),error=>error.status===409);f.engine.queue=[];
 });
 
@@ -123,7 +123,7 @@ test('native call tasks register before their tool result, survive hangup, and f
 test('native registered work remains in history even with no final chat result and cannot be updated by a completed scope',async t=>{
  const f=setup(t),voice=new NativeRealtimeVoice({worker:f.worker,engine:f.engine,connectTimeoutMs:1000,stopTimeoutMs:1000}),call=await f.engine.startCall(sdp);await f.engine.handle(event('turn/started',{turn:{id:'no-output',status:'inProgress'}}));const session=voice.session,turn=session.turns.get('no-output');
  await voice.tool(session,turn,'task_plan',plan());await f.engine.handle(event('turn/completed',{turn:{id:turn.turnId,status:'interrupted'}}));assert.equal(f.store.state.workTasks[0].status,'paused');assert.equal(f.store.state.completions.length,0);assert.equal(f.store.state.messages.length,0);await assert.rejects(voice.tool(session,turn,'task_plan',plan()),/no longer belongs/);
- assert.deepEqual(f.engine.dismissProgress(f.store.state.workTasks[0].id,'work'),{ok:true});await f.engine.stopCall(call.callId);
+ assert.deepEqual(f.engine.dismissProgress(f.store.state.workTasks[0].id,'work',{confirmUnfinished:true}),{ok:true});await f.engine.stopCall(call.callId);
 });
 
 test('executor finality is saved for typed work even when the earlier chat result save fails',async t=>{
