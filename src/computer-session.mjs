@@ -7,7 +7,7 @@ export class ComputerSession extends EventEmitter{
  async control(body){return (await this.worker.guest('/control',body)).json();}
  async acquire(){
   if(this.pending||this.state.sessionId)throw Error('Desktop takeover is already active.');
-  if(this.engine.call)throw Error('End the call before taking control of the desktop.');
+  this.engine.assertTakeoverCall();
   this.pending=true;this.engine.acquiring=true;this.engine.pauseQueue?.();
   try{
    this.state=await this.control({action:'acquire'});this.change();

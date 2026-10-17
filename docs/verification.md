@@ -4,6 +4,16 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
+## 0.4.5 in-call control, recent work and complete skills follow-up
+
+The local JavaScript coverage run passed **996 tests, zero failures and zero skips**. Coverage is **98.57% lines, 90.54% branches and 90.66% functions**; all configured gates passed. The seven separate coverage/version gate tests and 20 mocked Python VM/MCP tests also passed. No native window, microphone or live user task was operated for these checks.
+
+Connected-call takeover retains media while reserving the guest desktop, pausing exact owned work, then confirming human input. Tests cover both voice providers, changed call ownership, uncertain handoffs, typed reference sharing during control, late speech admissions and stale input leases. Returning control never replays paused work. Model screenshot, input and browser-launch tools remain blocked while the human lease is reserved or held.
+
+Recent inactive work can be dismissed without changing chat, task status, read receipts or model context; active and queued ownership cannot be hidden. Awaiting review uses a small header mark, with chat summaries limited to active or queued work. Attachment tests cover consistent card controls, bounded spacing, loading placeholders, cached-image reconciliation and load errors. These are simulated DOM checks, not visual acceptance of the Windows application.
+
+The reported TETR.IO ZIP contained only instructions because its implementation lived in a separate workspace directory. A self-contained candidate now contains 20 files: actual helpers, tests, manifests, lockfile, licenses and provenance. Its 13 offline tests and ZIP import/export byte comparisons passed without desktop interaction. The packaging adjustment sends runtime outputs outside the skill folder; generated npm dependencies are excluded from source export. Skill reads and metadata edits retain current supporting files, while enable/disable moves the existing directory. Deployment and installation are recorded separately after idle checks; this checkpoint does not claim a new live game or call test.
+
 ## 0.4.5 tray, task progress and text files follow-up
 
 The final local JavaScript coverage run passed **961 tests, zero failures and zero skips**. Coverage is **98.54% lines, 90.37% branches and 90.46% functions**, with all configured gates satisfied. The seven separate coverage/version gate tests passed, and all **12 Windows Rust tests** passed with no ignored tests. These are unit, API, protocol and simulated-DOM checks; native windows and editor dialogs were not opened for visual inspection.

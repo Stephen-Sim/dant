@@ -26,6 +26,10 @@ Choose **Download ZIP** on a managed skill card to save `<name>.zip`. The archiv
 
 Create or edit a lowercase skill name, description and instructions. Expand **Supporting text files (JSON)** for a mapping such as `{"scripts/check.py":"print('check')"}`. Relative `scripts/`, `references/` and `assets/` paths and the root documentation names above are accepted. Instructions are limited to 48 KiB, the description to 1,000 UTF-8 bytes, and supporting files to 20 text files of 64 KiB each. Instructions and supporting files together have a 256 KiB limit.
 
+Keep a reusable skill self-contained: put required helpers, supported text assets and dependency manifests inside its accepted paths, and reference them relative to the skill. For example, `scripts/package.json` and a lockfile can describe dependencies to install on another computer. A path such as `../../../tools` refers to a separate workspace folder and is not included in the ZIP. Export packages the supported skill directory, not arbitrary workspace files, binary assets or `node_modules`.
+
+When updating a skill through the API, omitting `files` preserves its current supporting files; providing a `files` mapping replaces them. Enabling or disabling moves the existing directory and retains its contents.
+
 Enabled skills live in the managed workspace's `.agents/skills/<name>/SKILL.md`; disabled skills move to `.dant-disabled-skills/` outside discovery. The list shows the actual VM path. You can edit, enable, disable or remove managed skills. Unrelated system or user skill folders are not managed by this page.
 
 The model may discover and create a skill when a procedure is reusable. Saving creates real `SKILL.md` and support files and requests refreshed skill discovery; it does **not** run helpers. Discovery and script validation are separate: a listed or freshly saved skill is not evidence that its scripts passed a test. Helpers must be explicitly exercised and their results checked in the VM.

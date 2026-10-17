@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import {parseHTML} from 'linkedom';
 import {workProgress,renderWorkSummary,renderActiveWork,renderVoiceWorkHistory} from '../ui/work-progress.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
@@ -31,4 +32,9 @@ test('native background work exposes an adjustment only when the owned task can 
 test('direct resume handlers cannot submit while a subscription call is active',async()=>{
  const {context,state,requests,toasts}=fixture();await context.resumeTask('paused',false);await context.resumeTask('unknown',true);assert.equal(requests.length,0);assert.deepEqual(toasts,['resumeAfterCall','resumeAfterCall']);
  state.call=null;await context.resumeTask('paused',false);assert.equal(requests.length,1);assert.equal(requests[0].route,'/tasks/resume');assert.equal(requests[0].body.ids[0],'paused');
+});
+test('only inactive recent task rows have close controls, including while another call is active',()=>{
+ const {context,state}=fixture();state.queue=['queued'];state.messages.push({id:'queued',role:'user',text:'Queued work',status:'queued'},{id:'review',role:'user',text:'Result',status:'review'},{id:'completed',role:'user',text:'Done',status:'completed'},{id:'draft',role:'user',text:'Still preparing attachment',status:'draft'});
+ const {document}=parseHTML(context.renderProgress()),dismiss=[...document.querySelectorAll('[data-task-dismiss]')];assert.deepEqual(dismiss.map(button=>button.dataset.taskDismiss),['paused','unknown','review','completed']);assert.ok(dismiss.every(button=>button.dataset.progressKind==='task'&&!button.hasAttribute('disabled')));assert.ok(document.querySelector('[data-task-accept="review"]'));assert.ok(document.querySelector('[data-action="stop"]'));
+ context.pendingActions.add('task:paused');const pending=parseHTML(context.renderProgress()).document;assert.equal(pending.querySelector('[data-task-dismiss="paused"]').hasAttribute('disabled'),true);
 });

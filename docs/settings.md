@@ -20,7 +20,11 @@ Enable **Message notifications** in General to receive alerts for unread results
 
 **Minimize to chat** displays a draggable horizontal call bar with the avatar on the left. Minimizing the Windows app or closing its main window to the system tray during an active call displays a separate desktop bar, initially above the taskbar at the bottom right. Drag its background to move it; its expand control restores the main window. It hides when the main window returns or the call ends. Both bars control the existing call, microphone and timer, without creating another audio session. Browser mode uses the in-app bar.
 
+**Take control** remains available during a confirmed connected call and keeps its audio connected. Input waits until the exact running work has stopped and the VM confirms your control lease; queued work pauses. **Return to dant** does not replay tasks. Give a new instruction in the call when ready to continue. Connecting, stopping or unconfirmed call states still block new takeover; returning an existing lease remains available.
+
 Attachment download buttons keep chat and image previews open. Desktop **Save As** uses the original file name and extension by default; browser mode starts a file download. Cancelling leaves the current view intact.
+
+Attachments in one message use consistent spacing. File cards keep the filename, **View** and download button inside the same border. Images reserve space while loading and show a stable error message if loading fails; this changes the presentation, not transfer speed.
 
 Text and code attachments have **View** and a separate download control. Click the filename in chat or conversation details to open a closable plain-text preview. JSON is formatted without changing number values; deeply nested or oversized formatting falls back to the complete original text. Previews accept UTF-8 text up to 1 MiB. Larger files remain available through download or the desktop editor. HTML and SVG source stays inert text; links, markup and scripts do not execute.
 

@@ -176,6 +176,22 @@ class DesktopTests(unittest.TestCase):
                 desktop.act({'type': 'key', 'key': 'a'}, session['sessionId'])
             self.assertEqual(control.command({'action': 'status'})['status'], 'dant')
 
+    def test_model_mcp_desktop_actions_stay_blocked_through_reservation_and_human_control(self):
+        import control
+        session = control.command({'action': 'acquire'})
+        with patch.object(desktop_mcp, 'screenshot', return_value=b'PNG') as capture, patch.object(desktop_mcp.subprocess, 'run') as run:
+            for confirmed in (False, True):
+                if confirmed:
+                    control.command({'action': 'confirm', 'sessionId': session['sessionId']})
+                for name, arguments in [('screenshot', {}), ('key', {'key': 'a'}), ('open_url', {'url': 'https://example.invalid/login'})]:
+                    with self.subTest(confirmed=confirmed, tool=name), self.assertRaisesRegex(ValueError, 'human control'):
+                        desktop_mcp.invoke(name, arguments, pathlib.Path(self.folder.name))
+            capture.assert_not_called()
+            run.assert_not_called()
+            control.command({'action': 'release', 'sessionId': session['sessionId']})
+            desktop_mcp.invoke('screenshot', {}, pathlib.Path(self.folder.name))
+            capture.assert_called_once()
+
 
 class VoiceAndMCPTests(unittest.TestCase):
     @staticmethod

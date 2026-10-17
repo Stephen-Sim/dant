@@ -76,11 +76,11 @@ test('export revalidates aggregate limits, metadata, paths and secrets even afte
  alter(()=>fs.writeFileSync(path.join(directory,'assets/schema.json'),'RIFFbinary'));
 });
 
-test('export discovers shell-added helpers and license docs using actual current files while leaving the marker and edit index unchanged',async t=>{
+test('editing and export discover shell-added helpers and license docs using actual current files without changing the marker',async t=>{
  const {skills,importer}=fixture(t),saved=skills.save(sample),directory=path.dirname(saved.path),marker=path.join(directory,'.dant-managed.json'),originalMarker=fs.readFileSync(marker),added={'scripts/shell-added.py':'print("not executed by export")\n','LICENSE.md':'Additional license document.\n','references/notes.md':'Added during development.\n'};
  for(const [relative,text]of Object.entries(added))fs.writeFileSync(path.join(directory,relative),text);
  for(const name of ['__pycache__','.pytest_cache','.mypy_cache','.ruff_cache']){const cache=path.join(directory,'scripts',name);fs.mkdirSync(cache);fs.writeFileSync(path.join(cache,'generated.bin'),Buffer.from([0,255]));}
- assert.deepEqual(skills.get(sample.name).files,sample.files);const exported=exportSkillZip(skills,sample.name),entries=storedEntries(exported.data);assert.equal(entries.size,10);assert.equal([...entries.keys()].some(relative=>relative.includes('cache')||relative.endsWith('.dant-managed.json')),false);
+ assert.deepEqual(skills.get(sample.name).files,{...sample.files,...added});const exported=exportSkillZip(skills,sample.name),entries=storedEntries(exported.data);assert.equal(entries.size,10);assert.equal([...entries.keys()].some(relative=>relative.includes('cache')||relative.endsWith('.dant-managed.json')),false);
  for(const [relative,text]of Object.entries(added))assert.equal(entries.get(sample.name+'/'+relative).toString('utf8'),text);
  const preview=await importer.preview({name:exported.name,data:exported.data}),imported=importer.commit({id:preview.id,enabled:false});assert.deepEqual({...imported.files},{...sample.files,...added});assert.equal(skills.get(sample.name).enabled,false);assert.deepEqual(fs.readFileSync(marker),originalMarker);
 });
@@ -88,7 +88,20 @@ test('export discovers shell-added helpers and license docs using actual current
 test('stale marker entries do not omit current files or make export read missing and outside paths',t=>{
  const {skills}=fixture(t),saved=skills.save(sample),directory=path.dirname(saved.path),marker=path.join(directory,'.dant-managed.json'),meta=JSON.parse(fs.readFileSync(marker,'utf8'));
  meta.files.push('scripts/missing.py','scripts/../../outside');fs.writeFileSync(marker,JSON.stringify(meta));fs.unlinkSync(path.join(directory,'scripts/check.py'));fs.writeFileSync(path.join(directory,'scripts/replacement.py'),'Current implementation.');
- assert.throws(()=>skills.get(sample.name));const entries=storedEntries(exportSkillZip(skills,sample.name).data);assert.equal(entries.has(sample.name+'/scripts/check.py'),false);assert.equal(entries.has(sample.name+'/scripts/missing.py'),false);assert.equal(entries.get(sample.name+'/scripts/replacement.py').toString('utf8'),'Current implementation.');assert.equal(entries.size,7);
+ assert.equal(skills.get(sample.name).files['scripts/replacement.py'],'Current implementation.');assert.equal(skills.get(sample.name).files['scripts/missing.py'],undefined);const entries=storedEntries(exportSkillZip(skills,sample.name).data);assert.equal(entries.has(sample.name+'/scripts/check.py'),false);assert.equal(entries.has(sample.name+'/scripts/missing.py'),false);assert.equal(entries.get(sample.name+'/scripts/replacement.py').toString('utf8'),'Current implementation.');assert.equal(entries.size,7);
+});
+
+test('shell-created nested project remains complete through toggle, instruction-only update, ZIP export and import',async t=>{
+ const {skills,importer}=fixture(t),saved=skills.save({name:'portable-project',description:'Self-contained helpers.',instructions:'Use scripts/project/run.mjs.'}),directory=path.dirname(saved.path),files={'scripts/project/run.mjs':'import "./lib/helper.mjs";\n','scripts/project/lib/helper.mjs':'export const value=1;\n','scripts/project/package.json':'{"type":"module","dependencies":{"example":"1.0.0"}}\n','scripts/project/package-lock.json':'{"lockfileVersion":3}\n','scripts/project/LICENSE':'Fixture dependency license\n','references/setup.md':'Use npm ci in scripts/project; do not bundle node_modules.\n'};
+ for(const [relative,text]of Object.entries(files)){const full=path.join(directory,relative);fs.mkdirSync(path.dirname(full),{recursive:true});fs.writeFileSync(full,text);}
+ skills.setEnabled(saved.name,false);skills.setEnabled(saved.name,true);skills.save({name:saved.name,description:'Updated helper instructions',instructions:'Read references/setup.md, then use scripts/project/run.mjs.'});const exported=exportSkillZip(skills,saved.name),entries=storedEntries(exported.data);assert.equal(entries.size,7);for(const [relative,text]of Object.entries(files))assert.equal(entries.get(saved.name+'/'+relative).toString('utf8'),text);
+ const preview=await importer.preview({name:exported.name,data:exported.data}),restored=importer.commit({id:preview.id});assert.deepEqual(restored.files,files);assert.equal(restored.instructions,'Read references/setup.md, then use scripts/project/run.mjs.');
+});
+
+test('npm installed binaries and nested dependencies are excluded while authored source and lockfiles roundtrip unchanged',async t=>{
+ const {skills,importer}=fixture(t),input={name:'npm-helper',description:'Portable dependency fixture.',instructions:'Run npm ci from scripts/project, then use run.mjs.',files:{'scripts/project/run.mjs':'import "example";\n','scripts/project/package.json':'{"dependencies":{"example":"1.0.0"}}\n','scripts/project/package-lock.json':'{"lockfileVersion":3}\n','scripts/project/LICENSE':'Fixture license\n'}},saved=skills.save(input),directory=path.dirname(saved.path),generated=path.join(directory,'scripts/project/node_modules/example/node_modules/nested/build/native.node');fs.mkdirSync(path.dirname(generated),{recursive:true});const binary=Buffer.from([0,255,127,128]);fs.writeFileSync(generated,binary);fs.writeFileSync(path.join(directory,'scripts/project/node_modules/example/resource.bin'),Buffer.alloc(300000));
+ const exported=exportSkillZip(skills,input.name),entries=storedEntries(exported.data);assert.equal(entries.size,5);assert.equal([...entries.keys()].some(name=>name.includes('node_modules')),false);assert.deepEqual(fs.readFileSync(generated),binary);for(const [relative,text]of Object.entries(input.files))assert.equal(entries.get(input.name+'/'+relative).toString('utf8'),text);
+ const preview=await importer.preview({name:exported.name,data:exported.data}),restored=importer.commit({id:preview.id});assert.deepEqual(restored.files,input.files);
 });
 
 test('unlisted unsafe content, invalid UTF-8, links and explicit walk limits fail rather than produce incomplete ZIPs',t=>{

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {parseHTML} from 'linkedom';
 import {reconcile} from '../ui/dom.js';
+import {bindAttachmentImages} from '../ui/attachment-images.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start))),settle=async()=>{await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));};
 function fixture(language='en'){
@@ -11,7 +12,7 @@ function fixture(language='en'){
  class FrameImage{constructor(){this.naturalWidth=1280;this.naturalHeight=960;images.push(this);}get src(){return this.value||'';}set src(value){this.value=value;if(value&&decode!=='pending')queueMicrotask(()=>decode==='error'?this.onerror?.():this.onload?.());}}
  document.hasFocus=()=>true;
  const c={downloads:{bind(){}},document,Event,window:{},AbortController,innerWidth:1440,base:'',token:'test',localStorage:{getItem:()=>null,setItem(){}},fallbackLanguage:language,state:{controller:{status:'online',cached:false},settings:{language,vm:{host:'192.0.2.10',user:'dant',port:22,keyPath:'C:/vm-key'}},worker:{status:'offline'},computer:{status:'agent',sessionId:'lease-1'},messages:[],call:null},eventConnected:true,unloading:false,page:'chat',chatMode:'text',showComputer:true,pc:null,callStarting:false,callStops:{pending:false},pendingActions:new Set(),screenURL:'blob:existing-frame',screenError:'',screenFailures:0,screenTimer:null,screenLoad:null,screenAbort:null,screenBusy:false,screenEpoch:0,vmDraft:null,voiceLoadedFor:'',modal:null,managedSettings:{bind(){}},chatHistory:{bind(){},bindModal(){}},icons:{},createElement:()=>({outerHTML:'<svg></svg>'}),toast:value=>toasts.push(value),bindSteer(){},bindProvision(){},bindVoiceKey(){},bindTelegram(){},bindAppearance(){},bindVMSettings(){},setInterval:(callback,ms)=>{assert.equal(ms,1200);intervals.set(++sequence,callback);return sequence;},clearInterval:id=>intervals.delete(id),setTimeout:(callback,ms)=>{timeouts.set(++sequence,{callback,ms});return sequence;},clearTimeout:id=>timeouts.delete(id),URL:{createObjectURL:()=>`blob:screen-${++screenSequence}`,revokeObjectURL:url=>revoked.push(url)}};
- c.Image=FrameImage;c.fetch=async(url,options)=>{screens.push({url,options});if(wait)await wait();return {ok:true,blob:async()=>({type:'image/png'})};};c.post=async(route,body)=>{requests.push({route,body});if(route==='/connect')c.state.worker.status='online';if(route==='/takeover')c.state.computer.status=body.enabled?'human':'agent';return {ok:true};};c.api=async route=>{requests.push({route});assert.equal(route,'/state');return c.state;};
+ c.bindAttachmentImages=bindAttachmentImages;c.Image=FrameImage;c.fetch=async(url,options)=>{screens.push({url,options});if(wait)await wait();return {ok:true,blob:async()=>({type:'image/png'})};};c.post=async(route,body)=>{requests.push({route,body});if(route==='/connect')c.state.worker.status='online';if(route==='/takeover')c.state.computer.status=body.enabled?'human':'agent';return {ok:true};};c.api=async route=>{requests.push({route});assert.equal(route,'/state');return c.state;};
  c.filePreview={bind(){}};vm.createContext(c);vm.runInContext([
   part('const zh={','const subscriptionVoiceUnavailable='),part('const subscriptionVoiceUnavailable=','const eyes='),part('function renderComputer(){','function renderSettings(){'),part('function hasVMConnection(){','function renderVMSettings(){'),part('async function connectVM(){','async function saveAndConnectVM(){'),part('let inputChain=','async function taskRequest('),part('function bindComputerInput(){','async function openExternal('),part('async function action(a){','async function checkUnconfirmedMessage(){'),part('function screenVisible(){','async function loadVoices(){'),
  ].join('\n'),c);
@@ -38,6 +39,11 @@ test('agent-offline takeover and all input routes stay blocked even while the de
 
 test('an existing human lease may still be returned while the agent is offline or a call stop is pending',async()=>{
  const f=fixture();f.c.state.computer.status='human';f.c.callStops.pending=true;f.c.render();const release=f.document.querySelector('[data-action="takeover"]');assert.equal(release.disabled,false);assert.equal(release.textContent,'Return to dant');await f.click('[data-action="takeover"]');assert.equal(f.requests[0].route,'/takeover');assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0].body)),{enabled:false,sessionId:'lease-1'});assert.equal(f.c.state.computer.status,'agent');
+});
+test('human input keeps its exact lease during a connected call without sending a media stop',async()=>{
+ const f=fixture(),call={id:'live',provider:'subscription',status:'connected'},peer={close(){throw Error('Call media must stay connected');}};f.c.state.worker.status='online';f.c.state.computer.status='human';f.c.state.call=call;f.c.pc=peer;f.c.render();
+ await f.c.vmInput({type:'click',x:12,y:34});await f.c.vmInput({type:'text',text:'ordinary test input'});assert.deepEqual(JSON.parse(JSON.stringify(f.requests)),[{route:'/input',body:{type:'click',x:12,y:34,sessionId:'lease-1'}},{route:'/input',body:{type:'text',text:'ordinary test input',sessionId:'lease-1'}}]);assert.equal(f.c.state.call,call);assert.equal(f.c.pc,peer);
+ f.c.state.computer.status='agent';await f.c.vmInput({type:'key',key:'Return'});assert.equal(f.requests.length,2,'returning the lease immediately blocks further human input');
 });
 
 test('manual Reconnect restores the executor path explicitly without resuming or replaying a task',async()=>{

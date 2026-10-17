@@ -93,7 +93,7 @@ sequenceDiagram
 
 Model tools and human input share `flock` and the control file. Unconfirmed interruption never grants input access. Stale session IDs, unconfirmed leases, and expired leases are rejected. Two idle minutes release ownership; paused tasks require explicit resumption afterward. The visible computer panel fetches screenshots serially and maps input to actual image bounds.
 
-Calls and acquiring human desktop control are mutually exclusive. The UI disables takeover during an active or recovering call and while hangup is unconfirmed; the Worker also enforces this rule. Desktop viewing remains available, and releasing an existing human lease is never blocked by that UI check. No takeover action automatically ends a call.
+A confirmed connected call can remain connected during human takeover. The Worker pauses queued work and waits for the exact active turn to stop; human input still requires the guest's confirmed control lease. Returning ownership does not replay interrupted or queued work. During the ongoing call, a fresh instruction can request further work. Connecting, stopping, recovering or unconfirmed call states block new takeover; releasing an existing human lease remains available. Takeover never ends the media connection.
 
 These constraints cover app scheduling and desktop tools. They cannot guarantee termination of previously detached background processes or replace VM operating-system permissions.
 

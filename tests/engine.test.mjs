@@ -90,8 +90,8 @@ test('takeover pauses queued tasks and return requires explicit resumption',asyn
  engine.resumePaused([two.id]);await tick();assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,2);
 });
 
-test('call and human control exclude one another',async t=>{
- const {engine}=setup(t);engine.takeover=true;await assert.rejects(engine.startCall('offer'),/Return the computer/);engine.takeover=false;engine.call={started:Date.now()};await assert.rejects(engine.acquire(),/End the voice call/);
+test('human control blocks new calls and incomplete calls block takeover',async t=>{
+ const {engine}=setup(t);engine.takeover=true;await assert.rejects(engine.startCall('offer'),/Return the computer/);engine.takeover=false;engine.call={started:Date.now()};await assert.rejects(engine.acquire(),/Wait for the voice call/);
 });
 
 test('completed outputs are archived against the baseline and attached once to final assistant',async t=>{

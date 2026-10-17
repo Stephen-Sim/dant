@@ -8,6 +8,7 @@ import {Engine} from '../src/engine.mjs';
 import {NativeRealtimeVoice,NATIVE_REALTIME_MODEL} from '../src/realtime.mjs';
 import {CredentialVault,CredentialRequests} from '../src/credentials.mjs';
 import {DANT_IDENTITY_INSTRUCTIONS} from '../src/identity.mjs';
+import {ComputerSession} from '../src/computer-session.mjs';
 
 const sdp='v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -224,9 +225,56 @@ test('background file delivery archives only explicit output and never duplicate
  await engine.stopCall(call.callId);
 });
 
-test('normal work and takeover cannot enter the reserved native execution channel',async t=>{
- const {store,worker,engine}=setup(t),call=await engine.startCall(sdp),message=store.add({role:'user',text:'Later task'});engine.enqueue(message);assert.equal(message.status,'paused');assert.equal(message.pauseReason,'voice-call');await assert.rejects(engine.acquire(),/End the voice call/);
+test('normal work stays paused and takeover waits for established native media',async t=>{
+ const {store,worker,engine}=setup(t),call=await engine.startCall(sdp),message=store.add({role:'user',text:'Later task'});engine.enqueue(message);assert.equal(message.status,'paused');assert.equal(message.pauseReason,'voice-call');await assert.rejects(engine.acquire(),/Wait for the voice call/);
  await engine.stopCall(call.callId);await tick();assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,0);assert.equal(message.status,'paused');
+});
+
+test('desktop takeover pauses the exact native task while retaining connected speech and explicit resumption',async t=>{
+ const {store,worker,engine,voice}=setup(t),call=await engine.startCall(sdp);engine.confirmCallConnected(call.callId);
+ const sent=await voice.message({clientMessageId:'manual-login-task',text:'Open the login page'}),session=voice.session,liveCall=engine.call;
+ const lease=[];worker.guest=async(route,body)=>{lease.push({route,...body});return Response.json({status:body.action==='release'?'dant':body.action==='acquire'?'taking-over':'human',sessionId:body.action==='release'?null:'human-lease',expiresAt:Date.now()+120000});};
+ const computer=new ComputerSession(engine,worker);t.after(()=>computer.close());const taken=await computer.acquire();
+ assert.equal(taken.status,'human');assert.equal(engine.takeover,true);assert.equal(voice.session,session);assert.equal(engine.call,liveCall);assert.equal(engine.call.status,'connected');assert.equal(sent.message.status,'paused');assert.equal(worker.terminated,0);
+ assert.deepEqual(worker.calls.filter(entry=>entry.method==='turn/interrupt').map(entry=>entry.params),[{threadId:'thread',turnId:sent.turnId}]);assert.equal(worker.calls.some(entry=>entry.method==='thread/realtime/stop'),false);
+ const turns=worker.calls.filter(entry=>entry.method==='turn/start').length;
+ const paused=await voice.message({clientMessageId:'typed-while-manual',text:'I am entering the password myself'});
+ assert.equal(paused.message.status,'paused');assert.equal(paused.message.pauseReason,'human-control');assert.equal(paused.voiceContext.status,'submitted');assert.equal(worker.calls.filter(entry=>entry.method==='turn/start').length,turns);assert.equal(liveReferences(worker).at(-1).params.text.includes('I am entering the password myself'),true);
+ await computer.input({sessionId:taken.sessionId,type:'key',key:'Tab'});await computer.release(taken.sessionId);await tick();
+ assert.equal(engine.takeover,false);assert.equal(engine.call,liveCall);assert.equal(voice.session,session);assert.equal(worker.calls.filter(entry=>entry.method==='turn/start').length,turns);assert.equal(paused.message.status,'paused');
+ const fresh=await voice.message({clientMessageId:'continue-after-manual',text:'I have finished. Continue now.'});assert.equal(fresh.turnId,'typed-2');assert.equal(store.state.messages.some(message=>message.id===sent.message.id),true);await engine.pause();await engine.stopCall(call.callId);
+ assert.deepEqual(lease.filter(entry=>entry.route==='/control').map(entry=>entry.action),['acquire','confirm','release']);
+});
+
+test('new native spoken work is interrupted during human control without closing media or replaying late admissions',async t=>{
+ const {worker,engine,voice}=setup(t),call=await engine.startCall(sdp);engine.confirmCallConnected(call.callId);await engine.acquire();const session=voice.session;
+ await begin(engine,'while-held');await tick();await engine.handle(handoff('held-receipt'));await session.eventChain;
+ assert.equal(session.turns.get('while-held').done,true);assert.equal(session.turns.get('while-held').pauseRequested,true);assert.equal(engine.takeover,true);assert.equal(engine.call.id,call.callId);assert.equal(engine.call.status,'connected');
+ await engine.handle(handoff('late-held-receipt'));assert.equal(session.handoffs.get('late-held-receipt').humanControl,true);engine.release();
+ await begin(engine,'late-after-return');await tick();await session.eventChain;
+ assert.equal(session.turns.get('late-after-return').done,true);assert.equal(session.turns.get('late-after-return').pauseRequested,true);assert.equal(engine.call.status,'connected');assert.equal(worker.terminated,0);
+ assert.deepEqual(worker.calls.filter(entry=>entry.method==='turn/interrupt').map(entry=>entry.params.turnId),['while-held','late-after-return']);assert.equal(worker.calls.some(entry=>entry.method==='thread/realtime/stop'||entry.method==='turn/start'||entry.method==='turn/steer'),false);await engine.stopCall(call.callId);
+});
+
+test('native ownership uncertainty blocks takeover before requesting a guest lease',async t=>{
+ const {worker,engine,voice}=setup(t),call=await engine.startCall(sdp);engine.confirmCallConnected(call.callId);const guest=[];worker.guest=async(route,body)=>{guest.push({route,body});throw Error('Must not reach guest');};const computer=new ComputerSession(engine,worker);t.after(()=>computer.close());
+ for(const patch of [{unknown:true},{stopping:true},{closed:true},{submitting:{}},{pausing:true},{background:true},{status:'negotiating'}]){
+  const previous=Object.fromEntries(Object.keys(patch).map(key=>[key,voice.session[key]]));Object.assign(voice.session,patch);await assert.rejects(computer.acquire(),/Wait for the voice call/);Object.assign(voice.session,previous);assert.equal(engine.takeover,false);assert.equal(engine.acquiring,false);
+ }
+ await engine.handle(handoff('unresolved-before-takeover'));await assert.rejects(computer.acquire(),/Wait for the voice call/);assert.deepEqual(guest,[]);await engine.stopCall(call.callId);
+});
+
+test('takeover never grants ownership after the captured call changes while its task pauses',async t=>{
+ const {worker,engine,voice}=setup(t),call=await engine.startCall(sdp);engine.confirmCallConnected(call.callId);await begin(engine,'pause-before-call-change');const request=worker.request.bind(worker);let interrupt;
+ worker.request=(method,params)=>method==='turn/interrupt'?new Promise(resolve=>interrupt=()=>{worker.event('turn/completed',{turn:{id:params.turnId,status:'interrupted'}});resolve({});}):request(method,params);
+ const taking=engine.acquire(),rejected=assert.rejects(taking,/voice call changed/);while(!interrupt)await tick();engine.call=null;interrupt();await rejected;assert.equal(engine.takeover,false);assert.equal(engine.acquiring,false);assert.equal(voice.session.unknown,false);assert.equal(worker.terminated,0);engine.call={id:call.callId,provider:'subscription',connectedAt:123,status:'connected'};await engine.stopCall(call.callId);
+});
+
+test('connected API media survives matched task pause and blocks new computer work until explicit return',async t=>{
+ const {engine,worker}=setup(t),call={id:'api-live',provider:'api',status:'connected',connectedAt:123};engine.call=call;let mediaStops=0;engine.voice={call:{callId:call.id,status:'active'},async stop(){mediaStops++;}};
+ const task=engine.runVoiceTask('Open the sign-in screen'),paused=assert.rejects(task,/paused/);await tick();const turnId=engine.active.turnId;await engine.acquire();await paused;
+ assert.equal(engine.takeover,true);assert.equal(engine.call,call);assert.equal(mediaStops,0);assert.deepEqual(worker.calls.filter(entry=>entry.method==='turn/interrupt').map(entry=>entry.params),[{threadId:'thread',turnId}]);await assert.rejects(engine.runVoiceTask('Do not run while I type'),/Return the desktop/);
+ engine.release();await tick();assert.equal(engine.call,call);assert.equal(worker.calls.filter(entry=>entry.method==='turn/start').length,1);assert.equal(worker.terminated,0);engine.voice.call.status='stopping';await assert.rejects(engine.acquire(),/Wait for the voice call/);assert.equal(engine.takeover,false);
 });
 
 test('explicit safety stop waits for a known background turn interrupt completion before release',async t=>{
@@ -244,7 +292,7 @@ test('unknown background handoff rejects effects and confirms process terminatio
 
 test('missing closed confirmation terminates executor and failed termination retains the call lock',async t=>{
  const {worker,engine,voice}=setup(t,{voice:{stopTimeoutMs:10}}),call=await engine.startCall(sdp);const request=worker.request.bind(worker);worker.request=(method,params)=>method==='thread/realtime/stop'?Promise.resolve({}):request(method,params);
- worker.terminateConfirmed=async()=>{throw Error('Actual process exit not confirmed');};await assert.rejects(engine.stopCall(call.callId),/not confirmed/);assert.ok(engine.call);assert.equal(engine.call.status,'stop-unconfirmed');assert.equal(voice.call.status,'stop-unconfirmed');await assert.rejects(engine.acquire(),/End the voice call/);
+ worker.terminateConfirmed=async()=>{throw Error('Actual process exit not confirmed');};await assert.rejects(engine.stopCall(call.callId),/not confirmed/);assert.ok(engine.call);assert.equal(engine.call.status,'stop-unconfirmed');assert.equal(voice.call.status,'stop-unconfirmed');await assert.rejects(engine.acquire(),/Wait for the voice call/);
  worker.terminateConfirmed=async()=>({terminated:true});await engine.stopCall(call.callId);assert.equal(engine.call,null);assert.equal(voice.call,null);
 });
 

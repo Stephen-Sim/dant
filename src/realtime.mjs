@@ -64,15 +64,15 @@ export class NativeRealtimeVoice extends EventEmitter {
  get call(){const s=this.session;return s&&!s.background?{callId:s.id,provider:'subscription',model:NATIVE_REALTIME_MODEL,version:'v3',voice:s.voice,status:s.status,connectedAt:s.connectedAt||null}:null;}
  get active(){
   const s=this.session;if(!s)return null;const turn=[...s.turns.values()].find(turn=>!turn.done||s.background&&!turn.resultSaved);
-  if(turn||s.submitting||s.unknown||this.pendingHandoffs(s))return {messageId:turn?.messageId||s.submitting?.message.id||null,turnId:turn?.turnId||null,source:'voice',...(s.background?{background:true}:{}),status:s.unknown?'unknown':s.pausing?'pausing':turn?.credentialWaits?'waiting_user':'running'};
+  if(turn||s.submitting||s.unknown||this.pendingHandoffs(s))return {messageId:turn?.messageId||s.submitting?.message.id||null,turnId:turn?.turnId||null,source:'voice',...(s.background?{background:true}:{}),status:s.unknown?'unknown':s.pausing||turn?.pauseRequested?'pausing':turn?.credentialWaits?'waiting_user':'running'};
   return null;
  }
  get state(){return {call:this.call,error:this.error,lastStop:this.lastStop?{...this.lastStop}:null,available:this.worker.status==='online',version:'v3',model:NATIVE_REALTIME_MODEL};}
  get progress(){
   const s=this.session;if(!s)return null;const finishing=[...s.turns.values()].find(turn=>turn.done&&!turn.resultSaved),active=this.active||finishing&&{messageId:finishing.messageId,turnId:finishing.turnId};if(!active)return null;const turn=active.turnId?s.turns.get(active.turnId):null,task=turn||{messageId:active.messageId,workProgress:s.workProgress};
-  return {...taskProgressSnapshot(task,{source:turn?.source||'voice',background:s.background===true,status:s.unknown?'unknown':s.pausing?'pausing':turn?.credentialWaits||turn?.awaitingChatInput?'waiting_user':'running',startedAt:s.submitting?.message?.time,redact:text=>this.engine.redact(text),saving:!!turn?.finalized&&!turn.resultSaved}),canSteer:Boolean(this.acceptsChatInput)};
+  return {...taskProgressSnapshot(task,{source:turn?.source||'voice',background:s.background===true,status:s.unknown?'unknown':s.pausing||turn?.pauseRequested?'pausing':turn?.credentialWaits||turn?.awaitingChatInput?'waiting_user':'running',startedAt:s.submitting?.message?.time,redact:text=>this.engine.redact(text),saving:!!turn?.finalized&&!turn.resultSaved}),canSteer:Boolean(this.acceptsChatInput)};
  }
- get acceptsChatInput(){const s=this.session;if(!s?.background||s.unknown||s.pausing||s.stopping)return false;const turns=[...s.turns.values()].filter(turn=>!turn.done);return turns.length===1&&turns[0].awaitingChatInput;}
+ get acceptsChatInput(){const s=this.session;if(!s?.background||s.unknown||s.pausing||s.stopping||this.engine.acquiring||this.engine.takeover)return false;const turns=[...s.turns.values()].filter(turn=>!turn.done);return turns.length===1&&!turns[0].pauseRequested&&turns[0].awaitingChatInput;}
  answerBackground(message){
   const s=this.session,turn=s&&[...s.turns.values()].find(turn=>!turn.done);if(!this.acceptsChatInput||!turn)return Promise.reject(Error('The background task is no longer awaiting input'));
   turn.pendingSubmissions++;const operation=s.messageChain.then(async()=>{let submitted=false;
@@ -169,6 +169,10 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(replyTo&&!this.engine.task(replyTo))return Promise.reject(Error('The referenced message is not in this conversation'));
   const prior=this.engine.store.state.messages.find(message=>message.role==='user'&&message.clientMessageId===clientMessageId);
   if(prior){if(prior.text!==text||prior.replyTo!==replyTo)return Promise.reject(Error('This message identifier already belongs to different content'));return Promise.resolve({message:prior,callId:s.id,turnId:prior.turnId,submission:prior.submission,duplicate:true,...(prior.submission==='unknown'?{unknownOutcome:true}:{})});}
+  if(this.engine.takeover||this.engine.acquiring){
+   const message=this.engine.store.add({role:'user',text,replyTo,attachments:[],clientMessageId,voiceCallId:s.id,status:'paused',submission:'preparing',pauseReason:'human-control'});this.change();
+   return this.syncContext({kind:'message',message,callId:s.id}).then(voiceContext=>({message,callId:s.id,submission:message.submission,voiceContext}));
+  }
   if(s.pausing)return Promise.reject(Error('Current voice work is pausing; send a new task after it stops'));
   if(s.unknown)return Promise.reject(Error('A voice task handoff is unconfirmed. End the call before sending another task'));
   if(this.pendingHandoffs(s))return this.settlePendingHandoffs(s).then(()=>this.message({clientMessageId,text,replyTo,attachments,callId}));
@@ -177,7 +181,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   const context=this.syncContext({kind:'message',message,callId:s.id});
   const epoch=s.workEpoch,operation=s.messageChain.then(()=>this.submitMessage(s,message,epoch));s.messageChain=operation.catch(()=>{});return operation.then(async result=>({...result,voiceContext:await context}));
  }
- workCurrent(s,epoch){this.current(s);if(s.pausing||epoch!==s.workEpoch)throw Error('This task was paused before submission');}
+ workCurrent(s,epoch){this.current(s);if(s.pausing||this.engine.takeover||this.engine.acquiring||epoch!==s.workEpoch)throw Error('This task was paused before submission');}
  input(s,message){
   const input=this.engine.input(message);if(!s.spokenContext.length)return input;
   const groups=[];for(const entry of s.spokenContext){const previous=groups.at(-1);if(previous?.role===entry.role)previous.parts.push(entry.text);else groups.push({role:entry.role,parts:[entry.text]});}
@@ -222,7 +226,15 @@ export class NativeRealtimeVoice extends EventEmitter {
   }
  }
  createTurn(s,id,{source='voice'}={}){
-  const stopped=deferred(),turn={turnId:id,source,assistantIds:[],explicitPaths:[],explicitMessageIds:[],pendingSubmissions:0,outputs:new Map(),stopped:stopped.promise,resolveStopped:stopped.resolve,done:false,background:Boolean(s.continueWork)};startTaskProgress(turn,{step:'working'});s.turns.set(id,turn);for(const handoff of s.handoffs.values())if(!handoff.turnId&&!handoff.idleConfirmed)handoff.turnId=id;this.change();return turn;
+  const stopped=deferred(),turn={turnId:id,source,assistantIds:[],explicitPaths:[],explicitMessageIds:[],pendingSubmissions:0,outputs:new Map(),stopped:stopped.promise,resolveStopped:stopped.resolve,done:false,background:Boolean(s.continueWork)};startTaskProgress(turn,{step:'working'});s.turns.set(id,turn);for(const handoff of s.handoffs.values())if(!handoff.turnId&&!handoff.idleConfirmed){handoff.turnId=id;if(handoff.humanControl)turn.pauseRequested=true;}this.change();return turn;
+ }
+ interruptTurn(s,turn){
+  return turn.interruption ||= Promise.resolve().then(async()=>{if(turn.done)return;await Promise.race([this.worker.request('turn/interrupt',{threadId:s.threadId,turnId:turn.turnId}),turn.stopped]);await turn.stopped;});
+ }
+ pauseForHumanControl(s,turn){
+  turn.pauseRequested=true;this.change();
+  // The matching completion must still pass through eventChain; never await it here.
+  void within(this.interruptTurn(s,turn),this.stopTimeoutMs,'The task did not confirm that it paused for human control').catch(()=>{if(this.session===s&&!s.stopping){this.unknown(s,'pause-unconfirmed');this.emit('notice','The task has not confirmed it paused. Computer tools remain blocked by your desktop control session.');}});
  }
  pendingHandoffs(s){return [...s.handoffs.values()].some(handoff=>!handoff.turnId&&!handoff.idleConfirmed);}
  async settlePendingHandoffs(s){
@@ -249,7 +261,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   const active=[...s.turns.values()].filter(turn=>!turn.done);if(active.length>1){this.unknown(s,'ambiguous-turns',event);return;}
   // Codex admits/steers work before publishing this receipt, but it supplies
   // no turn ID. Keep it pending rather than guessing an older completed turn.
-  const turn=active[0];s.handoffs.set(key,{itemId:item.item_id,turnId:turn?.turnId||null});advanceTaskProgress(s,'working');
+  const turn=active[0];s.handoffs.set(key,{itemId:item.item_id,turnId:turn?.turnId||null,...(this.engine.takeover||this.engine.acquiring?{humanControl:true}:{})});if(turn&&(this.engine.takeover||this.engine.acquiring))this.pauseForHumanControl(s,turn);advanceTaskProgress(s,'working');
   this.emit('diagnostic',{code:'voice_handoff_tracked',callId:s.id,count:1,...(turn?{turnId:turn.turnId}:{})});this.change();
  }
  async reconcileHandoffs(s){
@@ -348,6 +360,7 @@ export class NativeRealtimeVoice extends EventEmitter {
    if(s.turns.size>=128){this.unknown(s,'turn-limit',event);this.engine.rejectEvent(event,'Voice task limit reached');return;}
    if(s.background||s.closed&&!s.continueWork||[...s.turns.values()].some(turn=>!turn.done))this.unknown(s,'ambiguous-turns',event);
    const turn=this.createTurn(s,id);
+   if(this.engine.takeover||this.engine.acquiring||turn.pauseRequested){this.pauseForHumanControl(s,turn);return;}
    try{turn.baseline=await this.engine.deliverables?.captureBaseline?.({outputDir:this.engine.outputDir,workspace:this.engine.workspace,conversationId:this.engine.store.state.conversationId,turnId:id});}
    catch(error){this.unknown(s,'baseline-unconfirmed',event);this.emit('notice','Voice output baseline could not be captured: '+readableError(error.message));}
    return;
@@ -421,7 +434,7 @@ export class NativeRealtimeVoice extends EventEmitter {
      if(s.unknown||this.pendingHandoffs(s)||s.submitting||[...s.turns.values()].some(turn=>turn.pendingSubmissions)){this.unknown(s,'pause-unconfirmed');throw unknown();}
      const turns=[...s.turns.values()].filter(turn=>!turn.done);
      for(const turn of turns){turn.pauseRequested=true;for(const id of turn.explicitMessageIds)this.engine.safeUpdate(id,{status:'pausing'});}this.change();
-     await Promise.all(turns.map(async turn=>{await Promise.race([this.worker.request('turn/interrupt',{threadId:s.threadId,turnId:turn.turnId}),turn.stopped]);await turn.stopped;}));
+     await Promise.all(turns.map(turn=>this.interruptTurn(s,turn)));
      await s.eventChain;this.workSession(s);if(s.unknown)throw unknown();
      return {paused:true,callId:s.id,callContinues:!s.background,turnIds:turns.map(turn=>turn.turnId)};
     })(),this.stopTimeoutMs,'The current voice task did not confirm that it stopped');
