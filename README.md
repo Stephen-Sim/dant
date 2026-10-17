@@ -4,6 +4,8 @@ English · [简体中文](docs/zh-CN/README.md)
 
 A digital companion for Windows, with its own Ubuntu computer. This rebuild follows the original UI and architecture, using Tauri/Rust, Node.js, Hyper-V or VMware Workstation, and Codex App Server.
 
+Download the installer or complete portable package from [GitHub Releases](https://github.com/Stephen-Sim/dant/releases/latest). Windows x64 packages are unsigned; checksums and build metadata are included. Extract the whole portable archive before opening `dant.exe`.
+
 The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execution and conversation data inside the VM. Windows provides the interface, VM setup, SSH forwarding, offline display cache, and native notifications. It does not run the agent’s work commands.
 
 ## Features
@@ -18,6 +20,7 @@ The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execut
 - VM-owned encrypted credentials with secure request forms, and a plugin-style **Skills** library in the left sidebar for searching, creating, editing and enabling reusable skills. See [credentials and skills](docs/credentials-and-skills.md).
 - Chat search and explicit record editing, withdrawal, deletion and clearing; the model session and context remain intact. Saving an edit does not resubmit work unless you choose **Save and send again**.
 - Online and working status, with the last actual task or call activity shown as a relative time.
+- Structured diagnostics with automatic three-day retention and bounded disk usage. See [diagnostics](docs/diagnostics.md).
 - The composer microphone records a voice attachment: click again to stop, preview it in the draft, then choose **Send**. It preserves the audio file and existing typed text. **Speech to text** is a separate attachment-menu option; the header phone starts a realtime call. Assistant read-aloud remains available. Windows text-speech helpers are local; browser support varies.
 
 ## Run locally

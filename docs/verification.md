@@ -4,6 +4,16 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
+## 0.4.4 voice screenshot stability and diagnostics
+
+The Windows JavaScript run executed 544 tests: 543 passed, one Windows symlink check skipped and none failed. Coverage was 97.95% lines, 87.43% branches and 89.81% functions. All seven coverage/version gate tests and the frontend production build passed. New regressions cover immutable screenshot projection, both voice notification buffers, genuine overflow shutdown, read-only desktop access while the executor is offline, authenticated diagnostics, RPC lifecycle metadata, rotation, three-day expiry and safe cleanup.
+
+Investigation of the reported TETR.IO failure found the original Hyper-V VM and desktop bridge running, with no reboot, kernel crash or OOM evidence in the checked interval; the Codex executor was offline with `Worker stopped`. A regression reproducer showed that a 900,000-byte MCP image can exceed the 1 MiB voice observer budget after base64 encoding and stop the executor. The fix omits duplicate image bytes only from dant's observer copy, preserving the complete model result and all ownership and uncertain-shutdown guards. Historical logs were insufficient to prove that this was the exact trigger of the reported incident.
+
+The fixed backend was deployed through the normal idle-VM update path. Its version and three-day retention were verified, and all 43 existing message IDs were preserved. A real subscription WebRTC call then completed an explicit typed task taking three consecutive desktop MCP screenshots of an isolated diagnostic Firefox window opened at TETR.IO. Three correlated diagnostics recorded original notifications of 791,776, 791,776 and 791,788 bytes, each projected to 554 observer bytes. The same peer, call and online executor were preserved throughout; hangup was confirmed without stopping the executor. The VM boot ID remained unchanged. Only the temporary diagnostic browser profile's process was closed afterward.
+
+This acceptance used no physical microphone or speaker and did not play the complete 40-line game. It verifies screenshot handling during a call, not uninterrupted gameplay or long-running voice reliability. See [diagnostics](diagnostics.md) for log locations, metadata boundaries and retention.
+
 ## 0.4.3 sidebar skill library
 
 Skills now open from a dedicated puzzle icon below the sidebar logo, with searchable plugin-style cards, creation, editing and enable switches. Ten additional DOM and handler regressions cover the independent bilingual page, skill-only reads, offline cached cards, unchanged chat drafts and live calls, and late reads or writes after navigation, modal replacement or a VM change. The Windows JavaScript run executed 494 tests: 493 passed, one Windows symlink check skipped and none failed. Coverage was 97.79% lines, 87.09% branches and 89.04% functions; all seven coverage/version gate tests passed. This UI change does not alter skill execution or require a VM redeployment.

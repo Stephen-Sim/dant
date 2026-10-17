@@ -141,7 +141,7 @@ test('raw handoff_request forces confirmed executor termination even with no ann
  const {engine,voice,worker,store}=setup(t),call=await engine.startCall(sdp);
  await engine.handle(event('thread/realtime/itemAdded',{item:{type:'handoff_request',handoff_id:'unobservable'}}));
  await assert.rejects(voice.message({clientMessageId:'message-after-handoff',text:'Do something'}),/handoff.*unconfirmed/);assert.equal(store.state.messages.length,0);
- await engine.stopCall(call.callId);assert.equal(worker.terminated,1);assert.equal(engine.call,null);
+ await engine.stopCall(call.callId);assert.equal(worker.terminated,1);assert.equal(engine.call,null);assert.equal(voice.state.lastStop.reason,'untracked-handoff');assert.equal(voice.state.lastStop.executorStopped,true);assert.equal(voice.state.lastStop.confirmed,true);assert.equal(voice.state.lastStop.method,'thread/realtime/itemAdded');assert.match(voice.state.error,/Only the Codex executor was stopped/);
 });
 
 test('explicit native text waits for turn acknowledgement, persists final, and deduplicates client IDs',async t=>{
@@ -258,4 +258,49 @@ test('pause invalidates not-yet-submitted native text instead of replaying it af
  const collector=new EventEmitter();let release;collector.captureBaseline=()=>new Promise(resolve=>release=resolve);collector.archive=()=>[];
  const {engine,voice,worker,store}=setup(t,{engine:{deliverables:collector}}),call=await engine.startCall(sdp);const sending=voice.message({clientMessageId:'queued-before-pause',text:'Do not submit after pause'});const rejected=assert.rejects(sending,/paused before submission/);await tick();assert.equal(typeof release,'function');
  const result=await engine.pause();assert.equal(result.paused,true);assert.equal(store.state.messages[0].status,'paused');release({});await rejected;assert.equal(worker.calls.some(call=>call.method==='turn/start'),false);assert.ok(engine.call);await engine.stopCall(call.callId);
+});
+
+test('a large screenshot completion does not overflow the voice observer or terminate its executor',async t=>{
+ const {engine,voice,worker}=setup(t),call=await engine.startCall(sdp);await begin(engine,'screenshot-turn');
+ const image=Buffer.alloc(900000,37).toString('base64'),notification=event('item/completed',{turnId:'screenshot-turn',item:{id:'large-screen',type:'mcpToolCall',server:'dant_desktop',tool:'screenshot',status:'completed',arguments:{},result:{content:[{type:'image',mimeType:'image/png',data:image}],isError:false}}});
+ assert.ok(Buffer.byteLength(JSON.stringify(notification))>1024*1024);const original=JSON.stringify(notification);await engine.handle(notification);await tick();assert.equal(worker.terminated,0);assert.equal(worker.status,'online');assert.equal(voice.session.unknown,false);assert.equal(engine.call.id,call.callId);assert.equal(JSON.stringify(notification),original);await engine.stopCall(call.callId);
+});
+
+test('consecutive large screenshots queue only metadata while preserving validated MCP delivery',async t=>{
+ const {engine,voice,worker,store}=setup(t),call=await engine.startCall(sdp);await begin(engine,'screenshot-turn');
+ let release;voice.session.eventChain=new Promise(resolve=>release=resolve);const image=Buffer.alloc(900000,41).toString('base64'),notifications=[];
+ for(let index=0;index<8;index++)notifications.push(event('item/completed',{turnId:'screenshot-turn',item:{id:'screen-'+index,type:'mcpToolCall',server:'dant_desktop',tool:'screenshot',status:'completed',result:{content:[{type:'image',mimeType:'image/png',data:image}],isError:false}}}));
+ const payload={dantMessage:{text:'Explicit requested result'}},delivery=event('item/completed',{turnId:'screenshot-turn',item:{id:'delivery',type:'mcpToolCall',server:'dant_desktop',tool:'send_chat_message',status:'completed',arguments:{text:payload.dantMessage.text},result:{content:[{type:'text',text:JSON.stringify(payload)},{type:'image',mimeType:'image/png',data:image}],structuredContent:payload,isError:false}}});notifications.push(delivery);
+ const pending=notifications.map(notification=>engine.handle(notification));assert.equal(voice.session.queuedEvents,9);assert.ok(voice.session.queuedBytes<10000);assert.equal(voice.session.unknown,false);release();await Promise.all(pending);assert.equal(worker.terminated,0);assert.equal(voice.session.queuedBytes,0);assert.equal(voice.session.queuedEvents,0);assert.equal(store.state.messages[0].text,'Explicit requested result');assert.ok(notifications.every(notification=>notification.params.item.result.content.some(content=>content.type==='image'&&content.data===image)));await engine.stopCall(call.callId);assert.equal(worker.terminated,0);
+});
+
+test('three observed screenshots emit exactly three safe size diagnostics before queueing',async t=>{
+ const {engine,voice,worker}=setup(t),diagnostics=[];voice.on('diagnostic',entry=>diagnostics.push(entry));const call=await engine.startCall(sdp);await begin(engine,'screenshot-diagnostics');
+ const image=Buffer.alloc(900000,47).toString('base64');for(let index=0;index<3;index++)await engine.handle(event('item/completed',{turnId:'screenshot-diagnostics',item:{id:'diagnostic-image-'+index,type:'mcpToolCall',server:'dant_desktop',tool:'screenshot',status:'completed',result:{content:[{type:'image',mimeType:'image/png',data:image}]}}}));
+ assert.equal(diagnostics.length,3);assert.ok(diagnostics.every(entry=>entry.code==='voice_observer_image_omitted'&&entry.callId===call.callId&&entry.method==='item/completed'&&entry.eventBytes>1024*1024&&entry.bytes<1000&&entry.count===1));assert.equal(JSON.stringify(diagnostics).includes(image.slice(0,100)),false);assert.equal(diagnostics.reduce((count,entry)=>count+entry.count,0),3);assert.equal(worker.terminated,0);await engine.stopCall(call.callId);
+});
+
+test('large screenshot results before turn acknowledgement stay bounded without mutating the model result',async t=>{
+ const {engine,voice,worker}=setup(t),call=await engine.startCall(sdp),request=worker.request.bind(worker);let acknowledge;
+ worker.request=(method,params)=>method==='turn/start'?new Promise(resolve=>acknowledge=resolve):request(method,params);
+ const sending=voice.message({clientMessageId:'large-early-screenshot',text:'Observe the game'});await tick();assert.ok(voice.session.submitting);const image=Buffer.alloc(900000,43).toString('base64'),notification=event('item/completed',{turnId:'typed-early',item:{id:'early-screen',type:'mcpToolCall',server:'dant_desktop',tool:'screenshot',status:'completed',result:{content:[{type:'image',mimeType:'image/png',data:image}]}}});
+ await engine.handle(notification);const pending=voice.session.submitting;assert.equal(pending.early.length,1);assert.ok(pending.bytes<1000);assert.equal(Object.hasOwn(pending.early[0].params.item.result.content[0],'data'),false);assert.equal(notification.params.item.result.content[0].data,image);assert.equal(voice.session.unknown,false);acknowledge({turn:{id:'typed-early'}});const result=await sending;assert.equal(result.submission,'confirmed');assert.equal(worker.terminated,0);assert.equal(engine.call.id,call.callId);await engine.stopCall(call.callId);
+});
+
+test('real critical notification overflow still waits for confirmed termination and never replays work',async t=>{
+ const {engine,voice,worker,store}=setup(t),diagnostics=[];voice.on('diagnostic',entry=>diagnostics.push(entry));const call=await engine.startCall(sdp),sent=await voice.message({clientMessageId:'critical-overflow',text:'An owned task'});let confirm,terminations=0;worker.terminateConfirmed=()=>{terminations++;return new Promise(resolve=>confirm=resolve);};
+ const privateText='never-publish-this-payload-'+ 'x'.repeat(1024*1024),notification=event('item/tool/call',{turnId:sent.turnId,tool:'send_message',arguments:{text:privateText}},900);
+ await engine.handle(notification);await tick();assert.equal(terminations,1);assert.ok(engine.call);assert.equal(voice.state.lastStop.reason,'notification-buffer');assert.equal(voice.state.lastStop.confirmed,false);assert.equal(voice.state.lastStop.executorStopped,false);assert.equal(voice.state.lastStop.method,'item/tool/call');assert.ok(voice.state.lastStop.eventBytes>1024*1024);assert.equal(JSON.stringify(voice.state).includes('never-publish'),false);assert.equal(store.state.messages.length,1);
+ const stopping=voice.session.stopPromise;confirm({terminated:true});await stopping;assert.equal(engine.call,null);assert.equal(voice.state.lastStop.confirmed,true);assert.equal(voice.state.lastStop.executorStopped,true);assert.equal(voice.state.lastStop.reason,'notification-buffer');assert.match(voice.state.error,/VM was not shut down/);assert.equal(store.state.messages[0].status,'paused');assert.equal(engine.queue.length,0);assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1);assert.equal(worker.responses.some(response=>response.result?.success),false);assert.deepEqual(diagnostics.map(entry=>entry.code),['voice_executor_stop_required','voice_shutdown']);assert.equal(diagnostics[0].confirmed,false);assert.equal(diagnostics[1].confirmed,true);assert.equal(JSON.stringify(diagnostics).includes('never-publish'),false);
+});
+
+test('early control-event overflow retains its own reason and still requires confirmed executor stop',async t=>{
+ const {engine,voice,worker}=setup(t),call=await engine.startCall(sdp),session=voice.session;session.submitting={message:{id:'pending'},early:[],bytes:0};
+ for(let index=0;index<129;index++)await engine.handle(event('item/started',{turnId:'pending-turn',item:{id:'control-'+index,type:'mcpToolCall',server:'dant_desktop',tool:'click',arguments:{x:index,y:index}}}));
+ assert.equal(session.unknown,true);assert.equal(session.submitting.early.length,128);assert.equal(session.stopCause.reason,'early-text-buffer');assert.equal(worker.terminated,0);await engine.stopCall(call.callId);assert.equal(worker.terminated,1);assert.equal(voice.state.lastStop.reason,'early-text-buffer');assert.equal(voice.state.lastStop.queuedEvents,128);assert.equal(voice.state.lastStop.confirmed,true);assert.equal(worker.calls.some(call=>call.method==='turn/start'),false);
+});
+
+test('unconfirmed shutdown diagnostics retain a fixed reason without transport payloads or secrets',async t=>{
+ const {engine,voice,worker}=setup(t),diagnostics=[];voice.on('diagnostic',entry=>diagnostics.push(entry));const call=await engine.startCall(sdp);await engine.handle(event('thread/realtime/itemAdded',{item:{type:'handoff_request',text:'private-handoff-payload'}}));worker.terminateConfirmed=async()=>{throw Error('private-termination-secret');};
+ await assert.rejects(engine.stopCall(call.callId),/private-termination-secret/);assert.ok(engine.call);assert.equal(voice.state.lastStop.reason,'untracked-handoff');assert.equal(voice.state.lastStop.confirmed,false);assert.equal(voice.state.lastStop.executorStopped,false);assert.match(voice.state.error,/has not been confirmed/);assert.equal(JSON.stringify({state:voice.state,diagnostics}).includes('private-'),false);assert.deepEqual(diagnostics.map(entry=>entry.code),['voice_executor_stop_required','voice_shutdown_unconfirmed']);worker.terminateConfirmed=async()=>({terminated:true});await engine.stopCall(call.callId);assert.equal(voice.state.lastStop.confirmed,true);
 });

@@ -24,13 +24,16 @@ import {isReaction} from './reactions.mjs';
 import {CredentialVault,CredentialRequests} from './credentials.mjs';
 import {SkillLibrary} from './skill-library.mjs';
 import {ConversationHistory} from './history.mjs';
+import {Diagnostics} from './diagnostics.mjs';
+import {observeHttp,observeTasks,serviceVersion,diagnosticWorkerStatus} from './diagnostic-events.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 export function createApp(options={}){
  const dataDir=options.dataDir||process.env.DANT_DATA||path.join(root,'data');
  if(options.mode==='vm-worker'||options.mode==='test')return createWorkerApp({...options,dataDir});
  return createControllerApp({...options,dataDir,projectRoot:options.projectRoot||root,prepareOnly:options.mode==='prepare'||options.prepareOnly});
 }
-export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'data'),workerFactory=s=>new LocalWorker(s),secretFactory=dir=>createSecretStore(dir),voiceFactory=options=>new Voice(options),nativeVoiceFactory=options=>new NativeRealtimeVoice(options),telegramFactory=options=>new TelegramGateway(options),credentialVaultFactory=options=>new CredentialVault(options),credentialRequestsFactory=options=>new CredentialRequests(options),skillLibraryFactory=options=>new SkillLibrary(options)}={}){
+export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'data'),workerFactory=s=>new LocalWorker(s),secretFactory=dir=>createSecretStore(dir),voiceFactory=options=>new Voice(options),nativeVoiceFactory=options=>new NativeRealtimeVoice(options),telegramFactory=options=>new TelegramGateway(options),credentialVaultFactory=options=>new CredentialVault(options),credentialRequestsFactory=options=>new CredentialRequests(options),skillLibraryFactory=options=>new SkillLibrary(options),diagnosticsFactory=options=>new Diagnostics(options)}={}){
+ const version=serviceVersion(root),diagnostics=diagnosticsFactory({dataDir,role:'vm-worker',version});
  const store=new Store(dataDir),worker=workerFactory(store),attachmentStore=new AttachmentStore(path.join(dataDir,'attachments')),deliverables=new DeliverableCollector(attachmentStore),memory=new MemoryStore(dataDir);
  memory.migrateLegacy?.(store);
  const engine=new Engine(store,worker,{memory,deliverables}),computer=new ComputerSession(engine,worker),history=new ConversationHistory({store,engine}),app=express(),server=http.createServer(app);
@@ -51,6 +54,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  },hangupTimeoutMs:2000});
  engine.voice=voice;
  const nativeVoice=nativeVoiceFactory({worker,engine});engine.nativeVoice=nativeVoice;
+ nativeVoice.on('diagnostic',event=>{if(['voice_executor_stop_required','voice_shutdown_unconfirmed','voice_shutdown','voice_observer_image_omitted'].includes(event?.code)){const {code,...metadata}=event;diagnostics.log(code,metadata);}});
  nativeVoice.on('notice',message=>engine.emit('notice',message));nativeVoice.on('change',()=>engine.change());
  const telegram=telegramFactory({dataDir,store,engine,attachments:attachmentStore});telegram.on('change',()=>engine.change());
  voice.on('closed',()=>{callScopedKey=null;if(engine.call?.provider==='api'){const callId=engine.call.id;credentials.cancelOwner(callId);engine.closeCall(callId);engine.emit('realtime',{method:'thread/realtime/closed',params:{callId}});}});
@@ -76,6 +80,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  const files=path.join(dataDir,'files');fs.mkdirSync(files,{recursive:true});
  const token=randomBytes(32).toString('hex');
  app.disable('x-powered-by');
+ app.use(observeHttp(diagnostics));
  app.use((req,res,next)=>{const host=req.headers.host?.split(':')[0];if(!['127.0.0.1','localhost'].includes(host))return res.sendStatus(403);const origin=req.headers.origin;if(origin&&!/^https?:\/\/(127\.0\.0\.1|localhost)(:431[78])?$/.test(origin)&&origin!=='http://tauri.localhost'&&origin!=='tauri://localhost')return res.sendStatus(403);if(origin){res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Vary','Origin');res.setHeader('Access-Control-Allow-Headers','Content-Type, X-Dant-Token');res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,DELETE,OPTIONS');}if(req.method==='OPTIONS')return res.sendStatus(204);next();});
  app.use(express.json({limit:'2mb'}));
  function credentialScope(){
@@ -96,11 +101,16 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  });
  app.get('/api/session',(req,res)=>res.json({token,product:'dant',mode:'worker'}));
  app.use('/api',(req,res,next)=>{if(req.headers['x-dant-token']!==token&&req.query.token!==token)return res.sendStatus(401);next();});
- const snapshot=()=>{const key=voiceKeys.status(),native=nativeVoice.state;return {mode:'vm-worker',conversationId:store.state.conversationId,messages:store.state.messages,completions:store.state.completions||[],presence:{lastActiveAt:store.state.presence?.lastActiveAt||null},credentials:credentials.snapshot(),skills:skillSnapshot(),memory:store.state.memory,memoryFiles:memory.snapshot(),settings:store.state.settings,telegram:telegram.status(),worker:{status:worker.status,error:worker.error||null,account:worker.account?.account,models:worker.models?.data||[],realtime:{available:native.available,reason:native.available?null:'vm-offline',provider:'subscription',billing:'subscription',subscription:{available:native.available,version:'v3',error:native.error||null},api:{available:key.configured,billing:'api'},key}},active:engine.active?{messageId:engine.active.messageId,turnId:engine.active.turnId}:nativeVoice.active||null,queue:engine.queue.map(m=>m.id),takeover:computer.state.status==='human',computer:computer.snapshot(),call:engine.call,schedules:store.state.schedules,provisioning:provisioning.snapshot()};};
+ app.get('/api/diagnostics',(req,res)=>res.json({status:diagnostics.status(),recent:diagnostics.recent(50)}));
+ app.all('/api/diagnostics',(req,res)=>res.status(405).json({error:'Diagnostics are read-only.'}));
+ const snapshot=()=>{const key=voiceKeys.status(),native=nativeVoice.state;return {mode:'vm-worker',conversationId:store.state.conversationId,messages:store.state.messages,completions:store.state.completions||[],presence:{lastActiveAt:store.state.presence?.lastActiveAt||null},credentials:credentials.snapshot(),skills:skillSnapshot(),memory:store.state.memory,memoryFiles:memory.snapshot(),settings:store.state.settings,telegram:telegram.status(),worker:{status:worker.status,error:worker.error||null,account:worker.account?.account,models:worker.models?.data||[],realtime:{available:native.available,reason:native.available?null:'vm-offline',provider:'subscription',billing:'subscription',subscription:{available:native.available,version:'v3',error:native.error||null,lastStop:native.lastStop||null},api:{available:key.configured,billing:'api'},key}},active:engine.active?{messageId:engine.active.messageId,turnId:engine.active.turnId}:nativeVoice.active||null,queue:engine.queue.map(m=>m.id),takeover:computer.state.status==='human',computer:computer.snapshot(),call:engine.call,schedules:store.state.schedules,provisioning:provisioning.snapshot()};};
  const wss=new WebSocketServer({noServer:true,maxPayload:1024*1024});
  server.on('upgrade',(req,socket,head)=>{const url=new URL(req.url,'http://localhost');if(url.pathname!=='/events'||url.searchParams.get('token')!==token){socket.destroy();return;}const origin=req.headers.origin;if(origin&&!/^http:\/\/(127\.0\.0\.1|localhost):431[78]$/.test(origin)&&origin!=='http://tauri.localhost'&&origin!=='tauri://localhost'){socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));});
  const broadcast=(type,data)=>{const payload=JSON.stringify({type,data});for(const ws of wss.clients)if(ws.readyState===1)ws.send(payload);};
  let broadcastTimer,closing=false,lastProvisionStatus=provisioning.snapshot().status;engine.on('change',()=>{if(closing)return;clearTimeout(broadcastTimer);broadcastTimer=setTimeout(()=>broadcast('state',snapshot()),60);});engine.on('notice',message=>broadcast('notice',{message}));engine.on('realtime',e=>broadcast('realtime',e));
+ let workerStatus=diagnosticWorkerStatus(worker.status);diagnostics.log('worker.status',{status:workerStatus});worker.on('status',()=>{const status=diagnosticWorkerStatus(worker.status);if(status!==workerStatus){workerStatus=status;diagnostics.log('worker.status',{status});}});
+ worker.on('lifecycle',event=>{if(['rpc.timeout','rpc.disconnected'].includes(event?.code)){const {code,...metadata}=event;diagnostics.log(code,metadata);}});
+ engine.on('change',observeTasks(diagnostics,store,engine));diagnostics.log('service.started',{version});
  provisioning.on('change',progress=>{if(closing)return;importBinding();engine.change();if(progress.status==='ready'&&lastProvisionStatus!=='ready'&&!engine.active&&!engine.call){engine.loaded=false;worker.connect().catch(e=>engine.emit('notice',e.message));}lastProvisionStatus=progress.status;});
  wss.on('connection',ws=>ws.send(JSON.stringify({type:'state',data:snapshot()})));
  app.get('/api/state',(req,res)=>res.json(snapshot()));
@@ -164,7 +174,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  app.use((err,req,res,next)=>{if(res.headersSent)return next(err);res.status(err.status||(err.unknownOutcome?502:400)).json({error:err.type==='entity.parse.failed'?'Invalid JSON request.':err.type==='entity.too.large'?'The request exceeds its size limit.':err.message,...(err.unknownOutcome?{unknownOutcome:true}:{})});});
  let closePromise;
  telegram.start();
- return {app,server,store,worker,engine,voice,nativeVoice,telegram,voiceKeys,provisioning,computer,credentials,skills,history,close:()=>{if(closePromise)return closePromise;closing=true;credentials.close();computer.close();provisioning.close();clearInterval(scheduler);clearTimeout(broadcastTimer);closePromise=Promise.allSettled([voice.close(),nativeVoice.close(),telegram.close()]).finally(()=>{callScopedKey=null;worker.disconnect();});for(const ws of wss.clients)ws.terminate();wss.close();server.close();return closePromise;}};
+ return {app,server,store,worker,engine,voice,nativeVoice,telegram,voiceKeys,provisioning,computer,credentials,skills,history,diagnostics,close:()=>{if(closePromise)return closePromise;closing=true;credentials.close();computer.close();provisioning.close();clearInterval(scheduler);clearTimeout(broadcastTimer);closePromise=Promise.allSettled([voice.close(),nativeVoice.close(),telegram.close()]).finally(()=>{callScopedKey=null;try{worker.disconnect();}finally{diagnostics.log('service.closed',{version});diagnostics.close();}});for(const ws of wss.clients)ws.terminate();wss.close();server.close();return closePromise;}};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const mode=process.argv.includes('--vm-worker')?'vm-worker':process.argv.includes('--prepare')?'prepare':'vm-controller';

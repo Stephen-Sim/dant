@@ -11,6 +11,8 @@ import {VmProfiles,readVmBinding,normalizeVmBinding} from './vm-profiles.mjs';
 import {NotificationHub} from './notifications.mjs';
 import {createSecretStore} from './secrets.mjs';
 import {appearanceDefaults,appearanceKeys,readAppearance,validateAppearancePatch,listSystemFonts} from './appearance.mjs';
+import {Diagnostics} from './diagnostics.mjs';
+import {observeHttp,serviceVersion,diagnosticWorkerStatus} from './diagnostic-events.mjs';
 
 const parse=file=>JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
 const allowedOrigin=origin=>!origin||/^https?:\/\/(127\.0\.0\.1|localhost)(:431[78])?$/.test(origin)||origin==='http://tauri.localhost'||origin==='tauri://localhost';
@@ -18,8 +20,9 @@ const emptyState=()=>({messages:[],memory:'',settings:{language:'zh',voice:'mari
 
 // No Store, Engine, LocalWorker, user command, or authoritative conversation file
 // is constructed by this process. The JSON here is explicitly an offline cache.
-export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridgeFactory=options=>new VmBridge(options),provisioningFactory=options=>new Provisioning(options),secretFactory=dir=>createSecretStore(dir),profileFactory=options=>new VmProfiles(options),profileOptions={},fontsProvider=listSystemFonts}={}){
+export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridgeFactory=options=>new VmBridge(options),provisioningFactory=options=>new Provisioning(options),secretFactory=dir=>createSecretStore(dir),profileFactory=options=>new VmProfiles(options),profileOptions={},fontsProvider=listSystemFonts,diagnosticsFactory=options=>new Diagnostics(options)}={}){
  fs.mkdirSync(dataDir,{recursive:true});const configFile=path.join(dataDir,'controller.json'),cacheFile=path.join(dataDir,'state-cache.json');
+ const version=serviceVersion(projectRoot),diagnostics=diagnosticsFactory({dataDir,role:'controller',version});
  let config={language:'zh',notifications:false,...appearanceDefaults};try{config={...config,...parse(configFile)};}catch{}config={...config,...readAppearance(config)};
  let cached=emptyState();try{cached=parse(cacheFile);}catch{}
  const profiles=profileFactory({dataDir,projectRoot,...profileOptions});let profileError=null;try{profiles.autoImport();}catch(error){profileError=error.message;}
@@ -27,6 +30,7 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  const notifications=new NotificationHub(dataDir),voiceKeys=secretFactory(dataDir);notifications.configure(config.notifications);
  const app=express(),server=http.createServer(app),token=randomBytes(32).toString('hex'),wss=new WebSocketServer({noServer:true,maxPayload:1024*1024}),streams=new Set();let closing=false,lastSaved=0,saveTimer;
  app.disable('x-powered-by');
+ app.use(observeHttp(diagnostics));
  app.use((req,res,next)=>{const hostname=req.headers.host?.split(':')[0];if(!['127.0.0.1','localhost'].includes(hostname)||!allowedOrigin(req.headers.origin))return res.sendStatus(403);if(req.headers.origin){res.setHeader('Access-Control-Allow-Origin',req.headers.origin);res.setHeader('Vary','Origin');res.setHeader('Access-Control-Allow-Headers','Content-Type, X-Dant-Token');res.setHeader('Access-Control-Allow-Methods','GET,POST,PATCH,DELETE,OPTIONS');}if(req.method==='OPTIONS')return res.sendStatus(204);next();});
  app.use(express.json({limit:'2mb'}));app.get('/api/session',(req,res)=>res.json({token,product:'dant',mode:'controller'}));
  app.use('/api',(req,res,next)=>req.headers['x-dant-token']===token||req.query.token===token?next():res.sendStatus(401));
@@ -36,14 +40,18 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  function snapshot(){const state=structuredClone(cached),key=voiceKeys.status();state.mode='vm-controller';state.settings={...emptyState().settings,...state.settings,language:config.language,notifications:config.notifications,...readAppearance(config),vm:{...emptyState().settings.vm,...binding()}};state.worker={...state.worker,status:bridge.status==='online'?state.worker?.status||'connecting':bridge.status,error:profileError||bridge.error||state.worker?.error||null,realtime:{...state.worker?.realtime,key,api:{available:key.configured,billing:'api'}}};state.provisioning=provisioning.snapshot();state.controller={status:bridge.status,authority:'vm',cached:bridge.status!=='online',updatedAt:lastSaved||null,error:profileError||bridge.error||null};return state;}
  function broadcast(type,data){if(closing)return;const body=JSON.stringify({type,data});for(const client of wss.clients)if(client.readyState===1)client.send(body);for(const stream of streams)stream.write(`data: ${body}\n\n`);}
  function saveCache(){clearTimeout(saveTimer);saveTimer=null;const temporary=cacheFile+'.tmp';fs.writeFileSync(temporary,JSON.stringify(cached));fs.renameSync(temporary,cacheFile);lastSaved=Date.now();}
- bridge.on('state',state=>{cached=state;notifications.observe(state);if(!saveTimer)saveTimer=setTimeout(()=>{try{saveCache();}catch{broadcast('notice',{message:'The VM state is available, but its Windows cache could not be saved.'});}},2000);broadcast('state',snapshot());});
- bridge.on('change',()=>broadcast('state',snapshot()));bridge.on('event',event=>broadcast(event.type,event.data));
+ let cachedWorkerStatus=diagnosticWorkerStatus(cached.worker?.status),bridgeStatus=diagnosticWorkerStatus(bridge.status);diagnostics.log('bridge.status',{status:bridgeStatus});diagnostics.log('worker.status',{status:cachedWorkerStatus,cached:true});
+ bridge.on('state',state=>{cached=state;const status=diagnosticWorkerStatus(state.worker?.status);if(status!==cachedWorkerStatus){cachedWorkerStatus=status;diagnostics.log('worker.status',{status,cached:true});}notifications.observe(state);if(!saveTimer)saveTimer=setTimeout(()=>{try{saveCache();}catch{broadcast('notice',{message:'The VM state is available, but its Windows cache could not be saved.'});}},2000);broadcast('state',snapshot());});
+ bridge.on('change',()=>{const status=diagnosticWorkerStatus(bridge.status);if(status!==bridgeStatus){bridgeStatus=status;diagnostics.log('bridge.status',{status});}broadcast('state',snapshot());});bridge.on('event',event=>broadcast(event.type,event.data));
+ diagnostics.log('service.started',{version});
  let provisioningStatus=provisioning.snapshot().status;
  provisioning.on('change',progress=>{broadcast('state',snapshot());if(!prepareOnly&&progress.status==='ready'&&provisioningStatus!=='ready')void connect().catch(error=>broadcast('notice',{message:error.message}));provisioningStatus=progress.status;});
  server.on('upgrade',(req,socket,head)=>{let url;try{url=new URL(req.url,'http://localhost');}catch{socket.destroy();return;}if(url.pathname!=='/events'||url.searchParams.get('token')!==token||!allowedOrigin(req.headers.origin)){socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));});
  wss.on('connection',ws=>ws.send(JSON.stringify({type:'state',data:snapshot()})));
  app.get('/api/events',(req,res)=>{res.setHeader('Content-Type','text/event-stream');res.setHeader('Cache-Control','no-cache');res.setHeader('Connection','keep-alive');res.flushHeaders();streams.add(res);res.write(`data: ${JSON.stringify({type:'state',data:snapshot()})}\n\n`);const heartbeat=setInterval(()=>res.write(': keepalive\n\n'),15000);heartbeat.unref();req.on('close',()=>{clearInterval(heartbeat);streams.delete(res);});});
  app.get('/api/state',async(req,res)=>{if(bridge.status==='online')try{await bridge.refresh();}catch(error){bridge.error=error.message;}res.json(snapshot());});
+ app.get('/api/diagnostics',async(req,res)=>{let worker={available:false,reason:'worker-unavailable'};if(bridge.status==='online')try{const response=await bridge.request('/api/diagnostics');if(response.ok){const value=await response.json();if(value&&typeof value.status==='object'&&Array.isArray(value.recent))worker={available:true,status:value.status,recent:value.recent.slice(-50)};}}catch{}res.json({status:diagnostics.status(),recent:diagnostics.recent(50),worker});});
+ app.all('/api/diagnostics',(req,res)=>res.status(405).json({error:'Diagnostics are read-only.'}));
  app.post('/api/provision',(req,res)=>res.json(provisioning.start(req.body)));
  app.post('/api/connect',async(req,res)=>{await connect();res.json({ok:true});});
  app.post('/api/prepare',async(req,res)=>{await bridge.prepare();res.json({ok:true});});
@@ -77,5 +85,5 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.use(express.static(path.join(projectRoot,'dist')));
  app.use((error,req,res,next)=>{if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(error.unknownOutcome?{unknownOutcome:true}: {})});});
  let closePromise;
- return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();});return closePromise;}};
+ return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
 }

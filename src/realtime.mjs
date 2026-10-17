@@ -3,12 +3,29 @@ import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {readableError} from './errors.mjs';
 import {buildCallContext,LiveContextQueue} from './call-context.mjs';
+import {prepareObserverEvent} from './observer-event.mjs';
 
 export const NATIVE_REALTIME_MODEL='gpt-live-1-codex';
 export const DEFAULT_NATIVE_VOICE='ember';
 export const NATIVE_VOICES=Object.freeze(['juniper','maple','spruce','ember','vale','breeze','arbor','sol','cove','aube','bubbie','haetsal','hanul','himari','leher','miko','neer','porto','rindo','rio','rivage','selva','sonna','tinta','viola']);
 const turnIdOf=event=>event.params?.turnId||event.params?.turn?.id;
 const validSdp=sdp=>typeof sdp==='string'&&sdp.length<=200000&&/^v=0\r?\n/.test(sdp)&&/^m=audio /m.test(sdp);
+const stopReasons=Object.freeze({
+ 'notification-buffer':'Voice notifications exceeded the observer safety limit.',
+ 'early-text-buffer':'Voice task notifications exceeded the limit before submission was acknowledged.',
+ 'untracked-handoff':'A voice task handoff could not be matched to an acknowledged task.',
+ 'untracked-turn':'A voice notification did not belong to a known active task.',
+ 'ambiguous-turns':'More than one voice task appeared active.',
+ 'turn-limit':'The voice call reached its task limit.',
+ 'tool-limit':'The voice call reached its tool limit.',
+ 'baseline-unconfirmed':'The output baseline for a voice task could not be confirmed.',
+ 'start-unconfirmed':'The voice call start timed out without acknowledgement.',
+ 'text-submission-unconfirmed':'A voice text task submission was not acknowledged.',
+ 'pause-unconfirmed':'A voice task did not confirm that it paused.',
+ 'pending-submission':'The voice call ended while a text task submission was pending.',
+ 'shutdown-unconfirmed':'The voice call or its background work did not confirm shutdown.'
+});
+const observedMethods=new Set(['turn/started','turn/completed','item/started','item/completed','item/agentMessage/delta','item/tool/call','thread/realtime/itemAdded','thread/realtime/started','thread/realtime/sdp','thread/realtime/closed','thread/realtime/error']);
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});promise.catch(()=>{});return {promise,resolve,reject};}
 async function within(promise,ms,message){let timer;try{return await Promise.race([promise,new Promise((resolve,reject)=>timer=setTimeout(()=>reject(Error(message)),ms))]);}finally{clearTimeout(timer);}}
 function finalLinks(text,alreadySent=''){
@@ -26,7 +43,7 @@ export class NativeRealtimeVoice extends EventEmitter {
  constructor({worker,engine,terminateExecutor,connectTimeoutMs=20000,stopTimeoutMs=10000,contextTimeoutMs=5000}={}){
   super();if(!worker||!engine)throw Error('Native voice requires the VM executor and conversation engine');
   this.worker=worker;this.engine=engine;this.terminateExecutor=terminateExecutor||(()=>worker.terminateConfirmed());this.connectTimeoutMs=connectTimeoutMs;this.stopTimeoutMs=stopTimeoutMs;
-  this.session=null;this.error=null;this.contextTimeoutMs=contextTimeoutMs;this.voices=[...NATIVE_VOICES];engine.nativeVoice=this;
+  this.session=null;this.error=null;this.lastStop=null;this.contextTimeoutMs=contextTimeoutMs;this.voices=[...NATIVE_VOICES];engine.nativeVoice=this;
   const settings=engine.store.state.settings,selected=settings.nativeVoice||settings.voice;
   const nativeVoice=this.voices.includes(selected)?selected:DEFAULT_NATIVE_VOICE;
   if(settings.voice!==nativeVoice||settings.nativeVoice!==nativeVoice||!settings.apiVoice){settings.voice=settings.nativeVoice=nativeVoice;settings.apiVoice ||= 'marin';engine.store.save();}
@@ -37,7 +54,14 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(turn||s.submitting||s.unknown)return {messageId:turn?.messageId||s.submitting?.message.id||null,turnId:turn?.turnId||null,source:'voice',status:s.unknown?'unknown':s.pausing?'pausing':'running'};
   return null;
  }
- get state(){return {call:this.call,error:this.error,available:this.worker.status==='online',version:'v3',model:NATIVE_REALTIME_MODEL};}
+ get state(){return {call:this.call,error:this.error,lastStop:this.lastStop?{...this.lastStop}:null,available:this.worker.status==='online',version:'v3',model:NATIVE_REALTIME_MODEL};}
+ unknown(s,reason,event,metadata={}){
+  s.unknown=true;if(s.stopCause)return;
+  s.stopCause={reason:Object.hasOwn(stopReasons,reason)?reason:'shutdown-unconfirmed',at:Date.now()};
+  if(event)s.stopCause.method=observedMethods.has(event.method)?event.method:'other';
+  for(const key of ['eventBytes','queuedBytes','queuedEvents'])if(Number.isSafeInteger(metadata[key])&&metadata[key]>=0)s.stopCause[key]=metadata[key];
+  this.error=stopReasons[s.stopCause.reason];this.change();
+ }
  change(){if(this.session&&this.engine.call?.id===this.session.id)this.engine.call.status=this.session.status;this.emit('change',this.state);this.engine.change();}
  async listVoices(){
   const result=await this.worker.request('thread/realtime/listVoices',{}),voices=result?.voices?.v3;
@@ -71,7 +95,7 @@ export class NativeRealtimeVoice extends EventEmitter {
    if(this.session!==s)throw Error('Voice call cancelled');
    this.error=readableError(error.message)||'The subscription call could not be started';
    // A lost start acknowledgement can leave a live call after any stop RPC.
-   if(s.startSubmitted&&!s.startAccepted&&error.code==null)s.unknown=true;
+   if(s.startSubmitted&&!s.startAccepted&&error.code==null)this.unknown(s,'start-unconfirmed');
    if(!s.startSubmitted||(error.code!=null&&!s.started&&!s.answer))this.finalize(s,'start-rejected');
    else await this.stop(id).catch(stopError=>this.emit('notice',stopError.message));
    throw Error(this.error);
@@ -115,7 +139,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   let turn,submitted=false;
   try{
    this.workCurrent(s,epoch);await s.eventChain;this.workCurrent(s,epoch);if(s.unknown)throw Error('A voice task handoff is unconfirmed');
-   let active=[...s.turns.values()].filter(turn=>!turn.done);if(active.length>1){s.unknown=true;throw Error('The active voice task is ambiguous');}
+   let active=[...s.turns.values()].filter(turn=>!turn.done);if(active.length>1){this.unknown(s,'ambiguous-turns');throw Error('The active voice task is ambiguous');}
    if(!active.length){
     const baseline=await this.engine.deliverables?.captureBaseline?.({outputDir:this.engine.outputDir,workspace:this.engine.workspace,conversationId:this.engine.store.state.conversationId,messageId:message.id});
     await s.eventChain;this.workCurrent(s,epoch);if(s.unknown)throw Error('A voice task handoff is unconfirmed');active=[...s.turns.values()].filter(turn=>!turn.done);
@@ -132,14 +156,14 @@ export class NativeRealtimeVoice extends EventEmitter {
      this.change();return {message,callId:s.id,turnId:id,submission:'confirmed'};
     }
    }
-   if(active.length!==1){s.unknown=true;throw Error('The active voice task is ambiguous');}
+   if(active.length!==1){this.unknown(s,'ambiguous-turns');throw Error('The active voice task is ambiguous');}
    turn=active[0];if(turn.done)throw Error('The active voice task changed');
    turn.pendingSubmissions++;this.engine.store.update(message.id,{status:'running',submission:'submitting',parentTaskId:turn.messageId||null});submitted=true;
    await within(this.worker.request('turn/steer',{threadId:s.threadId,expectedTurnId:turn.turnId,input:this.engine.input(message)}),this.connectTimeoutMs,'The text steering request was not acknowledged');
    this.current(s);turn.explicitMessageIds.push(message.id);turn.messageId ||= message.id;
    this.engine.store.update(message.id,{status:turn.finalStatus||'running',submission:'confirmed',turnId:turn.turnId,executorConfirmedAt:Date.now()});turn.pendingSubmissions--;await this.finishTurn(s,turn);this.change();return {message,callId:s.id,turnId:turn.turnId,submission:'confirmed'};
   }catch(error){
-   const unknown=submitted&&error.code==null;if(unknown)s.unknown=true;
+   const unknown=submitted&&error.code==null;if(unknown)this.unknown(s,'text-submission-unconfirmed');
    if(s.submitting?.message===message)s.submitting=null;
    if(turn?.pendingSubmissions)turn.pendingSubmissions--;
    this.engine.safeUpdate(message.id,{status:unknown?'paused':submitted?'failed':'paused',submission:unknown?'unknown':submitted?'rejected':'preparing',pauseReason:unknown?'submission-unknown':'voice-task-unavailable',error:readableError(error.message)});
@@ -169,16 +193,18 @@ export class NativeRealtimeVoice extends EventEmitter {
  }
  handleEvent(event){
   const s=this.session;if(!s||!this.ownsEvent(event))return Promise.resolve();
+  const original=event;event=prepareObserverEvent(event);
   const bytes=Buffer.byteLength(JSON.stringify(event));
-  if(s.queuedEvents>=128||s.queuedBytes+bytes>1024*1024){s.unknown=true;this.engine.rejectEvent(event,'Voice notification buffer exceeded');queueMicrotask(()=>void this.stop(s.id).catch(error=>this.emit('notice',error.message)));return Promise.resolve();}
+  if(event!==original)this.emit('diagnostic',{code:'voice_observer_image_omitted',callId:s.id,method:observedMethods.has(event.method)?event.method:'other',eventBytes:Buffer.byteLength(JSON.stringify(original)),bytes,count:1});
+  if(s.queuedEvents>=128||s.queuedBytes+bytes>1024*1024){this.unknown(s,'notification-buffer',event,{eventBytes:bytes,queuedBytes:s.queuedBytes,queuedEvents:s.queuedEvents});this.engine.rejectEvent(event,'Voice notification buffer exceeded');queueMicrotask(()=>void this.stop(s.id).catch(error=>this.emit('notice',error.message)));return Promise.resolve();}
   s.queuedEvents++;s.queuedBytes+=bytes;
   // RPC notifications arrive in order, but archive/tool awaits must preserve it.
   const operation=s.eventChain.then(()=>this.processEvent(s,event)).finally(()=>{s.queuedEvents--;s.queuedBytes-=bytes;});s.eventChain=operation.catch(error=>this.emit('notice',readableError(error.message)));return operation;
  }
  async processEvent(s,event){
-  if(this.session!==s)return;const p=event.params||{},id=turnIdOf(event),method=event.method;
+  if(this.session!==s)return;event=prepareObserverEvent(event);const p=event.params||{},id=turnIdOf(event),method=event.method;
   if(method.startsWith('thread/realtime/')){
-   if(method==='thread/realtime/itemAdded'&&p.item?.type==='handoff_request')s.unknown=true;
+   if(method==='thread/realtime/itemAdded'&&p.item?.type==='handoff_request')this.unknown(s,'untracked-handoff',event);
    if(method==='thread/realtime/started'){
     if(p.version!=='v3'){s.failure.reject(Error('The VM returned an unsupported realtime version'));return;}
     s.started=true;s.realtimeSessionId=p.realtimeSessionId;
@@ -199,25 +225,25 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(id&&(s.finished.has(id)||this.engine.completedTurns.has(id))){this.engine.rejectEvent(event,'Inactive voice task');return;}
   if(s.submitting){
    const pending=s.submitting,bytes=Buffer.byteLength(JSON.stringify(event));
-   if(pending.early.length>=128||pending.bytes+bytes>1024*1024){s.unknown=true;this.engine.rejectEvent(event,'Early text task notification buffer exceeded');return;}
+   if(pending.early.length>=128||pending.bytes+bytes>1024*1024){this.unknown(s,'early-text-buffer',event,{eventBytes:bytes,queuedBytes:pending.bytes,queuedEvents:pending.early.length});this.engine.rejectEvent(event,'Early text task notification buffer exceeded');return;}
    pending.early.push(event);pending.bytes+=bytes;return;
   }
   if(method==='turn/started'&&id){
    if(s.turns.has(id))return;
-   if(s.turns.size>=128){s.unknown=true;this.engine.rejectEvent(event,'Voice task limit reached');return;}
-   if(s.stopping||s.closed||[...s.turns.values()].some(turn=>!turn.done))s.unknown=true;
+   if(s.turns.size>=128){this.unknown(s,'turn-limit',event);this.engine.rejectEvent(event,'Voice task limit reached');return;}
+   if(s.stopping||s.closed||[...s.turns.values()].some(turn=>!turn.done))this.unknown(s,'ambiguous-turns',event);
    const turn=this.createTurn(s,id);
    try{turn.baseline=await this.engine.deliverables?.captureBaseline?.({outputDir:this.engine.outputDir,workspace:this.engine.workspace,conversationId:this.engine.store.state.conversationId,turnId:id});}
-   catch(error){s.unknown=true;this.emit('notice','Voice output baseline could not be captured: '+readableError(error.message));}
+   catch(error){this.unknown(s,'baseline-unconfirmed',event);this.emit('notice','Voice output baseline could not be captured: '+readableError(error.message));}
    return;
   }
   const turn=id&&s.turns.get(id);
-  if(!turn||turn.done){s.unknown=true;this.engine.rejectEvent(event,'No accepted voice background task');return;}
+  if(!turn||turn.done){this.unknown(s,'untracked-turn',event);this.engine.rejectEvent(event,'No accepted voice background task');return;}
   if(event.id!==undefined){
    if(method!=='item/tool/call'){this.engine.rejectEvent(event,'Unsupported voice background request');return;}
    // A duplicate RPC request cannot execute side effects twice.
    const identity=String(p.callId||event.id);if(s.tools.has(identity)){this.engine.rejectEvent(event,'Duplicate voice tool call');return;}
-   if(s.tools.size>=1000){s.unknown=true;this.engine.rejectEvent(event,'Voice tool limit reached');return;}s.tools.add(identity);
+   if(s.tools.size>=1000){this.unknown(s,'tool-limit',event);this.engine.rejectEvent(event,'Voice tool limit reached');return;}s.tools.add(identity);
    try{
     if(s.stopping||turn.pauseRequested)throw Error('The voice task is stopping');
     const args=typeof p.arguments==='string'?JSON.parse(p.arguments):p.arguments;
@@ -271,14 +297,14 @@ export class NativeRealtimeVoice extends EventEmitter {
    try{
     return await within((async()=>{
      await s.eventChain;this.current(s);
-     if(s.unknown||s.submitting||[...s.turns.values()].some(turn=>turn.pendingSubmissions)){s.unknown=true;throw unknown();}
+     if(s.unknown||s.submitting||[...s.turns.values()].some(turn=>turn.pendingSubmissions)){this.unknown(s,'pause-unconfirmed');throw unknown();}
      const turns=[...s.turns.values()].filter(turn=>!turn.done);
      for(const turn of turns){turn.pauseRequested=true;for(const id of turn.explicitMessageIds)this.engine.safeUpdate(id,{status:'pausing'});}this.change();
      await Promise.all(turns.map(async turn=>{await Promise.race([this.worker.request('turn/interrupt',{threadId:s.threadId,turnId:turn.turnId}),turn.stopped]);await turn.stopped;}));
      await s.eventChain;this.current(s);if(s.unknown)throw unknown();
      return {paused:true,callId:s.id,callContinues:true,turnIds:turns.map(turn=>turn.turnId)};
     })(),this.stopTimeoutMs,'The current voice task did not confirm that it stopped');
-   }catch(error){if(this.session===s&&!s.stopping){s.unknown=true;this.error=readableError(error.message);}throw unknown();}
+   }catch(error){if(this.session===s&&!s.stopping)this.unknown(s,'pause-unconfirmed');throw unknown();}
    finally{if(this.session===s){s.pausing=false;s.pausePromise=null;this.change();}}
   });return s.pausePromise;
  }
@@ -286,10 +312,10 @@ export class NativeRealtimeVoice extends EventEmitter {
   const s=this.session;if(!s)return Promise.resolve({stopped:true});
   if(callId!==undefined&&callId!==s.id)return Promise.reject(Error('The voice call changed'));
   if(s.stopPromise)return s.stopPromise;s.stopping=true;this.engine.credentials?.cancelOwner?.(s.id);s.contextQueue?.close();s.status='stopping';this.change();
-  if(s.submitting||[...s.turns.values()].some(turn=>turn.pendingSubmissions))s.unknown=true;
+  if(s.submitting||[...s.turns.values()].some(turn=>turn.pendingSubmissions))this.unknown(s,'pending-submission');
   s.failure.reject(Error('Voice call cancelled'));
   if(!s.startSubmitted){this.finalize(s,'cancelled');return Promise.resolve({stopped:true,callId:s.id});}
-  s.stopPromise=Promise.resolve().then(()=>this.stopSession(s)).catch(error=>{if(this.session===s){s.stopPromise=null;s.status='stop-unconfirmed';this.error=readableError(error.message);this.change();}throw error;});return s.stopPromise;
+  s.stopPromise=Promise.resolve().then(()=>this.stopSession(s)).catch(error=>{if(this.session===s){s.stopPromise=null;s.status='stop-unconfirmed';this.error=stopReasons[s.stopCause?.reason||'shutdown-unconfirmed']+' Executor shutdown has not been confirmed. Computer control remains blocked.';this.emit('diagnostic',{code:'voice_shutdown_unconfirmed',...this.lastStop});this.change();}throw error;});return s.stopPromise;
  }
  async stopSession(s){
   try{
@@ -303,16 +329,21 @@ export class NativeRealtimeVoice extends EventEmitter {
    })(),this.stopTimeoutMs,'The VM did not confirm that the voice call and its tasks stopped');
   }catch(error){
    this.engine.pauseQueue('voice-stop-uncertain');
+   if(!s.stopCause)this.unknown(s,'shutdown-unconfirmed');
+   s.stopRecord={...s.stopCause,callId:s.id,executorStopped:false,confirmed:false};this.lastStop=s.stopRecord;this.emit('diagnostic',{code:'voice_executor_stop_required',...this.lastStop});this.change();
    const result=await this.terminateExecutor();if(result?.terminated!==true)throw Error('The VM executor has not confirmed shutdown. Computer control remains blocked.');
+   s.stopRecord={...s.stopRecord,executorStopped:true,confirmed:true};this.lastStop=s.stopRecord;
+   this.error=stopReasons[s.stopCause.reason]+' Only the Codex executor was stopped; the VM was not shut down. Reconnect before starting new work. Paused tasks will not replay.';
    this.engine.loaded=false;this.emit('notice','The old VM executor was stopped because voice task shutdown was uncertain. Paused tasks will not replay.');
   }
   this.finalize(s,'stopped');return {stopped:true,callId:s.id};
  }
  finalize(s,reason){
   if(this.session!==s)return;this.engine.credentials?.cancelOwner?.(s.id);s.contextQueue?.close();this.session=null;
+  this.lastStop=s.stopRecord||{...s.stopCause,reason:s.stopCause?.reason||reason,callId:s.id,at:s.stopCause?.at||Date.now(),executorStopped:false,confirmed:true};
   for(const message of this.engine.store.state.messages)if(message.role==='user'&&message.voiceCallId===s.id&&['queued','running','waiting_user','pausing'].includes(message.status))this.engine.safeUpdate(message.id,{status:'paused',pauseReason:'voice-call-ended'});
   if(this.engine.call?.id===s.id)this.engine.closeCall(s.id);
-  this.emit('closed',{reason,callId:s.id});this.engine.emit('realtime',{method:'thread/realtime/closed',params:{threadId:s.threadId,callId:s.id}});this.change();
+  this.emit('closed',{reason,callId:s.id});this.emit('diagnostic',{code:'voice_shutdown',...this.lastStop});this.engine.emit('realtime',{method:'thread/realtime/closed',params:{threadId:s.threadId,callId:s.id}});this.change();
  }
  async close(){return this.stop();}
 }

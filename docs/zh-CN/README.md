@@ -2,6 +2,8 @@
 
 [English](../../README.md) · 简体中文
 
+在 [GitHub Releases](https://github.com/Stephen-Sim/dant/releases/latest) 下载 Windows x64 安装包或完整便携包。安装包未签名，附 SHA-256 校验和构建信息；便携版需解压整个压缩包后再打开 `dant.exe`。
+
 Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Tauri 桌面壳、Node.js 本地服务和 VM 内的 Codex App Server。
 
 按原版 UI 与架构重建，适配 Windows + Hyper-V / VMware Workstation。Windows 负责界面、VM 安装管理、本机通知和 API 代理；Ubuntu VM 持有聊天、任务、记忆、附件与 Codex 执行器。职责与 Mac / UTM 原版对应，通信改为 SSH 本地隧道。详见 [实现架构](architecture.md)。
@@ -20,6 +22,7 @@ Windows 上的数字伙伴，有自己的 Ubuntu 虚拟电脑。使用 Rust / Ta
 - SSH 转发桌面画面及输入，不在宿主机执行 Agent 的工作命令。
 - 每条消息最多 5 个附件，每个 10 MiB；成功执行后自动归档 `output/` 中新增或变化的文件。
 - 输入框麦克风直接录制语音附件，再点一次结束，草稿中可播放，点击“发送”才提交；保留音频文件和已有文字，不自动转写。附件菜单里的“语音转文字”是独立选项，顶部电话用于实时通话。助手朗读继续保留。
+- 结构化诊断日志默认最多保留 3 天，定时清理并限制磁盘占用，详见[诊断日志](diagnostics.md)。
 - VM 文件记忆、人工接管共享锁和两分钟租约、本机未读完成通知、单次定时任务，以及订阅实时通话。
 
 ## 本地启动

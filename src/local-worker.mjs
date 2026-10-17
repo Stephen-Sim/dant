@@ -41,6 +41,7 @@ export class LocalWorker extends EventEmitter {
    rpc=this.rpcFactory(command,args,{cwd:this.workspaceRoot,env:{...process.env,DANT_CREDENTIAL_BRIDGE_TOKEN:this.credentialBridgeToken||'',DISPLAY:':0',CODEX_HOME:path.join(this.home,'.dant-codex'),PATH:`${path.join(this.home,'.local/bin')}:${path.dirname(process.execPath)}:/usr/local/bin:/usr/bin:${process.env.PATH||''}`}});this.rpc=rpc;
    if(rpc.child){this.executorChild=rpc.child;this.executorClosed=false;this.executorClose=new Promise(resolve=>rpc.child.once('close',()=>{if(this.executorChild===rpc.child)this.executorClosed=true;resolve();}));}
    rpc.on('event',event=>{if(this.rpc===rpc)this.emit('event',event);});
+   rpc.on('lifecycle',event=>{if(this.rpc===rpc)this.emit('lifecycle',event);});
    rpc.on('disconnected',error=>{if(this.rpc===rpc){this.rpc=null;this.status='offline';this.account=null;this.models=null;this.error=error.message;this.emit('status');}});
    await rpc.request('initialize',{clientInfo:{name:'dant',title:'dant',version:'0.1.0'},capabilities:{experimentalApi:true}});current();rpc.send({method:'initialized'});
    const account=await rpc.request('account/read',{});current();this.account=account;const models=await rpc.request('model/list',{});current();this.models=models;this.status='online';this.error=null;this.emit('status');return this.account;
@@ -56,9 +57,12 @@ export class LocalWorker extends EventEmitter {
  }
  request(method,params){if(this.status!=='online')throw Error('The VM executor is offline');let value=injectReactionContext(method,injectMessageReferences(method,params,this.store.state.messages),this.store.state.messages);if(this.skills&&['turn/start','turn/steer','thread/realtime/start'].includes(method)){const context=this.skills.context();if(method==='thread/realtime/start')value={...value,realtimeStartInstructions:(value.realtimeStartInstructions||'')+'\n\n'+context};else if(Array.isArray(value.input))value={...value,input:[...value.input,{type:'text',text:context,text_elements:[]}]};}return this.rpc.request(method,value);}
  async guest(route,body){
-  if(this.status!=='online')throw Error('The VM executor is offline');
+  const readOnlyScreen=this.platform==='linux'&&route==='/screen'&&body===undefined;
+  if(this.status!=='online'&&!readOnlyScreen)throw Error('The VM executor is offline');
   if(!['/screen','/input','/control','/file','/read-file'].includes(route))throw Error('Unsupported desktop operation');
-  const response=await this.fetchImpl(`http://127.0.0.1:4320${route}`,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+  let response;
+  try{response=await this.fetchImpl(`http://127.0.0.1:4320${route}`,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});}
+  catch(error){if(readOnlyScreen)throw Error('The VM desktop bridge could not be reached',{cause:error});throw error;}
   if(!response.ok)throw Error(`Desktop operation failed (${response.status})`);return response;
  }
  async upload(file){return (await this.guest('/file',{name:file.originalname,data:fs.readFileSync(file.path).toString('base64')})).json();}

@@ -47,6 +47,12 @@ function replaceSpawn(t, implementation) {
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 }
 
+test('LocalWorker forwards current RPC lifecycle metadata without forwarding raw stderr or obsolete connections',async t=>{
+ const {worker,rpc}=fixture(t),lifecycle=[],raw=[];worker.on('lifecycle',event=>lifecycle.push(event));worker.on('diagnostic',value=>raw.push(value));await worker.connect();
+ rpc.emit('diagnostic','private stderr and credential');rpc.emit('lifecycle',{code:'rpc.timeout',method:'turn/start',count:1});assert.deepEqual(lifecycle,[{code:'rpc.timeout',method:'turn/start',count:1}]);assert.deepEqual(raw,[]);
+ worker.disconnect();rpc.emit('lifecycle',{code:'rpc.disconnected',reason:'process-closed',count:0});assert.equal(lifecycle.length,1);
+});
+
 test('runtime verification requires non-root Linux virtualization and a working PNG desktop', async () => {
   for (const options of [{platform:'win32', uid:1000}, {platform:'linux', uid:0}]) await assert.rejects(assertVmRuntime(options), /ordinary user inside a Linux VM/);
   for (const detect of [() => 'none', () => '', () => { throw Error('not installed'); }]) await assert.rejects(assertVmRuntime({platform:'linux', uid:1000, detect}), /No virtual machine/);
@@ -179,7 +185,7 @@ test('executor termination waits for actual child close and fails closed on time
 
 test('desktop operations are local, allowlisted, carry lease bodies and upload exact bytes', async t => {
   const requests = []; const {worker, home} = fixture(t, {fetchImpl:async (url, options) => { requests.push({url, options}); return Response.json({guestPath:'/vm/file', ok:true}); }});
-  await assert.rejects(worker.guest('/screen'), /offline/); await worker.connect();
+  await assert.rejects(worker.guest('/input',{sessionId:'owned-lease',type:'key',value:'ESC'}), /offline/); await worker.connect();
   await assert.rejects(worker.guest('/shell', {}), /Unsupported desktop/);
   await worker.guest('/screen'); await worker.guest('/input', {sessionId:'owned-lease', type:'key', value:'ESC'});
   assert.equal(requests[0].url, 'http://127.0.0.1:4320/screen'); assert.equal(requests[0].options.method, 'GET'); assert.equal(requests[0].options.body, undefined);
@@ -188,6 +194,37 @@ test('desktop operations are local, allowlisted, carry lease bodies and upload e
   assert.equal((await worker.upload({path:file, originalname:'结果.txt'})).guestPath, '/vm/file');
   assert.deepEqual(JSON.parse(requests[2].options.body), {name:'结果.txt', data:Buffer.from([0,1,255]).toString('base64')});
   worker.fetchImpl = async () => new Response('', {status:409}); await assert.rejects(worker.guest('/control', {action:'renew'}), /Desktop operation failed \(409\)/);
+});
+
+test('an offline Linux executor can fetch a live read-only desktop screenshot without reconnecting or changing status', async t => {
+  const requests = [], {worker, calls, rpc} = fixture(t, {fetchImpl:async (url, options) => { requests.push({url, options}); return new Response(png,{headers:{'Content-Type':'image/png'}}); }});
+  worker.error='Worker stopped';const generation=worker.generation,statuses=[];worker.on('status',()=>statuses.push(worker.status));
+  const response=await worker.guest('/screen');assert.deepEqual(Buffer.from(await response.arrayBuffer()),png);
+  assert.equal(requests.length,1);assert.equal(requests[0].url,'http://127.0.0.1:4320/screen');assert.equal(requests[0].options.method,'GET');assert.equal(requests[0].options.body,undefined);assert.ok(requests[0].options.signal instanceof AbortSignal);
+  assert.equal(worker.status,'offline');assert.equal(worker.error,'Worker stopped');assert.equal(worker.generation,generation);assert.equal(worker.rpc,undefined);assert.equal(calls.length,0);assert.equal(rpc.requests.length,0);assert.deepEqual(statuses,[]);
+});
+
+test('offline screenshot bridge failures report their actual failure and never retry or imply executor recovery', async t => {
+  let fetched=0;const {worker,calls}=fixture(t,{fetchImpl:async()=>{fetched++;return new Response('',{status:503});}});
+  await assert.rejects(worker.guest('/screen'),/Desktop operation failed \(503\)/);assert.equal(fetched,1);assert.equal(worker.status,'offline');
+  const unavailable=Error('TEST-ONLY-sensitive diagnostic');worker.fetchImpl=async()=>{fetched++;throw unavailable;};
+  await assert.rejects(worker.guest('/screen'),error=>error.message==='The VM desktop bridge could not be reached'&&error.cause===unavailable);assert.equal(fetched,2);
+  worker.fetchImpl=async()=>{fetched++;throw new DOMException('Timed out','TimeoutError');};await assert.rejects(worker.guest('/screen'),/desktop bridge could not be reached/);assert.equal(fetched,3);assert.equal(worker.status,'offline');assert.equal(calls.length,0);
+});
+
+test('offline desktop exemption is only an exact bodyless Linux screen GET', async t => {
+  let fetched=0;const {worker}=fixture(t,{fetchImpl:async()=>{fetched++;assert.fail('Non-read operations cannot reach the bridge while offline');}});
+  for(const [route,body] of [['/input',{sessionId:'lease',type:'key',key:'Escape'}],['/control',{action:'acquire'}],['/file',{name:'x',data:''}],['/read-file',{path:'/home/dant/work/x'}],['/screen',{}],['/screen',null],['/screen?anything',undefined],['/shell',{}]])await assert.rejects(worker.guest(route,body),/executor is offline/);
+  for(const platform of ['win32','darwin']){worker.platform=platform;await assert.rejects(worker.guest('/screen'),/executor is offline/);}
+  assert.equal(fetched,0);
+});
+
+test('read-only screenshots do not clear an unconfirmed executor termination or permit desktop control', async t => {
+  const child=new Child({autoClose:false}),rpc=new FakeRpc({child}),{worker}=fixture(t,{rpc,fetchImpl:async()=>new Response(png)});
+  await worker.connect();await assert.rejects(worker.terminateConfirmed({timeoutMs:5}),/has not confirmed.*control remains blocked/);assert.equal(worker.executorClosed,false);assert.equal(worker.status,'offline');
+  assert.deepEqual(Buffer.from(await (await worker.guest('/screen')).arrayBuffer()),png);assert.equal(worker.executorClosed,false);assert.equal(worker.status,'offline');
+  await assert.rejects(worker.guest('/control',{action:'acquire'}),/executor is offline/);await assert.rejects(worker.guest('/input',{sessionId:'lease',type:'key',key:'Escape'}),/executor is offline/);assert.throws(()=>worker.request('turn/start',{}),/executor is offline/);
+  child.emit('close',0);
 });
 
 test('only an explicit task or call request receives fresh reactions from the authoritative VM Store', async t => {
