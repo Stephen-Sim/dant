@@ -15,7 +15,7 @@ The **Windows Controller → Ubuntu authoritative Worker** boundary keeps execut
 - Serial VM tasks with pause, explicit resume, review, and acceptance; uncertain submissions are never automatically replayed.
 - VM memory, scheduled tasks, shared desktop control with an expiring lease, and unread completion notifications.
 - Up to five attachments per message, each at most 10 MiB, plus automatic delivery of eligible changed files from `output/`.
-- VM-owned encrypted credentials with secure request forms, and reusable skills with instruction and supporting-file management. See [credentials and skills](docs/credentials-and-skills.md).
+- VM-owned encrypted credentials with secure request forms, and a plugin-style **Skills** library in the left sidebar for searching, creating, editing and enabling reusable skills. See [credentials and skills](docs/credentials-and-skills.md).
 - Chat search and explicit record editing, withdrawal, deletion and clearing; the model session and context remain intact. Saving an edit does not resubmit work unless you choose **Save and send again**.
 - Online and working status, with the last actual task or call activity shown as a relative time.
 - The composer microphone records a voice attachment: click again to stop, preview it in the draft, then choose **Send**. It preserves the audio file and existing typed text. **Speech to text** is a separate attachment-menu option; the header phone starts a realtime call. Assistant read-aloud remains available. Windows text-speech helpers are local; browser support varies.

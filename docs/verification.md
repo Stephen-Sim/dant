@@ -4,6 +4,10 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-17, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately.
 
+## 0.4.3 sidebar skill library
+
+Skills now open from a dedicated puzzle icon below the sidebar logo, with searchable plugin-style cards, creation, editing and enable switches. Ten additional DOM and handler regressions cover the independent bilingual page, skill-only reads, offline cached cards, unchanged chat drafts and live calls, and late reads or writes after navigation, modal replacement or a VM change. The Windows JavaScript run executed 494 tests: 493 passed, one Windows symlink check skipped and none failed. Coverage was 97.79% lines, 87.09% branches and 89.04% functions; all seven coverage/version gate tests passed. This UI change does not alter skill execution or require a VM redeployment.
+
 ## 0.4.2 call view controls
 
 The minimize and expand controls use compact icons with transparent backgrounds and no borders. Bilingual tooltips, accessible names, keyboard focus and hover feedback remain available. Existing interaction tests verify that both controls preserve the call connection, media, identity and running timer. The Windows JavaScript run executed 484 tests: 483 passed, one Windows symlink check skipped and none failed; coverage was 97.78% lines, 86.82% branches and 89.14% functions. All seven coverage/version gate tests passed.

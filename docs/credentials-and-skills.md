@@ -2,7 +2,7 @@
 
 English · [简体中文](zh-CN/credentials-and-skills.md)
 
-Connect the work computer, then open **Settings → Credential vault** or **Skills**. Both are owned by the Ubuntu Worker, alongside its conversation. These settings do not install skills into the Windows host or the Codex desktop app.
+Connect the work computer, then open **Settings → Credential vault** or the **Skills** puzzle icon below the dant logo in the left sidebar. Both are owned by the Ubuntu Worker, alongside its conversation. They do not install skills into the Windows host or the Codex desktop app.
 
 ## Credential workflow
 
@@ -15,6 +15,8 @@ The VM vault uses AES-256-GCM encryption. Its master key is a separate file rest
 `credential_get` intentionally supplies the secret to the model's scoped tool context when needed for login. It is not an ordinary chat response. Secrets must not be echoed into chat, command output, repositories or skill files. The optional paid voice API key remains a separate configuration described in [voice configuration](VOICE-KEY.md).
 
 ## Skill workflow
+
+Skills have their own plugin-style library page. Search the name or description, create a skill, or use a card's controls to edit, enable, disable or remove it. The page retains cached cards while offline and disables changes until the work computer reconnects. Opening this page does not start a task or run a skill.
 
 Create or edit a lowercase skill name, description and instructions. Expand **Supporting text files (JSON)** for a mapping such as `{"scripts/check.py":"print('check')"}`. Only relative `scripts/`, `references/` and `assets/` paths are accepted. Instructions are limited to 48 KiB, the description to 1,000 UTF-8 bytes, and supporting files to 20 text files of 64 KiB each, with a combined 256 KiB limit.
 
