@@ -4,6 +4,12 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.5 consolidated local installer, installation deferred
+
+A fresh Windows installer was built from clean source commit `5ca9c65`, including the recent task-priority, timestamp, skill-edit, header/close-icon, task-continuation and log-audit fixes. Native release compilation and NSIS packaging succeeded. All **5,407 runtime files** matched the current source, prepared resources and staged backend by exact inventory and SHA-256; the installer was copied to the separate local `rounds-5ca9c65` artifact directory with a recorded native executable hash. Installer SHA-256: `28b444b22ebca06d84f259b99b104d28ee1a0f1fc62813db50ae154632d10e3f`.
+
+The pre-install check found the current call and local application still running. The user then explicitly chose **package first, do not install yet**. Packaging and file verification were completed without installing, launching another Controller, deploying VM services or changing the active call. The existing installed application remains at its previous build; this package is a local 0.4.5 build identified by the source commit and installer hash, with no new release published.
+
 ## 0.4.5 recent error log audit follow-up
 
 The read-only audit covered the preceding 24 hours around **2026-10-18 11:38 Asia/Kuala_Lumpur**, using Windows Controller diagnostics, VM service diagnostics/journal and the current conversation's streamed tool events. All 42 Windows file HTTP 503 responses occurred before bridge readiness. The 309 observed MCP calls contained nine `open_url` timeouts, six task-plan HTTP 400s and one skill-read HTTP 400. The latter two groups match the pending continuation/file-count fixes below; the nine browser calls waited approximately 15 seconds each. Client-aborted screen HTTP 499s were classified separately. The current VM services were online, with zero automatic restarts since their latest start at approximately 01:34 local time; earlier service exits and known guarded executor stops remain historical evidence, not proof that every recorded failure has the same cause.
