@@ -1,6 +1,7 @@
 export function formatCallDuration(value){
  const seconds=Number.isFinite(Number(value))?Math.max(0,Math.floor(Number(value))):0;
- return Math.floor(seconds/60)+':'+String(seconds%60).padStart(2,'0');
+ const minutes=Math.floor(seconds/60),remainder=String(seconds%60).padStart(2,'0');
+ return seconds<3600?minutes+':'+remainder:Math.floor(seconds/3600)+':'+String(minutes%60).padStart(2,'0')+':'+remainder;
 }
 
 // The server's connectedAt and final history seconds are authoritative. A local

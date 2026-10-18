@@ -26,7 +26,7 @@ test('new calls reset elapsed time; old records and late hangups cannot affect t
 });
 
 test('duration formatting matches chat history for zero, long calls and invalid values',()=>{
- assert.equal(formatCallDuration(0),'0:00');assert.equal(formatCallDuration(61),'1:01');assert.equal(formatCallDuration(3903),'65:03');assert.equal(formatCallDuration(-1),'0:00');assert.equal(formatCallDuration(NaN),'0:00');assert.equal(formatCallDuration(9.9),'0:09');
+ assert.equal(formatCallDuration(0),'0:00');assert.equal(formatCallDuration(61),'1:01');assert.equal(formatCallDuration(3599),'59:59');assert.equal(formatCallDuration(3600),'1:00:00');assert.equal(formatCallDuration(3601),'1:00:01');assert.equal(formatCallDuration(3903),'1:05:03');assert.equal(formatCallDuration(4666),'1:17:46');assert.equal(formatCallDuration(36000),'10:00:00');assert.equal(formatCallDuration(86461),'24:01:01');assert.equal(formatCallDuration(-1),'0:00');assert.equal(formatCallDuration(NaN),'0:00');assert.equal(formatCallDuration(9.9),'0:09');
 });
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start))),settle=()=>new Promise(resolve=>setImmediate(resolve));
