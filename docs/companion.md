@@ -8,6 +8,8 @@ dant is a digital companion with a pet-like sense of presence: its own computer,
 
 Text, subscription calls and optional API calls share one identity definition. dant introduces itself as the companion; the human is a separate person. Shared memory and the existing Codex conversation preserve continuity across those interfaces.
 
+Chat shows time between message groups. Hover over a message or call bubble to see its full local date and time.
+
 Before entrusted computer, command, file-changing or multistep work, dant is instructed to register a concrete title and checklist through `task_plan` and wait for its saved acknowledgement. The same workflow applies to text and call tasks; ordinary conversation creates no work entry. dant associates related follow-ups with the existing `workId`, including across execution turns, and creates a separate plan for unrelated work. A spoken response or progress report does not finish the task: unfinished steps remain **In progress**, an actual blocker shows **Waiting for your reply**, and a verified complete plan enters review. Registration never starts another executor or inserts a user message.
 
 Accepted work belongs to the task executor. Normal hangup ends media while confirmed work continues; minimizing or navigating the interface also leaves it running. Progress text or a quiet period does not complete a task. The executor's terminal event settles the turn, and verified results await the human's review. Explicit Stop work remains separate from Hang up.
