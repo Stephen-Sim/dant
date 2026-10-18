@@ -74,7 +74,7 @@ export class Engine extends EventEmitter {
  }
  get progress(){
   const active=this.active;if(!active)return null;
-  const task=this.task(active.messageId),status=active.cancelUnconfirmed?'unknown':active.stopRequested?'pausing':task?.submission==='unknown'||active.steerUnconfirmed?'unknown':active.credentialWaits||this.pendingUserRequests.size||active.awaitingChatInput?'waiting_user':'running';
+  const task=this.task(active.messageId),status=active.cancelUnconfirmed?'unknown':active.stopRequested?'pausing':task?.submission==='unknown'||active.steerUnconfirmed?'unknown':active.credentialWaits||this.pendingUserRequests.size||active.awaitingChatInput||active.planWaitingForUser?'waiting_user':'running';
   return {...taskProgressSnapshot(active,{source:active.voiceOutput?'voice':'chat',background:active.backgroundVoice===true,status,startedAt:task?.time,redact:text=>this.redact(text),saving:Boolean(active.finishing)}),callId:active.callId||null,...(status==='running'&&active.conversationalInput&&!active.workRecord&&!active.workObserved?{visible:false}:{}),canSteer:Boolean(active.startAcknowledged&&active.turnId&&!active.stopRequested&&!active.finishing&&!active.steerUnconfirmed&&!this.takeover&&!this.acquiring&&(!active.voiceOutput||active.backgroundVoice))};
  }
  get presence(){const at=this.store.state.presence?.lastActiveAt;return {lastActiveAt:typeof at==='number'&&Number.isFinite(at)&&at>0&&at<=8640000000000000?at:null};}
@@ -408,7 +408,7 @@ export class Engine extends EventEmitter {
  }
  listWorkTasks(context){
   this.workManagementScope(context);
-  return {items:this.store.state.workTasks.slice(-300).map(record=>({workId:record.id,title:this.redact(record.title).slice(0,240),status:record.status,steps:{completed:record.plan.steps.filter(step=>step.status==='completed').length,total:record.plan.steps.length}}))};
+  return {items:this.store.state.workTasks.slice(-300).map(record=>({workId:record.id,title:this.redact(record.title).slice(0,240),status:record.status,steps:record.plan?{completed:record.plan.steps.filter(step=>step.status==='completed').length,total:record.plan.steps.length}:null}))};
  }
  requestWorkCancellation(workId,context){
   if(typeof workId!=='string'||!workId||workId.length>128||/[\x00-\x20\x7f]/.test(workId))throw Error('A real work ID is required to cancel a task.');
@@ -541,8 +541,8 @@ export class Engine extends EventEmitter {
     const input=await this.prepareInput(message,{signal:active.preparation?.signal});
     assertCurrent();
     this.updateWork(message.id,{submission:'submitting'});submitted=true;
-    await this.worker.request('turn/steer',{threadId:active.threadId,expectedTurnId,input});
-    this.safeUpdate(message.id,{submission:'confirmed',turnId:expectedTurnId,executorConfirmedAt:Date.now(),...(active.finalStatus?{status:active.finalStatus}:{})});active.messageIds.push(message.id);active.awaitingChatInput=false;if(active.workRecord||active.workObserved)this.markWorkMessages(active);this.change();return {queued:false,turnId:expectedTurnId};
+    const waitRevision=active.planWaitRevision;await this.worker.request('turn/steer',{threadId:active.threadId,expectedTurnId,input});
+    this.safeUpdate(message.id,{submission:'confirmed',turnId:expectedTurnId,executorConfirmedAt:Date.now(),...(active.finalStatus?{status:active.finalStatus}:{})});active.messageIds.push(message.id);active.awaitingChatInput=false;if(active.planWaitRevision===waitRevision)active.planWaitingForUser=false;if(active.workRecord||active.workObserved)this.markWorkMessages(active);this.change();return {queued:false,turnId:expectedTurnId};
    }catch(error){
     const unknown=submitted&&error.code==null;
     if(unknown)active.steerUnconfirmed=true;
@@ -563,7 +563,7 @@ export class Engine extends EventEmitter {
   if(isTurn&&active?.startSubmitted&&!active.startAcknowledged){this.bufferEvent(active,event);return;}
   if(isTurn&&(!active||!active.startAcknowledged)){this.rejectEvent(event,'No accepted active turn');return;}
   if(id&&active?.turnId&&id!==active.turnId){this.rejectEvent(event,'Inactive turn');return;}
-  if(active?.startAcknowledged&&parameters.threadId===active.threadId&&id===active.turnId&&observeTaskProgress(active,event,{redact:text=>this.redact(text)})){if(isTaskExecutionEvent(event)){active.workObserved=true;this.markWorkMessages(active);}if(event.method==='turn/plan/updated')this.observeRegisteredPlan(active,parameters.plan);this.change();}
+  if(active?.startAcknowledged&&parameters.threadId===active.threadId&&id===active.turnId&&observeTaskProgress(active,event,{redact:text=>this.redact(text)})){if(isTaskExecutionEvent(event))this.observeRegisteredExecution(active);if(event.method==='turn/plan/updated')this.observeRegisteredPlan(active,parameters.plan);this.change();}
   if(event.id!==undefined){
    if(event.method==='item/tool/call'){
     try{const args=typeof parameters.arguments==='string'?JSON.parse(parameters.arguments):parameters.arguments;const result=await this.tool(parameters.tool,args||{},parameters.tool==='end_call'?{mediaCallId:this.eventMedia.get(event)}:undefined);this.worker.rpc.reply(event.id,{success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]});}
@@ -571,7 +571,7 @@ export class Engine extends EventEmitter {
    }
    if(event.method==='item/tool/requestUserInput'){
     if(active.backgroundVoice){this.requestChatInput(event,active);return;}
-    this.pendingUserRequests.set(event.id,event);for(const messageId of active.messageIds)this.safeUpdate(messageId,{status:'waiting_user'});this.emit('user-input',event);this.change();return;
+    active.awaitingChatInput=true;this.pendingUserRequests.set(event.id,event);for(const messageId of active.messageIds)this.safeUpdate(messageId,{status:'waiting_user'});this.emit('user-input',event);this.change();return;
    }
    this.worker.rpc?.send({id:event.id,error:{code:-32601,message:'Unsupported request: '+event.method}});return;
   }
@@ -601,7 +601,7 @@ export class Engine extends EventEmitter {
  }
  respondToUser(id,result){
   if(!this.pendingUserRequests.has(id)||!this.active)throw Error('User request is no longer active');
-  this.worker.rpc.reply(id,result);this.pendingUserRequests.delete(id);for(const messageId of this.active.messageIds)this.safeUpdate(messageId,{status:'running'});this.change();
+  this.worker.rpc.reply(id,result);this.pendingUserRequests.delete(id);this.active.awaitingChatInput=this.pendingUserRequests.size>0;this.active.planWaitingForUser=false;for(const messageId of this.active.messageIds)this.safeUpdate(messageId,{status:'running'});this.change();
  }
  async tool(name,args,context){
   switch(name){
@@ -643,22 +643,37 @@ export class Engine extends EventEmitter {
  }
  registerTaskPlan(args,context){
   const {task,isCurrent}=this.taskPlanScope(context),safe=taskPlanInput(args,{redact:text=>this.redact(text)});if(!isCurrent())throw Error('The task plan no longer belongs to active work.');
-  const record=this.store.registerWork({turnId:task.turnId,messageId:this.task(task.messageId)?.role==='user'?task.messageId:null,source:this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice',...safe,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput?'waiting_user':'running'});
-  task.workRecord=record;this.markWorkMessages(task);this.change();return {saved:true,workId:record.id,turnId:record.turnId,title:record.title,plan:record.plan};
+  const waiting=safe.status===undefined?task.planWaitingForUser===true:safe.status==='waiting_user';
+  if(waiting&&safe.status===undefined)taskPlanInput({...args,status:'waiting_user'},{redact:text=>this.redact(text)});
+  const record=this.store.registerWork({turnId:task.turnId,messageId:this.task(task.messageId)?.role==='user'?task.messageId:null,source:this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice',...safe,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput||waiting?'waiting_user':'running'});
+  task.planWaitingForUser=waiting;task.planWaitRevision=(task.planWaitRevision||0)+1;task.workRecord=record;this.markWorkMessages(task);this.change();return {saved:true,workId:record.id,turnId:record.turnId,title:record.title,plan:record.plan,status:record.status};
  }
  markWorkMessages(task){for(const id of new Set([task.messageId,...(task.messageIds||[]),...(task.explicitMessageIds||[])].filter(Boolean))){const message=this.task(id);if(message?.role==='user'&&message.workKind)this.safeUpdate(id,{workKind:'task',...(task.workRecord?{workId:task.workRecord.id}:{})});}}
+ observeRegisteredExecution(task){
+  task.workObserved=true;
+  if(!task.workRecord){
+   try{const message=this.task(task.messageId),source=this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice';
+    const fallback=this.store.state.settings.language==='en'?(source==='voice'?'Task from a call':'Chat task'):(source==='voice'?'通话中交办的任务':'聊天任务');
+    const title=String(this.redact(message?.role==='user'?message.text||fallback:fallback)).replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,240)||fallback;
+    task.workRecord=this.store.registerWork({turnId:task.turnId,messageId:message?.role==='user'?message.id:null,source,title,plan:null,observed:true,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput?'waiting_user':'running'});
+   }catch(error){this.emit('notice','Could not save observed task progress: '+error.message);}
+  }
+  this.markWorkMessages(task);
+ }
  observeRegisteredPlan(task,steps){
   // Public Codex plans are already task-facing data. Never derive records from
   // speech, reasoning, command arguments, or assistant narration.
   if(!Array.isArray(steps)||!steps.length)return;
   try{const plan=publicTaskPlan(steps,{redact:text=>this.redact(text)}),previous=task.workRecord;
-   const title=previous?.title||plan.steps[0].step;
-   task.workRecord=this.store.registerWork({workId:previous?.id,turnId:task.turnId,messageId:this.task(task.messageId)?.role==='user'?task.messageId:null,source:this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice',title,plan,observed:true,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput?'waiting_user':'running'});this.markWorkMessages(task);
+   if(task.planWaitingForUser)taskPlanInput({title:previous.title,steps:plan.steps,status:'waiting_user'});
+   const title=previous?.plan?previous.title:plan.steps[0].step;
+   task.workRecord=this.store.registerWork({workId:previous?.id,turnId:task.turnId,messageId:this.task(task.messageId)?.role==='user'?task.messageId:null,source:this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice',title,plan,observed:true,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput||task.planWaitingForUser?'waiting_user':'running'});this.markWorkMessages(task);
   }catch(error){this.emit('notice','Could not save the public task plan: '+error.message);}
  }
  finalizeRegisteredWork(task,status){
   // The executor has ended even when a separate chat/result save fails. Keep
   // its durable task status independent of those optional delivery writes.
+  if(task.workObserved&&!task.workRecord)this.observeRegisteredExecution(task);
   try{return this.store.updateRegisteredWork(task.turnId,{status:registeredWorkFinalStatus(task,status),executionEnded:true});}catch(error){this.emit('notice','Could not save final task progress: '+error.message);return null;}
  }
  scheduleTool(name,args,context){
@@ -774,7 +789,7 @@ export class Engine extends EventEmitter {
    if(active.backgroundVoice){
     const result=this.redact([...(active.voiceOutputs?.values()||[])].map(output=>output.text).join('\n\n'));
     if(status==='completed'){this.deliverBackgroundText(result,active);if(!active.assistantIds.length)this.deliverText(this.store.state.settings.language==='en'?'The background task has finished.':'后台任务已结束。',active);}
-    if(status!=='completed'){const detail=this.redact(error||'');this.deliverText((this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),active);}
+    if(status!=='completed'&&!cancelled){const detail=this.redact(error||'');this.deliverText((this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),active);}
    }
    for(const id of active.messageIds)this.updateWork(id,{status:taskStatus,error,pauseReason:taskStatus==='paused'?'executor-stopped':null});
    for(const [itemId,message] of this.items){if(message.status==='streaming')message.status=status==='completed'?'completed':'paused';bounded(this.completedItems,itemId);}

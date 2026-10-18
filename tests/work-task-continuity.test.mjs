@@ -23,7 +23,7 @@ test('task plan continuations use an explicit work ID rather than interpreting a
 
 test('unfinished registered work remains continuing after a successful executor turn without claiming an executor is active',()=>{
  const task={workRecord:{plan:{steps:steps()}}};assert.equal(registeredWorkFinalStatus(task,'review'),'continuing');task.awaitingChatInput=true;assert.equal(registeredWorkFinalStatus(task,'review'),'waiting_user');task.awaitingChatInput=false;task.credentialWaits=1;assert.equal(registeredWorkFinalStatus(task,'review'),'waiting_user');for(const status of ['paused','failed','completed'])assert.equal(registeredWorkFinalStatus(task,status),status);
- task.workRecord.plan.steps=steps().map(step=>({...step,status:'completed'}));assert.equal(registeredWorkFinalStatus(task,'review'),'review');assert.equal(registeredWorkFinalStatus({},'review'),'review');
+ task.workRecord.plan.steps=steps().map(step=>({...step,status:'completed'}));assert.equal(registeredWorkFinalStatus(task,'review'),'waiting_user');task.credentialWaits=0;assert.equal(registeredWorkFinalStatus(task,'review'),'review');assert.equal(registeredWorkFinalStatus({},'review'),'review');
 });
 
 test('a task explicitly continues across owned turns with one stable ID, original start and accumulated turn history',t=>{
@@ -169,6 +169,6 @@ test('native finalization persists the execution boundary for unfinished work aw
  assert.equal(f.store.state.workTasks[0].status,'waiting_user');assert.ok(f.store.state.workTasks[0].executionEndedAt);assert.equal(f.voice.active,null);assert.equal(new Store(f.store.dir).state.workTasks[0].status,'waiting_user');assert.equal(f.worker.calls.some(call=>call.method==='turn/start'),false);await f.engine.stopCall(f.call.callId);
 });
 
-test('actual native execution is visible even before its public plan arrives without creating speculative task records',async t=>{
- const f=await nativeFixture(t);await f.begin('actual-work');assert.equal(f.voice.progress.visible,false);await f.event('item/started',{turnId:'actual-work',item:{id:'command',type:'commandExecution',command:'private-command'}});assert.equal(f.voice.progress.visible,true);assert.equal(f.voice.progress.step,'command');assert.equal(f.store.state.workTasks.length,0);assert.equal(JSON.stringify(f.voice.progress).includes('private-command'),false);await f.finish('actual-work');await f.engine.stopCall(f.call.callId);
+test('actual native execution persists before its public plan without inventing task steps',async t=>{
+ const f=await nativeFixture(t);await f.begin('actual-work');assert.equal(f.voice.progress.visible,false);await f.event('item/started',{turnId:'actual-work',item:{id:'command',type:'commandExecution',command:'private-command'}});assert.equal(f.voice.progress.visible,true);assert.equal(f.voice.progress.step,'command');assert.equal(f.store.state.workTasks.length,1);assert.equal(f.store.state.workTasks[0].plan,null);assert.equal(JSON.stringify(f.voice.progress).includes('private-command'),false);await f.finish('actual-work');assert.equal(f.store.state.workTasks[0].status,'continuing');await f.engine.stopCall(f.call.callId);
 });

@@ -35,6 +35,13 @@ test('direct resume handlers cannot submit while a subscription call is active',
  state.call=null;await context.resumeTask('paused',false);assert.equal(requests.length,1);assert.equal(requests[0].route,'/tasks/resume');assert.equal(requests[0].body.ids[0],'paused');
 });
 
+test('stale resume actions cannot replay cancelled or removed messages',async()=>{
+ const {context,state,requests,toasts}=fixture();state.call=null;const message=state.messages.find(item=>item.id==='paused');message.status='cancelled';
+ await context.resumeTask('paused',false);await context.resumeTask('paused',true);await context.resumeTask('removed',false);assert.equal(requests.length,0);assert.deepEqual(toasts,[]);
+ state.call={id:'call',provider:'subscription'};await context.resumeTask('paused',false);assert.equal(requests.length,0);assert.deepEqual(toasts,[],'a terminal stale action needs neither a replay nor a misleading call warning');
+ message.status='paused';await context.resumeTask('paused',false);assert.deepEqual(toasts,['resumeAfterCall'],'valid replay still respects the call guard');
+});
+
 test('submitting and unknown-outcome work use explicit retry controls instead of ordinary resume',async()=>{
  const {context,state,requests}=fixture();state.call=null;state.active=null;state.messages.push({id:'submitting',role:'user',text:'Submission reply not recorded',status:'paused',submission:'submitting'},{id:'flagged',role:'user',text:'Uncertain outcome',status:'failed',unknownOutcome:true},{id:'preparing',role:'user',text:'Not submitted yet',status:'paused',submission:'preparing'});
  const {document}=parseHTML(context.renderProgress());for(const id of ['submitting','flagged']){assert.ok(document.querySelector('[data-task-unknown="'+id+'"]'));assert.equal(document.querySelector('[data-task-resume="'+id+'"]'),null);await context.resumeTask(id,false);}assert.equal(requests.length,0);

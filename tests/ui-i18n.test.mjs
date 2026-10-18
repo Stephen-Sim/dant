@@ -120,6 +120,33 @@ test('message actions sit beside each bubble while reactions, receipts and attac
  const actionRules=[...css.matchAll(/([^{}]*\.message-actions[^{}]*)\{([^{}]*)\}/g)].map(match=>match[2]).join(';');assert.doesNotMatch(actionRules,/position\s*:\s*(?:absolute|fixed)/);
 });
 
+test('cancelled chat messages retain their content and receipts without retry or task-error furniture in either language',()=>{
+ for(const language of ['zh','en']){
+  const {context:c}=fixture(language);c.state.messages=[
+   {id:'cancelled',role:'user',status:'cancelled',text:'Please find my profile',time:1,executorConfirmedAt:2,error:'The task stopped before completion.',attachments:[{id:'note',name:'note.txt',type:'text/plain',size:12}]},
+   {id:'reply',role:'assistant',status:'completed',text:'Do you mean the page link or the configuration file?',replyTo:'cancelled',time:2,attachments:[]},
+   {id:'failed',role:'user',status:'failed',text:'A separate failed request',time:3,error:'A real failure'},
+   {id:'interrupted',role:'user',status:'interrupted',text:'An interrupted request',time:4},
+   {id:'unknown',role:'user',status:'failed',submission:'unknown',text:'An uncertain request',time:5}
+  ];
+  const {document}=parseHTML('<main>'+c.renderMessages()+'</main>'),cancelled=document.querySelector('[data-id="cancelled"]');
+  assert.match(cancelled.querySelector('.markdown').textContent,/Please find my profile/);assert.ok(cancelled.querySelector('[data-file-preview="note"]'));assert.ok(cancelled.querySelector('[data-reply]'));assert.ok(cancelled.querySelector('.delivery-state'));assert.equal(cancelled.querySelector('.delivery-state').title,language==='zh'?'执行器已读':'Read by executor');
+  assert.equal(cancelled.querySelector('[data-retry],.retry-message,.task-status,.error'),null);assert.doesNotMatch(cancelled.textContent,/Cancelled|已取消|Retry|重试|The task stopped before completion/);
+  const reply=document.querySelector('[data-id="reply"]');assert.match(reply.querySelector('.markdown').textContent,/page link or the configuration file/);assert.match(reply.querySelector('blockquote').textContent,/Please find my profile/);
+  assert.match(document.querySelector('[data-retry="failed"]').textContent,language==='zh'?/失败 · 重试/:/Failed · Retry/);assert.ok(document.querySelector('[data-id="failed"] .error'));assert.ok(document.querySelector('[data-retry="interrupted"]'));assert.equal(document.querySelector('[data-retry="unknown"]').textContent,language==='zh'?'查看未确认的任务':'Review unconfirmed task');
+ }
+});
+
+test('an already-bound chat retry cannot replay a message cancelled or removed before the click',async()=>{
+ const {context:c}=fixture('en'),attempts=[],toasts=[];c.state.messages=[{id:'was-failed',role:'user',status:'failed',text:'A request',time:1}];
+ const {document}=parseHTML('<main>'+c.renderMessages()+'</main><input id="file-input" type="file" hidden>');c.document=document;
+ for(const method of ['bindSteer','bindProvision','bindVoiceKey','bindTelegram','bindAppearance','bindVMSettings','bindComputerInput'])c[method]=()=>{};
+ c.resumeTask=async id=>attempts.push(id);c.toast=text=>toasts.push(text);c.openModal=()=>attempts.push('review');vm.runInContext(section('function bind(){','async function taskRequest('),c);c.bind();
+ const button=document.querySelector('[data-retry]');assert.ok(button);c.state.messages[0].status='cancelled';c.state.messages[0].submission='unknown';await button.onclick();assert.deepEqual(attempts,[],'a stale cancelled button cannot resume or open an unrelated recovery flow');
+ c.state.messages=[];await button.onclick();assert.deepEqual(attempts,[]);assert.deepEqual(toasts,[]);
+ c.state.messages=[{id:'was-failed',role:'user',status:'failed'}];await button.onclick();assert.deepEqual(attempts,['was-failed'],'a still-valid failure retains its existing retry action');
+});
+
 test('dant-owned reactions on user messages stay distinct, localized and non-editable beside matching human feedback',async()=>{
  for(const [language,label]of [['zh','dant 的回应：赞'],['en','dant reacted: Like']]){
   const {context:c}=fixture(language),requests=[];c.state.messages=[{id:'reacted-user',role:'user',status:'review',text:'Thank you',time:1,reactions:['👍'],assistantReaction:'👍',assistantReactionUpdatedAt:2,attachments:[]}];

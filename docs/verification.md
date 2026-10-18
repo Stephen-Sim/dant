@@ -4,6 +4,12 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## Unreleased task-intake and cancelled-chat fixes
+
+A read-only audit found the reported UI-profile request still marked as conversation, with no registered work identity. The model instructions now require accepted tasks, including single link/file delivery and clarification-needed work, to register before action or clarification. An explicit `waiting_user` plan persists across executor completion and restart; related answers reuse the matching identity. Owned execution without a public plan persists a provisional record with no invented checklist or percentage, including oversized native observer events. Delayed operation completion, handoff receipts and earlier input acknowledgements cannot erase a newer saved question. Speech-only clarification still depends on the model delegating and registering as instructed; no utterance classifier or additional execution channel was introduced.
+
+Cancelled chat messages keep ordinary content and real receipts without Retry or task-error annotations, and confirmed cancellation no longer inserts a canned stopped message. Real partial results and Work progress history remain. All **1,421 JavaScript tests** passed with zero failures or skips; coverage was **98.96% lines, 91.54% branches and 91.90% functions**, with all gates passing. The Python MCP schema parity check and frontend production build passed. These are source changes only; no installer, VM deployment, new release or live-model/audio acceptance was performed for this follow-up.
+
 ## 0.4.7-beta.1 local candidate
 
 Read-only diagnostics showed two VM `/api/call` HTTP 400 responses at **13:16:15** and **13:16:28 Asia/Kuala_Lumpur**, following a confirmed media-only hangup at **13:12:42**. A later call connected at **13:18:19**. Both installed services reported 0.4.5. The reported error came from dant's background-work admission guard, rather than a crashed or stalled connection. No live work, call or stored conversation was changed during the audit.

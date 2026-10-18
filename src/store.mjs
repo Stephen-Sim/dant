@@ -11,6 +11,8 @@ const workError=(code,message)=>Object.assign(Error(message),{code});
 const dismissibleStates=new Set(['continuing','paused','failed','review','completed','cancelled']);
 const progressPriorities=new Set(['high','normal','low']);
 const unconfirmedProgress=entry=>entry?.unknownOutcome===true||['unknown','submitting'].includes(entry?.submission);
+// Reuse the public title rules without persisting an invented task checklist.
+const observedWithoutPlan=title=>({title:taskPlanInput({title,steps:[{step:'Title validation only',status:'pending'}]}).title,plan:null});
 export class Store {
   constructor(dir,{renameSync=fs.renameSync,platform=process.platform,pause=ms=>Atomics.wait(pauseBuffer,0,0,ms)}={}) {
     this.renameSync=renameSync;this.platform=platform;this.pause=pause;
@@ -20,9 +22,9 @@ export class Store {
     if(!uuidPattern.test(this.state.conversationId||''))this.state.conversationId=randomUUID();
     this.state.version=2;this.state.schedules ||= [];this.state.completions ||= [];
     this.state.workTasks=(Array.isArray(this.state.workTasks)?this.state.workTasks:[]).flatMap(entry=>{
-      try{const {title,plan}=taskPlanInput({title:entry.title,steps:entry.plan?.steps});if(!uuidPattern.test(entry.id)||typeof entry.turnId!=='string'||!entry.turnId||entry.turnId.length>256||!['chat','voice'].includes(entry.source)||!['running','waiting_user','pausing','unknown','continuing','paused','failed','review','completed','cancelled'].includes(entry.status))return [];
+      try{const {title,plan}=entry.provisional===true&&entry.plan===null?observedWithoutPlan(entry.title):taskPlanInput({title:entry.title,steps:entry.plan?.steps});if(!uuidPattern.test(entry.id)||typeof entry.turnId!=='string'||!entry.turnId||entry.turnId.length>256||!['chat','voice'].includes(entry.source)||!['running','waiting_user','pausing','unknown','continuing','paused','failed','review','completed','cancelled'].includes(entry.status))return [];
       const turnIds=[...new Set([...(Array.isArray(entry.turnIds)?entry.turnIds:[]).filter(id=>typeof id==='string'&&id&&id.length<=256),entry.turnId])];
-      const status=entry.status==='review'&&plan.steps.some(step=>step.status!=='completed')?'continuing':entry.status;
+      const status=entry.status==='review'&&(!plan||plan.steps.some(step=>step.status!=='completed'))?'continuing':entry.status;
       const restored={id:entry.id,turnId:entry.turnId,turnIds,messageId:typeof entry.messageId==='string'?entry.messageId:null,source:entry.source,title,plan,status,startedAt:entry.startedAt,updatedAt:entry.updatedAt};
       if(typeof entry.progressDismissedAt==='number'&&entry.progressDismissedAt>0)restored.progressDismissedAt=entry.progressDismissedAt;
       if(Object.hasOwn(entry,'progressPriority'))restored.progressPriority=progressPriorities.has(entry.progressPriority)?entry.progressPriority:'normal';
@@ -73,17 +75,18 @@ export class Store {
   }
   registerWork({workId,turnId,messageId=null,source='chat',title,plan,startedAt,status='running',observed=false}){
     if(typeof turnId!=='string'||!turnId||turnId.length>256||!['chat','voice'].includes(source))throw workError('work_stale_turn','Registered work requires a real owned turn.');
-    const safe=taskPlanInput({title,steps:plan?.steps}),before=this.state.workTasks,current=before.findIndex(entry=>entry.turnId===turnId),index=workId===undefined?current:before.findIndex(entry=>entry.id===workId),previous=before[index],automatic=before[current],observing=observed===true,now=Date.now();
+    const observing=observed===true,withoutPlan=observing&&plan===null,safe=withoutPlan?observedWithoutPlan(title):taskPlanInput({title,steps:plan?.steps}),before=this.state.workTasks,current=before.findIndex(entry=>entry.turnId===turnId),index=workId===undefined?current:before.findIndex(entry=>entry.id===workId),previous=before[index],automatic=before[current],now=Date.now();
     if(workId!==undefined&&(!previous||typeof workId!=='string'))throw workError('work_not_found','The task to continue was not found.');
     if(previous?.status==='cancelled')throw workError('work_not_continuable','Cancelled work cannot be continued. Create a new task if needed.');
     const supersede=current>=0&&index!==current&&!observing&&automatic.provisional===true&&['running','waiting_user'].includes(automatic.status)&&Array.isArray(automatic.turnIds)&&automatic.turnIds.length===1&&automatic.turnIds[0]===turnId;
     if(current>=0&&index!==current&&!supersede)throw workError('work_conflict','This turn already belongs to a different task.');
     if(previous&&previous.turnId!==turnId){if(!['continuing','waiting_user','paused','review'].includes(previous.status))throw workError('work_not_continuable','Only inactive unfinished work can continue in a different turn.');if(previous.turnIds?.includes(turnId))throw workError('work_stale_turn','A previous task turn cannot replace its current turn.');}
     if(!previous&&before.some(entry=>entry.turnIds?.includes(turnId)))throw workError('work_stale_turn','This turn already belongs to a different task.');
+    if(withoutPlan&&previous?.plan){safe.title=previous.title;safe.plan=previous.plan;}
     const turnIds=[...new Set([...(previous?.turnIds||[]),...(previous?[previous.turnId]:[]),turnId])];
     const priority=this.state.messages.find(message=>message.id===messageId&&message.role==='user')?.progressPriority;
     const record={...(previous||{id:randomUUID(),source,startedAt:typeof startedAt==='number'&&Number.isFinite(startedAt)&&startedAt>0?startedAt:now,...(progressPriorities.has(priority)?{progressPriority:priority}:{}),...(observing?{provisional:true}:{})}),turnId,turnIds,messageId:previous?.messageId||messageId||null,...safe,status:['running','waiting_user','pausing','unknown'].includes(status)?status:'running',updatedAt:now};
-    if(!observing||record.provisional!==true)delete record.provisional;
+    if(withoutPlan&&record.plan===null)record.provisional=true;else if(!observing||record.provisional!==true)delete record.provisional;
     delete record.progressDismissedAt;delete record.pauseReason;delete record.executionEndedAt;let next=[...before];if(index<0)next.push(record);else next[index]=record;if(supersede)next=next.filter((entry,position)=>position!==current);this.state.workTasks=next.slice(-300);
     try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;
   }
