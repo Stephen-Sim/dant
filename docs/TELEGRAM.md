@@ -15,6 +15,8 @@ Only one private account is paired. Both its Telegram user ID and chat ID must m
 
 ## Commands and delivery
 
+Telegram system messages follow the language selected in dant Settings. Welcome and help text, progress labels, command responses and delivery notices appear in one language at a time. Changing the language applies to new messages without pairing again; offline changes sync after reconnection. User messages and dant's replies retain their original text.
+
 - `/help`: show available commands.
 - `/status`: report the shared executor, call, current work and queue state.
 - `/progress` (also `/porgress`): show the same current and recent work as desktop Work progress, including registered titles, step states and task IDs.
@@ -32,11 +34,13 @@ Attachments use the app's content inspection and 10 MiB per-file limit. Unsuppor
 
 ## One conversation on both devices
 
-The desktop app and paired Telegram chat use one VM conversation, context, attachments, and serial task queue. A Telegram instruction creates one task and appears on the desktop. It is not echoed back to Telegram as a second user message. Desktop user messages are mirrored by the bot with a **You · desktop** prefix; Telegram bots send these copies under the bot's identity.
+The desktop app and paired Telegram chat use one VM conversation, context, attachments, and serial task queue. A Telegram instruction creates one task and appears on the desktop. It is not echoed back to Telegram as a second user message. Desktop user messages are mirrored by the bot with a localized prefix, **You · desktop** in English; Telegram bots send these copies under the bot's identity.
 
 New completed dant messages and their attachments are mirrored regardless of whether the request started on the desktop, in Telegram, or was explicitly delivered during a call. Streaming fragments and the live call audio are not mirrored. Long text is split into Telegram-sized plain-text messages.
 
 Sync starts from pairing, or from the first upgrade that enables conversation mirroring for an existing pairing. Existing history is not bulk-exported. Restarting the VM does not resend the baseline history. Editing, deleting, clearing history, quoted-reply links, and reactions are not currently synchronized between Telegram and the desktop; clearing the desktop history also does not reset the model conversation.
+
+Read and unread indicators remain independent in Telegram and dant.
 
 Duplicate updates use stable input IDs and do not execute the same task again. Restart recovery does not automatically resume interrupted model work.
 

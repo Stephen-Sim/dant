@@ -37,12 +37,16 @@ class MockApi{
  count(method){return this.calls.filter(call=>call.method===method).length;}
 }
 function setup(t,options={}){
- const dir=options.dir||fs.mkdtempSync(path.join(base,'telegram-test-'));if(!options.dir)t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=new Store(dir),engine=new FakeEngine(store),attachments=new AttachmentStore(path.join(dir,'attachments')),api=new MockApi();
+ const dir=options.dir||fs.mkdtempSync(path.join(base,'telegram-test-'));if(!options.dir)t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const store=new Store(dir);if(!options.dir||options.language!==undefined)store.state.settings.language=options.language??'en';const engine=new FakeEngine(store),attachments=new AttachmentStore(path.join(dir,'attachments')),api=new MockApi();
  const gateway=new TelegramGateway({dataDir:dir,store,engine,attachments,fetchImpl:api.fetch,autoPoll:false,...options.gateway});t.after(()=>gateway.close());return {dir,store,engine,attachments,api,gateway};
 }
 function update(id,text,extra={}){return {update_id:id,message:{message_id:id,chat:{id:11,type:'private'},from:{id:11,is_bot:false},text,...extra}};}
 async function paired(context){await context.gateway.configure({token:TOKEN,enabled:true});const pairing=await context.gateway.pair();await context.gateway.receive(update(1,'/start '+pairing.code));await context.gateway.flush();return pairing;}
 function complete(context,text='Done',files=[]){const task=context.store.state.messages.find(message=>message.role==='user'&&message.source?.type==='telegram');context.store.update(task.id,{status:'review',turnId:'turn-test'});const reply=context.store.add({role:'assistant',text,status:'completed',taskId:task.id,attachments:files});return {task,reply};}
+const englishPrompt=/\b(?:Send text|Work progress|Computer(?: control)?|Online|Offline|No call|In a call|Current work|State|Elapsed|Last update|Task steps|Recent tasks|Ongoing tasks|Queued|Background|Waiting for your reply|Status unconfirmed|Awaiting review|Awaiting confirmation|Completed|Pending|Failed|Paused|Working|Task from a call|Task resume requested|There is no|This Telegram|No Telegram|Stop only this|Usage:|Check progress|The task could not|No paused|Choose a paused|Return computer|Connect the work|End the subscription|Continue voice-only|Work finished|Task submission|Work and queue|Work has not confirmed|This message could not)\b/i;
+function assertPromptLanguage(text,language){assert.equal(typeof text,'string');assert.ok(text.trim());if(language==='en')assert.doesNotMatch(text,/\p{Script=Han}/u);else{assert.match(text,/\p{Script=Han}/u);assert.doesNotMatch(text,englishPrompt);}}
+function commandText(context,id){const parts=context.gateway.config.outbox.filter(item=>item.id.startsWith(`command:${id}:`));assert.ok(parts.length,'a command should queue its own reply');return parts.map(item=>item.text).join('');}
+async function localizedCommand(context,id,text,language){await context.gateway.receive(update(id,text,{from:{id:11,is_bot:false,language_code:language==='en'?'zh-hans':'en'}}));await context.gateway.flush();const reply=commandText(context,id);assertPromptLanguage(reply,language);assert.ok(context.api.calls.some(call=>call.method==='sendMessage'&&reply.includes(call.body.text)),'the localized reply must be sent through the fake Telegram transport');return reply;}
 
 test('Telegram defaults off and has no network activity or token in public state',async t=>{
  const {gateway,api,dir}=setup(t);gateway.start();await gateway.pollOnce();await gateway.flush();assert.equal(api.calls.length,0);assert.equal(gateway.status().enabled,false);assert.equal(gateway.status().configured,false);assert.equal(fs.existsSync(path.join(dir,'telegram.json')),false);
@@ -155,7 +159,7 @@ test('a crash while accepting an update leaves an unknown receipt without replay
 });
 
 test('/status and /help return owner-only plain responses without account details',async t=>{
- const context=setup(t);await paired(context);await context.gateway.receive(update(2,'/status'));await context.gateway.receive(update(3,'/help'));await context.gateway.flush();assert.ok(context.api.calls.some(call=>call.method==='sendMessage'&&call.body.text.includes('Computer / 电脑: Online / 在线')));assert.ok(context.api.calls.filter(call=>call.method==='sendMessage').every(call=>call.body.chat_id==='11'));
+ const context=setup(t);await paired(context);await context.gateway.receive(update(2,'/status'));await context.gateway.receive(update(3,'/help'));await context.gateway.flush();assert.ok(context.api.calls.some(call=>call.method==='sendMessage'&&call.body.text.includes('Computer: Online')));assert.ok(context.api.calls.filter(call=>call.method==='sendMessage').every(call=>call.body.chat_id==='11'));
 });
 
 test('shared progress includes registered desktop and call plans, timestamps, queue and actual recent states',async t=>{
@@ -165,7 +169,7 @@ test('shared progress includes registered desktop and call plans, timestamps, qu
  store.state.workTasks=[{id:'current-record',turnId:'current-turn',messageId:current.id,source:'voice',title:'Verified call work',plan,status:'running',startedAt:100000,updatedAt:190000},{id:'voice-record',turnId:'voice-only-turn',messageId:null,source:'voice',title:'Earlier voice task',plan,status:'paused',updatedAt:180000}];
  engine.progress={workId:'current-record',messageId:current.id,turnId:'current-turn',source:'voice',status:'waiting_user',background:true,startedAt:100000,updatedAt:190000};engine.queue=[queued];engine.call={provider:'api',id:'existing-call'};
  await gateway.receive(update(2,'/progress'));await gateway.flush();const output=context.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text.startsWith('Work progress')).at(-1).body.text;
- for(const value of ['Verified call work','Waiting for your reply','1:40','1970-01-01T00:03:10.000Z','✓ Prepare files','◉ Verify the result','○ Deliver files','Queued desktop work','Earlier voice task','Paused / 已暂停','/resume paused-task','Continue with a new instruction in chat'])assert.ok(output.includes(value),value);
+ for(const value of ['Verified call work','Waiting for your reply','1:40','1970-01-01T00:03:10.000Z','✓ Prepare files','◉ Verify the result','○ Deliver files','Queued desktop work','Earlier voice task','Paused','/resume paused-task','Continue with a new instruction in chat'])assert.ok(output.includes(value),value);
  assert.equal(output.includes('/resume voice-record'),false);assert.equal(output.includes(steer.text),false);assert.equal(output.match(/Verified call work/g).length,1);assert.equal(gateway.workState().recent.some(item=>item.taskId===current.id||item.taskId===steer.id),false);assert.equal(paused.status,'paused');assert.equal(engine.call.id,'existing-call');assert.equal(store.state.messages.length,4);
 });
 
@@ -191,7 +195,7 @@ test('/porgress alias is read-only, and offline status never implies cached work
 test('public progress redacts known secrets and excludes dismissed records, blockers, reasoning and tool output',async t=>{
  const context=setup(t);await paired(context);const {engine,gateway,store}=context;engine.redact=text=>text.replaceAll('stored-secret','[redacted]');engine.progress={title:'Public stored-secret title '+TOKEN,status:'running',source:'voice',plan:{total:2,completed:0,currentStep:'Current stored-secret step'},reasoning:'PRIVATE_REASONING',output:'PRIVATE_OUTPUT'};
  store.state.workTasks=[{id:'dismissed-record',turnId:'old-turn',messageId:null,source:'voice',status:'review',title:'HIDDEN_RECORD',progressDismissedAt:1000}];store.add({role:'user',status:'paused',text:'HIDDEN_MESSAGE',progressDismissedAt:1000});const blocker=store.add({role:'assistant',status:'completed',text:'PRIVATE_BLOCKER'});store.state.completions=[{id:'blocker-receipt',turnId:'old-turn:input:1',messageIds:[blocker.id]}];
- const output=gateway.progressText();assert.match(output,/\[redacted\]/);assert.match(output,/Steps \/ 步骤: 0\/2/);for(const secret of ['stored-secret',TOKEN,'PRIVATE_REASONING','PRIVATE_OUTPUT','HIDDEN_RECORD','HIDDEN_MESSAGE','PRIVATE_BLOCKER'])assert.equal(output.includes(secret),false,secret);
+ const output=gateway.progressText();assert.match(output,/\[redacted\]/);assert.match(output,/Steps: 0\/2/);for(const secret of ['stored-secret',TOKEN,'PRIVATE_REASONING','PRIVATE_OUTPUT','HIDDEN_RECORD','HIDDEN_MESSAGE','PRIVATE_BLOCKER'])assert.equal(output.includes(secret),false,secret);
 });
 
 test('progress reports only final voice receipts and never their speech or reply contents',async t=>{
@@ -361,4 +365,56 @@ test('an ambiguous mirrored send freezes later components and is not retried aft
 
 test('trusted API voice deliveries mirror with current-conversation provenance while unknown or stale orphans stay private',async t=>{
  const context=setup(t);await paired(context);const file=context.attachments.put({name:'voice-result.txt',data:Buffer.from('explicit voice output')});context.store.add({role:'assistant',text:'Explicit API voice delivery',attachments:[file],status:'completed',taskId:'voice-task-1',source:{type:'voice-call',conversationId:context.store.state.conversationId}});context.store.add({role:'assistant',text:'Stale API voice output',status:'completed',taskId:'voice-task-2',source:{type:'voice-call',conversationId:'different-conversation'}});context.store.add({role:'assistant',text:'Unknown orphan response',status:'completed',taskId:'voice-task-3'});const before=context.api.count('sendMessage');await context.gateway.flush();assert.deepEqual(context.api.calls.filter(call=>call.method==='sendMessage').slice(before).map(call=>call.body.text),['Explicit API voice delivery']);assert.equal(context.api.count('sendDocument'),1);await context.gateway.flush();assert.equal(context.api.count('sendDocument'),1);
+});
+
+for(const language of ['zh','en']){
+ test('Telegram '+language+' welcome, help, command fallback and progress use only the current dant language',async t=>{
+  const context=setup(t,{language}),{gateway,store,engine}=context;await gateway.configure({token:TOKEN,enabled:true});const pair=await gateway.pair();await localizedCommand(context,1,'/start '+pair.code,language);
+  for(const [id,command]of [[2,'/help'],[3,'/commands'],[4,'/unknown']]){const text=await localizedCommand(context,id,command,language);for(const name of ['/progress','/porgress','/status','/pause','/resume','/stop','/help'])assert.ok(text.includes(name),name);}
+  await localizedCommand(context,5,'/status',language);await localizedCommand(context,6,'/porgress',language);
+  const queued=store.add({id:'queued-localized-task',role:'user',text:'',status:'queued'});engine.queue=[queued];engine.call={id:'same-call',provider:'api'};engine.takeover=true;engine.pendingFollowups=new Map([['pending-input',{}]]);
+  engine.progress={source:'voice',status:'waiting_user',background:true,startedAt:1000,updatedAt:2000,plan:{total:2,completed:1,currentStep:language==='en'?'Check result':'核对结果'}};
+  store.state.workTasks=[{id:'ongoing-locale',turnId:'ongoing-turn',source:'voice',title:'',status:'continuing',updatedAt:1000},{id:'recent-locale',turnId:'recent-turn',source:'voice',title:'',status:'review',updatedAt:1000}];
+  const progress=await localizedCommand(context,7,'/progress',language);for(const label of language==='en'?['Work progress','Computer: Online','Waiting for your reply','Background','Queued','In a call','Human','Awaiting confirmation','Task from a call']:['工作进度','在线','回复','后台','排队','通话','用户','等待确认','通话'])assert.ok(progress.includes(label),label);assert.equal(engine.call.id,'same-call');assert.equal(engine.enqueued.length,0);
+  for(const status of ['running','continuing','waiting_user','pausing','unknown','review','paused','failed','completed','queued','draft']){engine.progress.status=status;assertPromptLanguage(gateway.progressText(),language);}
+  engine.worker.status='offline';const offline=await localizedCommand(context,8,'/status',language);assert.match(offline,language==='en'?/Offline or connecting/:/离线|连接中/);assert.match(offline,language==='en'?/Status unconfirmed/:/未确认/);
+ });
+
+ test('Telegram '+language+' pause, resume and stop acknowledgements and guard errors stay single-language',async t=>{
+  const context=setup(t,{language}),{gateway,store,engine}=context;await paired(context);let id=2;
+  await localizedCommand(context,id++,'/pause',language);await localizedCommand(context,id++,'/pause extra',language);
+  engine.active={messageId:'current-control-task',messageIds:[]};engine.pause=async()=>{throw Error('PRIVATE_EXECUTOR '+TOKEN);};const uncertain=await localizedCommand(context,id++,'/pause',language);assert.equal(uncertain.includes('PRIVATE_EXECUTOR'),false);assert.equal(uncertain.includes(TOKEN),false);
+  let pauses=0;const call={id:'preserved-call',provider:'api'};engine.call=call;engine.pause=async()=>{pauses++;engine.active=null;engine.queue=[];};await localizedCommand(context,id++,'/pause',language);assert.equal(pauses,1);assert.equal(engine.call,call);engine.call=null;
+  await localizedCommand(context,id++,'/resume',language);const task=store.add({id:'localized-resume-task',role:'user',text:language==='en'?'Resumable work':'可继续的工作',status:'paused'});let resumes=0;engine.resumePaused=(ids,options)=>{resumes++;assert.deepEqual(ids,[task.id]);assert.deepEqual(options,{confirmUnknown:false});};
+  for(const [name,set,reset]of [
+   ['offline',()=>engine.worker.status='offline',()=>engine.worker.status='online'],
+   ['human',()=>engine.takeover=true,()=>engine.takeover=false],
+   ['subscription',()=>engine.call={id:'native-call',provider:'subscription'},()=>engine.call=null],
+   ['active',()=>engine.active={messageId:'other-current'},()=>engine.active=null],
+   ['unknown submission',()=>store.update(task.id,{submission:'unknown'}),()=>store.update(task.id,{submission:'preparing'})]
+  ]){set();await localizedCommand(context,id++,'/resume '+task.id,language);assert.equal(resumes,0,name);reset();}
+  await localizedCommand(context,id++,'/resume missing-full-task-id',language);assert.equal(resumes,0);await localizedCommand(context,id++,'/resume '+task.id,language);assert.equal(resumes,1);
+  engine.resumePaused=()=>{throw Error('PRIVATE_RESUME '+TOKEN);};const failed=await localizedCommand(context,id++,'/resume '+task.id,language);assert.equal(failed.includes('PRIVATE_RESUME'),false);assert.equal(failed.includes(TOKEN),false);
+  store.add({id:'second-localized-task',role:'user',text:language==='en'?'Another paused task':'另一项暂停任务',status:'paused'});const choose=await localizedCommand(context,id++,'/resume',language);assert.ok(choose.includes('/resume '+task.id));
+  await localizedCommand(context,id++,'/stop',language);const inputId=id++;await gateway.receive(update(inputId,language==='en'?'Telegram work':'来自聊天的工作'));const own=store.state.messages.find(message=>message.clientMessageId===`tg:123456:${inputId}`);assert.ok(own);engine.active={messageId:own.id,messageIds:[own.id]};await localizedCommand(context,id++,'/stop',language);assert.equal(engine.stops.at(-1).messageId,own.id);assert.equal(engine.active,null);
+ });
+
+ test('Telegram '+language+' mirror prefixes and automatic result notices are localized without translating message bodies',async t=>{
+  const context=setup(t,{language}),{gateway,store,api}=context;await paired(context);const prefix=language==='en'?'You · desktop':'你 · 桌面',body='原文 remains unchanged';let before=api.count('sendMessage');store.add({role:'user',text:body,status:'queued'});await gateway.flush();assert.deepEqual(api.calls.filter(call=>call.method==='sendMessage').slice(before).map(call=>call.body.text),[prefix+':\n'+body]);
+  const file=context.attachments.put({name:'original-name.txt',data:Buffer.from('unchanged bytes')});store.add({role:'user',text:'',attachments:[file]});await gateway.flush();assert.equal(api.calls.filter(call=>call.method==='sendDocument').at(-1).body.get('caption'),prefix);
+  for(const [index,status,submission]of [[0,'review',undefined],[1,'paused',undefined],[2,'failed',undefined],[3,'paused','unknown']]){const updateId=20+index;await gateway.receive(update(updateId,language==='en'?'Requested work':'交办的工作'));const task=store.state.messages.find(message=>message.clientMessageId===`tg:123456:${updateId}`);store.update(task.id,{status,submission,turnId:'localized-result-'+index});before=api.count('sendMessage');await gateway.flush();const messages=api.calls.filter(call=>call.method==='sendMessage').slice(before);assert.equal(messages.length,1);assertPromptLanguage(messages[0].body.text,language);if(status==='review')assert.match(messages[0].body.text,language==='en'?/review/:/验收/);if(submission==='unknown')assert.match(messages[0].body.text,language==='en'?/unconfirmed/:/未确认/);}
+  const task=store.state.messages.find(message=>message.clientMessageId==='tg:123456:20'),answer='Assistant 原文 is preserved';store.add({role:'assistant',taskId:task.id,text:answer,status:'completed'});before=api.count('sendMessage');await gateway.flush();assert.deepEqual(api.calls.filter(call=>call.method==='sendMessage').slice(before).map(call=>call.body.text),[answer]);
+ });
+}
+
+test('Telegram reads dant language on each new reply, ignores sender language_code, and never rewrites queued prompts',async t=>{
+ const context=setup(t,{language:'zh'}),{gateway,store,api}=context;await paired(context);await gateway.receive(update(2,'/help',{from:{id:11,is_bot:false,language_code:'en'}}));const queuedChinese=commandText(context,2),previousSends=api.calls.filter(call=>call.method==='sendMessage'&&call.body.text===queuedChinese).length;assertPromptLanguage(queuedChinese,'zh');
+ store.state.settings.language='en';await localizedCommand(context,3,'/status','en');assert.equal(commandText(context,2),queuedChinese);assert.equal(api.calls.filter(call=>call.method==='sendMessage'&&call.body.text===queuedChinese).length,previousSends+1);assertPromptLanguage(commandText(context,3),'en');
+ store.state.settings.language='zh';await localizedCommand(context,4,'/help','zh');delete store.state.settings.language;await localizedCommand(context,5,'/status','zh');store.state.settings.language='unsupported';await localizedCommand(context,6,'/help','zh');
+ const sent=api.count('sendMessage');store.state.settings.language='en';await gateway.flush();assert.equal(api.count('sendMessage'),sent,'a language switch cannot replay already delivered prompts');
+});
+
+test('Telegram control acknowledgements use the latest language after awaiting confirmed engine work',async t=>{
+ const context=setup(t,{language:'zh'}),{gateway,store,engine}=context;await paired(context);let resolvePause;engine.active={messageId:'pausing-current'};engine.pause=()=>new Promise(resolve=>resolvePause=()=>{engine.active=null;resolve();});const pausing=gateway.receive(update(2,'/pause'));await tick();assert.equal(typeof resolvePause,'function');store.state.settings.language='en';resolvePause();await pausing;await gateway.flush();assertPromptLanguage(commandText(context,2),'en');
+ await gateway.receive(update(3,'Telegram-origin work'));const own=store.state.messages.find(message=>message.clientMessageId==='tg:123456:3');engine.active={messageId:own.id,messageIds:[own.id]};let resolveStop;engine.waitStopped=()=>new Promise(resolve=>resolveStop=()=>{engine.active=null;resolve();});const stopping=gateway.receive(update(4,'/stop'));await tick();assert.equal(typeof resolveStop,'function');store.state.settings.language='zh';resolveStop();await stopping;await gateway.flush();assertPromptLanguage(commandText(context,4),'zh');
 });

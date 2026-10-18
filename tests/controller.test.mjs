@@ -13,6 +13,7 @@ const temporary=t=>{const dir=fs.mkdtempSync(path.join(root,'controller-'));t.af
 class FakeProvisioning extends EventEmitter{snapshot(){return {status:'idle',running:false};}providers(){return {selected:'auto',provider:'vmware',availableProviders:[{id:'hyperv',available:false},{id:'vmware',available:true}]};}resumeMonitoring(){return this.snapshot();}close(){}}
 class FakeBridge extends EventEmitter{
  constructor(){super();this.status='offline';this.error=null;this.requests=[];}
+ emit(event,...args){if(event==='state'&&args[0])args[0].settings={language:'zh',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,...args[0].settings};return super.emit(event,...args);}
  async refresh(){return this.cached;}
  async request(route,options){this.requests.push({route,...options});if(this.fail)throw Object.assign(Error('Unknown outcome; not resent'),{unknownOutcome:true,status:502});return new Response(JSON.stringify({ok:true}),{headers:{'Content-Type':'application/json'}});}
  close(){}disconnect(){this.status='offline';this.emit('change');}
@@ -34,7 +35,7 @@ test('language changes persist offline and synchronize the VM default on reconne
  fs.writeFileSync(path.join(dir,'test-key'),'temporary test fixture');fs.writeFileSync(path.join(dir,'vm.json'),JSON.stringify({host:'192.0.2.1',user:'dant',port:22,keyPath:'test-key'}));
  bridge.connect=async()=>{bridge.status='online';bridge.cached={settings:{language:'zh'}};};
  response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.ok,true);assert.equal(bridge.requests.length,1);assert.equal(bridge.requests[0].route,'/api/settings');assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'en',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});
- response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'zh'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'zh');assert.deepEqual(JSON.parse(bridge.requests.at(-1).body),{language:'zh'});
+ response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'zh'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'zh');assert.deepEqual(JSON.parse(bridge.requests.at(-1).body),{language:'zh',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});
  const invalid=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'unknown'})});assert.equal(invalid.ok,false);assert.equal(app.snapshot().settings.language,'zh');
 });
 
@@ -119,7 +120,7 @@ test('work summary changes stay local during a call and are removed from mixed p
  const patch=body=>fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify(body)});
  assert.equal((await patch({showWorkSummary:true})).status,200);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().settings.showWorkSummary,true);
  assert.equal((await patch({showWorkSummary:false,language:'en',model:'unchanged-proxy-behavior'})).status,200);
- assert.deepEqual(bridge.requests.map(request=>JSON.parse(request.body)),[{language:'en',model:'unchanged-proxy-behavior'}]);assert.equal(app.snapshot().settings.showWorkSummary,false);
+ assert.deepEqual(bridge.requests.map(request=>JSON.parse(request.body)),[{language:'en',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},{model:'unchanged-proxy-behavior'}]);assert.equal(app.snapshot().settings.showWorkSummary,false);
  assert.equal(state.call,call);assert.equal(state.active,active);assert.deepEqual(state.queue,['queued-task']);assert.equal(disconnects,0);assert.equal(bridge.status,'online');
 });
 
@@ -173,14 +174,14 @@ test('busy VM connection changes are rejected atomically while appearance and la
    const dir=temporary(t);writeProfile(dir,'192.0.2.60');const {app,base,headers,bridge}=await listen(t,dir);let disconnects=0;bridge.disconnect=()=>{disconnects++;bridge.status='offline';};
    const patch=body=>fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify(body)});
    assert.equal((await patch({theme:'dark',language:'en'})).status,200);
-   const state={messages:[],settings:{},worker:{status:'online'},...busy};bridge.cached=state;bridge.status='online';bridge.emit('state',state);
+   const state={messages:[],settings:{language:'en'},worker:{status:'online'},...busy};bridge.cached=state;bridge.status='online';bridge.emit('state',state);
    const oldVm=fs.readFileSync(path.join(dir,'vm.json')),oldConfig=fs.readFileSync(path.join(dir,'controller.json')),oldRegistry=fs.readFileSync(path.join(dir,'registry.json'));
    for(const body of [{vm:{host:'192.0.2.70'}},{vm:{host:'192.0.2.70'},theme:'light',language:'zh',fontSize:17}]){
     const response=await patch(body);assert.equal(response.status,409);assert.equal((await response.json()).error,'Stop active work and return computer control before changing its connection');
     assert.deepEqual(fs.readFileSync(path.join(dir,'vm.json')),oldVm);assert.deepEqual(fs.readFileSync(path.join(dir,'controller.json')),oldConfig);assert.deepEqual(fs.readFileSync(path.join(dir,'registry.json')),oldRegistry);
     assert.equal(app.snapshot().settings.vm.host,'192.0.2.60');assert.equal(app.snapshot().settings.theme,'dark');assert.equal(app.snapshot().settings.language,'en');assert.equal(disconnects,0);assert.equal(bridge.status,'online');assert.equal(bridge.requests.length,0);
    }
-   assert.equal((await patch({theme:'light',font:'mono',language:'zh'})).status,200);assert.equal(app.snapshot().settings.theme,'light');assert.equal(app.snapshot().settings.language,'zh');assert.equal(disconnects,0);assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'zh'});
+   assert.equal((await patch({theme:'light',font:'mono',language:'zh'})).status,200);assert.equal(app.snapshot().settings.theme,'light');assert.equal(app.snapshot().settings.language,'zh');assert.equal(disconnects,0);assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'zh',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});
   });
  }
 });
@@ -208,7 +209,7 @@ test('expanded appearance settings persist locally, normalize colors and never r
  const expected={...patch,accentColor:'#AB12EF',foregroundColor:'#F1F2F3'},saved=JSON.parse(fs.readFileSync(path.join(dir,'controller.json')));
  for(const [key,value]of Object.entries(expected)){assert.equal(app.snapshot().settings[key],value);assert.equal(saved[key],value);}
  bridge.status='online';response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({themePreset:'warm',fontFamily:'Cascadia Code',language:'en',model:'fixture-model'})});assert.equal(response.status,200);
- assert.equal(bridge.requests.length,1);assert.deepEqual(JSON.parse(bridge.requests[0].body),{language:'en',model:'fixture-model'});
+ assert.equal(bridge.requests.length,2);assert.deepEqual(bridge.requests.map(request=>JSON.parse(request.body)),[{language:'en',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},{model:'fixture-model'}]);
  assert.equal(app.snapshot().settings.themePreset,'warm');assert.equal(app.snapshot().settings.fontFamily,'Cascadia Code');
  const reloaded=createControllerApp({dataDir:dir,projectRoot:path.resolve('.'),bridgeFactory:()=>new FakeBridge(),provisioningFactory:()=>new FakeProvisioning(),profileOptions:{registryFile:path.join(dir,'registry.json'),includeProject:false,env:{}}});t.after(()=>reloaded.close());assert.equal(reloaded.snapshot().settings.themePreset,'warm');assert.equal(reloaded.snapshot().settings.codeFontSize,19);assert.equal(reloaded.snapshot().settings.fontFamily,'Cascadia Code');
 });
@@ -269,4 +270,52 @@ test('executor recovery failures are surfaced once without replay or an automati
  for(const [name,setup,status]of [['rejected',bridge=>bridge.responseStatus=409,409],['transport-unknown',bridge=>bridge.failure=Object.assign(Error('Unknown recovery outcome'),{status:502,unknownOutcome:true}),502],['not-online',bridge=>bridge.refresh=async()=>{bridge.refreshes.push(true);return {...bridge.state,worker:{status:'offline'}};},503]]){
   await t.test(name,async t=>{const {base,headers,bridge}=await recoveryFixture(t);setup(bridge);const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,status);const body=await response.json();assert.equal(bridge.requests.length,1);assert.equal(bridge.state.messages[0].status,'paused');assert.deepEqual(bridge.state.queue,[]);if(name==='transport-unknown')assert.equal(body.unknownOutcome,true);else assert.match(body.error,/executor/);});
  }
+});
+
+const settle=async(predicate=()=>true)=>{for(let i=0;i<80;i++){await new Promise(resolve=>setImmediate(resolve));if(predicate())return;}assert.fail('Local preference fixture did not settle.');};
+const gate=()=>{let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};};
+class PreferenceBridge extends FakeBridge{
+ constructor(state=idleRecoveryState()){super();this.state=state;this.generation=0;this.connections=[];this.refreshes=[];this.inFlight=0;this.maxInFlight=0;}
+ async connect({deploy=true}={}){this.connections.push(deploy);this.generation++;this.status='online';this.cached=this.state;this.emit('state',this.state);this.emit('change');return this.state;}
+ disconnect(){this.generation++;super.disconnect();}
+ async request(route,options){
+  assert.equal(route,'/api/settings','preference synchronization must never restart or pause work');assert.equal(options.method,'PATCH');const values=JSON.parse(options.body),target=this.state,request={route,...options,values,generation:this.generation};this.requests.push(request);this.inFlight++;this.maxInFlight=Math.max(this.maxInFlight,this.inFlight);
+  try{const result=await this.write?.(request);if(result)return result;Object.assign(target.settings,values);return new Response('{"ok":true}');}finally{this.inFlight--;}
+ }
+ async refresh(force){this.refreshes.push({generation:this.generation,force});this.cached=this.state;this.emit('state',this.state);return this.state;}
+}
+
+test('automatic transport recovery synchronizes an offline language change and time zone once while preserving calls, work and queue',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.95');const state={...idleRecoveryState(),settings:{language:'zh',timeZone:'Europe/Paris'},worker:{status:'online'},active:{turnId:'still-running'},call:{id:'still-speaking'},queue:['still-queued']},bridge=new PreferenceBridge(state),{app,base,headers}=await listen(t,dir,bridge);
+ assert.equal((await fetch(base+'/api/settings',{method:'PATCH',headers,body:'{"language":"en"}'})).status,200);assert.equal(bridge.requests.length,0);const work=structuredClone({active:state.active,call:state.call,queue:state.queue,messages:state.messages});
+ await bridge.connect({deploy:false});await settle(()=>bridge.refreshes.length===1);assert.deepEqual(bridge.connections,[false]);assert.deepEqual(bridge.requests.map(item=>item.values),[{language:'en',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone}]);assert.equal(app.snapshot().settings.language,'en');assert.equal(state.settings.language,'en');
+ for(let i=0;i<4;i++){bridge.emit('state',state);bridge.emit('change');}await settle();assert.equal(bridge.requests.length,1,'successful state refreshes cannot trigger a PATCH loop');assert.deepEqual({active:state.active,call:state.call,queue:state.queue,messages:state.messages},work);
+});
+
+test('a language change during an older reconnect write is serialized and acknowledged only after the latest preference refresh',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.96');const state={...idleRecoveryState(),settings:{language:'en',timeZone:'Europe/Paris'}},bridge=new PreferenceBridge(state),first=gate(),second=gate();bridge.write=request=>request.values.language==='zh'?first.promise:second.promise;const {app,base,headers}=await listen(t,dir,bridge);
+ await bridge.connect({deploy:false});assert.equal(bridge.requests[0].values.language,'zh');let answered=false;const changed=fetch(base+'/api/settings',{method:'PATCH',headers,body:'{"language":"en"}'}).then(response=>{answered=true;return response;});await settle(()=>app.snapshot().settings.language==='en');assert.equal(bridge.requests.length,1);assert.equal(answered,false);
+ first.resolve();await settle(()=>bridge.requests.length===2);assert.equal(state.settings.language,'zh');assert.equal(answered,false);second.resolve();assert.equal((await changed).status,200);assert.equal(state.settings.language,'en');assert.equal(bridge.maxInFlight,1);assert.deepEqual(bridge.requests.map(item=>item.values.language),['zh','en']);assert.equal(bridge.refreshes.length,2);
+});
+
+test('a failed automatic preference write can retry on a later fresh state without an immediate event retry loop',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.97');const bridge=new PreferenceBridge({...idleRecoveryState(),settings:{language:'en',timeZone:'Europe/Paris'}});let fail=true;bridge.write=async()=>fail?new Response('{}',{status:503}):undefined;await listen(t,dir,bridge);await bridge.connect({deploy:false});await settle();assert.equal(bridge.requests.length,1);
+ for(let i=0;i<5;i++)bridge.emit('state',bridge.state);await settle();assert.equal(bridge.requests.length,1);assert.equal(bridge.refreshes.length,0);
+ const later=Date.now()+6000;t.mock.method(Date,'now',()=>later);fail=false;bridge.emit('state',bridge.state);await settle(()=>bridge.refreshes.length===1);assert.equal(bridge.requests.length,2);assert.equal(bridge.state.settings.language,'zh');assert.equal(bridge.requests[0].signal.aborted,false);
+});
+
+test('switching VM aborts the old preference scope and ignores its late acknowledgement',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.98');const old={...idleRecoveryState(),settings:{language:'en',timeZone:'Europe/Paris'}},bridge=new PreferenceBridge(old),late=gate();bridge.write=request=>request.generation===1?late.promise:undefined;const {app,base,headers}=await listen(t,dir,bridge);await bridge.connect({deploy:false});const oldRequest=bridge.requests[0];
+ assert.equal((await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({vm:{host:'192.0.2.99'},language:'en'})})).status,200);assert.equal(oldRequest.signal.aborted,true);bridge.state={...idleRecoveryState(),conversationId:'new-vm',settings:{language:'zh',timeZone:'Europe/Paris'}};await bridge.connect({deploy:false});await settle(()=>bridge.state.settings.language==='en');const refreshes=bridge.refreshes.length;
+ late.resolve();await settle();assert.equal(bridge.refreshes.length,refreshes,'the old acknowledgement cannot refresh the new VM');assert.equal(bridge.state.settings.language,'en');assert.equal(app.snapshot().conversationId,'new-vm');assert.equal(app.snapshot().settings.language,'en');assert.deepEqual(bridge.requests.map(item=>item.values.language),['zh','en']);
+});
+
+test('closing the Controller aborts a preference write even when its mock bridge emits no close event',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.100');const bridge=new PreferenceBridge({...idleRecoveryState(),settings:{language:'en',timeZone:'Europe/Paris'}}),late=gate();bridge.write=()=>late.promise;const {app}=await listen(t,dir,bridge);await bridge.connect({deploy:false});const request=bridge.requests[0];await app.close();assert.equal(request.signal.aborted,true);late.resolve();await settle();assert.equal(bridge.refreshes.length,0);assert.equal(bridge.requests.length,1);
+});
+
+test('a mixed settings request cannot send its remaining model mutation to a new VM after awaited language synchronization',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.101');const bridge=new PreferenceBridge(idleRecoveryState()),late=gate();t.after(()=>late.resolve());bridge.write=request=>request.values.language==='en'?late.promise:undefined;const {base,headers}=await listen(t,dir,bridge);await bridge.connect({deploy:false});
+ const pending=fetch(base+'/api/settings',{method:'PATCH',headers,body:'{"language":"en","model":"old-vm-only"}'});await settle(()=>bridge.requests.length===1);const oldRequest=bridge.requests[0];assert.equal((await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({vm:{host:'192.0.2.102'},language:'zh'})})).status,200);assert.equal(oldRequest.signal.aborted,true);
+ bridge.state={...idleRecoveryState(),conversationId:'new-vm'};await bridge.connect({deploy:false});late.resolve();const response=await pending;assert.equal(response.status,409);assert.match((await response.json()).error,/VM connection changed/);assert.equal(bridge.state.settings.model,undefined);assert.equal(bridge.requests.some(request=>request.values.model==='old-vm-only'),false,'a stale model mutation must not cross VM ownership');
 });

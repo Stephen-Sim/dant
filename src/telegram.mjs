@@ -8,8 +8,28 @@ const API='https://api.telegram.org',MAX_CONFIG=1024*1024,MAX_OUTBOX=128;
 const retryRenameCodes=new Set(['EPERM','EACCES','EBUSY']),pauseBuffer=new Int32Array(new SharedArrayBuffer(4));
 const allowedMethods=new Set(['getMe','getWebhookInfo','getUpdates','getFile','sendMessage','sendDocument']);
 const terminal=new Set(['review','completed','failed','paused']);
-const progressStates={running:'Working / 正在执行',continuing:'In progress / 进行中',waiting_user:'Waiting for your reply / 等待你回复',pausing:'Stopping safely / 正在安全停止',unknown:'Status unconfirmed / 状态未确认',review:'Awaiting review / 待验收',paused:'Paused / 已暂停',failed:'Failed / 失败',completed:'Completed / 已完成',queued:'Queued / 排队中',draft:'Draft / 草稿'};
-const commandHelp='已连接 dant。发送文字、图片、文档或语音附件即可提交任务。 / Send text, photos, documents or voice files to request work.\n/progress 工作进度（也支持 /porgress） / Shared work progress\n/status 电脑、通话与队列状态 / Computer, call and queue status\n/pause 暂停当前工作和队列，保留通话 / Pause shared work and queue, keep the call\n/resume [task ID] 继续已暂停任务 / Resume a paused task\n/stop 仅停止本 Telegram 的任务 / Stop only this Telegram’s tasks\n/help 帮助 / Help';
+const telegramText={
+ zh:{
+  help:'已连接 dant。发送文字、图片、文档或语音附件即可提交任务。\n/progress 工作进度（也支持 /porgress）\n/status 电脑、通话与队列状态\n/pause 暂停当前工作和队列，保留通话\n/resume [任务 ID] 继续已暂停任务\n/stop 仅停止本 Telegram 的任务\n/help 帮助',
+  states:{running:'正在执行',continuing:'进行中',waiting_user:'等待你回复',pausing:'正在安全停止',unknown:'状态未确认',review:'待验收',paused:'已暂停',failed:'失败',completed:'已完成',cancelled:'已取消',queued:'排队中',draft:'草稿'},
+  progress:'工作进度',computer:'电脑',online:'在线',offline:'离线或连接中',control:'电脑控制',human:'用户',call:'通话',inCall:'通话中',noCall:'未通话',delivery:'消息投递',awaitingConfirmation:'等待确认',current:'当前',state:'状态',background:'后台',elapsed:'已用时',lastUpdate:'最后更新',taskSteps:'任务步骤',steps:'步骤',noRunning:'当前没有正在执行的任务',unavailable:'无法确认工作状态，请在 dant 重新连接',ongoing:'进行中的任务',queued:'排队中',recent:'最近任务',voiceFollowup:'请在聊天中重新交办后续工作',task:'任务',voiceTask:'通话中交办的任务',
+  receiveError:'消息未能执行。请在 dant 检查任务状态后再决定是否重新提交。',stopSuccess:'已停止此 Telegram 的当前任务，等待你重新决定下一步。',stopNone:'没有可停止的 Telegram 当前任务。桌面任务和通话保持原状。',
+  pauseUsage:'用法：/pause（暂停当前工作及队列，通话保持连接）。',pauseNone:'当前没有可暂停的任务。',pauseSuccess:'工作和队列已暂停，通话保持原状。',pauseUnconfirmed:'尚未确认任务已经暂停，请在 dant 查看工作进度；通话不会由此命令挂断。',
+  connectFirst:'请先在 dant 连接工作电脑。',returnControl:'请先归还电脑控制权。',endSubscription:'请先结束订阅语音通话，再继续已暂停的任务。',activeUnconfirmed:'当前任务仍在执行或状态未确认，请先在 dant 查看工作进度。',
+  resumeNotFound:'没有找到该已暂停或失败的任务，请使用完整任务 ID。',resumeChoose:'有多项已暂停任务，请明确选择：',resumeNone:'没有可继续的已暂停任务。通话任务请在聊天中重新交办。',resumeUnknown:'这个任务的提交结果未确认，不能自动重试。请先在 dant 检查并明确确认重试。',resumeSuccess:'已请求继续任务。',resumeProgress:'/progress 查看进度',resumeFailed:'任务未能继续，请在 dant 检查任务状态和控制权。',
+  attachmentPrompt:'请检查 Telegram 附件。',desktop:'你 · 桌面',workFinished:'任务已结束，等待你在 dant 验收。',submissionUnknown:'任务提交结果未确认，不会自动重试。请先在 dant 检查。',taskPaused:'任务已暂停，请在 dant 查看。',taskFailed:'任务未能完成，请在 dant 查看。',
+ },
+ en:{
+  help:'Connected to dant. Send text, photos, documents or voice files to request work.\n/progress Shared work progress (also /porgress)\n/status Computer, call and queue status\n/pause Pause shared work and queue, keep the call\n/resume [task ID] Resume a paused task\n/stop Stop only this Telegram’s tasks\n/help Help',
+  states:{running:'Working',continuing:'In progress',waiting_user:'Waiting for your reply',pausing:'Stopping safely',unknown:'Status unconfirmed',review:'Awaiting review',paused:'Paused',failed:'Failed',completed:'Completed',cancelled:'Cancelled',queued:'Queued',draft:'Draft'},
+  progress:'Work progress',computer:'Computer',online:'Online',offline:'Offline or connecting',control:'Computer control',human:'Human',call:'Call',inCall:'In a call',noCall:'No call',delivery:'Message delivery',awaitingConfirmation:'Awaiting confirmation',current:'Current',state:'State',background:'Background',elapsed:'Elapsed',lastUpdate:'Last update',taskSteps:'Task steps',steps:'Steps',noRunning:'No task is running',unavailable:'Work status is unavailable; reconnect in dant',ongoing:'Ongoing tasks',queued:'Queued',recent:'Recent tasks',voiceFollowup:'Continue with a new instruction in chat',task:'Task',voiceTask:'Task from a call',
+  receiveError:'This message could not be executed. Check dant before resubmitting.',stopSuccess:'This Telegram task stopped. Resume it explicitly in dant if needed.',stopNone:'No Telegram-owned active task to stop. Desktop work and calls were left alone.',
+  pauseUsage:'Usage: /pause (pause current work and queue, keep the call).',pauseNone:'There is no current or queued work to pause.',pauseSuccess:'Work and queue paused; the call was left unchanged.',pauseUnconfirmed:'Work has not confirmed it stopped. Check Work progress in dant; this command does not hang up the call.',
+  connectFirst:'Connect the work computer in dant first.',returnControl:'Return computer control to dant before resuming.',endSubscription:'End the subscription call before resuming paused work.',activeUnconfirmed:'Current work is still active or unconfirmed. Check Work progress in dant first.',
+  resumeNotFound:'No paused or failed task matches that full task ID.',resumeChoose:'Choose a paused task explicitly:',resumeNone:'No paused chat task is available. Continue voice-only work with a new chat instruction.',resumeUnknown:'This task’s submission is unconfirmed and cannot be retried here. Inspect and explicitly confirm a retry in dant.',resumeSuccess:'Task resume requested.',resumeProgress:'/progress Check progress',resumeFailed:'The task could not resume. Check its state and computer ownership in dant.',
+  attachmentPrompt:'Please inspect the attached Telegram file.',desktop:'You · desktop',workFinished:'Work finished and awaits your review in dant.',submissionUnknown:'Task submission is unconfirmed and will not be retried. Check dant first.',taskPaused:'Task paused; check dant.',taskFailed:'Task failed; check dant.',
+ },
+};
 const validTime=value=>typeof value==='number'&&Number.isFinite(value)&&value>0&&value<=8640000000000000?value:null;
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const identifier=value=>Number.isSafeInteger(value)&&value>0?String(value):null;
@@ -56,6 +76,7 @@ export class TelegramGateway extends EventEmitter{
   }
   this.engineListener=()=>{if(this.closed||!this.config.enabled||!this.config.owner||this.flushTimer)return;this.flushTimer=setTimeout(()=>{this.flushTimer=null;try{this.scanResults();this.kickOutbound();}catch{this.fail('Telegram results could not be queued');}},100);this.flushTimer.unref?.();};engine.on('change',this.engineListener);
  }
+ words(){return telegramText[this.store.state.settings?.language==='en'?'en':'zh'];}
  status(){
   const c=this.config;return {enabled:!!c.enabled,configured:!!c.token,connected:this.connected,bot:c.bot?{id:c.bot.id,username:c.bot.username}:null,paired:!!c.owner,owner:c.owner?{chatId:c.owner.chatId,userId:c.owner.userId}:null,pairing:c.pairing&&c.pairing.expiresAt>this.now()?{expiresAt:c.pairing.expiresAt}:null,lastError:c.lastError?this.safe(c.lastError):null,lastInboundAt:c.lastInboundAt||null,lastOutboundAt:c.lastOutboundAt||null,pendingOutbound:c.outbox.filter(item=>['queued','sending'].includes(item.status)).length,delivery:{failed:c.outbox.filter(item=>item.status==='failed').length,unknown:c.outbox.filter(item=>item.status==='unknown').length},sync:{mode:'new-messages',active:!!c.enabled&&!!c.owner&&c.owner.syncVersion===1,historyBackfill:false,edits:false,deletes:false,reactions:false}};
  }
@@ -145,7 +166,7 @@ export class TelegramGateway extends EventEmitter{
    if(command)await this.command(command,id,match?.[2]?.trim()||'');
    else await this.incoming(message,id);
    receipt.status='done';
-  }catch{receipt.status='failed';this.config.lastError='A Telegram message could not be accepted; it was not replayed';if(!this.store.state.messages.some(task=>task.clientMessageId===`tg:${this.config.bot.id}:${id}`))this.queueText(`update:${id}:error`,'消息未能执行。请在 dant 检查任务状态后再决定是否重新提交。 / This message could not be executed. Check dant before resubmitting.');}
+  }catch{receipt.status='failed';this.config.lastError='A Telegram message could not be accepted; it was not replayed';if(!this.store.state.messages.some(task=>task.clientMessageId===`tg:${this.config.bot.id}:${id}`))this.queueText(`update:${id}:error`,this.words().receiveError);}
   finally{this.config.offset=Math.max(this.config.offset,id+1);this.save();this.change();this.kickOutbound();}
  }
  publicText(value,limit=240){return this.safeText(this.engine.redact?.(String(value??''))??String(value??'')).replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,limit);}
@@ -160,7 +181,7 @@ export class TelegramGateway extends EventEmitter{
    records.push(record);for(const id of [record.turnId,...(record.turnIds||[])])turns.add(id);recordIds.add(record.id);const message=byId.get(record.messageId);if(message?.role==='user'&&(!message.turnId||turns.has(message.turnId)))registeredMessages.add(message.id);
   }
   const currentRecord=records.find(record=>active&&(record.id===active.workId||record.turnId===active.turnId)),currentMessage=users.find(message=>activeIds.has(message.id));
-  const title=(entry,message)=>this.publicText(entry?.title||message?.text||message?.attachments?.map(file=>file.name).join(', ')||(entry?.source==='voice'?'Task from a call / 通话中交办的任务':'Task / 任务'));
+  const title=(entry,message)=>this.publicText(entry?.title||message?.text||message?.attachments?.map(file=>file.name).join(', ')||(entry?.source==='voice'?this.words().voiceTask:this.words().task));
   const recent=users.filter(message=>!activeIds.has(message.id)&&!queuedIds.has(message.id)&&!registeredMessages.has(message.id)&&!turns.has(message.turnId)&&!validTime(message.progressDismissedAt)).map(message=>({title:title(null,message),status:message.status==='read'?'review':message.status,at:validTime(message.time),taskId:message.id}));
   for(const record of records){
    const original=byId.get(record.messageId),message=messages.find(item=>item.role==='user'&&item.turnId===record.turnId)||(original?.role==='user'&&!original.turnId?original:null),ownsMessage=message?.role==='user';
@@ -169,60 +190,60 @@ export class TelegramGateway extends EventEmitter{
   }
   for(const completion of this.store.state.completions||[]){
    if(!completion?.turnId||turns.has(completion.turnId)||validTime(completion.progressDismissedAt)||completion.turnId===active?.turnId||users.some(message=>message.id===completion.taskId)||completion.work?.source!=='voice'||!['review','failed','paused'].includes(completion.work.status)||!completion.messageIds?.some(id=>byId.get(id)?.role==='assistant'&&byId.get(id).kind!=='call'))continue;
-   turns.add(completion.turnId);recent.push({title:'Task from a call / 通话中交办的任务',status:completion.work.status,at:validTime(completion.work.updatedAt)||validTime(completion.at),taskId:null,voice:true});
+   turns.add(completion.turnId);recent.push({title:this.words().voiceTask,status:completion.work.status,at:validTime(completion.work.updatedAt)||validTime(completion.at),taskId:null,voice:true});
   }
   recent.sort((a,b)=>(b.at||0)-(a.at||0));const ongoing=recent.filter(item=>['continuing','waiting_user'].includes(item.status));
   return {active:active?{...active,title:title({...currentRecord,...active},currentMessage),plan:active.plan||currentRecord?.plan,startedAt:validTime(active.startedAt)||validTime(currentRecord?.startedAt)||validTime(currentMessage?.time),updatedAt:validTime(active.updatedAt)||validTime(currentRecord?.updatedAt)}:null,queue,ongoing,recent:recent.filter(item=>!ongoing.includes(item)).slice(0,5),title};
  }
  progressText({brief=false}={}){
-  const {active,queue,ongoing,recent,title}=this.workState(),online=this.engine.worker?.status==='online',stateLabel=status=>progressStates[status]||progressStates.unknown;
-  const lines=['Work progress / 工作进度',`Computer / 电脑: ${online?'Online / 在线':'Offline or connecting / 离线或连接中'}`];
-  if(this.engine.takeover||this.engine.acquiring)lines.push('Computer control / 电脑控制: Human / 用户');
-  lines.push(`Call / 通话: ${this.engine.call?'In a call / 通话中':'No call / 未通话'}`);
-  if(this.engine.pendingFollowups?.size||this.engine.callReferences?.size)lines.push('Message delivery / 消息投递: Awaiting confirmation / 等待确认');
+  const w=this.words(),{active,queue,ongoing,recent,title}=this.workState(),online=this.engine.worker?.status==='online',stateLabel=status=>w.states[status]||w.states.unknown;
+  const lines=[w.progress,`${w.computer}: ${online?w.online:w.offline}`];
+  if(this.engine.takeover||this.engine.acquiring)lines.push(`${w.control}: ${w.human}`);
+  lines.push(`${w.call}: ${this.engine.call?w.inCall:w.noCall}`);
+  if(this.engine.pendingFollowups?.size||this.engine.callReferences?.size)lines.push(`${w.delivery}: ${w.awaitingConfirmation}`);
   if(active){
-   lines.push(`Current / 当前: ${active.title}`,`State / 状态: ${stateLabel(online?active.status:'unknown')}${active.background?' · Background / 后台':''}`);
-   if(active.startedAt){const seconds=Math.max(0,Math.floor((this.now()-active.startedAt)/1000));lines.push(`Elapsed / 已用时: ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);}
-   if(active.updatedAt)lines.push(`Last update / 最后更新: ${new Date(active.updatedAt).toISOString()}`);
+   lines.push(`${w.current}: ${active.title}`,`${w.state}: ${stateLabel(online?active.status:'unknown')}${active.background?' · '+w.background:''}`);
+   if(active.startedAt){const seconds=Math.max(0,Math.floor((this.now()-active.startedAt)/1000));lines.push(`${w.elapsed}: ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);}
+   if(active.updatedAt)lines.push(`${w.lastUpdate}: ${new Date(active.updatedAt).toISOString()}`);
    if(!brief){const steps=active.plan?.steps;
-    if(Array.isArray(steps)&&steps.length&&steps.length<=128){lines.push('Task steps / 任务步骤:');for(const [index,item]of steps.entries())if(['pending','inProgress','completed'].includes(item?.status)&&typeof item.step==='string')lines.push(`${index+1}. ${item.status==='completed'?'✓':item.status==='inProgress'?'◉':'○'} ${this.publicText(item.step)}`);}
-    else if(active.plan&&Number.isSafeInteger(active.plan.total)&&active.plan.total>0&&active.plan.total<=128&&Number.isSafeInteger(active.plan.completed)&&active.plan.completed>=0&&active.plan.completed<=active.plan.total){lines.push(`Steps / 步骤: ${active.plan.completed}/${active.plan.total}`);if(active.plan.currentStep)lines.push(this.publicText(active.plan.currentStep));}
+    if(Array.isArray(steps)&&steps.length&&steps.length<=128){lines.push(w.taskSteps+':');for(const [index,item]of steps.entries())if(['pending','inProgress','completed'].includes(item?.status)&&typeof item.step==='string')lines.push(`${index+1}. ${item.status==='completed'?'✓':item.status==='inProgress'?'◉':'○'} ${this.publicText(item.step)}`);}
+    else if(active.plan&&Number.isSafeInteger(active.plan.total)&&active.plan.total>0&&active.plan.total<=128&&Number.isSafeInteger(active.plan.completed)&&active.plan.completed>=0&&active.plan.completed<=active.plan.total){lines.push(`${w.steps}: ${active.plan.completed}/${active.plan.total}`);if(active.plan.currentStep)lines.push(this.publicText(active.plan.currentStep));}
    }
-  }else if(!ongoing.length)lines.push(online?'No task is running / 当前没有正在执行的任务':'Work status is unavailable; reconnect in dant / 无法确认工作状态，请在 dant 重新连接');
-  if(ongoing.length){lines.push('Ongoing tasks / 进行中的任务:');for(const item of ongoing)lines.push(`• ${item.title} — ${stateLabel(!online?'unknown':item.status)}`);}
-  lines.push(`Queued / 排队中: ${queue.length}`);if(!brief)for(const message of queue)lines.push(`• ${title(null,message)}`);
-  if(!brief&&recent.length){lines.push('Recent tasks / 最近任务:');for(const item of recent){lines.push(`• ${item.title} — ${stateLabel(!online&&['running','waiting_user','pausing'].includes(item.status)?'unknown':item.status)}`);if(item.taskId&&['paused','failed'].includes(item.status))lines.push(`/resume ${item.taskId}`);else if(item.voice&&item.status==='paused')lines.push('Continue with a new instruction in chat / 请在聊天中重新交办后续工作');}}
+  }else if(!ongoing.length)lines.push(online?w.noRunning:w.unavailable);
+  if(ongoing.length){lines.push(w.ongoing+':');for(const item of ongoing)lines.push(`• ${item.title} — ${stateLabel(!online?'unknown':item.status)}`);}
+  lines.push(`${w.queued}: ${queue.length}`);if(!brief)for(const message of queue)lines.push(`• ${title(null,message)}`);
+  if(!brief&&recent.length){lines.push(w.recent+':');for(const item of recent){lines.push(`• ${item.title} — ${stateLabel(!online&&['running','waiting_user','pausing'].includes(item.status)?'unknown':item.status)}`);if(item.taskId&&['paused','failed'].includes(item.status))lines.push(`/resume ${item.taskId}`);else if(item.voice&&item.status==='paused')lines.push(w.voiceFollowup);}}
   return lines.join('\n');
  }
  async command(command,id,args=''){
-  const key=`command:${id}`;
+  const key=`command:${id}`,t=key=>this.words()[key];
   if(command==='stop'){
    const own=message=>this.taskOwned(message),active=this.engine.active;
    this.engine.queue=this.engine.queue.filter(message=>{if(!own(message))return true;this.engine.safeUpdate(message.id,{status:'paused',pauseReason:'telegram-stop'});return false;});
-   if(!this.engine.call&&active&&active.messageIds.every(messageId=>own(this.engine.task(messageId)))){await this.engine.waitStopped(active);this.queueText(key,'已停止此 Telegram 的当前任务，等待你重新决定下一步。 / This Telegram task stopped. Resume it explicitly in dant if needed.');}
-   else this.queueText(key,'没有可停止的 Telegram 当前任务。桌面任务和通话保持原状。 / No Telegram-owned active task to stop. Desktop work and calls were left alone.');this.engine.change();return;
+   if(!this.engine.call&&active&&active.messageIds.every(messageId=>own(this.engine.task(messageId)))){await this.engine.waitStopped(active);this.queueText(key,t('stopSuccess'));}
+   else this.queueText(key,t('stopNone'));this.engine.change();return;
   }
   if(command==='progress'||command==='porgress'){this.queueText(key,this.progressText());return;}
   if(command==='status'){this.queueText(key,this.progressText({brief:true}));return;}
   if(command==='pause'){
-   if(args){this.queueText(key,'用法：/pause（暂停当前工作及队列，通话保持连接）。 / Usage: /pause (pause current work and queue, keep the call).');return;}
-   if(!this.engine.active&&!this.engine.nativeVoice?.active&&!this.engine.nativeVoice?.progress&&!this.engine.pendingFollowups?.size&&!this.engine.callReferences?.size&&!this.engine.queue.length){this.queueText(key,'当前没有可暂停的任务。 / There is no current or queued work to pause.');return;}
-   try{await this.engine.pause();this.queueText(key,'工作和队列已暂停，通话保持原状。 / Work and queue paused; the call was left unchanged.');}
-   catch{this.queueText(key,'尚未确认任务已经暂停，请在 dant 查看工作进度；通话不会由此命令挂断。 / Work has not confirmed it stopped. Check Work progress in dant; this command does not hang up the call.');}return;
+   if(args){this.queueText(key,t('pauseUsage'));return;}
+   if(!this.engine.active&&!this.engine.nativeVoice?.active&&!this.engine.nativeVoice?.progress&&!this.engine.pendingFollowups?.size&&!this.engine.callReferences?.size&&!this.engine.queue.length){this.queueText(key,t('pauseNone'));return;}
+   try{await this.engine.pause();this.queueText(key,t('pauseSuccess'));}
+   catch{this.queueText(key,t('pauseUnconfirmed'));}return;
   }
   if(command==='resume'){
    const session=this.engine.nativeVoice?.session;
-   if(this.engine.worker?.status!=='online'){this.queueText(key,'请先在 dant 连接工作电脑。 / Connect the work computer in dant first.');return;}
-   if(this.engine.takeover||this.engine.acquiring){this.queueText(key,'请先归还电脑控制权。 / Return computer control to dant before resuming.');return;}
-   if(this.engine.call?.provider==='subscription'){this.queueText(key,'请先结束订阅语音通话，再继续已暂停的任务。 / End the subscription call before resuming paused work.');return;}
-   if(this.engine.active||this.engine.progress||this.engine.pendingFollowups?.size||this.engine.callReferences?.size||this.engine.nativeVoice?.active||this.engine.nativeVoice?.progress||session&&(session.background||session.unknown||session.submitting||session.stopping||session.pausing||this.engine.nativeVoice?.pendingHandoffs?.(session)||[...(session.turns?.values?.()||[])].some(turn=>!turn.done||!turn.resultSaved||turn.pendingSubmissions))){this.queueText(key,'当前任务仍在执行或状态未确认，请先在 dant 查看工作进度。 / Current work is still active or unconfirmed. Check Work progress in dant first.');return;}
+   if(this.engine.worker?.status!=='online'){this.queueText(key,t('connectFirst'));return;}
+   if(this.engine.takeover||this.engine.acquiring){this.queueText(key,t('returnControl'));return;}
+   if(this.engine.call?.provider==='subscription'){this.queueText(key,t('endSubscription'));return;}
+   if(this.engine.active||this.engine.progress||this.engine.pendingFollowups?.size||this.engine.callReferences?.size||this.engine.nativeVoice?.active||this.engine.nativeVoice?.progress||session&&(session.background||session.unknown||session.submitting||session.stopping||session.pausing||this.engine.nativeVoice?.pendingHandoffs?.(session)||[...(session.turns?.values?.()||[])].some(turn=>!turn.done||!turn.resultSaved||turn.pendingSubmissions))){this.queueText(key,t('activeUnconfirmed'));return;}
    const paused=this.store.state.messages.filter(message=>message.role==='user'&&message.kind!=='call'&&message.status==='paused'),selected=args?this.store.state.messages.find(message=>message.id===args&&message.role==='user'&&message.kind!=='call'&&['paused','failed'].includes(message.status)):paused.length===1?paused[0]:null;
-   if(!selected){this.queueText(key,args?'没有找到该已暂停或失败的任务，请使用完整 task ID。 / No paused or failed task matches that full task ID.':paused.length?'有多项已暂停任务，请明确选择： / Choose a paused task explicitly:\n'+paused.map(message=>`/resume ${message.id} · ${this.publicText(message.text||'Task / 任务')}`).join('\n'):'没有可继续的已暂停任务。通话任务请在聊天中重新交办。 / No paused chat task is available. Continue voice-only work with a new chat instruction.');return;}
-   if(['unknown','submitting'].includes(selected.submission)||selected.unknownOutcome){this.queueText(key,'这个任务的提交结果未确认，不能自动重试。请先在 dant 检查并明确确认重试。 / This task’s submission is unconfirmed and cannot be retried here. Inspect and explicitly confirm a retry in dant.');return;}
-   try{this.engine.resumePaused([selected.id],{confirmUnknown:false});this.queueText(key,`已请求继续任务。 / Task resume requested.\n${selected.id}\n/progress 查看进度 / Check progress`);}
-   catch{this.queueText(key,'任务未能继续，请在 dant 检查任务状态和控制权。 / The task could not resume. Check its state and computer ownership in dant.');}return;
+   if(!selected){this.queueText(key,args?t('resumeNotFound'):paused.length?t('resumeChoose')+'\n'+paused.map(message=>`/resume ${message.id} · ${this.publicText(message.text||t('task'))}`).join('\n'):t('resumeNone'));return;}
+   if(['unknown','submitting'].includes(selected.submission)||selected.unknownOutcome){this.queueText(key,t('resumeUnknown'));return;}
+   try{this.engine.resumePaused([selected.id],{confirmUnknown:false});this.queueText(key,`${t('resumeSuccess')}\n${selected.id}\n${t('resumeProgress')}`);}
+   catch{this.queueText(key,t('resumeFailed'));}return;
   }
-  this.queueText(key,commandHelp);
+  this.queueText(key,t('help'));
  }
  taskOwned(message){const source=message?.source,owner=this.config.owner;return source?.type==='telegram'&&owner&&typeof owner.pairingId==='string'&&source.pairingId===owner.pairingId&&source.botId===this.config.bot?.id&&source.chatId===owner.chatId&&source.userId===owner.userId;}
  async incoming(message,updateId){
@@ -232,7 +253,7 @@ export class TelegramGateway extends EventEmitter{
   if(Array.isArray(message.photo)&&message.photo.length){const photo=[...message.photo].sort((a,b)=>(b.file_size||b.width*b.height)-(a.file_size||a.width*a.height)).find(file=>!file.file_size||file.file_size<=MAX_ATTACHMENT_BYTES);if(!photo)throw Error('Telegram photo exceeds 10 MiB');candidates.push({file:photo,name:`photo-${message.message_id||updateId}.jpg`,type:'image/jpeg'});}
   for(const [key,name,type] of [['document','document',undefined],['voice',`voice-${message.message_id||updateId}.ogg`,'audio/ogg']])if(message[key])candidates.push({file:message[key],name:message[key].file_name||name,type});
   if(!text.trim()&&!candidates.length)return;if(candidates.length>MAX_MESSAGE_ATTACHMENTS)throw Error('Attach at most five files');
-  const task=this.store.add({role:'user',text:text||(message.voice?'':'Please inspect the attached Telegram file.'),attachments:[],clientMessageId,status:'draft',source:{type:'telegram',botId:this.config.bot.id,chatId:this.config.owner.chatId,userId:this.config.owner.userId,pairingId:this.config.owner.pairingId,updateId,...(identifier(message.message_id)?{messageId:identifier(message.message_id)}:{})}});
+  const task=this.store.add({role:'user',text:text||(message.voice?'':this.words().attachmentPrompt),attachments:[],clientMessageId,status:'draft',source:{type:'telegram',botId:this.config.bot.id,chatId:this.config.owner.chatId,userId:this.config.owner.userId,pairingId:this.config.owner.pairingId,updateId,...(identifier(message.message_id)?{messageId:identifier(message.message_id)}:{})}});
   try{
    if(this.engine.queue.length>=32)throw Error('The task queue is full');const attachments=[];
    for(const candidate of candidates)attachments.push(await this.download(candidate));
@@ -295,8 +316,8 @@ export class TelegramGateway extends EventEmitter{
    // A previous ambiguous component freezes this message, including files
    // appended later; receiving new content never authorizes a resend.
    if(marker.text==='unknown'||marker.files.some(file=>file.status==='unknown')||this.config.outbox.some(item=>item.deliveryId===group&&item.status==='unknown'))continue;
-   const items=[];if(newText){const value=message.role==='user'?'You · desktop:\n'+text:text;for(const [index,chunk]of splitTelegramText(this.safeText(value)).entries())items.push({id:group+':text:'+index,kind:'text',text:chunk,deliveryId:group,localMessageId:message.id});}
-   for(const file of pendingFiles)items.push({id:group+':file:'+file.id,kind:'document',attachmentId:file.id,deliveryId:group,localMessageId:message.id,...(message.role==='user'?{caption:'You · desktop'}:{})});
+   const items=[];if(newText){const value=message.role==='user'?this.words().desktop+':\n'+text:text;for(const [index,chunk]of splitTelegramText(this.safeText(value)).entries())items.push({id:group+':text:'+index,kind:'text',text:chunk,deliveryId:group,localMessageId:message.id});}
+   for(const file of pendingFiles)items.push({id:group+':file:'+file.id,kind:'document',attachmentId:file.id,deliveryId:group,localMessageId:message.id,...(message.role==='user'?{caption:this.words().desktop}:{})});
    if(newText)marker.text='scheduling';for(const file of pendingFiles){const prior=marker.files.find(item=>item.id===file.id);if(prior)prior.status='scheduling';else marker.files.push({id:file.id,status:'scheduling'});}
    this.store.update(message.id,{telegramMirror:marker});const accepted=this.queueMirrorBatch(items),status=accepted?'scheduled':'pending';
    if(newText)marker.text=status;marker.files=marker.files.map(file=>file.status==='scheduling'?{...file,status}:file);this.store.update(message.id,{telegramMirror:marker});
@@ -323,8 +344,8 @@ export class TelegramGateway extends EventEmitter{
    this.store.update(task.id,{telegramDelivery:marker});let scheduled=true;
    if(['review','completed'].includes(task.status)){
     const delivered=replies.some(reply=>!!reply.text||reply.attachments?.length);
-    if(!delivered)scheduled=this.queueText(key,'任务已结束，等待你在 dant 验收。 / Work finished and awaits your review in dant.',{deliveryId:key,taskId:task.id});
-   }else scheduled=this.queueText(key,task.submission==='unknown'?'任务提交结果未确认，不会自动重试。请先在 dant 检查。 / Task submission is unconfirmed and will not be retried. Check dant first.':`任务${task.status==='paused'?'已暂停':'未能完成'}，请在 dant 查看。 / Task ${task.status==='paused'?'paused':'failed'}; check dant.`,{deliveryId:key,taskId:task.id});
+    if(!delivered)scheduled=this.queueText(key,this.words().workFinished,{deliveryId:key,taskId:task.id});
+   }else scheduled=this.queueText(key,task.submission==='unknown'?this.words().submissionUnknown:task.status==='paused'?this.words().taskPaused:this.words().taskFailed,{deliveryId:key,taskId:task.id});
    this.store.update(task.id,{telegramDelivery:{...marker,status:scheduled?'scheduled':'failed'}});this.save();
   }
  }

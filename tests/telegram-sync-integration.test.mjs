@@ -60,8 +60,8 @@ async function fixture(t,options={}){
  const worker=new Worker(dir),instance=createWorkerApp({dataDir:dir,workerFactory:store=>{worker.store=store;return worker;},voiceFactory:()=>new ApiVoice(),audioTranscriberFactory:()=>({transcribe:async()=>({text:'Synthetic recorded voice',language:'en',duration:3})}),telegramFactory:options=>(gateway=new TelegramGateway({...options,fetchImpl:api.fetch,autoPoll:false})),...options});worker.engine=instance.engine;
  t.after(async()=>{await instance.close();assert.ok(path.resolve(dir).startsWith(base+path.sep));fs.rmSync(dir,{recursive:true,force:true});});
  await new Promise(resolve=>instance.server.listen(0,'127.0.0.1',resolve));const url='http://127.0.0.1:'+instance.server.address().port,{token}=await fetch(url+'/api/session').then(response=>response.json());
- const request=async(route,body)=>{const response=await fetch(url+route,{method:'POST',headers:{'X-Dant-Token':token,...(body instanceof FormData?{}:{'Content-Type':'application/json'})},body:body instanceof FormData?body:JSON.stringify(body)});const value=await response.json();assert.equal(response.status,200,JSON.stringify(value));return value;};
- const old=instance.store.add({role:'user',text:'Historical desktop request',status:'completed'});instance.store.add({role:'assistant',text:'Historical answer',status:'completed',taskId:old.id});
+ const request=async(route,body,method='POST')=>{const response=await fetch(url+route,{method,headers:{'X-Dant-Token':token,...(body instanceof FormData?{}:{'Content-Type':'application/json'})},body:body instanceof FormData?body:JSON.stringify(body)});const value=await response.json();assert.equal(response.status,200,JSON.stringify(value));return value;};
+ instance.store.state.settings.language='en';const old=instance.store.add({role:'user',text:'Historical desktop request',status:'completed'});instance.store.add({role:'assistant',text:'Historical answer',status:'completed',taskId:old.id});
  await gateway.configure({token:TOKEN,enabled:true});const pairing=await gateway.pair();await gateway.receive(update(1,'/start '+pairing.code));await gateway.flush();api.calls=[];
  return {dir,api,worker,instance,gateway,request,store:instance.store,engine:instance.engine};
 }
@@ -143,4 +143,13 @@ test('a completed ephemeral API voice task mirrors its trusted explicit text and
  assert.equal(f.store.state.messages.some(message=>String(message.text).includes('Private API voice')),false);assert.equal(f.store.state.completions.length,0);
  await f.gateway.close();const restarted=new TelegramGateway({dataDir:f.dir,store:f.store,engine:f.engine,attachments:new AttachmentStore(path.join(f.dir,'attachments')),fetchImpl:f.api.fetch,autoPoll:false});t.after(()=>restarted.close());await restarted.flush();
  assert.deepEqual(f.api.texts(),['Explicit API voice text']);assert.equal(f.api.documents().length,1);assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,1);
+});
+
+test('worker HTTP language settings immediately control the next Telegram prompt without depending on sender locale',async t=>{
+ const f=await fixture(t),before=f.store.state.messages.map(message=>({id:message.id,text:message.text}));
+ const help=async(id,senderLanguage)=>{const incoming=update(id,'/help');incoming.message.from.language_code=senderLanguage;await f.gateway.receive(incoming);await f.gateway.flush();return f.api.texts().at(-1);};
+ assert.doesNotMatch(await help(2,'zh-hans'),/\p{Script=Han}/u);
+ await f.request('/api/settings',{language:'zh'},'PATCH');assert.equal(f.store.state.settings.language,'zh');const chinese=await help(3,'en');assert.match(chinese,/已连接 dant/);assert.doesNotMatch(chinese,/Send text|Shared work progress|Stop only this Telegram/);
+ await f.request('/api/settings',{language:'en'},'PATCH');assert.equal(f.store.state.settings.language,'en');const english=await help(4,'zh-hans');assert.match(english,/Connected to dant/);assert.doesNotMatch(english,/\p{Script=Han}/u);
+ assert.deepEqual(f.store.state.messages.map(message=>({id:message.id,text:message.text})),before);assert.equal(f.worker.calls.some(call=>['turn/start','turn/steer','thread/realtime/start'].includes(call.method)),false);
 });

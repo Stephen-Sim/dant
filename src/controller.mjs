@@ -43,13 +43,45 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.use('/api',(req,res,next)=>{if(!updateSensitiveRequest(req))return next();req.updateInstallDone=updateLease.enter();res.once('finish',()=>req.updateInstallDone());next();});
  const admitted=handler=>async(req,res,next)=>{try{await handler(req,res,next);}catch(error){req.updateInstallDone?.(error);next(error);}finally{req.updateInstallDone?.();}};
  function binding(){try{return readVmBinding(dataDir);}catch{return {};}}
+ let preferenceSync;
+ // These idempotent preferences share one writer per SSH/VM connection. A
+ // newer UI language waits for any older write before applying its latest value.
+ const preferenceFailure=()=>Error('The computer connected, but its language and time zone could not be updated.');
+ const preferenceValues=()=>({language:config.language,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone});
+ function preferenceConnection(){
+  const identity=JSON.stringify([bridge.generation??null,binding()]);
+  if(closing||bridge.status!=='online'||preferenceSync?.identity!==identity){preferenceSync?.abort.abort();preferenceSync=null;}
+  if(closing||bridge.status!=='online')return null;
+  return preferenceSync??={identity,abort:new AbortController(),pending:null,confirmed:null,submitted:false,retryAt:0};
+ }
+ const preferenceCurrent=context=>!closing&&preferenceSync===context&&bridge.status==='online'&&!context.abort.signal.aborted&&context.identity===JSON.stringify([bridge.generation??null,binding()]);
+ async function syncPreferences({retry=false}={}){
+  const context=preferenceConnection();if(!context)return;
+  if(context.pending)return context.pending;
+  if(!retry&&Date.now()<context.retryAt)return;
+  const pending=(async()=>{
+   while(preferenceCurrent(context)){
+    const values=preferenceValues(),key=JSON.stringify(values);
+    if(context.confirmed===key)return;
+    if(!context.submitted&&bridge.cached?.settings?.language===values.language&&bridge.cached?.settings?.timeZone===values.timeZone){context.confirmed=key;return;}
+    context.submitted=true;
+    const response=await bridge.request('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(values),signal:AbortSignal.any([context.abort.signal,AbortSignal.timeout(60000)])});
+    if(!preferenceCurrent(context))return;
+    if(!response.ok)throw preferenceFailure();
+    context.confirmed=key;context.retryAt=0;
+    await bridge.refresh(true);
+    if(!preferenceCurrent(context))return;
+   }
+  })().catch(error=>{if(!preferenceCurrent(context))return;context.confirmed=null;context.retryAt=Date.now()+5000;throw error;}).finally(()=>{if(context.pending===pending)context.pending=null;});
+  context.pending=pending;return pending;
+ }
+ function syncPreferencesAfterEvent(){const context=preferenceConnection();if(!context||context.pending||Date.now()<context.retryAt)return;void syncPreferences().catch(()=>{if(preferenceCurrent(context))broadcast('notice',{message:preferenceFailure().message});});}
  async function connect({recoverExecutor=false}={}){
   const finish=updateLease.enter();let failed;
   try{
   try{const discovery=profiles.autoImport();if(discovery.requiresSelection)throw Object.assign(Error(discovery.error),{status:409});readVmBinding(dataDir);profileError=null;}catch(error){profileError=error.message;throw error;}
   await bridge.connect();
-  const timeZone=Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if(bridge.status==='online'&&(bridge.cached?.settings?.language!==config.language||bridge.cached?.settings?.timeZone!==timeZone)){const response=await bridge.request('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:config.language,timeZone})});if(!response.ok)throw Error('The computer connected, but its language and time zone could not be updated.');}
+  await syncPreferences({retry:true});
   // Reopening SSH after startup or a transport failure must preserve an executor
   // intentionally stopped by voice safety. Only the explicit Reconnect action
   // may start it again, after checking fresh authoritative VM state.
@@ -67,8 +99,8 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  function broadcast(type,data){if(closing)return;const body=JSON.stringify({type,data});for(const client of wss.clients)if(client.readyState===1)client.send(body);for(const stream of streams)stream.write(`data: ${body}\n\n`);}
  function saveCache(){clearTimeout(saveTimer);saveTimer=null;const temporary=cacheFile+'.tmp';fs.writeFileSync(temporary,JSON.stringify(cached));fs.renameSync(temporary,cacheFile);lastSaved=Date.now();}
  let cachedWorkerStatus=diagnosticWorkerStatus(cached.worker?.status),bridgeStatus=diagnosticWorkerStatus(bridge.status);diagnostics.log('bridge.status',{status:bridgeStatus});diagnostics.log('worker.status',{status:cachedWorkerStatus,cached:true});
- bridge.on('state',state=>{cached=state;const status=diagnosticWorkerStatus(state.worker?.status);if(status!==cachedWorkerStatus){cachedWorkerStatus=status;diagnostics.log('worker.status',{status,cached:true});}notifications.observe(state);if(!saveTimer)saveTimer=setTimeout(()=>{try{saveCache();}catch{broadcast('notice',{message:'The VM state is available, but its Windows cache could not be saved.'});}},2000);broadcast('state',snapshot());});
- bridge.on('change',()=>{const status=diagnosticWorkerStatus(bridge.status);if(status!==bridgeStatus){bridgeStatus=status;diagnostics.log('bridge.status',{status});}broadcast('state',snapshot());});bridge.on('event',event=>broadcast(event.type,event.data));
+ bridge.on('state',state=>{cached=state;const status=diagnosticWorkerStatus(state.worker?.status);if(status!==cachedWorkerStatus){cachedWorkerStatus=status;diagnostics.log('worker.status',{status,cached:true});}notifications.observe(state);if(!saveTimer)saveTimer=setTimeout(()=>{try{saveCache();}catch{broadcast('notice',{message:'The VM state is available, but its Windows cache could not be saved.'});}},2000);broadcast('state',snapshot());syncPreferencesAfterEvent();});
+ bridge.on('change',()=>{const status=diagnosticWorkerStatus(bridge.status);if(status!==bridgeStatus){bridgeStatus=status;diagnostics.log('bridge.status',{status});}broadcast('state',snapshot());syncPreferencesAfterEvent();});bridge.on('event',event=>broadcast(event.type,event.data));
  diagnostics.log('service.started',{version});
  let provisioningStatus=provisioning.snapshot().status;
  provisioning.on('change',progress=>{broadcast('state',snapshot());if(!prepareOnly&&progress.status==='ready'&&provisioningStatus!=='ready')void connect().catch(error=>broadcast('notice',{message:error.message}));provisioningStatus=progress.status;});
@@ -96,7 +128,9 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   if(body.vm){const old=binding(),vm=normalizeVmBinding({...old,...Object.fromEntries(['host','user','port','keyPath','knownHosts'].filter(key=>body.vm[key]!==undefined).map(key=>[key,body.vm[key]]))},dataDir),temporary=path.join(dataDir,`.vm-settings-${randomUUID()}.tmp`);try{fs.writeFileSync(temporary,JSON.stringify(vm,null,2),{flag:'wx',mode:0o600});fs.renameSync(temporary,path.join(dataDir,'vm.json'));}finally{fs.rmSync(temporary,{force:true});}try{profiles.registerCurrent();}catch{}profileError=null;bridge.disconnect();delete body.vm;}
   Object.assign(config,appearance);for(const key of appearanceKeys)delete body[key];for(const key of ['language','notifications','showWorkSummary'])if(body[key]!==undefined){config[key]=body[key];if(key!=='language'||bridge.status!=='online')delete body[key];}
   fs.writeFileSync(configFile,JSON.stringify(config,null,2));notifications.configure(config.notifications);broadcast('state',snapshot());
-  if(Object.keys(body).length){req.body=body;return next();}res.json({ok:true});
+  const forwardingScope=JSON.stringify([bridge.generation??null,binding()]);
+  if(body.language!==undefined){delete body.language;await syncPreferences({retry:true});}
+  if(Object.keys(body).length){if(closing||forwardingScope!==JSON.stringify([bridge.generation??null,binding()]))throw Object.assign(Error('The VM connection changed before its settings could be updated.'),{status:409});req.body=body;return next();}res.json({ok:true});
  });
  app.use('/api',async(req,res,next)=>{
   let failed;
@@ -113,5 +147,5 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.use(express.static(path.join(projectRoot,'dist')));
  app.use((error,req,res,next)=>{req.updateInstallDone?.(error);if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(error.unknownOutcome?{unknownOutcome:true}: {})});});
  let closePromise;
- return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;updateLease.close();updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
+ return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;preferenceSync?.abort.abort();preferenceSync=null;updateLease.close();updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
 }
