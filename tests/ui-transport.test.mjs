@@ -66,7 +66,7 @@ test('a slow update check does not delay call shutdown or state polling over nat
   }finally{finishUpdate?.(response({latestVersion:'0.4.5'}));await checking;transport.close();}
 });
 
-test('only the two exact read-only app routes bypass pending native mutations', async () => {
+test('only exact stable/beta update reads and version reads bypass pending native mutations', async () => {
   let finishMutation;const starts=[];
   const transport=createTransport({desktop:true,invokeRequest:async(_command,args)=>{
     starts.push(args.route);
@@ -75,14 +75,14 @@ test('only the two exact read-only app routes bypass pending native mutations', 
   }});
   const saving=transport.json('/api/settings',{method:'PATCH',body:{language:'en'}});
   await until(()=>finishMutation);
-  const version=transport.json('/api/version'),checking=transport.json('/api/updates');
-  const mutation=transport.json('/api/updates',{method:'POST'}),other=transport.json('/api/updates/other');
+  const version=transport.json('/api/version'),checking=transport.json('/api/updates'),beta=transport.json('/api/updates?channel=beta');
+  const mutation=transport.json('/api/updates',{method:'POST'}),other=transport.json('/api/updates/other'),invalid=transport.json('/api/updates?channel=other');
   try{
     await until(()=>starts.includes('/api/version')&&starts.includes('/api/updates'));
-    assert.deepEqual(await version,{ok:true});assert.deepEqual(await checking,{ok:true});
-    assert.deepEqual(starts,['/api/settings','/api/version','/api/updates']);
-  }finally{finishMutation(response({ok:true}));await Promise.all([saving,mutation,other]);transport.close();}
-  assert.deepEqual(starts,['/api/settings','/api/version','/api/updates','/api/updates','/api/updates/other']);
+    assert.deepEqual(await version,{ok:true});assert.deepEqual(await checking,{ok:true});assert.deepEqual(await beta,{ok:true});
+    assert.deepEqual(starts,['/api/settings','/api/version','/api/updates','/api/updates?channel=beta']);
+  }finally{finishMutation(response({ok:true}));await Promise.all([saving,mutation,other,invalid]);transport.close();}
+  assert.deepEqual(starts,['/api/settings','/api/version','/api/updates','/api/updates?channel=beta','/api/updates','/api/updates/other','/api/updates?channel=other']);
 });
 
 test('desktop state polling waits until the prior request completes and never opens browser streams', async () => {

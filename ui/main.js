@@ -3,6 +3,7 @@ import {createElement,MessageCircle,Monitor,Settings,Brain,ArrowUp,Plus,Phone,Mi
 import {marked} from 'marked';
 import DOMPurify from 'dompurify';
 import {reconcile} from './dom.js';
+import {createChatScroll} from './chat-scroll.js';
 import {createTransport} from './transport.js';
 import {createMessageSubmissions,createCallStops} from './pending.js';
 import {SpeechHelper} from './speech.js';
@@ -26,6 +27,9 @@ import {searchMessages} from './chat-search.js';
 import {formatPresence} from './presence.js';
 import {createReadVisibility} from './read-state.js';
 import {createUpdates} from './updates.js';
+import {createNativeUpdates} from './native-updates.js';
+import {createUpdateDraft,updateDraftScope} from './update-draft.js';
+import {createMemorySettings} from './memory-settings.js';
 import {createSettingsNavigation} from './settings-navigation.js';
 import packageInfo from '../package.json';
 const icons={MessageCircle,Monitor,Settings,Brain,ArrowUp,Plus,Phone,Mic,Square,X,ArrowLeft,Reply,Smile,Check,CheckCheck,Paperclip,Volume2,Clock,Minimize2,Maximize2,MicOff,LogIn,RefreshCw,ExternalLink,ChevronRight,Download,Pause,Play,MoreHorizontal,ChevronDown,FileText,ArrowDown,Search,Puzzle};
@@ -41,6 +45,7 @@ const readVisibility=createReadVisibility({desktop:Boolean(window.__TAURI_INTERN
 const callDuration=createCallDuration({onTick:()=>updateCallDuration()});
 const floatingCall=createFloatingCall({window});
 const workDisclosures=createWorkDisclosures({getState:()=>state,document});
+const chatScroll=createChatScroll({document,window,getScope:()=>JSON.stringify([state?.conversationId??null,state?.settings?.vm?.host??null,state?.settings?.vm?.user??null,state?.settings?.vm?.port??null,state?.settings?.vm?.keyPath??null])});
 const progressActions=createProgressActions({getModel:()=>workProgress(state,{language:language(),connected:eventConnected}),request:taskRequest,render,toast,getLanguage:language,formatError:errorText,document,isPending:id=>pendingActions.has('task:'+id)});
 const nativeCallOverlay=createNativeCallOverlay({desktop:Boolean(window.__TAURI_INTERNALS__),onAction:handleNativeCallAction,onError:()=>toast(language()==='zh'?'通话悬浮窗暂时不可用。':'The floating call window is temporarily unavailable.')});
 const nativeTray=createNativeTray({desktop:Boolean(window.__TAURI_INTERNALS__),onProgress:()=>openModal({type:'progress'})});
@@ -55,8 +60,12 @@ const filePreview=createFilePreview({getState:()=>state,getModal:()=>modal,openM
 const messageSubmissions=createMessageSubmissions(),callStops=createCallStops(id=>post('/call/stop',{callId:id}));
 const managedSettings=createManagedSettings({getState:()=>state,getModal:()=>modal,request:api,download:file=>downloads.save(file),render,toast,openModal,closeModal,document,connected:()=>eventConnected,icon:name=>ico(name)});
 const scheduledTasks=createSchedules({getState:()=>state,request:api,render,toast,document,connected:()=>eventConnected,icon:name=>ico(name)});
-const chatHistory=createChatHistory({getState:()=>state,request:api,render,toast,openModal,closeModal,revealMessage,document,connected:()=>eventConnected,callActive:speechBlocked,searchMessages,icon:name=>ico(name)});
-const appUpdates=createUpdates({request:api,version:packageInfo.version,getLanguage:language,onChange:()=>{if(page==='settings'&&!unloading)render();},document,openExternal:window.__TAURI_INTERNALS__?openExternal:undefined,onOpenError:error=>toast(errorText(error))});
+const chatHistory=createChatHistory({getState:()=>state,request:api,render,toast,openModal,closeModal,revealMessage,navigate:action=>chatScroll.navigate(action),document,connected:()=>eventConnected,callActive:speechBlocked,searchMessages,icon:name=>ico(name)});
+const updateDraft=createUpdateDraft(),nativeUpdates=createNativeUpdates({desktop:Boolean(window.__TAURI_INTERNALS__),getToken:()=>token});
+let restoringUpdateDraft=false,updateInstalling=false;
+const appUpdates=createUpdates({request:api,version:packageInfo.version,getLanguage:language,onChange:()=>{if(page==='settings'&&!unloading)render();},document,nativeUpdater:nativeUpdates,getInstallState:updateInstallState,beforeInstall:saveUpdateDraft,openExternal:window.__TAURI_INTERNALS__?openExternal:undefined,onOpenError:error=>toast(errorText(error))});
+nativeUpdates.ready?.().then(()=>{if(page==='settings'&&!unloading)render();}).catch(()=>{});
+const memorySettings=createMemorySettings({request:api,getState:()=>state,getLanguage:language,onChange:render,document,connected:()=>eventConnected,renderMarkdown:md});
 const settingsNavigation=createSettingsNavigation({document,getLanguage:language,onChange:render,onCategory:loadSettingsCategory,onError:error=>toast(errorText(error))});
 let presenceTimer;
 const app=document.querySelector('#app');
@@ -119,6 +128,8 @@ function vmProviderStatus(){const setup=state.provisioning||{};return {provider:
 async function loadVMProviders(){if(vmProvidersBusy)return;vmProvidersBusy=true;vmProvidersError='';render();try{vmProviderInfo=await api('/vm/providers');}catch(error){vmProvidersError=error.message;}finally{vmProvidersBusy=false;render();}}
 function setupStageText(current){const stages={'checking-vmware':'providerChecking','checking-hyper-v':'providerChecking','preparing-seed':'guestPreparing','prepared':'guestPreparing','converting-image':'diskPreparing','expanding-disk':'diskPreparing','starting-vm':'computerBooting','network-repaired':'computerNetworking','downloading-image':'imageDownloading','verifying-image':'imageVerifying','extracting-image':'imagePreparing','configuring-nocloud':'guestPreparing','allocating-source-disk':'diskPreparing','converting-disk':'diskPreparing','resizing-disk':'diskPreparing','registering-vm':'computerRegistering','creating-vmx':'computerRegistering','booting-vm':'computerBooting','waiting-for-ip':'computerNetworking','guest-installing':'installing'};return t(stages[current.stage]||current.status);}
 Object.assign(zh,{schedules:'定时任务'});
+Object.assign(zh,{memory:'记忆与人格',memoryTitle:'记忆与人格'});
+Object.assign(en,{memory:'Memory & personality',memoryTitle:'Memory & personality'});
 Object.assign(zh,{showWorkSummary:'在聊天中显示任务进度',showWorkSummaryHint:'显示当前、进行中和排队的任务摘要；随时可从顶部打开工作进度。'});
 Object.assign(en,{showWorkSummary:'Show work progress in chat',showWorkSummaryHint:'Show a summary of active, ongoing and queued tasks. Work progress is always available in the header.'});
 const subscriptionVoiceUnavailable=()=>state?.worker.realtime?.subscription?.available===false;
@@ -143,25 +154,41 @@ async function api(route,options={}){
  return response.json();
 }
 const post=(p,body={})=>api(p,{method:'POST',body});
+function updateInstallState(){return {...state,mode:eventConnected&&state?.mode==='vm-controller'&&state.controller?.status==='online'&&state.controller.cached!==true?'controller':'offline',call:Boolean(pc||callStarting||state?.call||callStops.pending),unsafeLocalInput:Boolean(recording||recordStarting||dictating||recordDraft||sending||uploading||messageSubmissions.unknown)};}
+async function saveUpdateDraft(){
+ const current=updateInstallState();if(updateInstalling||current.mode!=='controller'||current.call||current.unsafeLocalInput)throw Error('Finish the call or pending input before installing.');
+ const draft={text:document.querySelector('#composer')?.value??composerDraft,replyTo,attachments};
+ updateInstalling=true;render();
+ try{const receipt=await updateDraft.save(state,draft);return ()=>{updateInstalling=false;updateDraft.discard(receipt);if(!unloading)render();};}
+ catch(error){updateInstalling=false;if(!unloading)render();throw error;}
+}
+async function restoreUpdateDraft(){
+ if(restoringUpdateDraft||!updateDraftScope(state))return;
+ restoringUpdateDraft=true;const scope=updateDraftScope(state);
+ try{const draft=await updateDraft.take(state,{occupied:Boolean((document.querySelector('#composer')?.value??composerDraft)||replyTo||attachments.length)});if(!draft||scope!==updateDraftScope(state)||(document.querySelector('#composer')?.value??composerDraft)||replyTo||attachments.length)return;composerDraft=draft.text;replyTo=draft.replyTo;attachments=draft.attachments;const input=document.querySelector('#composer');if(input)input.value=composerDraft;}finally{restoringUpdateDraft=false;}
+}
 function toast(text){const box=document.querySelector('#toast');box.textContent=text;box.classList.add('visible');clearTimeout(toast.timer);toast.timer=setTimeout(()=>box.classList.remove('visible'),6500);}
 function md(text){return DOMPurify.sanitize(marked.parse(text||'',{breaks:true}),{ALLOW_DATA_ATTR:false,SANITIZE_NAMED_PROPS:true,FORBID_TAGS:['img','iframe','style','form','input','video','button','textarea','select','audio'],FORBID_ATTR:['style']});}
 function render(){
+ chatScroll.capture();
+ memorySettings.setVisible(page==='memory');
  workDisclosures.capture();
  settingsNavigation.sync(page==='settings');appUpdates.setVisible(page==='settings'&&settingsNavigation.isVisible('about'));
  modal=managedSettings.syncModal(modal,page);
  modal=filePreview.syncModal(modal);
  appearance.sync(state.settings);
  const composer=document.querySelector('#composer');if(composer)composerDraft=composer.value;
- const scroll=document.querySelector('#messages'),nearBottom=!scroll||scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<90,oldScroll=scroll?.scrollTop||0;
  const status=!eventConnected?'offline':humanControl()?'takeover':state.active?'working':state.worker.status;
  document.documentElement.lang=language()==='en'?'en':'zh-CN';
  const template=document.createElement('template');
  template.innerHTML=`${renderRail()}<main class="${page==='chat'?'chat-main':'settings-main'}">${renderHeader(status)}${page==='chat'?`<div class="workspace ${showComputer&&chatMode==='text'?'computer-visible':''}" data-key="workspace"><section class="conversation" data-key="conversation">${renderCall()}${chatMode==='voice'&&!pc&&!callStarting?renderCallReady():renderChat()}</section>${showComputer&&chatMode==='text'?renderComputer():''}</div>`:['skills','schedules'].includes(page)?`<div class="full-page skills-full-page" data-key="page-${page}">${page==='skills'?managedSettings.renderSkillPage():renderSchedules()}</div>`:`<div class="full-page" data-key="page-${page}"><div class="settings-stack">${page==='settings'?renderSettings():renderMemory()}</div></div>`}</main><input type="file" id="file-input" hidden multiple>${renderModal()}`;
  reconcile(app,template.content);bind();resizeComposer();
+ for(const node of app.querySelectorAll(':scope > nav,:scope > main'))node.toggleAttribute('inert',updateInstalling);
+ if(updateInstalling){const overlay=document.createElement('div');overlay.className='update-install-lock';overlay.setAttribute('role','status');overlay.setAttribute('aria-live','polite');overlay.textContent=language()==='zh'?'正在启动安装程序，请稍候…':'Starting the installer. Please wait…';app.append(overlay);}
  floatingCall.sync(document.querySelector('.call-view.mini'),{bounds:app,anchor:document.querySelector('.conversation'),callKey:state.call?.id||callId||((pc||callStarting||callStops.pending)?callDuration.snapshot.callId||'connecting':null)});
  publishCallOverlay();
  nativeTray.sync({...state,controller:eventConnected?state.controller:{...state.controller,status:'offline',cached:true}});
- const nextScroll=document.querySelector('#messages');if(nextScroll)nextScroll.scrollTop=nearBottom?nextScroll.scrollHeight:oldScroll;positionReactionMenus();
+ chatScroll.restore();positionReactionMenus();
  updateRead();restartScreen();
 }
 function renderRail(){const unread=unreadMessages().length;return `<nav class="rail" aria-label="dant"><button type="button" class="brand" data-action="chat" title="dant" aria-label="${esc(t('chat')+(unread?' · '+unreadLabel(unread):''))}" ${page==='chat'?'aria-current="page"':''}>${eyes('small')}<span class="unread-badge" data-unread-count="${unread}" aria-hidden="true" ${unread?'':'hidden'}>${unread>99?'99+':unread}</span></button><button type="button" class="icon-btn rail-skills ${page==='skills'?'selected':''}" data-action="skills" title="${t('skills')}" aria-label="${t('skills')}" ${page==='skills'?'aria-current="page"':''}>${ico('puzzle')}</button><button type="button" class="icon-btn rail-schedules ${page==='schedules'?'selected':''}" data-action="schedules" title="${t('schedules')}" aria-label="${t('schedules')}" ${page==='schedules'?'aria-current="page"':''}>${ico('clock')}</button><div class="rail-bottom">${button('settings','settings',t('settings'),'icon-btn '+(page==='settings'?'selected':''))}</div></nav>`;}
@@ -248,7 +275,7 @@ function renderSettings(){
   computer:`${renderVMSettings()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing?`<p class="card-description">${t('currentPermissions')}</p>${button('computer','monitor',t('viewComputer'),'text-btn')}`:`<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo?'selected':''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo?'selected':''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo?'permissionsAdminHint':'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
   account:`<section class="settings-section setting-card" data-setting-card="account"><div class="card-label"><h2>${t('accountSubscription')}</h2></div><div class="card-content"><div class="setting-row"><div><strong>${esc(state.worker.account?.email||'ChatGPT')}</strong><small>${esc(state.worker.account?.planType||t('offline'))}</small></div><button type="button" class="text-btn ${state.worker.account?'':'primary'}" data-action="${state.worker.account?'logout':'login'}">${t(state.worker.account?'logout':'login')}</button></div><p class="card-description">${t('subscriptionTasks')}</p><div id="login-details">${renderLoginDetails()}</div><div class="setting-row model-setting"><span>${t('model')}</span><select id="model" aria-label="${t('model')}"><option value="">${t('default')}</option>${state.worker.models.map(model=>`<option value="${esc(model.model)}" ${model.model===settings.model?'selected':''}>${esc(model.displayName||model.model)}</option>`).join('')}</select></div></div></section>`,
   credentials:managedSettings.renderCredentials(),
-  history:`${chatHistory.renderSettings()}<div class="settings-links">${button('memory','brain',t('memory'),'text-btn')}${button('schedules','clock',t('schedules'),'text-btn')}</div>`,
+  history:`${chatHistory.renderSettings()}<div class="settings-links">${button('memory','brain',t('memory'),'text-btn')}</div>`,
   telegram:renderTelegramSettings(),about:appUpdates.render(),
  };
  return settingsNavigation.render(sections);
@@ -356,7 +383,7 @@ function renderProvisionCard(){
  const providerHint=provider==='vmware'?'providerVmwareHint':provider==='hyperv'?'providerHypervHint':'providerAutoHint';
  return `<div class="provision-card"><p class="setup-summary">${existing?esc(vmSystemDescription()):t('newComputerSystem')}</p><p class="setup-lead">${ready?t('setupReady'):busy?setupStageText(current):t(existing?'existingComputerConfigured':'setupBeforeCreate')}</p>${current.status==='failed'?`<p class="error">${esc(current.error?errorText(current.error):t('provisionFailed'))}</p>`:''}${busy||ready?`<ol class="setup-phases">${phases.map((phase,index)=>`<li class="${index<rank||ready?'done':index===rank?'current':''}"><span>${index<rank||ready?ico('check'):index+1}</span>${t(phase==='ready'?'provisionReady':phase)}</li>`).join('')}</ol>`:''}${existing?`<div class="setup-connection"><strong>${t('connectionDetails')}</strong><span>${esc(state.settings.vm.user||current.connection?.user||'dant')}@${esc(state.settings.vm.host||current.connection?.host||'')}</span></div>`:''}<form id="provision-form"><label>${t('hypervisor')}<select name="provider" aria-label="${t('hypervisor')}" ${busy||existing||vmProvidersBusy?'disabled':''}>${providerOptions}</select></label>${vmProvidersBusy?`<p class="muted" role="status">${t('providerDetecting')}</p>`:''}${vmProvidersError?`<p class="error">${esc(errorText(vmProvidersError))}</p>`:''}${provider?`<p class="muted">${t('providerUsing')} · ${esc(vmProviderLabel(provider))}</p>`:''}<p class="muted">${t(providerHint)}</p>${unavailable?`<p class="error">${t(selection==='auto'?'noHypervisor':'providerUnavailable')}${availability?.reason?' · '+esc(errorText(availability.reason)):''}</p>`:''}<details id="provision-options" ${provisionExpanded?'open':''}><summary>${t('createOptions')}</summary><div class="provision-resources"><label>${t('cpu')}<input name="cpu" type="number" min="1" max="64" value="${esc(provisionDraft.cpu)}" required ${busy||existing?'disabled':''}></label><label>${t('memorySize')}<input name="memoryGB" type="number" min="2" max="128" value="${esc(provisionDraft.memoryGB)}" required ${busy||existing?'disabled':''}></label><label>${t('diskSize')}<input name="diskGB" type="number" min="32" max="2048" value="${esc(provisionDraft.diskGB)}" required ${busy||existing?'disabled':''}></label></div><label class="provision-admin"><input name="adminSudo" type="checkbox" ${provisionDraft.adminSudo?'checked':''} ${busy||existing?'disabled':''}><span>${t('vmAdmin')}<small>${t('vmAdminHint')}</small></span></label></details><div class="setup-footer">${existing?button('connect','refresh-cw',t('refresh'),'text-btn'):''}<button type="submit" class="text-btn primary" ${busy||existing||vmProvidersBusy||unavailable?'disabled':''}>${t(existing?'createReady':busy?current.status:'createComputer')}</button>${ready?button('setup-done','arrow-up',t('backChat'),'text-btn'):''}</div></form></div>`;
 }
-function renderMemory(){return `<section class="settings-section memory-page"><p class="card-description">${t('memorySub')}</p><div class="memory-content markdown">${state.memory?md(state.memory):`<div class="empty-state">${ico('brain')}<p>${t('memoryEmpty')}</p></div>`}</div></section>`;}
+function renderMemory(){return memorySettings.render();}
 function renderSchedules(){return scheduledTasks.renderPage();}
 function renderCallReady(){
  const ready=eventConnected&&state.worker.status==='online'&&!subscriptionVoiceUnavailable()&&!state.call&&!callStops.pending;
@@ -392,7 +419,7 @@ function renderProgress(){
  };
  const item=(message,status)=>{
   const pending=busy||pendingActions.has('task:'+message.id);
-  const dismiss=['review','paused','failed','completed'].includes(status)?`<button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${esc(message.id)}" data-progress-kind="task" data-progress-status="${esc(status)}" title="${t('dismissTask')}" aria-label="${t('dismissTask')}" ${pending?'disabled':''}>${ico('x')}</button>`:'';
+  const dismiss=['review','paused','failed','completed','cancelled'].includes(status)?`<button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${esc(message.id)}" data-progress-kind="task" data-progress-status="${esc(status)}" title="${t('dismissTask')}" aria-label="${t('dismissTask')}" ${pending?'disabled':''}>${ico('x')}</button>`:'';
   return `<div class="progress-item" data-key="progress-${esc(message.id)}"><span class="progress-state ${status}">${status==='completed'?ico('check'):ico('clock')}</span><div><p>${esc(message.text||message.attachments?.map(file=>file.name).join(', ')||'')}</p><small>${t(status==='read'?'review':status)} · ${formatTime(message.time,true)}</small>${renderWorkPriority({message},model.labels,{pending})}${taskActions(message,status)}</div>${dismiss}</div>`;
  };
  const nativeCall=state.call?.provider==='subscription';
@@ -400,7 +427,7 @@ function renderProgress(){
  const ongoingHtml=ongoing.length?`<h4>${esc(model.labels.ongoing)}</h4>${ongoing.map(historyItem).join('')}`:'';
  const changed=steerExpectedTurn&&steerExpectedTurn!==state.active?.turnId,steerDisabled=changed||!state.active?.turnId||pendingActions.has('steer');
  const completedHtml=model.completedCount?`<div class="progress-section-heading"><h4>${esc(model.labels.completedTasks)} <small>(${model.completedCount})</small></h4><button type="button" class="text-btn" data-progress-clear-completed aria-label="${esc(model.labels.completedTasks+': '+model.labels.clearCompleted)}" ${busy?'disabled':''}>${esc(model.labels.clearCompleted)}</button></div>${completed.slice(0,12).map(historyItem).join('')}`:'';
- return `${progressActions.renderConfirmation()}${active?`${renderActiveWork(model)}${nativeCall?`<p class="muted native-steer-hint">${t('voiceTaskAdjust')}</p><button type="button" class="text-btn" data-action="stop">${t('stopWork')}</button>`:!active.canSteer?`<p class="muted native-steer-hint">${t('workAdjustUnavailable')}</p><button type="button" class="text-btn" data-action="stop">${t('stopWork')}</button>`:`<form id="steer-form"><label>${t('steerTask')}<textarea id="steer-text" name="text" rows="2" placeholder="${t('steerHint')}" required ${pendingActions.has('steer')||active.stale?'disabled':''}>${esc(steerDraft)}</textarea></label>${changed?`<p class="error">${t('steerChanged')}</p><button type="button" class="text-link" data-action="clear-steer">${t('clear')}</button>`:''}<div class="form-actions"><button type="button" class="text-btn" data-action="stop">${t('stop')}</button><button type="submit" class="text-btn primary" ${steerDisabled||active.stale?'disabled':''}>${t('sendSteer')}</button></div></form>`}`:(ongoing.length?'':`<p class="muted">${model.reliable?t('noActiveTask'):esc(model.labels.offline)}</p>`)}${ongoingHtml}${queue.length?`<h4>${t('queuedTasks')}</h4>${queue.map(entry=>item(entry.message,'queued')).join('')}`:''}${recent.length?`<h4>${t('taskHistory')}</h4>${recent.map(historyItem).join('')}`:''}${completedHtml}${!active&&!ongoing.length&&!queue.length&&!recent.length&&!model.completedCount?`<p class="muted">${t('progressEmpty')}</p>`:''}`;
+ return `${progressActions.renderConfirmation()}${active?`${renderActiveWork(model,{pending:busy})}${nativeCall?`<p class="muted native-steer-hint">${t('voiceTaskAdjust')}</p>`:!active.canSteer?`<p class="muted native-steer-hint">${t('workAdjustUnavailable')}</p>`:`<form id="steer-form"><label>${t('steerTask')}<textarea id="steer-text" name="text" rows="2" placeholder="${t('steerHint')}" required ${pendingActions.has('steer')||active.stale?'disabled':''}>${esc(steerDraft)}</textarea></label>${changed?`<p class="error">${t('steerChanged')}</p><button type="button" class="text-link" data-action="clear-steer">${t('clear')}</button>`:''}<div class="form-actions"><button type="submit" class="text-btn primary" ${steerDisabled||active.stale?'disabled':''}>${t('sendSteer')}</button></div></form>`}`:(ongoing.length?'':`<p class="muted">${model.reliable?t('noActiveTask'):esc(model.labels.offline)}</p>`)}${ongoingHtml}${queue.length?`<h4>${t('queuedTasks')}</h4>${queue.map(entry=>item(entry.message,'queued')).join('')}`:''}${recent.length?`<h4>${t('taskHistory')}</h4>${recent.map(historyItem).join('')}`:''}${completedHtml}${!active&&!ongoing.length&&!queue.length&&!recent.length&&!model.completedCount?`<p class="muted">${t('progressEmpty')}</p>`:''}`;
 }
 function renderModal(){
  if(!modal)return '';
@@ -436,8 +463,8 @@ function bind(){
  bindAttachmentImages(document,{ready:eventConnected&&(!state.controller||state.controller.status==='online'&&state.controller.cached!==true),scope:JSON.stringify([state.conversationId??null,state.settings?.vm?.host??null,state.settings?.vm?.user??null,state.settings?.vm?.port??null,state.settings?.vm?.keyPath??null])});
  filePreview.bind(id=>conversationFiles().find(file=>file.id===id));
  downloads.bind(id=>conversationFiles().find(file=>file.id===id),()=>toast(language()==='zh'?'文件保存失败，请检查连接和保存位置后重试。':'Could not save the file. Check the connection and destination, then try again.'));
- document.querySelectorAll('[data-progress-message]').forEach(node=>node.onclick=()=>{const id=node.dataset.progressMessage;if(!state.messages.some(message=>message.id===id))return;closeModal();revealMessage(id);const target=[...document.querySelectorAll('.message[data-id]')].find(element=>element.dataset.id===id);if(target){target.scrollIntoView({block:'center',behavior:'auto'});target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}updateRead();});
- document.querySelectorAll('[data-first-unread]').forEach(node=>node.onclick=()=>{const first=unreadMessages()[0];if(!first)return;revealMessage(first.id);const target=[...document.querySelectorAll('.message[data-id]')].find(element=>element.dataset.id===first.id);if(target){target.scrollIntoView({block:'center',behavior:'auto'});target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}updateRead();});
+ document.querySelectorAll('[data-progress-message]').forEach(node=>node.onclick=()=>{const id=node.dataset.progressMessage;if(!state.messages.some(message=>message.id===id))return;closeModal();revealMessage(id);const target=[...document.querySelectorAll('.message[data-id]')].find(element=>element.dataset.id===id);if(target){chatScroll.navigate(()=>target.scrollIntoView({block:'center',behavior:'auto'}));target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}updateRead();});
+ document.querySelectorAll('[data-first-unread]').forEach(node=>node.onclick=()=>{const first=unreadMessages()[0];if(!first)return;revealMessage(first.id);const target=[...document.querySelectorAll('.message[data-id]')].find(element=>element.dataset.id===first.id);if(target){chatScroll.navigate(()=>target.scrollIntoView({block:'center',behavior:'auto'}));target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}updateRead();});
  document.querySelectorAll('[data-language]').forEach(el=>el.onclick=()=>changeLanguage(el.dataset.language).catch(error=>toast(errorText(error))));
  document.querySelectorAll('[data-permission]').forEach(el=>el.onclick=()=>{provisionDraft.adminSudo=el.dataset.permission==='admin';render();});
  const manualOptions=document.querySelector('#manual-vm-options');if(manualOptions)manualOptions.ontoggle=()=>manualVMExpanded=manualOptions.open;
@@ -456,6 +483,7 @@ function bind(){
  bindProvision();bindVoiceKey();bindTelegram();
  bindAppearance();bindVMSettings();managedSettings.bind();chatHistory.bind();chatHistory.bindModal(modal);
  if(document.querySelector('.app-about-settings'))appUpdates.bind();
+ if(document.querySelector('.memory-page'))memorySettings.bind();
  if(document.querySelector('.settings-layout')){settingsNavigation.bind();textEditor.bind();}
  const callView=document.querySelector('.call-view');if(callView)callView.onclick=()=>audio?.play().catch(()=>{});
  if(document.querySelector('.schedules-page'))scheduledTasks.bind();
@@ -463,7 +491,7 @@ function bind(){
  bindComputerInput();
  document.querySelectorAll('.markdown a,#login-details a,.voice-settings a,.telegram-settings a').forEach(link=>{link.target='_blank';link.rel='noopener noreferrer';if(window.__TAURI_INTERNALS__)link.onclick=e=>{e.preventDefault();openExternal(link.href).catch(error=>toast(errorText(error)));};});
 }
-async function taskRequest(id,route,body={}){const key='task:'+id;if(pendingActions.has(key))return;pendingActions.add(key);render();try{const result=await post(route,body);state=await api('/state');return result;}finally{pendingActions.delete(key);render();}}
+async function taskRequest(id,route,body={}){const key='task:'+id;if(pendingActions.has(key))return;pendingActions.add(key);render();try{const result=await post(route,body);state=await api('/state');return result;}catch(error){if(route.endsWith('/cancel'))try{state=await api('/state');}catch{}throw error;}finally{pendingActions.delete(key);render();}}
 function resumeTask(id,confirmUnknown){if(state.call?.provider==='subscription'){toast(t('resumeAfterCall'));return Promise.resolve();}const message=state.messages.find(item=>item.id===id);if(unknownTask(message)&&!confirmUnknown){progressExpanded=true;openModal({type:'details'});return Promise.resolve();}return taskRequest(id,'/tasks/resume',{ids:[id],...(confirmUnknown?{confirmUnknown:true}:{})});}
 function bindSteer(){
  const form=document.querySelector('#steer-form');if(!form)return;const input=document.querySelector('#steer-text');
@@ -511,6 +539,7 @@ function bindComputerInput(){
 async function openExternal(url){const parsed=new URL(url);if(!['http:','https:','mailto:'].includes(parsed.protocol))throw Error(t('unsupportedLink'));const {openUrl}=await import('@tauri-apps/plugin-opener');await openUrl(parsed.href);}
 const pendingActions=new Set();
 async function action(a){
+ if(updateInstalling)return;
  if(['chat','settings','memory','schedules','skills'].includes(a)){managedSettings.onClose(modal);chatHistory.onClose();if(a!=='settings'){const secret=document.querySelector('#telegram-token');if(secret)secret.value='';clearTelegramPairing();}if(a!=='chat'&&(dictating||speakingId))await stopSpeech();attachmentMenu=false;if(a!=='settings'){const secret=document.querySelector('#voice-api-key');if(secret)secret.value='';}modal=null;emojiFor=null;if(a==='chat'){chatMode='text';if(pc)callMini=true;}page=a;render();if(a==='skills')await managedSettings.loadSkills();return;}
  if(a==='clear-steer'){steerDraft='';steerExpectedTurn=null;render();return;}
  if(a==='details'){openModal({type:'details'});return;}
@@ -562,6 +591,7 @@ async function checkUnconfirmedMessage(){
  if(found){messageSubmissions.acknowledged(uncertain.clientMessageId);if(uncertain.kind==='voice'){if(recordDraft?.attempt?.clientMessageId===uncertain.clientMessageId)cancelRecording(true);}else clearSentDraft(uncertain.raw,uncertain.items,uncertain.reply);toast(t('sendFound'));}else toast(t('sendStillUnknown'));progressExpanded=true;openModal({type:'details'});
 }
 async function send(confirmResend=false){
+ if(updateInstalling)return;
  const input=document.querySelector('#composer');if(!input||sending||uploading)return;if(recording||recordStarting||recordDraft){toast(t('finishRecording'));return;}
  const raw=input.value,text=raw.trim(),items=[...attachments],reply=replyTo;if(!text&&!items.length)return;
  if(messageSubmissions.unknown&&!confirmResend){toast(t('sendUnknownHint'));return;}
@@ -575,6 +605,7 @@ async function send(confirmResend=false){
  finally{sending=false;render();document.querySelector('#composer')?.focus({preventScroll:true});}
 }
 async function upload(file){
+ if(updateInstalling)return;
  if(file.size>10*1024*1024)throw Error(t('fileLimit'));if(attachments.length+uploading>=5)throw Error(t('attachmentLimit'));uploading++;render();
  try{const form=new FormData();form.append('file',file);const item=await api('/upload',{method:'POST',body:form});attachments.push(item);}
  finally{uploading--;render();}
@@ -619,6 +650,7 @@ async function loadVoices(){
  }catch{voiceChoices=[];apiVoiceChoices=[];voiceError='voiceUnavailable';}if(page==='settings')render();
 }
 async function startCall(provider='subscription'){
+ if(updateInstalling)return;
  if(pc||callStarting)return;if(state.call||callStops.pending)throw Error(t('callNeedsStop'));if(state.worker.status!=='online'||!eventConnected)throw Error(t('setupHint'));
  if(provider==='api'&&apiVoiceUnavailable())throw Error(t('voiceKeyRequired'));
  if(provider==='subscription'&&subscriptionVoiceUnavailable())throw Error(t('callUnavailable'));
@@ -626,7 +658,7 @@ async function startCall(provider='subscription'){
  if(!navigator.mediaDevices?.getUserMedia||!window.RTCPeerConnection)throw Error(t('mediaUnavailable'));
  const waitingGeneration=callGeneration;
  if(dictating||speakingId)await stopSpeech();
- if(unloading||waitingGeneration!==callGeneration||pc||callStarting)return;
+ if(updateInstalling||unloading||waitingGeneration!==callGeneration||pc||callStarting)return;
  if(recording||recordStarting||recordDraft)throw Error(t('finishRecordingBeforeCall'));
  if(state.call||callStops.pending)throw Error(t('callNeedsStop'));
  if(state.worker.status!=='online'||!eventConnected)throw Error(t('setupHint'));
@@ -714,6 +746,7 @@ async function toggleRecord(){
  finally{if(generation===recordGeneration){recordStarting=false;if(!unloading)render();}}
 }
 async function sendVoice(confirmResend=false){
+ if(updateInstalling)return;
  const draft=recordDraft;if(!draft||draft.busy||sending||uploading)return;
  if(messageSubmissions.unknown&&!confirmResend){toast(t('voiceUnknown'));return;}
  if(!eventConnected)throw Error(t('connectionLost'));if(speechBlocked())throw Error(t('recordDuringCall'));
@@ -774,7 +807,7 @@ function updateRead(){
 }
 async function handleEvent(event){
  if(event.type==='state'){
-  eventConnected=true;state=event.data;callDuration.sync(state.call,state.messages);if(state.telegram||state.worker.telegram){telegramStatus=state.telegram||state.worker.telegram;if(telegramStatus.paired)clearTelegramPairing();}fallbackLanguage=language();localStorage.setItem('dant.language',fallbackLanguage);if(speechBlocked()&&(dictating||speakingId))stopSpeech().catch(()=>{});if(state.worker.account)loginDetails=null;
+  eventConnected=true;state=event.data;await restoreUpdateDraft();callDuration.sync(state.call,state.messages);if(state.telegram||state.worker.telegram){telegramStatus=state.telegram||state.worker.telegram;if(telegramStatus.paired)clearTelegramPairing();}fallbackLanguage=language();localStorage.setItem('dant.language',fallbackLanguage);if(speechBlocked()&&(dictating||speakingId))stopSpeech().catch(()=>{});if(state.worker.account)loginDetails=null;
   for(const message of state.messages.filter(item=>item.role==='assistant'&&item.status==='completed')){if(initialized&&!lastAssistant.has(message.id)&&(document.hidden||!document.hasFocus()||page!=='chat'))notify(message.text.slice(0,160)||t('completed')).catch(()=>{});lastAssistant.add(message.id);}initialized=true;
   if(!state.call&&pc&&!callStarting)cleanupCall();render();loadVoices();
  }
@@ -800,6 +833,6 @@ document.addEventListener('keydown',event=>{
  if(event.key==='Escape'&&!event.isComposing){if(fontMenuOpen){fontMenuOpen=false;render();document.querySelector('#appearance-font-picker>summary')?.focus({preventScroll:true});return;}if(attachmentMenu){attachmentMenu=false;render();return;}if(dictating||speakingId){stopSpeech().catch(()=>{});return;}if(emojiFor){emojiFor=null;render();return;}if(modal){event.preventDefault();closeModal();return;}if(chatMode==='voice'&&!pc&&!callStarting){chatMode='text';render();return;}}
  if(event.key==='Tab'&&modal){const dialog=document.querySelector('.dialog');if(!dialog)return;const focusable=[...dialog.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[tabindex="0"]')].filter(element=>element.getClientRects().length);if(!focusable.length){event.preventDefault();dialog.focus();return;}const first=focusable[0],last=focusable.at(-1),active=document.activeElement;if(event.shiftKey&&(active===first||active===dialog||!dialog.contains(active))){event.preventDefault();last.focus();}else if(!event.shiftKey&&(active===last||active===dialog||!dialog.contains(active))){event.preventDefault();first.focus();}}
 });
-document.addEventListener('visibilitychange',()=>{updateRead();restartScreen();});window.addEventListener('focus',()=>{updateRead();restartScreen();});window.addEventListener('blur',()=>{stopReadTracking();restartScreen();});window.addEventListener('resize',()=>{updateRead();positionReactionMenus();});window.addEventListener('beforeunload',()=>{unloading=true;settingsNavigation.sync(false);appUpdates.dispose();nativeTray.dispose();textEditor.dispose();clearInterval(presenceTimer);managedSettings.clearSecret();clearTelegramPairing();appearance.dispose();speechGeneration++;speech.stop().catch(()=>{});stopReadTracking();clearInterval(screenTimer);screenAbort?.abort();const hadCall=!!pc||callStarting||state?.call,id=callId;cleanupCall();cancelRecording(true);if(hadCall&&id)transport.json('/api/call/stop',{method:'POST',body:{callId:id},keepalive:true}).catch(()=>{});transport.close();if(screenURL)URL.revokeObjectURL(screenURL);});
-async function boot(){document.documentElement.lang=language()==='en'?'en':'zh-CN';try{const session=await transport.json('/api/session');transport.setToken(session.token);state=await api('/state');callDuration.sync(state.call,state.messages);for(const message of state.messages.filter(m=>m.role==='assistant'&&m.status==='completed'))lastAssistant.add(message.id);render();startPresenceTicker();connectEvents();}catch(e){app.innerHTML=`<div class="boot-error"><h1>dant</h1><p>${esc(t('bootFailed'))}</p><p>${esc(errorText(e))}</p><button onclick="location.reload()">${t('retryConnection')}</button></div>`;}}
+document.addEventListener('visibilitychange',()=>{updateRead();restartScreen();});window.addEventListener('focus',()=>{updateRead();restartScreen();});window.addEventListener('blur',()=>{stopReadTracking();restartScreen();});window.addEventListener('resize',()=>{updateRead();positionReactionMenus();});window.addEventListener('beforeunload',()=>{unloading=true;chatScroll.dispose();memorySettings.dispose();settingsNavigation.sync(false);appUpdates.dispose();nativeTray.dispose();textEditor.dispose();clearInterval(presenceTimer);managedSettings.clearSecret();clearTelegramPairing();appearance.dispose();speechGeneration++;speech.stop().catch(()=>{});stopReadTracking();clearInterval(screenTimer);screenAbort?.abort();const hadCall=!!pc||callStarting||state?.call,id=callId;cleanupCall();cancelRecording(true);if(hadCall&&id)transport.json('/api/call/stop',{method:'POST',body:{callId:id},keepalive:true}).catch(()=>{});transport.close();if(screenURL)URL.revokeObjectURL(screenURL);});
+async function boot(){document.documentElement.lang=language()==='en'?'en':'zh-CN';try{const session=await transport.json('/api/session');transport.setToken(session.token);state=await api('/state');await restoreUpdateDraft();callDuration.sync(state.call,state.messages);for(const message of state.messages.filter(m=>m.role==='assistant'&&m.status==='completed'))lastAssistant.add(message.id);render();startPresenceTicker();connectEvents();}catch(e){app.innerHTML=`<div class="boot-error"><h1>dant</h1><p>${esc(t('bootFailed'))}</p><p>${esc(errorText(e))}</p><button onclick="location.reload()">${t('retryConnection')}</button></div>`;}}
 boot();

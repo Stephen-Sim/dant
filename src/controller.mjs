@@ -14,6 +14,7 @@ import {appearanceDefaults,appearanceKeys,readAppearance,validateAppearancePatch
 import {Diagnostics} from './diagnostics.mjs';
 import {observeHttp,serviceVersion,diagnosticWorkerStatus} from './diagnostic-events.mjs';
 import {UpdateService,installUpdateRoutes} from './updates.mjs';
+import {UpdateInstallLease,installLeaseRoutes,updateSensitiveRequest} from './update-install-lease.mjs';
 
 const parse=file=>JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
 const allowedOrigin=origin=>!origin||/^https?:\/\/(127\.0\.0\.1|localhost)(:431[78])?$/.test(origin)||origin==='http://tauri.localhost'||origin==='tauri://localhost';
@@ -37,8 +38,14 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.use('/api',(req,res,next)=>req.headers['x-dant-token']===token||req.query.token===token?next():res.sendStatus(401));
  app.use('/api/internal',(req,res)=>res.sendStatus(403));
  installUpdateRoutes(app,updates);
+ const updateLease=new UpdateInstallLease({snapshot,refresh:async()=>{if(bridge.status!=='online')throw Error('The VM is offline.');if(bridge.refreshing)await bridge.refreshing;await bridge.refresh(true);}});
+ installLeaseRoutes(app,updateLease);
+ app.use('/api',(req,res,next)=>{if(!updateSensitiveRequest(req))return next();req.updateInstallDone=updateLease.enter();res.once('finish',()=>req.updateInstallDone());next();});
+ const admitted=handler=>async(req,res,next)=>{try{await handler(req,res,next);}catch(error){req.updateInstallDone?.(error);next(error);}finally{req.updateInstallDone?.();}};
  function binding(){try{return readVmBinding(dataDir);}catch{return {};}}
  async function connect({recoverExecutor=false}={}){
+  const finish=updateLease.enter();let failed;
+  try{
   try{const discovery=profiles.autoImport();if(discovery.requiresSelection)throw Object.assign(Error(discovery.error),{status:409});readVmBinding(dataDir);profileError=null;}catch(error){profileError=error.message;throw error;}
   await bridge.connect();
   const timeZone=Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -54,6 +61,7 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   const response=await bridge.request('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idleRecovery:true})});
   if(!response.ok)throw Object.assign(Error('The VM connected, but its executor could not reconnect. Check its state before trying again.'),{status:response.status>=400&&response.status<600?response.status:502});
   const refreshed=await bridge.refresh(true);if(refreshed?.worker?.status!=='online')throw Object.assign(Error('The VM connected, but its executor is still offline. Check its diagnostics before trying again.'),{status:503});
+  }catch(error){failed=error;throw error;}finally{finish(failed);}
  }
  function snapshot(){const state=structuredClone(cached),key=voiceKeys.status();state.mode='vm-controller';state.settings={...emptyState().settings,...state.settings,language:config.language,notifications:config.notifications,showWorkSummary:config.showWorkSummary,...readAppearance(config),vm:{...emptyState().settings.vm,...binding()}};state.worker={...state.worker,status:bridge.status==='online'?state.worker?.status||'connecting':bridge.status,error:profileError||bridge.error||state.worker?.error||null,realtime:{...state.worker?.realtime,key,api:{available:key.configured,billing:'api'}}};state.provisioning=provisioning.snapshot();state.controller={status:bridge.status,authority:'vm',cached:bridge.status!=='online',updatedAt:lastSaved||null,error:profileError||bridge.error||null};return state;}
  function broadcast(type,data){if(closing)return;const body=JSON.stringify({type,data});for(const client of wss.clients)if(client.readyState===1)client.send(body);for(const stream of streams)stream.write(`data: ${body}\n\n`);}
@@ -70,14 +78,14 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.get('/api/state',async(req,res)=>{if(bridge.status==='online')try{await bridge.refresh();}catch(error){bridge.error=error.message;}res.json(snapshot());});
  app.get('/api/diagnostics',async(req,res)=>{let worker={available:false,reason:'worker-unavailable'};if(bridge.status==='online')try{const response=await bridge.request('/api/diagnostics');if(response.ok){const value=await response.json();if(value&&typeof value.status==='object'&&Array.isArray(value.recent))worker={available:true,status:value.status,recent:value.recent.slice(-50)};}}catch{}res.json({status:diagnostics.status(),recent:diagnostics.recent(50),worker});});
  app.all('/api/diagnostics',(req,res)=>res.status(405).json({error:'Diagnostics are read-only.'}));
- app.post('/api/provision',(req,res)=>res.json(provisioning.start(req.body)));
+ app.post('/api/provision',admitted((req,res)=>res.json(provisioning.start(req.body))));
  let manualConnect;
- app.post('/api/connect',async(req,res)=>{if(!manualConnect){const pending=connect({recoverExecutor:true}).finally(()=>{if(manualConnect===pending)manualConnect=null;});manualConnect=pending;}await manualConnect;res.json({ok:true});});
- app.post('/api/prepare',async(req,res)=>{await bridge.prepare();res.json({ok:true});});
+ app.post('/api/connect',admitted(async(req,res)=>{if(!manualConnect){const pending=connect({recoverExecutor:true}).finally(()=>{if(manualConnect===pending)manualConnect=null;});manualConnect=pending;}await manualConnect;res.json({ok:true});}));
+ app.post('/api/prepare',admitted(async(req,res)=>{await bridge.prepare();res.json({ok:true});}));
  app.get('/api/vm/profiles',(req,res)=>res.json(profiles.discover()));
  app.get('/api/vm/providers',(req,res)=>res.json(provisioning.providers()));
  app.get('/api/fonts',async(req,res)=>res.json(await fontsProvider()));
- app.post('/api/vm/import',(req,res)=>{const previous=profiles.discover().current,result=profiles.import(req.body);profileError=null;if(previous?.id!==profiles.discover().current?.id)bridge.disconnect();broadcast('state',snapshot());res.json(result);});
+ app.post('/api/vm/import',admitted((req,res)=>{const previous=profiles.discover().current,result=profiles.import(req.body);profileError=null;if(previous?.id!==profiles.discover().current?.id)bridge.disconnect();broadcast('state',snapshot());res.json(result);}));
  app.get('/api/notifications/pending',(req,res)=>res.json({notifications:notifications.pending().map(notification=>({...notification,language:config.language}))}));
  app.post('/api/notifications/:id/ack',(req,res)=>res.json(notifications.acknowledge(req.params.id)));
  app.post('/api/voice-key',async(req,res)=>{if(cached.call)throw Error('End the call before changing its API key');await voiceKeys.set(req.body.key);broadcast('state',snapshot());res.json({ok:true,key:voiceKeys.status()});});
@@ -91,6 +99,7 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   if(Object.keys(body).length){req.body=body;return next();}res.json({ok:true});
  });
  app.use('/api',async(req,res,next)=>{
+  let failed;
   try{
    const route=new URL(req.originalUrl,'http://localhost');route.searchParams.delete('token');
    const headers={};if(req.headers['content-type'])headers['Content-Type']=req.headers['content-type'];
@@ -99,10 +108,10 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
    const response=await bridge.request(route.pathname+route.search,options);res.status(response.status);
    for(const name of ['content-type','content-disposition','cache-control','x-content-type-options'])if(response.headers.has(name))res.setHeader(name,response.headers.get(name));
    if(response.body)Readable.fromWeb(response.body).on('error',error=>{if(!res.headersSent)next(error);else res.destroy();}).pipe(res);else res.end();
-  }catch(error){next(error);}
+  }catch(error){failed=error;next(error);}finally{req.updateInstallDone?.(failed);}
  });
  app.use(express.static(path.join(projectRoot,'dist')));
- app.use((error,req,res,next)=>{if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(error.unknownOutcome?{unknownOutcome:true}: {})});});
+ app.use((error,req,res,next)=>{req.updateInstallDone?.(error);if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(error.unknownOutcome?{unknownOutcome:true}: {})});});
  let closePromise;
- return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
+ return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;updateLease.close();updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
 }

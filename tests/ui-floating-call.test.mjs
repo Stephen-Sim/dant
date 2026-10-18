@@ -89,7 +89,7 @@ test('short clicks do not move the call and dispose removes all movement ownersh
 
 test('main render reapplies the controller after DOM reconciliation and fixed styling covers the app',()=>{
  const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');
- assert.match(source,/import \{createFloatingCall\} from '\.\/floating-call\.js'/);assert.match(source,/reconcile\(app,template\.content\);bind\(\);resizeComposer\(\);\s*floatingCall\.sync/);
+ assert.match(source,/import \{createFloatingCall\} from '\.\/floating-call\.js'/);const render=source.slice(source.indexOf('function render(){'),source.indexOf('function renderRail(){'));assert.ok(render.indexOf('reconcile(app,template.content)')>=0);assert.ok(render.indexOf('floatingCall.sync')>render.indexOf('resizeComposer()'),'floating call geometry is rebound after DOM and composer layout');
  assert.match(css,/\.call-view\.mini\{position:fixed;z-index:20;cursor:grab;touch-action:none;user-select:none\}/);assert.match(css,/\.call-view\.mini\[data-call-dragging\]\{cursor:grabbing\}/);
 });
 

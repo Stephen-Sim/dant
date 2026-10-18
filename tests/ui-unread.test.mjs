@@ -76,8 +76,8 @@ test('restore alone does not read offscreen results and scrolling away resets th
 });
 
 test('jump to first unread scrolls and focuses the bubble without bypassing visibility or dwell',()=>{
- const f=fixture();f.c.state.messages.unshift({id:'user',role:'user',status:'completed'});let revealed,scrolled,focused;f.c.revealMessage=id=>revealed=id;f.article.scrollIntoView=options=>scrolled=options;f.article.focus=options=>focused=options;
- const start=source.indexOf(" document.querySelectorAll('[data-first-unread]')");vm.runInContext(source.slice(start,source.indexOf('\n',start)),f.c);f.document.querySelector('[data-first-unread]').dispatchEvent(new f.Event('click'));assert.equal(revealed,'a');assert.equal(scrolled.block,'center');assert.equal(focused.preventScroll,true);assert.equal(f.article.getAttribute('tabindex'),'-1');assert.equal(f.requests.length,0);f.advance(450);assert.equal(f.requests.length,1);
+ const f=fixture();f.c.state.messages.unshift({id:'user',role:'user',status:'completed'});let revealed,scrolled,focused,navigated=0;f.c.chatScroll={navigate(action){navigated++;action();}};f.c.revealMessage=id=>revealed=id;f.article.scrollIntoView=options=>scrolled=options;f.article.focus=options=>focused=options;
+ const start=source.indexOf(" document.querySelectorAll('[data-first-unread]')");vm.runInContext(source.slice(start,source.indexOf('\n',start)),f.c);f.document.querySelector('[data-first-unread]').dispatchEvent(new f.Event('click'));assert.equal(revealed,'a');assert.equal(navigated,1);assert.equal(scrolled.block,'center');assert.equal(focused.preventScroll,true);assert.equal(f.article.getAttribute('tabindex'),'-1');assert.equal(f.requests.length,0);f.advance(450);assert.equal(f.requests.length,1);
 });
 
 test('failed read receipts preserve unread state and retry only after another visibility check',async()=>{

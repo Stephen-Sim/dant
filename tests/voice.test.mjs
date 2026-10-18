@@ -3,6 +3,7 @@ import {SKILL_SUPPORT_FILE_LIMIT} from '../src/skill-limits.mjs';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {Voice,VOICES,VOICE_TOOLS,DEFAULT_VOICE_MODEL} from '../src/voice.mjs';
+import {TASK_LIST_SCHEMA,TASK_CANCEL_SCHEMA,taskListInput,taskCancelInput} from '../src/task-cancel.mjs';
 
 const KEY='sk-proj-fake-key-for-voice-tests-only';
 const SDP='v=0\r\ns=voice\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n';
@@ -44,10 +45,33 @@ test('voice uses the host key only for API and sideband authentication and retur
  assert.equal(requests[0].url,'https://api.openai.com/v1/realtime/calls');assert.equal(requests[0].options.redirect,'error');
  assert.equal(requests[0].options.headers.Authorization,`Bearer ${KEY}`);assert.equal(requests[0].options.body.get('sdp'),SDP);
  assert.equal(session.model,DEFAULT_VOICE_MODEL);assert.equal(session.audio.output.voice,'marin');assert.deepEqual(session.audio.input.transcription,{model:'gpt-transcribe'});assert.match(session.instructions,/Prefers Chinese/);assert.match(session.instructions,/current text chat/);
- assert.deepEqual(session.tools.map(tool=>tool.name),['run_task','memory_write','send_message','react_message','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','send_file','schedule_list','schedule_save','schedule_delete','end_call']);
+ assert.deepEqual(session.tools.map(tool=>tool.name),['run_task','task_list','task_cancel','memory_write','send_message','react_message','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','send_file','schedule_list','schedule_save','schedule_delete','end_call']);
  assert.equal(sockets[0].url,'wss://api.openai.com/v1/realtime?call_id=rtc_test');assert.equal(sockets[0].options.headers.Authorization,`Bearer ${KEY}`);
  assert.equal(voice.call.status,'active');assert.equal(JSON.stringify({state:voice.state,events}).includes(KEY),false);
- assert.ok(VOICES.includes('cedar'));assert.equal(VOICE_TOOLS.length,16);
+ assert.ok(VOICES.includes('cedar'));assert.equal(VOICE_TOOLS.length,18);
+});
+
+test('API voice can list actual task IDs without executing work and rejects task-list selectors',async t=>{
+ assert.deepEqual(TASK_LIST_SCHEMA,{});assert.deepEqual(taskListInput({}),{});assert.deepEqual(taskListInput(Object.create(null)),{});
+ for(const value of [null,[],{workId:'other'},{conversationId:'other'},{status:'running'},Object.create({})])assert.throws(()=>taskListInput(value),/empty arguments/);
+ const items=[{workId:'actual-work',title:'Verify the change',status:'continuing',steps:{completed:1,total:2}}],h=harness(t,{tool:async(name,args)=>{assert.equal(name,'task_list');assert.deepEqual(args,{});return {items};}});await h.voice.start({sdp:SDP});const socket=h.sockets[0],session=JSON.parse(h.requests[0].options.body.get('session')),spec=session.tools.find(tool=>tool.name==='task_list');
+ assert.deepEqual(spec.parameters,{type:'object',properties:{},required:[],additionalProperties:false});assert.match(session.instructions,/Use read-only task_list/);assert.match(session.instructions,/never guess an ID/);
+ emit(socket,completed([call('task_list',{},'list-work')]));await tick();assert.deepEqual(JSON.parse(socket.sent.find(item=>item.item?.call_id==='list-work').item.output),{items});
+ emit(socket,completed([call('task_list',{workId:'other'},'forged-list')]));await tick();assert.equal(JSON.parse(socket.sent.find(item=>item.item?.call_id==='forged-list').item.output).success,false);assert.equal(h.tasks.length,0);assert.equal(h.voice.call.status,'active');
+});
+
+test('task cancellation has one work ID and cannot accept caller-selected execution identifiers',()=>{
+ assert.deepEqual(Object.keys(TASK_CANCEL_SCHEMA),['workId']);assert.equal(taskCancelInput({workId:'known-work'}),'known-work');
+ for(const value of [null,[],{}, {workId:''},{workId:' '},{workId:'a b'},{workId:'a\n'},{workId:'x'.repeat(129)},{workId:7},{workId:'known',turnId:'other'},{workId:'known',callId:'other'},{workId:'known',status:'completed'},Object.assign(Object.create({}),{workId:'known'})])assert.throws(()=>taskCancelInput(value),/existing workId/);
+});
+
+test('API voice cancellation preserves requested versus confirmed results without creating work or ending the call',async t=>{
+ const invoked=[],h=harness(t,{tool:async(name,args,context)=>{invoked.push({name,args,context});return args.workId==='running-work'?{cancelRequested:true,workId:args.workId,turnId:'current-turn'}:{cancelled:true,workId:args.workId};}});await h.voice.start({sdp:SDP,callId:'current-call'});const socket=h.sockets[0],session=JSON.parse(h.requests[0].options.body.get('session')),spec=session.tools.find(tool=>tool.name==='task_cancel');
+ assert.deepEqual(spec.parameters,{type:'object',properties:TASK_CANCEL_SCHEMA,required:['workId'],additionalProperties:false});assert.match(session.instructions,/Do not infer cancellation from silence/);assert.match(session.instructions,/cancelRequested:true/);
+ const event=completed([call('task_cancel',{workId:'running-work'},'cancel-running'),call('task_cancel',{workId:'inactive-work'},'cancel-inactive')]);emit(socket,event);await tick();emit(socket,event);await tick();
+ assert.deepEqual(invoked.map(({name,args})=>({name,args})),[{name:'task_cancel',args:{workId:'running-work'}},{name:'task_cancel',args:{workId:'inactive-work'}}]);assert.ok(invoked.every(item=>item.context.callId==='current-call'&&item.context.isCurrent()));
+ const outputs=socket.sent.filter(item=>item.type==='conversation.item.create').map(item=>JSON.parse(item.item.output));assert.deepEqual(outputs,[{cancelRequested:true,workId:'running-work',turnId:'current-turn'},{cancelled:true,workId:'inactive-work'}]);assert.equal(h.tasks.length,0);assert.equal(h.voice.call.status,'active');assert.equal(h.requests.filter(request=>request.url.endsWith('/hangup')).length,0);
+ for(const [index,args]of [{},{workId:''},{workId:'a b'},{workId:'valid',turnId:'forged'},{workId:'valid',callId:'forged'}].entries())emit(socket,completed([call('task_cancel',args,'bad-cancel-'+index)]));await tick();assert.equal(invoked.length,2);assert.ok(socket.sent.filter(item=>item.item?.call_id?.startsWith('bad-cancel-')).every(item=>JSON.parse(item.item.output).success===false));
 });
 
 test('missing keys and invalid offers fail before sending requests',async t=>{

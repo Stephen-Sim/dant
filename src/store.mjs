@@ -4,11 +4,11 @@ import {randomUUID} from 'node:crypto';
 import {safeCompletionWork,taskPlanInput} from './task-progress.mjs';
 const renameRetryCodes=new Set(['EPERM','EACCES','EBUSY']);
 const pauseBuffer=new Int32Array(new SharedArrayBuffer(4));
-export const TASK_STATES=Object.freeze(['draft','accepted','queued','running','waiting_user','pausing','paused','failed','review','completed']);
+export const TASK_STATES=Object.freeze(['draft','accepted','queued','running','waiting_user','pausing','paused','failed','review','completed','cancelled']);
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const progressError=(status,message)=>Object.assign(Error(message),{status});
 const workError=(code,message)=>Object.assign(Error(message),{code});
-const dismissibleStates=new Set(['continuing','paused','failed','review','completed']);
+const dismissibleStates=new Set(['continuing','paused','failed','review','completed','cancelled']);
 const progressPriorities=new Set(['high','normal','low']);
 const unconfirmedProgress=entry=>entry?.unknownOutcome===true||['unknown','submitting'].includes(entry?.submission);
 export class Store {
@@ -20,7 +20,7 @@ export class Store {
     if(!uuidPattern.test(this.state.conversationId||''))this.state.conversationId=randomUUID();
     this.state.version=2;this.state.schedules ||= [];this.state.completions ||= [];
     this.state.workTasks=(Array.isArray(this.state.workTasks)?this.state.workTasks:[]).flatMap(entry=>{
-      try{const {title,plan}=taskPlanInput({title:entry.title,steps:entry.plan?.steps});if(!uuidPattern.test(entry.id)||typeof entry.turnId!=='string'||!entry.turnId||entry.turnId.length>256||!['chat','voice'].includes(entry.source)||!['running','waiting_user','pausing','unknown','continuing','paused','failed','review','completed'].includes(entry.status))return [];
+      try{const {title,plan}=taskPlanInput({title:entry.title,steps:entry.plan?.steps});if(!uuidPattern.test(entry.id)||typeof entry.turnId!=='string'||!entry.turnId||entry.turnId.length>256||!['chat','voice'].includes(entry.source)||!['running','waiting_user','pausing','unknown','continuing','paused','failed','review','completed','cancelled'].includes(entry.status))return [];
       const turnIds=[...new Set([...(Array.isArray(entry.turnIds)?entry.turnIds:[]).filter(id=>typeof id==='string'&&id&&id.length<=256),entry.turnId])];
       const status=entry.status==='review'&&plan.steps.some(step=>step.status!=='completed')?'continuing':entry.status;
       const restored={id:entry.id,turnId:entry.turnId,turnIds,messageId:typeof entry.messageId==='string'?entry.messageId:null,source:entry.source,title,plan,status,startedAt:entry.startedAt,updatedAt:entry.updatedAt};
@@ -28,6 +28,7 @@ export class Store {
       if(Object.hasOwn(entry,'progressPriority'))restored.progressPriority=progressPriorities.has(entry.progressPriority)?entry.progressPriority:'normal';
       if(entry.provisional===true)restored.provisional=true;
       if(typeof entry.executionEndedAt==='number'&&Number.isFinite(entry.executionEndedAt)&&entry.executionEndedAt>0)restored.executionEndedAt=entry.executionEndedAt;
+       if(typeof entry.cancelledAt==='number'&&Number.isFinite(entry.cancelledAt)&&entry.cancelledAt>0)restored.cancelledAt=entry.cancelledAt;
       if(['running','pausing','unknown'].includes(restored.status)||restored.status==='waiting_user'&&!restored.executionEndedAt){restored.status='paused';restored.pauseReason='restart';restored.updatedAt=Date.now();}else if(entry.pauseReason)restored.pauseReason=entry.pauseReason;
       return [restored];}catch{return [];}
     }).slice(-300);
@@ -74,6 +75,7 @@ export class Store {
     if(typeof turnId!=='string'||!turnId||turnId.length>256||!['chat','voice'].includes(source))throw workError('work_stale_turn','Registered work requires a real owned turn.');
     const safe=taskPlanInput({title,steps:plan?.steps}),before=this.state.workTasks,current=before.findIndex(entry=>entry.turnId===turnId),index=workId===undefined?current:before.findIndex(entry=>entry.id===workId),previous=before[index],automatic=before[current],observing=observed===true,now=Date.now();
     if(workId!==undefined&&(!previous||typeof workId!=='string'))throw workError('work_not_found','The task to continue was not found.');
+    if(previous?.status==='cancelled')throw workError('work_not_continuable','Cancelled work cannot be continued. Create a new task if needed.');
     const supersede=current>=0&&index!==current&&!observing&&automatic.provisional===true&&['running','waiting_user'].includes(automatic.status)&&Array.isArray(automatic.turnIds)&&automatic.turnIds.length===1&&automatic.turnIds[0]===turnId;
     if(current>=0&&index!==current&&!supersede)throw workError('work_conflict','This turn already belongs to a different task.');
     if(previous&&previous.turnId!==turnId){if(!['continuing','waiting_user','paused','review'].includes(previous.status))throw workError('work_not_continuable','Only inactive unfinished work can continue in a different turn.');if(previous.turnIds?.includes(turnId))throw workError('work_stale_turn','A previous task turn cannot replace its current turn.');}
@@ -87,7 +89,7 @@ export class Store {
   }
   updateRegisteredWork(turnId,{status,plan,executionEnded=false}={}){
     const before=this.state.workTasks,index=before.findIndex(entry=>entry.turnId===turnId);if(index<0)return null;
-    const previous=before[index],patch={};if(status!==undefined){if(!['running','waiting_user','pausing','unknown','continuing','paused','failed','review','completed'].includes(status))throw Error('Invalid registered work state.');patch.status=status;}
+    const previous=before[index],patch={};if(previous.status==='cancelled'&&(plan||status!==undefined&&status!=='cancelled'))throw workError('work_not_continuable','Cancelled work cannot be changed by an earlier execution.');if(status!==undefined){if(!['running','waiting_user','pausing','unknown','continuing','paused','failed','review','completed','cancelled'].includes(status))throw Error('Invalid registered work state.');patch.status=status;}
     if(plan)patch.plan=taskPlanInput({title:previous.title,steps:plan.steps}).plan;
     if(executionEnded)patch.executionEndedAt=Date.now();
     if((status===undefined||status===previous.status)&&!plan&&!executionEnded)return previous;
@@ -103,6 +105,20 @@ export class Store {
       throw progressError(409,'Only final voice task history can be dismissed.');
     }
     return entry;
+  }
+  cancelWork({turnId=null,messageIds=[],workId}={}){
+    const record=workId?this.state.workTasks.find(item=>item.id===workId):turnId?this.state.workTasks.find(item=>item.turnId===turnId):null;
+    if(workId&&(!record||record.turnId!==turnId))throw progressError(409,'The task to cancel changed.');
+    const ids=new Set(messageIds);if(this.state.messages.some(item=>item.role==='user'&&ids.has(item.id)&&(item.turnId||null)!==turnId))throw progressError(409,'The task to cancel changed.');
+    const messages=this.state.messages.filter(item=>item.role==='user'&&(ids.has(item.id)||turnId&&item.turnId===turnId)),entries=[...messages,...(record?[record]:[])];
+    if(!entries.length||entries.some(unconfirmedProgress))throw progressError(409,'This task cancellation cannot be confirmed.');
+    const now=Date.now(),patches=[];
+    for(const entry of entries){
+      const patch={status:'cancelled',cancelledAt:entry.cancelledAt||now,pauseReason:null,error:null,progressDismissedAt:null,...(entry===record?{executionEndedAt:entry.executionEndedAt||now,updatedAt:now}:{})};
+      patches.push({entry,prior:Object.fromEntries(Object.keys(patch).map(key=>[key,{had:Object.hasOwn(entry,key),value:entry[key]}]))});Object.assign(entry,patch);
+    }
+    try{this.save();}catch(error){for(const {entry,prior} of patches)for(const [key,value] of Object.entries(prior)){if(value.had)entry[key]=value.value;else delete entry[key];}throw error;}
+    return {ok:true,cancelled:true};
   }
   isProgressCompletion(entry){return Boolean(safeCompletionWork(entry.work)&&typeof entry.turnId==='string'&&!/:(input|credential):/.test(entry.turnId)&&Array.isArray(entry.messageIds)&&entry.messageIds.some(messageId=>this.state.messages.some(message=>message.id===messageId&&message.role==='assistant'&&message.status!=='streaming')));}
   progressEntry(id,kind){

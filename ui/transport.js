@@ -56,7 +56,7 @@ export function createTransport({
     // Public-release lookups are independent reads and may wait on GitHub.
     // Keep them outside the native work queue so they cannot delay hangup,
     // input ownership changes or the next authoritative state poll.
-    if (!desktop || (method === 'GET' && ['/api/version', '/api/updates'].includes(route)) || (method==='POST'&&route==='/api/skills/import/preview')) return perform();
+    if (!desktop || (method === 'GET' && ['/api/version', '/api/updates', '/api/updates?channel=beta'].includes(route)) || (method==='POST'&&route==='/api/skills/import/preview')) return perform();
     const request = ipc.then(perform, perform);
     ipc = request.catch(() => {});
     return request;

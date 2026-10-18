@@ -35,7 +35,7 @@ function fixture({language='en',online=true,live=false}={}){
  c.renderModal=()=>c.managedSettings.renderModal(c.modal)||'';
  c.settingsNavigation=createSettingsNavigation({document,getLanguage:()=>c.state.settings.language,onChange:()=>c.render(),onCategory:category=>c.loadSettingsCategory(category),onError:error=>toasts.push(error.message)});
  c.appUpdates=createUpdates({version:'1.0.0',document,getLanguage:()=>c.state.settings.language,onChange:()=>{if(c.page==='settings')c.render();},request:async route=>{updateRequests.push(route);return route==='/version'?{version:'1.0.0'}:{currentVersion:'1.0.0',latestVersion:'1.1.0',updateAvailable:true,releaseUrl:'https://github.com/Stephen-Sim/dant/releases/tag/v1.1.0'};}});
- vm.createContext(c);vm.runInContext([
+ c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};vm.createContext(c);vm.runInContext([
   part('const zh={','const subscriptionVoiceUnavailable='),part('const esc=','const eyes='),part('function render(){','function renderChat(){'),part('function renderSettings(){','const appearanceFields='),part('function renderCall(){','function renderUnconfirmedMessage(){'),part('function bind(){','async function taskRequest('),part('async function action(a){','async function checkUnconfirmedMessage(){'),
  ].join('\n'),c);c.render();
  return {c,document,requests,updateRequests,toasts,peer,stream,audio,call,timers,async click(selector){const node=document.querySelector(selector);assert.ok(node,selector);node.dispatchEvent(new Event('click',{bubbles:true}));await settle();assert.deepEqual(toasts,[]);}};

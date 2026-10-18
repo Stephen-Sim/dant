@@ -50,7 +50,7 @@ jobs:
         id: version
         run: node scripts/ci/version.mjs
       - name: Test release version gate
-        run: node --test scripts/ci/version.test.mjs scripts/ci/coverage.test.mjs
+        run: node --test scripts/ci/version.test.mjs scripts/ci/coverage.test.mjs scripts/ci/draft-release.test.mjs
       - name: Test application and enforce coverage, including Windows DPAPI
         run: npm run test:coverage
       - name: Upload coverage reports
@@ -142,13 +142,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          prerelease=false
+          if [[ "$VERSION" == *-* ]]; then prerelease=true; fi
           if existing=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
             if [ "$existing" != true ]; then
               echo 'Refusing to replace assets on an already published release.' >&2
               exit 1
             fi
+            gh release edit "$TAG" --prerelease="$prerelease"
             gh release upload "$TAG" artifacts/* --clobber
           else
             printf 'Unsigned Windows x64 build for %s.\n\nIncludes the NSIS installer, portable application with its complete backend, SHA-256 checksums, and build metadata.\n\nBuild: %s/%s/actions/runs/%s\n' "$VERSION" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/release-notes.md"
-            gh release create "$TAG" artifacts/* --draft --verify-tag --title "dant $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release create "$TAG" artifacts/* --draft --prerelease="$prerelease" --verify-tag --title "dant $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi

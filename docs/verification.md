@@ -4,6 +4,20 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.7-beta.1 local candidate
+
+Read-only diagnostics showed two VM `/api/call` HTTP 400 responses at **13:16:15** and **13:16:28 Asia/Kuala_Lumpur**, following a confirmed media-only hangup at **13:12:42**. A later call connected at **13:18:19**. Both installed services reported 0.4.5. The reported error came from dant's background-work admission guard, rather than a crashed or stalled connection. No live work, call or stored conversation was changed during the audit.
+
+The candidate separates stable execution and credential ownership from per-call media identity, allowing confirmed work to continue through a new native call. **303 focused backend/protocol tests** passed, including **21 independent coexistence regressions**. Cases cover pending secure input, typed and native owners, rejected or unconfirmed startup, missing close events, failed or malformed status reads after a real close, stale timeout continuations, takeover and task cancellation. Expired media controls cannot hang up a later call. Task cancellation retains history; Computer reflow retains the current message; Memory shows actual shared identity and sanitized durable references; updates add Stable/Beta channels, independent verified downloads and guarded local restart.
+
+The final complete JavaScript run passed **1,371 tests, zero failures and zero skips**, with **98.90% line, 91.28% branch and 91.78% function coverage** and all configured gates satisfied. All **71 Python tests**, **28 native Windows tests** and **10 release/version/coverage gate checks** passed. The frontend production build and all **104 local documentation links** passed. Package verification records exact source/resource/staged inventories, hashes and Windows version resources without running the executable or installer. This is a local Beta candidate; actual audio reattachment, installer/UAC/restart and device acceptance remain for user testing. No local installation, VM deployment or new public release is claimed by these checks.
+
+## 0.4.6 published release
+
+[v0.4.6](https://github.com/Stephen-Sim/dant/releases/tag/v0.4.6) was published from source commit `3d7c250`. All **1,259 JavaScript tests**, **67 Python tests**, **18 native Windows tests** and seven version/coverage checks passed. JavaScript coverage was **98.79% lines, 91.19% branches and 91.70% functions**. Both tag-specific Windows/Linux CI and Windows packaging succeeded. The four downloaded release assets matched their GitHub digests, `SHA256SUMS`, version, source commit and build run. The portable archive contained 5,740 validated entries with its complete backend; native application and installer version resources reported **0.4.6**. No executable or installer was run during this verification.
+
+A separate local Windows installer also built successfully. All **5,407 runtime files** matched the clean source, prepared resources and staged backend. Its SHA-256 is `d47230abf09559fa4e2c085ea9eb0c931762d619c2b0651f92e3fe572d0c1647`; local and GitHub builds have separate hashes. The current application, VM services, task and call were not interrupted or updated.
+
 ## 0.4.5 consolidated local installer, installation deferred
 
 A fresh Windows installer was built from clean source commit `5ca9c65`, including the recent task-priority, timestamp, skill-edit, header/close-icon, task-continuation and log-audit fixes. Native release compilation and NSIS packaging succeeded. All **5,407 runtime files** matched the current source, prepared resources and staged backend by exact inventory and SHA-256; the installer was copied to the separate local `rounds-5ca9c65` artifact directory with a recorded native executable hash. Installer SHA-256: `28b444b22ebca06d84f259b99b104d28ee1a0f1fc62813db50ae154632d10e3f`.

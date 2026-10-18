@@ -388,7 +388,7 @@ class VoiceAndMCPTests(unittest.TestCase):
             self.assertEqual(responses[0]['result']['serverInfo']['name'], 'dant_desktop')
             self.assertIn('screenshot', [tool['name'] for tool in responses[1]['result']['tools']])
             self.assertIn('react_message', [tool['name'] for tool in responses[1]['result']['tools']])
-            for name in ['task_plan', 'credential_find', 'credential_get', 'credential_request', 'credential_store', 'skill_list', 'skill_get', 'skill_save']:
+            for name in ['task_list', 'task_plan', 'task_cancel', 'credential_find', 'credential_get', 'credential_request', 'credential_store', 'skill_list', 'skill_get', 'skill_save']:
                 self.assertIn(name, [tool['name'] for tool in responses[1]['result']['tools']])
 
     def test_mcp_task_plan_waits_for_private_application_save(self):
@@ -417,6 +417,84 @@ class VoiceAndMCPTests(unittest.TestCase):
                          {'messageId': 'user', 'emoji': ''}, {'messageId': 'user', 'emoji': '👍\n'}]:
                 with self.assertRaises(ValueError):
                     desktop_mcp.invoke('react_message', args, folder)
+
+    def test_mcp_task_cancellation_forwards_only_known_work_id_and_preserves_confirmation_state(self):
+        spec = next(tool for tool in desktop_mcp.TOOLS if tool['name'] == 'task_cancel')['inputSchema']
+        self.assertEqual(spec['required'], ['workId'])
+        self.assertEqual(spec['properties'], {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}})
+        self.assertFalse(spec['additionalProperties'])
+        args = {'workId': 'existing-work'}
+        for actual in [{'cancelled': True, **args}, {'cancelRequested': True, **args, 'turnId': 'owned-turn'}]:
+            with patch.object(desktop_mcp, 'credential_bridge', return_value=actual) as bridge:
+                response = desktop_mcp.invoke('task_cancel', args, pathlib.Path('.'))
+                self.assertEqual(response['structuredContent'], {'taskCancelResult': actual})
+                self.assertEqual(json.loads(response['content'][0]['text']), {'taskCancelResult': actual})
+                bridge.assert_called_once_with('task_cancel', args)
+        for invalid in [{}, {'workId': ''}, {'workId': 'with spaces'}, {'workId': 'x' * 129}, {'workId': None},
+                        {'workId': 7}, {'workId': 'x\x7f'}, {'workId': 'valid', 'turnId': 'other'},
+                        {'workId': 'valid', 'callId': 'other'}, {'workId': 'valid', 'status': 'completed'}]:
+            with patch.object(desktop_mcp, 'credential_bridge') as bridge:
+                with self.assertRaisesRegex(ValueError, 'one existing workId'):
+                    desktop_mcp.invoke('task_cancel', invalid, pathlib.Path('.'))
+                bridge.assert_not_called()
+
+    def test_mcp_task_list_is_read_only_and_accepts_no_context_selector(self):
+        spec = next(tool for tool in desktop_mcp.TOOLS if tool['name'] == 'task_list')['inputSchema']
+        self.assertEqual(spec, {'type': 'object', 'properties': {}, 'required': [], 'additionalProperties': False})
+        actual = {'items': [{'workId': 'known-work', 'title': 'Verify changes', 'status': 'continuing', 'steps': {'completed': 1, 'total': 2}}]}
+        with tempfile.TemporaryDirectory() as folder, patch.object(desktop_mcp, 'credential_bridge', return_value=actual) as bridge:
+            response = desktop_mcp.invoke('task_list', {}, folder)
+            self.assertEqual(response['structuredContent'], {'taskListResult': actual})
+            bridge.assert_called_once_with('task_list', {})
+            self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
+        for invalid in [{'conversationId': 'other'}, {'workId': 'known-work'}, {'status': 'running'}]:
+            with patch.object(desktop_mcp, 'credential_bridge') as bridge:
+                with self.assertRaisesRegex(ValueError, 'empty arguments'):
+                    desktop_mcp.invoke('task_list', invalid, pathlib.Path('.'))
+                bridge.assert_not_called()
+
+    def test_task_cancellation_uses_owned_loopback_bridge_without_retry_or_secret_diagnostics(self):
+        secret = 'private-plan-token-in-error'
+        body = {'tool': 'task_cancel', 'arguments': {'workId': 'known-work'}}
+        actual = {'cancelRequested': True, 'workId': 'known-work', 'turnId': 'owned-turn'}
+        opener = unittest.mock.Mock()
+        opener.open.return_value = io.BytesIO(json.dumps(actual).encode())
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+            self.assertEqual(desktop_mcp.credential_bridge('task_cancel', body['arguments']), actual)
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, 'http://127.0.0.1:4317/api/internal/credentials')
+        self.assertEqual(request.get_header('X-dant-credential-token'), 'private-test-token')
+        self.assertEqual(json.loads(request.data), body)
+        self.assertEqual(opener.open.call_count, 1)
+
+        for status in [400, 403, 409, 500]:
+            opener = unittest.mock.Mock()
+            opener.open.side_effect = desktop_mcp.urllib.error.HTTPError(request.full_url, status, secret, {}, io.BytesIO(json.dumps({'error': secret}).encode()))
+            with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+                with self.assertRaises(ValueError) as raised:
+                    desktop_mcp.credential_bridge('task_cancel', body['arguments'])
+            self.assertEqual(str(raised.exception), f'Task cancellation request was rejected (HTTP {status})')
+            self.assertEqual(opener.open.call_count, 1)
+        opener = unittest.mock.Mock()
+        opener.open.side_effect = OSError(secret)
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaises(ValueError) as raised:
+                desktop_mcp.credential_bridge('task_cancel', body['arguments'])
+        self.assertEqual(str(raised.exception), 'The task cancellation result is unconfirmed. Check Work progress; do not retry cancellation automatically.')
+        self.assertEqual(opener.open.call_count, 1)
+
+    def test_task_list_bridge_failures_do_not_expose_private_errors(self):
+        for transport_error, expected in [
+                (desktop_mcp.urllib.error.HTTPError('http://127.0.0.1:4317/api/internal/credentials', 409, 'private-token-in-error', {}, io.BytesIO(b'private-body')),
+                 'Task list request was rejected (HTTP 409)'),
+                (OSError('private-token-in-error'), 'The task list result is unconfirmed. Check Work progress for saved tasks.')]:
+            opener = unittest.mock.Mock()
+            opener.open.side_effect = transport_error
+            with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+                with self.assertRaises(ValueError) as raised:
+                    desktop_mcp.credential_bridge('task_list', {})
+            self.assertEqual(str(raised.exception), expected)
+            self.assertEqual(opener.open.call_count, 1)
 
     def test_private_credential_bridge_uses_fixed_loopback_token_header_and_bounded_result(self):
         class Response(io.BytesIO):

@@ -7,6 +7,7 @@ import {isReaction} from './reactions.mjs';
 import {buildCallInput} from './call-input.mjs';
 import {SCHEDULE_SAVE_SCHEMA,SCHEDULE_ID_SCHEMA,SCHEDULE_INSTRUCTIONS} from './scheduler.mjs';
 import {SKILL_SUPPORT_FILE_LIMIT} from './skill-limits.mjs';
+import {TASK_LIST_SCHEMA,TASK_LIST_DESCRIPTION,TASK_CANCEL_SCHEMA,TASK_CANCEL_DESCRIPTION,TASK_CANCEL_INSTRUCTIONS,taskListInput,taskCancelInput} from './task-cancel.mjs';
 
 // https://developers.openai.com/api/docs/guides/voice-webrtc?voice-api=realtime
 // https://developers.openai.com/api/docs/guides/voice-server-controls?voice-api=realtime
@@ -18,6 +19,8 @@ const textSchema={type:'string',maxLength:100000};
 const defineTool=(name,description,properties={},required=[])=>({type:'function',name,description,parameters:{type:'object',properties,required,additionalProperties:false}});
 export const VOICE_TOOLS=Object.freeze([
  defineTool('run_task','Ask the existing dant coworker to perform work in its Ubuntu VM. Await the actual task result before claiming success.',{text:{type:'string',minLength:1}},['text']),
+ defineTool('task_list',TASK_LIST_DESCRIPTION,TASK_LIST_SCHEMA),
+ defineTool('task_cancel',TASK_CANCEL_DESCRIPTION,TASK_CANCEL_SCHEMA,['workId']),
  defineTool('memory_write','Replace durable dant memory with concise updated notes.',{text:textSchema},['text']),
  defineTool('send_message','Share requested text, progress, or a useful link in the same chat. Do not send ordinary speech transcripts.',{text:{...textSchema,minLength:1}},['text']),
  defineTool('react_message','Optionally react to a user message when it naturally fits. Use its actual messageId, a single emoji, or null to remove your reaction. Do not acknowledge every message.',{messageId:{type:'string',minLength:1,maxLength:128},emoji:{type:['string','null'],maxLength:64}},['messageId','emoji']),
@@ -60,6 +63,8 @@ function toolArguments(name,raw){
  }
  if(name==='run_task'||name==='send_message')if(!args.text.trim())throw Error('Invalid tool arguments');
  if(name==='send_file'&&(!args.path.startsWith('/')||args.path.includes('\0')))throw Error('Use an absolute VM file path');
+ if(name==='task_cancel')taskCancelInput(args);
+ if(name==='task_list')taskListInput(args);
  return args;
 }
 
@@ -110,7 +115,7 @@ export class Voice extends EventEmitter {
   }
  }
  current(s){if(this.#session!==s||s.abort.signal.aborted||s.closed||s.stopping)throw Error('Voice call cancelled.');}
- baseInstructions(s,memory=s.baseMemory){return [instructions,SCHEDULE_INSTRUCTIONS,buildMemoryContext(memory),s.baseReference].filter(Boolean).join('\n\n');}
+ baseInstructions(s,memory=s.baseMemory){return [instructions,TASK_CANCEL_INSTRUCTIONS,SCHEDULE_INSTRUCTIONS,buildMemoryContext(memory),s.baseReference].filter(Boolean).join('\n\n');}
  syncMemory({memory,callId}={}){
   const s=this.#session;if(!s||s.callId!==callId||!s.ready||s.closed)return Promise.resolve({callId,kind:'memory',status:'cancelled'});
   if(typeof memory!=='string')return Promise.resolve({callId,kind:'memory',status:'failed'});

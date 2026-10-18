@@ -14,7 +14,7 @@ function fixture(){
  api:async(route,options={})=>{requests.push({route,...options});if(route==='/state')return context.state;if(route==='/vm/profiles')return {current:null,candidates:[],requiresSelection:false};if(route==='/telegram')return {enabled:false,configured:false,connected:false,paired:false};return {ok:true};},
  };
  context.post=(route,body={})=>context.api(route,{method:'POST',body});context.appearance=createAppearance({document,storage:context.localStorage,matchMedia:()=>null,save:body=>context.api('/settings',{method:'PATCH',body})});
- vm.createContext(context);vm.runInContext([
+ context.updateInstalling=false;vm.createContext(context);vm.runInContext([
   section('const zh={','const subscriptionVoiceUnavailable='),
   section('const subscriptionVoiceUnavailable=','const esc='),
   section('const appearanceFields=','function renderVoiceSettings(settings){'),

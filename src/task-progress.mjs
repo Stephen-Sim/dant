@@ -19,7 +19,7 @@ export function taskPlanInput(args,{redact=text=>text}={}){
  return {title,plan:publicTaskPlan(args.steps,{redact}),...(args.workId!==undefined?{workId:args.workId}:{})};
 }
 
-const conversationTools=new Set(['task_plan','send_message','send_chat_message','end_call','react_message','memory_write','skill_list','skill_get','credential_find','credential_get','schedule_list','schedule_save','schedule_delete']);
+const conversationTools=new Set(['task_plan','task_list','task_cancel','send_message','send_chat_message','end_call','react_message','memory_write','skill_list','skill_get','credential_find','credential_get','schedule_list','schedule_save','schedule_delete']);
 export function isTaskExecutionEvent(event){
  const method=event?.method,params=event?.params||{};
  if(method==='item/tool/call')return ['skill_save','send_file','create_voice_message','credential_request','credential_store'].includes(params.tool);
@@ -70,11 +70,11 @@ export function taskProgressSnapshot(task,{source='chat',background=false,status
  return result;
 }
 export function voiceCompletionWork(task,status,{at=Date.now()}={}){
- if(!['review','failed','paused'].includes(status))return undefined;
+  if(!['review','failed','paused','cancelled'].includes(status))return undefined;
  const work={source:'voice',status},startedAt=task?.workProgress?.startedAt;if(validTime(startedAt))work.startedAt=startedAt;if(validTime(at))work.updatedAt=at;return work;
 }
 export function safeCompletionWork(work){
  if(!work||typeof work!=='object'||Array.isArray(work)||![Object.prototype,null].includes(Object.getPrototypeOf(work)))return undefined;
- const fields=Object.getOwnPropertyDescriptors(work),source=fields.source?.value,status=fields.status?.value;if(source!=='voice'||!['review','failed','paused'].includes(status))return undefined;
+  const fields=Object.getOwnPropertyDescriptors(work),source=fields.source?.value,status=fields.status?.value;if(source!=='voice'||!['review','failed','paused','cancelled'].includes(status))return undefined;
  const result={source,status};for(const key of ['startedAt','updatedAt'])if(validTime(fields[key]?.value))result[key]=fields[key].value;return result;
 }

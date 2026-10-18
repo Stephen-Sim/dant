@@ -119,16 +119,18 @@ test('a live thread snapshot can acknowledge an owned completed turn before its 
  await engine.stopCall(call.callId);assert.equal(worker.terminated,0);assert.equal(worker.calls.some(call=>call.method==='turn/interrupt'),false);assert.equal(voice.state.lastStop.executorStopped,false);await engine.handle(event('turn/completed',{turn:{id:'already-terminal',status:'completed'}}));assert.equal(engine.call,null);
 });
 
-test('a stalled or late reconciliation cannot unlock before termination or mutate a later call',async t=>{
+test('a stalled or late reconciliation cannot unlock known work until a fresh read confirms detach',async t=>{
  const {engine,voice,worker,store}=setup(t,{voice:{stopTimeoutMs:15}}),call=await engine.startCall(sdp),request=worker.request.bind(worker);let reply;
  await begin(engine,'reconciliation-timeout');await engine.handle(handoff('slow-proof'));worker.request=(method,params)=>method==='thread/read'?new Promise(resolve=>reply=resolve):request(method,params);
- await engine.stopCall(call.callId);assert.equal(worker.terminated,1);assert.equal(voice.state.lastStop.confirmed,true);const history=JSON.stringify(store.state.messages);reply({thread:{id:'thread',status:{type:'idle'},turns:[{id:'reconciliation-timeout',status:'completed'}]}});await tick();assert.equal(JSON.stringify(store.state.messages),history);assert.equal(worker.calls.some(call=>call.method==='turn/interrupt'),false);
+ await assert.rejects(engine.stopCall(call.callId),/shutdown could not be confirmed/);assert.equal(worker.terminated,0);assert.equal(engine.call.id,call.callId);assert.equal(voice.state.lastStop.confirmed,false);const history=JSON.stringify(store.state.messages);reply({thread:{id:'thread',status:{type:'idle'},turns:[{id:'reconciliation-timeout',status:'completed'}]}});await tick();assert.equal(JSON.stringify(store.state.messages),history);assert.equal(engine.call.id,call.callId);assert.equal(voice.session.turns.get('reconciliation-timeout').done,false);assert.equal(worker.calls.some(call=>call.method==='turn/interrupt'),false);worker.request=request;await engine.stopCall(call.callId);assert.equal(engine.call,null);assert.equal(voice.active.turnId,'reconciliation-timeout');await engine.handle(event('turn/completed',{turn:{id:'reconciliation-timeout',status:'completed'}}));assert.equal(worker.terminated,0);
 });
 
 test('handoff ledger stays bounded and unresolved or invalid authoritative snapshots cannot unlock work',async t=>{
  const {engine,voice,worker}=setup(t),call=await engine.startCall(sdp);await begin(engine,'limited-turn');for(let index=0;index<129;index++)await engine.handle(handoff('handoff-'+index));assert.equal(voice.session.handoffs.size,128);assert.equal(voice.session.unknown,true);await engine.stopCall(call.callId);assert.equal(worker.terminated,1);
  for(const snapshot of [{thread:{id:'foreign-thread',turns:[]}},{thread:{id:'thread',turns:null}},{thread:{id:'thread',turns:[{id:'known-turn',status:'inProgress'},{id:'known-turn',status:'inProgress'}]}},{thread:{id:'thread',turns:[{id:'known-turn',status:'unexpected'}]}},{thread:{id:'thread',turns:[{id:'unknown-active',status:'inProgress'}]}},{thread:{id:'thread',turns:[]}}]){
-  const {engine,voice,worker}=setup(t),call=await engine.startCall(sdp),request=worker.request.bind(worker);await begin(engine,'known-turn');await engine.handle(handoff('snapshot-validation'));worker.request=(method,params)=>method==='thread/read'?Promise.resolve(snapshot):request(method,params);await engine.stopCall(call.callId);assert.equal(worker.terminated,1);assert.equal(voice.state.lastStop.confirmed,true);
+  const {engine,voice,worker}=setup(t),call=await engine.startCall(sdp),request=worker.request.bind(worker);await begin(engine,'known-turn');await engine.handle(handoff('snapshot-validation'));worker.request=(method,params)=>method==='thread/read'?Promise.resolve(snapshot):request(method,params);
+  if(snapshot.thread.turns?.some(turn=>turn.id==='unknown-active')){await engine.stopCall(call.callId);assert.equal(worker.terminated,1);assert.equal(voice.state.lastStop.confirmed,true);}
+  else{await assert.rejects(engine.stopCall(call.callId),/shutdown could not be confirmed/);assert.equal(worker.terminated,0);assert.equal(engine.call.id,call.callId);assert.equal(engine.call.status,'stop-unconfirmed');assert.equal(voice.session.unknown,false);assert.equal(voice.session.turns.get('known-turn').done,false);worker.request=request;await engine.stopCall(call.callId);assert.equal(engine.call,null);assert.equal(voice.active.turnId,'known-turn');await engine.handle(event('turn/completed',{turn:{id:'known-turn',status:'completed'}}));assert.equal(worker.terminated,0);}
  }
 });
 
@@ -289,7 +291,7 @@ test('missing closed confirmation terminates executor and failed termination ret
 });
 
 test('stop while only reserved cancels the pending start without reviving it',async t=>{
- const {engine,worker}=setup(t);let stopped;engine.waitStopped=()=>new Promise(resolve=>stopped=resolve);const starting=engine.startCall(sdp);const callId=engine.call.id;await engine.stopCall(callId);assert.equal(engine.call,null);stopped();await assert.rejects(starting,/cancelled/);assert.equal(worker.calls.some(call=>call.method==='thread/realtime/start'),false);
+ const {engine,worker,store}=setup(t);let prepared;engine.prepareInput=()=>new Promise(resolve=>prepared=resolve);const message=store.add({role:'user',text:'An already requested task'});engine.enqueue(message);await tick();const owner=engine.active;assert.ok(prepared);const starting=engine.startCall(sdp),cancelled=assert.rejects(starting,/cancelled/);const callId=engine.call.id;await engine.stopCall(callId);assert.equal(engine.call,null);assert.equal(engine.active,owner);assert.equal(owner.stopRequested,undefined);prepared(engine.input(message));await cancelled;assert.equal(worker.calls.some(call=>call.method==='thread/realtime/start'),false);assert.equal(owner.startAcknowledged,true);await engine.handle(event('turn/completed',{turn:{id:owner.turnId,status:'completed'}}));
 });
 
 test('stop while opening a thread does not send realtime start or kill an idle executor',async t=>{

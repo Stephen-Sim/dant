@@ -15,7 +15,7 @@ function fixture(language='en'){
  c.progressActions={bind(){},renderConfirmation:()=>'',onClose(){},busy:false};
  c.workDisclosures=createWorkDisclosures({getState:()=>c.state,document});
  c.post=async(route,body)=>{requests.push({route,body});if(route==='/takeover')c.state.computer.status=body.enabled?'human':'agent';return {ok:true};};c.api=async route=>{requests.push({route});assert.equal(route,'/state');return c.state;};
- vm.createContext(c);vm.runInContext([
+ c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};vm.createContext(c);vm.runInContext([
   part('const zh={','const subscriptionVoiceUnavailable='),part('const subscriptionVoiceUnavailable=','const eyes='),
   part('function renderComputer(){','function renderSettings(){'),part('function hasVMConnection(){','function renderVMProfiles(){'),
   part('function bind(){','async function taskRequest('),part('async function action(a){','async function checkUnconfirmedMessage(){'),

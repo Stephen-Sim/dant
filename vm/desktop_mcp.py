@@ -21,7 +21,9 @@ def tool(name, description, properties, required=()):
 NUMBER = {'type': 'integer', 'minimum': 0, 'maximum': 4096}
 TEXT = {'type': 'string'}
 TOOLS = [
+    tool('task_list', 'List saved tasks in this conversation with their actual workId, title, status and completed/total step counts. Use this read-only list to identify the matching task before cancellation; never guess IDs. Listing never executes, restarts, cancels or completes work.', {}),
     tool('task_plan', 'Register entrusted work before execution and wait for its saved acknowledgement. Reuse the returned workId for related follow-ups across turns, updating the actual title and steps, including human-requested revisions of unaccepted review results. Accepted completed tasks stay closed. Decide whether a request belongs to that task; ordinary conversation creates no task. A reply does not finish unfinished work. This never starts execution, grants permission, or completes it.', {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'title': {'type': 'string', 'minLength': 1, 'maxLength': 240}, 'steps': {'type': 'array', 'minItems': 1, 'maxItems': 128, 'items': {'type': 'object', 'properties': {'step': {'type': 'string', 'minLength': 1, 'maxLength': 5000}, 'status': {'type': 'string', 'enum': ['pending', 'inProgress', 'completed']}}, 'required': ['step', 'status'], 'additionalProperties': False}}}, ['title', 'steps']),
+    tool('task_cancel', 'Cancel an existing task in this conversation by its exact workId from task_list when the human requests cancellation or the task is explicitly abandoned or superseded. Supports current acknowledged running/waiting work and saved continuing/waiting_user tasks; the application verifies execution ownership. Paused, failed, review, completed and unconfirmed records require Work progress review; pause alone is not proof of stopping. Preserves cancelled history; never completes, deletes or starts work. cancelRequested means stopping awaits confirmation; only cancelled:true confirms cancellation. Never infer cancellation from silence, waiting, a reply ending, hangup or closing a window.', {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}}, ['workId']),
     tool('screenshot', 'Observe the current VM desktop.', {}),
     tool('click', 'Click the VM desktop at screenshot coordinates.', {'x': NUMBER, 'y': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['x', 'y']),
     tool('drag', 'Drag on the VM desktop.', {'startX': NUMBER, 'startY': NUMBER, 'endX': NUMBER, 'endY': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['startX', 'startY', 'endX', 'endY']),
@@ -115,6 +117,10 @@ def credential_bridge(name, args):
                 raise ValueError('Credential result exceeds its size limit')
             return json.loads(raw)
     except urllib.error.HTTPError as error:
+        if name == 'task_list':
+            raise ValueError(f'Task list request was rejected (HTTP {error.code})') from None
+        if name == 'task_cancel':
+            raise ValueError(f'Task cancellation request was rejected (HTTP {error.code})') from None
         if name == 'task_plan':
             message = f'Task progress request was rejected (HTTP {error.code})'
             if error.code == 400:
@@ -131,6 +137,10 @@ def credential_bridge(name, args):
     except (OSError, ValueError):
         # Do not include request bodies, response bodies, tokens, or credentials
         # in diagnostics. Writes with a lost response must not be blindly retried.
+        if name == 'task_list':
+            raise ValueError('The task list result is unconfirmed. Check Work progress for saved tasks.') from None
+        if name == 'task_cancel':
+            raise ValueError('The task cancellation result is unconfirmed. Check Work progress; do not retry cancellation automatically.') from None
         if name == 'task_plan':
             raise ValueError('The task progress result is unconfirmed. Do not retry a task progress write automatically.') from None
         raise ValueError('The private credential result is unconfirmed. Do not retry a credential write automatically.') from None
@@ -138,8 +148,18 @@ def credential_bridge(name, args):
 def invoke(name, args, output_dir):
     if not isinstance(args, dict):
         raise ValueError('Tool arguments must be an object')
+    if name == 'task_list':
+        if args:
+            raise ValueError('A task list requires empty arguments.')
+        return result({'taskListResult': credential_bridge(name, args)})
     if name == 'task_plan':
         return result({'taskPlanResult': credential_bridge(name, args)})
+    if name == 'task_cancel':
+        work_id = args.get('workId')
+        if (set(args) != {'workId'} or not isinstance(work_id, str) or not work_id or
+                len(work_id) > 128 or any(ord(char) <= 32 or ord(char) == 127 for char in work_id)):
+            raise ValueError('A task cancellation requires one existing workId.')
+        return result({'taskCancelResult': credential_bridge(name, args)})
     if name in ('credential_find', 'credential_get', 'credential_request', 'credential_store'):
         return result({'credentialResult': credential_bridge(name, args)})
     if name in ('skill_list', 'skill_get', 'skill_save'):

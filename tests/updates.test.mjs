@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {UpdateService,compareVersions,REPOSITORY_URL,RELEASES_URL,LATEST_RELEASE_API} from '../src/updates.mjs';
+import {UpdateService,compareVersions,REPOSITORY_URL,RELEASES_URL,LATEST_RELEASE_API,RELEASES_API,MAX_INSTALLER_BYTES} from '../src/updates.mjs';
 
-const release=(tag='v0.5.0',patch={})=>({draft:false,prerelease:false,tag_name:tag,html_url:RELEASES_URL+'/tag/'+tag,...patch});
+const release=(tag='v0.5.0',patch={})=>({draft:false,prerelease:tag.includes('-'),tag_name:tag,html_url:RELEASES_URL+'/tag/'+tag,published_at:'2026-10-17T00:00:00Z',...patch});
+const installer=(tag='v0.5.0',patch={})=>{const name=`dant_${tag.replace(/^v/,'')}_windows_x64_setup.exe`;return {name,state:'uploaded',size:4096,digest:'sha256:'+'a'.repeat(64),browser_download_url:RELEASES_URL+'/download/'+tag+'/'+name,...patch};};
 const service=options=>new UpdateService({version:'0.4.5',...options});
 const code=expected=>error=>{assert.equal(error.code,expected);assert.equal(error.status,expected==='UPDATE_TIMEOUT'?504:expected==='UPDATE_RATE_LIMITED'?503:502);assert.ok(!error.message.includes('private-'));return true;};
 
@@ -17,7 +18,7 @@ test('SemVer comparison handles numeric releases, prereleases, metadata and larg
 
 test('manual checks use a fixed unauthenticated endpoint, deduplicate requests and cache success for one minute',async()=>{
  let calls=0,finish,now=Date.UTC(2026,9,17);const updates=service({now:()=>now,fetchImpl:async(url,options)=>{calls++;assert.equal(url,LATEST_RELEASE_API);assert.equal(options.method,'GET');assert.equal(options.redirect,'error');assert.equal(options.credentials,'omit');assert.equal(options.headers.Authorization,undefined);assert.equal(options.headers['X-Dant-Token'],undefined);assert.equal(options.headers['X-GitHub-Api-Version'],'2022-11-28');assert.ok(options.signal instanceof AbortSignal);if(calls===1)await new Promise(resolve=>finish=resolve);return Response.json(release());}});
- const first=updates.check(),second=updates.check();assert.equal(calls,1);assert.equal(first,second);finish();const result=await first;assert.deepEqual(result,{currentVersion:'0.4.5',latestVersion:'0.5.0',updateAvailable:true,releaseUrl:RELEASES_URL+'/tag/v0.5.0',checkedAt:'2026-10-17T00:00:00.000Z'});
+ const first=updates.check(),second=updates.check();assert.equal(calls,1);assert.equal(first,second);finish();const result=await first;assert.deepEqual(result,{currentVersion:'0.4.5',latestVersion:'0.5.0',updateAvailable:true,releaseUrl:RELEASES_URL+'/tag/v0.5.0',checkedAt:'2026-10-17T00:00:00.000Z',channel:'stable',asset:null});
  const cached=await updates.check();cached.latestVersion='mutated';assert.equal((await updates.check()).latestVersion,'0.5.0');assert.equal(calls,1);now+=60000;assert.equal((await updates.check()).checkedAt,'2026-10-17T00:01:00.000Z');assert.equal(calls,2);updates.close();await assert.rejects(updates.check(),code('UPDATE_UNAVAILABLE'));
 });
 
@@ -62,4 +63,29 @@ test('the deadline covers connection and response body stalls and aborts the req
 
 test('closing cancels an in-flight request without waiting for the network timeout',async()=>{
  let signal;const updates=service({fetchImpl:async(url,options)=>{signal=options.signal;return new Promise(()=>{});}}),pending=updates.check();updates.close();await assert.rejects(pending,code('UPDATE_UNAVAILABLE'));assert.equal(signal.aborted,true);assert.equal(updates.cached,null);
+});
+
+test('Stable and Beta checks isolate their requests, caches, assets and version precedence',async()=>{
+ const calls=[],finish=new Map(),updates=service({version:'0.5.0-beta.2',fetchImpl:async url=>{calls.push(url);await new Promise(resolve=>finish.set(url,resolve));return Response.json(url===LATEST_RELEASE_API?release('v0.4.9',{assets:[installer('v0.4.9')]}):[release('v0.5.0-beta.11',{assets:[installer('v0.5.0-beta.11')]}),release('v0.5.0-beta.3'),release('v0.9.0',{draft:true}),release('v1.0.0',{published_at:null}),release('v0.4.9')]);}});
+ const stable=updates.check(),beta=updates.check('beta');assert.equal(updates.check('beta'),beta);assert.deepEqual(calls,[LATEST_RELEASE_API,RELEASES_API+'?per_page=100&page=1']);finish.get(calls[1])();const preview=await beta;assert.equal(preview.channel,'beta');assert.equal(preview.latestVersion,'0.5.0-beta.11');assert.equal(preview.updateAvailable,true);assert.equal(preview.asset.name,'dant_0.5.0-beta.11_windows_x64_setup.exe');
+ finish.get(calls[0])();assert.equal((await stable).updateAvailable,false);preview.asset.sha256='forged';assert.equal((await updates.check('beta')).asset.sha256,'a'.repeat(64));assert.equal((await updates.check()).channel,'stable');assert.equal(calls.length,2);updates.close();
+});
+
+test('Beta selects the highest valid published SemVer across fixed bounded pagination',async()=>{
+ const urls=[],first=Array.from({length:100},()=>release('v0.4.9')),updates=service({fetchImpl:async url=>{urls.push(url);return Response.json(url.endsWith('page=1')?first:[release('v0.5.0-beta.11'),release('v0.5.0'),release('v0.6.0-rc.1',{prerelease:false}),release('v99.0.0',{draft:true}),release('v0.6.0-rc.2',{html_url:'https://evil.example'})]);}});
+ assert.equal((await updates.check('beta')).latestVersion,'0.5.0');assert.deepEqual(urls,[RELEASES_API+'?per_page=100&page=1',RELEASES_API+'?per_page=100&page=2']);updates.close();
+ let calls=0;const bounded=service({fetchImpl:async()=>{calls++;return Response.json(first);}});await assert.rejects(bounded.check('beta'),code('UPDATE_INVALID_RELEASE'));assert.equal(calls,10);bounded.close();
+});
+
+test('only exact official uploaded Windows assets with bounded size and SHA256 enable native download',async()=>{
+ const good=installer(),bad=[{...good,name:'dant.exe'},{...good,state:'new'},{...good,size:0},{...good,size:MAX_INSTALLER_BYTES+1},{...good,size:1.5},{...good,digest:null},{...good,digest:'md5:'+'a'.repeat(64)},{...good,digest:'sha256:bad'},{...good,browser_download_url:good.browser_download_url+'?secret=private-token'},{...good,browser_download_url:good.browser_download_url.replace('Stephen-Sim','evil')},{...good,browser_download_url:good.browser_download_url.replace('v0.5.0','v9.0.0')}];
+ for(const asset of bad){const updates=service({fetchImpl:async()=>Response.json(release('v0.5.0',{assets:[asset]}))});assert.equal((await updates.check()).asset,null);updates.close();}
+ const valid=service({fetchImpl:async()=>Response.json(release('v0.5.0',{assets:[{...good,digest:'sha256:'+'A'.repeat(64)}]}))});assert.deepEqual((await valid.check()).asset,{version:'0.5.0',channel:'stable',url:good.browser_download_url,name:good.name,size:good.size,sha256:'a'.repeat(64)});valid.close();
+ const duplicate=service({fetchImpl:async()=>Response.json(release('v0.5.0',{assets:[good,good]}))});assert.equal((await duplicate.check()).asset,null);duplicate.close();
+});
+
+test('unknown channels do not contact GitHub and close aborts both channel checks',async()=>{
+ const signals=[],updates=service({fetchImpl:async(url,options)=>{signals.push(options.signal);return new Promise(()=>{});}});
+ for(const channel of ['nightly','https://evil.example',[],{}])await assert.rejects(updates.check(channel),error=>error.code==='UPDATE_INVALID_CHANNEL'&&error.status===400);assert.equal(signals.length,0);
+ const a=updates.check(),b=updates.check('beta');updates.close();await assert.rejects(a,code('UPDATE_UNAVAILABLE'));await assert.rejects(b,code('UPDATE_UNAVAILABLE'));assert.ok(signals.every(signal=>signal.aborted));
 });

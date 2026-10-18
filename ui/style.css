@@ -86,6 +86,11 @@
 .current-work-status{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .current-work-status strong{font-size:calc(var(--app-font-size) * 12 / 13);font-weight:550}
 .current-work-status small{margin-left:auto;color:var(--text-faint);font-size:calc(var(--app-font-size) * 10 / 13)}
+.progress-cancel{width:24px;height:24px;flex-shrink:0;align-self:flex-start;margin-left:5px;color:var(--text-faint);font-size:16px}
+.current-work-status .progress-cancel{margin-left:0}
+.current-work-cancel{color:var(--danger)}
+.update-install-lock{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--screen-mask);color:var(--text);backdrop-filter:blur(3px);font-size:calc(var(--app-font-size) * 13 / 13)}
+.progress-state.cancelled,.work-checklist [data-work-step-status=cancelled]{color:var(--text-faint)}
 .current-work h3{font-size:calc(var(--app-font-size) * 14 / 13);line-height:1.65;overflow-wrap:anywhere;margin:14px 0 8px}
 .work-step,.work-plan p{font-size:calc(var(--app-font-size) * 11 / 13);line-height:1.7;color:var(--text-soft);margin:5px 0;overflow-wrap:anywhere}
 .work-checklist{list-style:none;padding:0;margin:12px 0 0;display:flex;flex-direction:column;gap:8px;font-size:calc(var(--app-font-size) * 11 / 13);line-height:1.65;color:var(--text-soft)}

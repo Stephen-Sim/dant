@@ -8,6 +8,8 @@ Use **Search settings** to find a setting across all categories. English and Chi
 
 Search uses a fixed catalog of setting names and help keywords. It does not search chat history, credential values or account details. Chat history search is a separate chat action.
 
+**Chat & data → Memory & personality** shows dant's actual shared identity and durable reference notes from the work computer. These are the same references used by chat and both voice providers, with credential values omitted. The view is read-only and can be refreshed; a previously loaded copy is labelled when the computer is offline. Scheduled tasks remain in the sidebar.
+
 Switching categories preserves local form drafts and an ongoing call. Some settings require a connected work computer; appearance, application version and update checks are handled locally. See [updates](updates.md).
 
 ## Chat and call controls
@@ -17,6 +19,12 @@ Chat shows a time divider at the start of the conversation, on a new day, and af
 Your message shows one check after it is saved, and two after the executor acknowledges its delivery. This confirms receipt, not comprehension or task completion. New chat messages go to the current task when it can accept followups; otherwise they wait in the queue. Explicitly resumed and scheduled tasks keep their separate queue behavior. A background task left by a subscription call accepts text followups; its attachments wait for a separate task.
 
 While a call is connected, typed text goes to that same call and dant responds aloud. Quoted replies carry the original message and speaker; both voice providers share the same conversation memory. Work progress remains available from its header button, and task checklist expansion survives status refreshes and reopening the panel.
+
+You can start a call while a confirmed task is running, including work continuing after an earlier call. The existing task and secure input requests keep their identity and progress. Connection failure or ordinary hangup does not pause that work; uncertain call or execution ownership still needs confirmation before another connection.
+
+Opening, closing or resizing the Computer panel keeps the chat at the message you are viewing. A chat already at the bottom stays there; reading older messages does not force a jump to the newest message. Delayed image loading also preserves the current view. Search, unread-message and task-result navigation still move to the selected message.
+
+Use the **×** or **Cancel current work** control in Work progress to cancel selected work, with confirmation. A confirmed cancellation moves it to Recent tasks as **Cancelled**, retaining its steps, results and files. Unconfirmed stops remain visible; unrelated queued tasks and the current call are preserved. Cancelled tasks do not resume automatically or count toward Clear completed. You can also ask dant to find a task through `task_list` and cancel it through `task_cancel`.
 
 In **General → Show work progress in chat**, enable the compact progress card above the conversation. It is off by default and remembers your choice after restart. The card opens the same Work progress panel; its visibility preference does not start, pause or finish work, or change the current call. The header button remains available.
 
@@ -48,7 +56,7 @@ The tray shows a brief online/work/waiting status and queue count. **Work progre
 
 Choose **Show call window** in the tray menu to restore a hidden desktop call bar. This action is unavailable without a current call.
 
-Choose **Exit dant** in the tray menu to end the application through its normal shutdown path. Use this before installing an update. If the operating system cannot create the tray icon, closing the main window exits normally so there is no inaccessible hidden app. The tray does not start dant automatically after Windows restarts.
+Choose **Exit dant** in the tray menu to end the application through its normal shutdown path. Use this before manually installing an update; the in-app updater handles its own restart. If the operating system cannot create the tray icon, closing the main window exits normally so there is no inaccessible hidden app. The tray does not start dant automatically after Windows restarts.
 
 ## Scheduled tasks
 

@@ -37,13 +37,17 @@ Language and appearance belong to the Controller and can change offline. Semanti
 
 The VM owns `~/dant/data/state.json`, immutable UUID attachment files and metadata, and `memory/dant/`. Work runs under `~/dant/workspaces/<conversationId>/output/`. Initial migration backs up original Windows data and converts attachment references without copying Codex authentication. Deployment uses a source allowlist, retains data and release backups, and defers updates during active work or calls.
 
+Windows application updates have separate Stable/Beta metadata and an independent native download path. The native host reads the fixed authenticated Controller descriptor, accepts only the official installer and verifies its size and digest. Installation acquires a short Controller admission lease after a fresh VM read, fencing new local calls, takeover and setup while leaving VM execution and ordinary messages alone. A copied helper waits for exact parent and owned Controller process handles, rechecks the installer and starts it only after authorized shutdown. This does not deploy or stop the VM Worker. See [updates](updates.md).
+
 ## Persistent conversation and execution
 
 A permanent UUID identifies the conversation, workspace, and reused Codex thread. User receipt is saved before execution. Only a valid `turn/start` acknowledgment establishes executor confirmation. Early events are bounded by count and size and replayed only after matching the acknowledged turn.
 
 `task_plan {title, steps, workId?}`, available through the model tools and `dant_desktop` MCP, saves the public plan before acknowledging it. Ordinary conversation creates no work entry. Related follow-ups explicitly reuse the returned `workId`, even across execution turns; unrelated work gets a separate record. The durable record retains the original identity/start time and its owned turn IDs, so replies and result receipts do not create duplicates. Rebinding requires an acknowledged current scope and an inactive continuing, waiting or paused record; unknown or competing owners are rejected.
 
-An ended response is separate from task completion. A successful turn with unfinished registered steps leaves the task **In progress**; an actual input blocker remains **Waiting for your reply**. Only a complete plan enters review. Progress shows ongoing work separately from recent results, without claiming an executor is running between turns. Ordinary speech, transcript tails and conversational tools do not flash a generic task card. Restart pauses interrupted execution; safely retained unfinished plans remain identifiable. Dismissing inactive progress changes neither execution nor shared context.
+An ended response is separate from task completion. A successful turn with unfinished registered steps leaves the task **In progress**; an actual input blocker remains **Waiting for your reply**. Only a complete plan enters review. Progress shows ongoing work separately from recent results, without claiming an executor is running between turns. Ordinary speech, transcript tails and conversational tools do not flash a generic task card. Restart pauses interrupted execution; safely retained unfinished plans remain identifiable. Hiding historical progress changes neither execution nor shared context.
+
+Explicit cancellation is distinct from resumable pause. Work progress captures the selected task's identity, turn and call before confirmation. Only a confirmed terminal interruption becomes `cancelled`; an uncertain stop stays visible. Inactive unfinished work can also be cancelled without affecting a different running task. The retained record keeps its plan, results and priority, cannot be continued by a stale plan update, and is excluded from Clear completed. The scoped `task_list {}` tool reads compact task identities and statuses; `task_cancel {workId}` uses the same cancellation lifecycle. Self-cancellation acknowledges the request without waiting inside the tool event chain for its own completion. Cancellation does not end call media or drain unrelated queued work.
 
 The same Worker scheduler backs the sidebar and `schedule_list`/`schedule_save`/`schedule_delete` model tools, including both voice providers and MCP. A save records a future one-time task, with an explicit instant and IANA time zone; it never submits work immediately. Due dispatch atomically persists its claimed schedule and one queued message before passing that message to the ordinary serial queue. Restart retains the claim, so it cannot create another due message. Desktop creation uses a stable request ID for uncertain HTTP acknowledgement; deleted requests retain tombstones. Calls, human control and unconfirmed ownership delay due work. Removing a schedule does not cancel an already dispatched execution.
 
@@ -56,7 +60,8 @@ stateDiagram-v2
   running --> waiting_user: Executor requests input
   waiting_user --> running: Explicit response
   running --> pausing: Request interruption
-  pausing --> paused: Stop confirmed
+  pausing --> paused: Pause confirmed
+  pausing --> cancelled: Cancellation confirmed
   running --> review: Turn succeeds
   review --> completed: User accepts
   running --> failed: Confirmed failure
@@ -107,7 +112,7 @@ These constraints cover app scheduling and desktop tools. They cannot guarantee 
 
 The default subscription channel uses `thread/realtime/start`, V3, `gpt-live-1-codex`, and WebRTC. The frontend owns audio tracks and the `oai-events` data channel; Controller and Worker carry negotiation and work control. Call records begin only after actual media connection confirmation, not after SDP alone.
 
-Calls share the conversation thread and workspace. Explicit messages and files are saved; ordinary spoken narration and transcripts are not persisted as chat. Stopping handles both audio and delegated work. An uncertain stop requires confirmed executor termination rather than releasing ownership just because audio ended.
+Calls share the conversation thread and workspace. Explicit messages and files are saved; ordinary spoken narration and transcripts are not persisted as chat. Media closure and explicit work interruption are separate. Unconfirmed media detachment keeps controls locked and known work intact; genuinely unknown task ownership retains the guarded executor recovery path.
 
 The in-app mini call is a horizontal bar with the avatar on the left. Drag its noninteractive area anywhere inside the app; position survives status refreshes and is clamped after resizing. In the Windows desktop app, minimizing the main window during a call shows a separate, draggable, always-on-top bar near the monitor's bottom-right work area. Restoring the main window or ending the call hides that bar. The secondary window receives only call metadata and forwards scoped controls to the main window, which continues to own the existing media connection. It has no microphone, audio stream, general local API bridge or speech-process permission of its own.
 
@@ -119,7 +124,9 @@ In-call typed messages are authoritative input to the current voice conversation
 
 Model-selected reactions to user messages use a VM tool and persist as `assistantReaction` / `assistantReactionUpdatedAt`, separately from human `reactions`. The UI labels dant's badge and does not offer a human toggle for it. The same emoji can belong to both parties independently; assistant-owned feedback is not treated as human feedback. The UI never guesses a reaction from message text.
 
-Normal hangup ends the audio connection while an already accepted task continues in the same Codex thread. The native adapter keeps its confirmed task observer after detaching media; optional API tasks stay with the same Engine. Results, errors and requests for input appear in chat with unread receipts. A credential request stays available in its secure form. Explicitly stopping work still interrupts the task, and uncertain ownership or failed shutdown retains the existing conservative recovery rules. A new native call waits until the background task finishes or is explicitly paused; no task is transferred or submitted again.
+Normal hangup ends the audio connection while an already accepted task continues in the same Codex thread. The native adapter keeps its confirmed task observer after detaching media; optional API tasks stay with the same Engine. Results, errors and requests for input appear in chat with unread receipts. A credential request stays available in its secure form. Explicitly stopping work still interrupts the task, and uncertain ownership or failed shutdown retains the existing conservative recovery rules.
+
+A new native call can connect while confirmed work is running. Its media identity is separate from the stable task, turn and credential owner; the existing task is neither paused nor submitted again. Codex routes speech to start or steer its actual current turn. Only media handshake notifications bypass a blocked work event chain; task and handoff notifications keep their ordering. A failed connection preserves work, and an unconfirmed media close does not claim success or terminate the task. Scoped controls from a previous call cannot hang up its replacement.
 
 Minimizing or expanding changes only the call view. It preserves the peer connection, media, call identifier, and elapsed-time clock. The clock begins at the confirmed connection timestamp, freezes on local disconnection or hangup, and reconciles its final value with the saved call record.
 

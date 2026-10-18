@@ -99,12 +99,12 @@ test('waiting for input, stopping and uncertain ownership remain distinct from n
  data.controller={status:'online'};assert.equal(workProgress(data,{connected:false}).active.status,'unknown');
 });
 
-test('hidden conversation markers cannot suppress uncertain, stopping or actual waiting ownership and its Stop control',()=>{
+test('hidden conversation markers cannot suppress uncertain, stopping or actual waiting ownership and its exact cancellation control',()=>{
  const data=state();data.messages=[{id:'conversation',role:'user',text:'Ordinary conversation',workKind:'conversation',status:'running',turnId:'conversation-turn'}];data.active={source:'voice',turnId:'conversation-turn',messageId:'conversation',visible:false,status:'running',canSteer:false};
  assert.equal(workProgress(data).active,null);assert.equal(workProgress(data).history.length,0);
  const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderProgress(){'),end=source.indexOf('function renderModal(){',start),context={progressActions:{renderConfirmation:()=>''},workDisclosures:{capture(){},bind(){},isOpen:()=>false},workProgress,renderWorkPriority,renderActiveWork,renderWorkTaskHistory,renderVoiceWorkHistory,state:data,language:()=>'en',eventConnected:true,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,unknownTask:()=>false};vm.createContext(context);vm.runInContext(source.slice(start,end),context);
  for(const [status,label]of [['unknown','Status unconfirmed'],['pausing','Stopping safely'],['waiting_user','Waiting for your reply']]){
-  data.active.status=status;const model=workProgress(data),document=parseHTML(context.renderProgress()).document;assert.equal(model.active.status,status);assert.equal(model.history.length,0);assert.match(document.querySelector('.current-work').textContent,new RegExp(label));assert.ok(document.querySelector('[data-action="stop"]'));assert.equal(document.querySelector('[data-task-resume],[data-task-accept]'),null,'recovery visibility never invents a replay or acceptance action');
+  data.active.status=status;const model=workProgress(data),document=parseHTML(context.renderProgress()).document;assert.equal(model.active.status,status);assert.equal(model.history.length,0);assert.match(document.querySelector('.current-work').textContent,new RegExp(label));const control=document.querySelector('[data-task-cancel]');assert.ok(control);assert.equal(control.hasAttribute('disabled'),status!=='waiting_user');assert.equal(document.querySelector('[data-task-resume],[data-task-accept]'),null,'recovery visibility never invents a replay or acceptance action');
  }
  data.active.status='running';assert.equal(parseHTML(context.renderProgress()).document.querySelector('.current-work'),null,'ordinary conversation stays hidden again once ownership is known');
 });
@@ -247,7 +247,7 @@ test('main renders first-class task access and voice result navigation without c
  assert.match(source,/renderWorkEntry\(workProgress\(state/);assert.match(source,/if\(a==='progress'\)\{openModal\(\{type:'progress'\}\)/);assert.match(source,/modal.type==='progress'/);
  const start=source.indexOf(" document.querySelectorAll('[data-progress-message]')"),end=source.indexOf(" document.querySelectorAll('[data-first-unread]')",start);assert.ok(start>0&&end>start);
  const {document,Event}=parseHTML('<button data-progress-message="result"></button><div class="message" data-id="result"></div>');let closes=0,reveals=0,reads=0,scrolls=0;document.querySelector('.message').scrollIntoView=()=>scrolls++;
- const context={document,state:{messages:[{id:'result',role:'assistant',read:false}]},closeModal:()=>closes++,revealMessage:()=>reveals++,updateRead:()=>reads++};vm.createContext(context);vm.runInContext(source.slice(start,end),context);document.querySelector('button').dispatchEvent(new Event('click'));
+ const context={document,chatScroll:{navigate:action=>action()},state:{messages:[{id:'result',role:'assistant',read:false}]},closeModal:()=>closes++,revealMessage:()=>reveals++,updateRead:()=>reads++};vm.createContext(context);vm.runInContext(source.slice(start,end),context);document.querySelector('button').dispatchEvent(new Event('click'));
  assert.equal(closes,1);assert.equal(reveals,1);assert.equal(scrolls,1);assert.equal(reads,1);assert.equal(context.state.messages[0].read,false,'only existing visibility dwell may acknowledge reading');
  context.state.messages=[];document.querySelector('button').dispatchEvent(new Event('click'));assert.equal(closes,1,'stale/deleted result is ignored');
 });

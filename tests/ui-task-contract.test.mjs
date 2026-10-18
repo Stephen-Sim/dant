@@ -8,7 +8,7 @@ import {workProgress,renderWorkPriority,renderActiveWork,renderVoiceWorkHistory,
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 function fixture(){
- const requests=[],toasts=[],state={active:{source:'voice',messageId:'active',turnId:'voice-turn'},call:{id:'call',provider:'subscription'},queue:[],messages:[{id:'active',role:'user',text:'Current task',status:'running'},{id:'paused',role:'user',text:'Paused task',status:'paused'},{id:'unknown',role:'user',text:'Unknown task',status:'paused',submission:'unknown'}]};
+ const requests=[],toasts=[],state={active:{source:'voice',messageId:'active',turnId:'voice-turn',callId:'call'},call:{id:'call',provider:'subscription'},queue:[],messages:[{id:'active',role:'user',text:'Current task',status:'running'},{id:'paused',role:'user',text:'Paused task',status:'paused'},{id:'unknown',role:'user',text:'Unknown task',status:'paused',submission:'unknown'}]};
  const context={progressActions:{bind(){},renderConfirmation:()=>'',onClose(){},busy:false},workDisclosures:{capture(){},bind(){},isOpen:()=>false},workProgress,renderWorkPriority,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,language:()=>'en',eventConnected:true,state,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',progressExpanded:false,t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,taskRequest:async(id,route,body)=>requests.push({id,route,body}),toast:value=>toasts.push(value),openModal:()=>{}};
  vm.createContext(context);vm.runInContext(source.match(/^const unknownTask=.*$/m)[0]+'\n'+section('function renderProgress(){','function renderModal(){')+'\n'+section('function resumeTask(id,confirmUnknown){','function bindSteer(){'),context);
  return {context,state,requests,toasts};
@@ -23,10 +23,11 @@ test('native work uses the call composer and disables ordinary paused-task repla
 });
 
 test('native background work exposes an adjustment only when the owned task can accept that reply',()=>{
- const {context,state}=fixture();state.call=null;state.active={source:'voice',messageId:null,turnId:'owned',background:true,canSteer:false};
- let html=context.renderProgress();assert.doesNotMatch(html,/id="steer-form"/);assert.match(html,/workAdjustUnavailable/);assert.match(html,/data-action="stop"/);
+ const {context,state}=fixture();state.call=null;state.active={source:'voice',messageId:null,turnId:'owned',callId:'detached-call',background:true,canSteer:false};
+ let html=context.renderProgress();assert.doesNotMatch(html,/id="steer-form"/);assert.match(html,/workAdjustUnavailable/);assert.doesNotMatch(html,/data-action="stop"/);
+ const controls=[...parseHTML(html).document.querySelectorAll('[data-task-cancel]')];assert.equal(controls.length,2);assert.ok(controls.every(button=>button.dataset.taskCancel==='current'&&button.dataset.progressKind==='active'&&button.dataset.progressTurn==='owned'&&button.dataset.progressCall==='detached-call'&&!button.hasAttribute('disabled')),'both the X and Cancel current work retain the detached execution owner');
  state.active.canSteer=true;state.active.status='waiting_user';html=context.renderProgress();assert.match(html,/id="steer-form"/);
- state.controller={cached:true};html=context.renderProgress();assert.match(html,/id="steer-text"[^>]*disabled/);assert.match(html,/<button type="submit"[^>]*disabled/);
+ state.controller={cached:true};html=context.renderProgress();assert.match(html,/id="steer-text"[^>]*disabled/);assert.match(html,/<button type="submit"[^>]*disabled/);assert.ok([...parseHTML(html).document.querySelectorAll('[data-task-cancel]')].every(button=>button.hasAttribute('disabled')),'cached ownership cannot issue cancellation');
 });
 
 test('direct resume handlers cannot submit while a subscription call is active',async()=>{
@@ -39,9 +40,10 @@ test('submitting and unknown-outcome work use explicit retry controls instead of
  const {document}=parseHTML(context.renderProgress());for(const id of ['submitting','flagged']){assert.ok(document.querySelector('[data-task-unknown="'+id+'"]'));assert.equal(document.querySelector('[data-task-resume="'+id+'"]'),null);await context.resumeTask(id,false);}assert.equal(requests.length,0);
  assert.ok(document.querySelector('[data-task-resume="preparing"]'));await context.resumeTask('preparing',false);await context.resumeTask('submitting',true);assert.equal(requests.length,2);assert.equal(requests[0].id,'preparing');assert.equal(requests[0].body.confirmUnknown,undefined);assert.equal(requests[1].id,'submitting');assert.equal(requests[1].body.confirmUnknown,true);
 });
-test('only inactive recent task rows have close controls, including while another call is active',()=>{
+test('active close controls cancel the exact owner while inactive history closes remain dismiss-only during a call',()=>{
  const {context,state}=fixture();state.queue=['queued'];state.messages.push({id:'queued',role:'user',text:'Queued work',status:'queued'},{id:'review',role:'user',text:'Result',status:'review'},{id:'completed',role:'user',text:'Done',status:'completed'},{id:'draft',role:'user',text:'Still preparing attachment',status:'draft'});
- const {document}=parseHTML(context.renderProgress()),dismiss=[...document.querySelectorAll('[data-task-dismiss]')];assert.deepEqual(dismiss.map(button=>button.dataset.taskDismiss),['paused','unknown','review','completed']);assert.ok(dismiss.every(button=>button.dataset.progressKind==='task'&&!button.hasAttribute('disabled')));assert.ok(document.querySelector('[data-task-accept="review"]'));assert.ok(document.querySelector('[data-action="stop"]'));
+ const {document}=parseHTML(context.renderProgress()),dismiss=[...document.querySelectorAll('[data-task-dismiss]')];assert.deepEqual(dismiss.map(button=>button.dataset.taskDismiss),['paused','unknown','review','completed']);assert.ok(dismiss.every(button=>button.dataset.progressKind==='task'&&!button.hasAttribute('disabled')));assert.ok(document.querySelector('[data-task-accept="review"]'));
+ const cancellation=[...document.querySelectorAll('[data-task-cancel]')];assert.equal(cancellation.length,2);assert.ok(cancellation.every(button=>button.dataset.taskCancel==='active'&&button.dataset.progressKind==='task'&&button.dataset.progressTurn==='voice-turn'&&button.dataset.progressCall==='call'));assert.equal(document.querySelector('[data-task-dismiss="active"],[data-task-cancel="queued"],[data-task-cancel="paused"],[data-task-cancel="unknown"]'),null);assert.equal(document.querySelector('[data-action="stop"]'),null,'the selected card never dispatches a global pause instead of exact cancellation');
  context.pendingActions.add('task:paused');const pending=parseHTML(context.renderProgress()).document;assert.equal(pending.querySelector('[data-task-dismiss="paused"]').hasAttribute('disabled'),true);
 });
 test('registered work keeps the existing task actions and uses its own persistent dismissal identity',()=>{

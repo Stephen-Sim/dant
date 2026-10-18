@@ -12,6 +12,7 @@ import {parseHTML} from 'linkedom';
 import {reconcile} from '../ui/dom.js';
 import {formatPresence} from '../ui/presence.js';
 import {createSchedules} from '../ui/schedules.js';
+import {createMemorySettings} from '../ui/memory-settings.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
@@ -21,6 +22,7 @@ function fixture(selected='zh'){
  localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},api:async(route,options)=>{requests.push({route,options});return {ok:true};},render:()=>{},esc:value=>String(value??''),ico:name=>`<svg>${name}</svg>`,button:(action,icon,label)=>`<button data-action="${action}" aria-label="${label}">${label}</button>`,eyes:()=>'',md:text=>text,formatTime:()=>'',humanControl:()=>false,unknownTask:message=>message?.submission==='unknown',speechBlocked:()=>false,renderLoginDetails:()=>'',fileURL:file=>'/fixture/'+file.id,
  };
  context.scheduledTasks=createSchedules({getState:()=>context.state,document:parseHTML('<html><body></body></html>').document,request:context.api,connected:()=>true});
+ context.memorySettings=createMemorySettings({getState:()=>context.state,getLanguage:()=>context.state?.settings?.language||context.fallbackLanguage,request:context.api,connected:()=>false});
  vm.createContext(context);vm.runInContext([
  section('const zh={','const subscriptionVoiceUnavailable='),
  section('const subscriptionVoiceUnavailable=','const esc='),
@@ -50,8 +52,8 @@ test('settings language persists and updates pages, status, accessibility and re
  await c.changeLanguage('en');assert.equal(storage.get('dant.language'),'en');assert.equal(requests[0].route,'/settings');assert.equal(requests[0].options.body.language,'en');
  assert.match(c.renderHeader('online'),/Online/);assert.match(c.renderChat(),/Message dant…/);assert.match(c.renderChat(),/aria-label="Voice message"/);assert.doesNotMatch(c.renderChat(),/听写|上传|录音/);
  const computer=c.renderComputer();assert.match(computer,/aria-label="Resize computer panel"/);assert.match(computer,/aria-label="Work computer keyboard input"/);assert.match(computer,/The desktop could not refresh/);
- assert.match(c.renderSettings(),/Settings|Language|Call voice/);assert.match(c.renderVoiceSettings(c.state.settings),/Voice options are unavailable/);assert.match(c.renderMemory(),/No shared memories yet/);assert.match(c.renderSchedules(),/No scheduled tasks/);
- await c.changeLanguage('zh');assert.equal(storage.get('dant.language'),'zh');assert.match(c.renderComputer(),/调整电脑区域宽度|桌面暂时无法刷新/);assert.match(c.renderVoiceSettings(c.state.settings),/暂时无法获取声音选项/);assert.match(c.renderMemory(),/我们还没有共同的记忆/);assert.match(c.renderSchedules(),/暂无定时任务/);
+ assert.match(c.renderSettings(),/Settings|Language|Call voice/);assert.match(c.renderVoiceSettings(c.state.settings),/Voice options are unavailable/);assert.match(c.renderMemory(),/shared identity and durable notes/);assert.match(c.renderSchedules(),/No scheduled tasks/);
+ await c.changeLanguage('zh');assert.equal(storage.get('dant.language'),'zh');assert.match(c.renderComputer(),/调整电脑区域宽度|桌面暂时无法刷新/);assert.match(c.renderVoiceSettings(c.state.settings),/暂时无法获取声音选项/);assert.match(c.renderMemory(),/共享身份与持久记忆/);assert.match(c.renderSchedules(),/暂无定时任务/);
  c.state=null;c.fallbackLanguage='en';assert.equal(c.words.t('retryConnection'),'Reconnect','boot failure uses the remembered language');
  const defaultFixture=fixture();defaultFixture.context.state=null;assert.equal(defaultFixture.context.words.t('retryConnection'),'重新连接','an installation without a language preference defaults to Chinese');
 });
