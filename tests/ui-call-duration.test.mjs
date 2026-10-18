@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {createCallSubtitles} from '../ui/call-subtitles.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -36,7 +37,7 @@ function callFixture(){
  const track={stop(){}},media={getTracks:()=>[track]},c={Date:class extends Date{static now(){return now;}},navigator:{mediaDevices:{getUserMedia:async()=>media}},window:{RTCPeerConnection:Peer},RTCPeerConnection:Peer,Audio:class{pause(){}},setTimeout:()=>1,clearTimeout(){},pc:null,callStarting:false,callConnected:false,callId:null,callGeneration:0,callProvider:'subscription',callMini:false,callChannel:null,callTimeout:null,stream:null,audio:null,callMuted:false,dictating:false,speakingId:null,recording:null,recordStarting:false,recordDraft:null,unloading:false,eventConnected:true,page:'chat',chatMode:'text',state:{worker:{status:'online'},settings:{language:'en'},messages:[],call:null},subscriptionVoiceUnavailable:()=>false,apiVoiceUnavailable:()=>false,render(){},toast(){},handleEvent(){},t:value=>value,stopSpeech:async()=>{},stopReadTracking(){},stopFailure:false,transport:{startEvents(value){c.connectionHandler=value.onConnection;}}};
  c.callDuration=createCallDuration({now:()=>now,schedule:fn=>{intervals.set(++next,fn);return next;},cancel:id=>intervals.delete(id)});
  c.post=async(route,body)=>{requests.push({route,body});if(route==='/call'){const id='call-'+requests.length;c.state.call={id,provider:'subscription',status:'connecting',connectedAt:null};return {callId:id,sdp:'answer'};}if(route==='/call/connected'){c.state.call.connectedAt=now;c.state.call.status='connected';return {callId:body.callId,connected:true,connectedAt:now};}if(route==='/call/stop'){if(c.stopFailure)throw Object.assign(Error('Network disconnected'),{unknownOutcome:true});c.state.messages.push({kind:'call',callId:body.callId,seconds:8});c.state.call=null;return {stopped:true};}throw Error('Unexpected mock route');};c.api=async()=>c.state;c.callStops=createCallStops(id=>c.post('/call/stop',{callId:id}));
- c.updateInstalling=false;
+ c.updateInstalling=false;c.callSubtitles=createCallSubtitles();
  vm.createContext(c);vm.runInContext(part('async function startCall(','async function toggleRecord(){')+'\n'+part('function connectEvents(){',"document.addEventListener('pointerdown'"),c);
  return {c,intervals,requests,advance(ms){now+=ms;for(const tick of intervals.values())tick();},async connect(){await c.startCall();const peer=c.pc;assert.equal(intervals.size,0);peer.connectionState='connected';peer.onconnectionstatechange();await settle();assert.equal(intervals.size,0,'peer connection alone does not start duration');peer.dc.readyState='open';peer.dc.onopen();await settle();assert.equal(c.callConnected,true);assert.equal(intervals.size,1);return peer;}};
 }

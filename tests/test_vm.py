@@ -404,6 +404,30 @@ class VoiceAndMCPTests(unittest.TestCase):
             response = desktop_mcp.dispatch({'id': 98, 'method': 'tools/call', 'params': {'name': 'task_plan', 'arguments': args}}, pathlib.Path('.'))
             self.assertTrue(response['result']['isError'])
 
+    def test_mcp_task_plan_preserves_a_recoverable_unsaved_binding_receipt_without_automatic_retry(self):
+        bound, unrelated = 'actual-bound-work', 'unrelated-work'
+        rejected = {'saved': False, 'code': 'work_conflict', 'activeWorkId': bound,
+                    'guidance': 'The requested plan was not saved. Keep the exact activeWorkId and its actual task.'}
+        saved = {'saved': True, 'workId': bound}
+        opener = unittest.mock.Mock()
+        opener.open.side_effect = [io.BytesIO(json.dumps(rejected).encode()), io.BytesIO(json.dumps(saved).encode())]
+        args = {'workId': unrelated, 'title': 'Other task', 'steps': [{'step': 'Inspect', 'status': 'inProgress'}]}
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+            response = desktop_mcp.dispatch({'id': 101, 'method': 'tools/call', 'params': {'name': 'task_plan', 'arguments': args}}, pathlib.Path('.'))
+            self.assertFalse(response['result']['isError'])
+            self.assertEqual(response['result']['structuredContent']['taskPlanResult'], rejected)
+            self.assertFalse(json.loads(response['result']['content'][0]['text'])['taskPlanResult']['saved'])
+            self.assertEqual(opener.open.call_count, 1)
+            self.assertEqual(args['workId'], unrelated)
+            corrected = {**args, 'workId': bound, 'title': 'Actual bound task'}
+            result = desktop_mcp.invoke('task_plan', corrected, pathlib.Path('.'))
+            self.assertEqual(result['structuredContent']['taskPlanResult'], saved)
+            self.assertEqual(opener.open.call_count, 2)
+        description = next(tool for tool in desktop_mcp.TOOLS if tool['name'] == 'task_plan')['description']
+        self.assertIn('saved:true', description)
+        self.assertIn('saved:false', description)
+        self.assertIn('activeWorkId', description)
+
     def test_mcp_reaction_only_returns_an_application_validated_request(self):
         with tempfile.TemporaryDirectory() as folder:
             for emoji in ['👍', '❤️', None]:

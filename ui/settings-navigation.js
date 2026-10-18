@@ -1,5 +1,5 @@
 const categories=[
- ['general','General','通用'],['appearance','Appearance','外观'],['voice','Voice','语音'],['computer','Work computer','工作电脑'],['account','ChatGPT','ChatGPT 账号'],['credentials','Credentials','凭据与密钥'],['history','Chat & data','聊天与数据'],['telegram','Telegram','Telegram 集成'],['about','About dant','关于 dant'],
+ ['general','General','通用'],['appearance','Appearance','外观'],['voice','Voice','语音'],['computer','Work computer','工作电脑'],['account','ChatGPT','ChatGPT 账号'],['usage','Usage','用量统计'],['credentials','Credentials','凭据与密钥'],['history','Chat & data','聊天与数据'],['telegram','Telegram','Telegram 集成'],['about','About dant','关于 dant'],
 ];
 // Search this fixed catalogue only. Never read rendered form values, credential
 // metadata, account details, conversation text, or any other user data.
@@ -26,6 +26,7 @@ const entries=[
  ['permissions','computer','Administration permissions','管理权限','sudo admin 管理员 权限','[data-setting-card="permissions"]'],
  ['subscription','account','ChatGPT sign-in & subscription','ChatGPT 登录与订阅','account login logout 账号 退出','[data-setting-card="account"]'],
  ['model','account','Model','模型','ChatGPT account 账号','#model'],
+ ['usage','usage','Token usage','Token 用量统计','tokens input cached output reasoning statistics 输入 缓存 输出 推理 消耗 统计','[data-setting-card="usage"]'],
  ['vault','credentials','Credential vault','凭据与密钥管理','password login secret key 密码 登录 凭据 保存','.credentials-settings'],
  ['clear-history','history','Clear chat history','清空聊天记录','delete remove data 删除 对话 数据','.conversation-settings'],
  ['memory','history','Memory','记忆','reference 笔记','[data-action="memory"]'],

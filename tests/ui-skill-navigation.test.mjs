@@ -1,5 +1,6 @@
 import {bindAttachmentImages} from '../ui/attachment-images.js';
 import test from 'node:test';
+import {createCallSubtitles} from '../ui/call-subtitles.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -15,6 +16,7 @@ import {createUpdates} from '../ui/updates.js';
 import {createSettingsNavigation} from '../ui/settings-navigation.js';
 import {createSchedules} from '../ui/schedules.js';
 import {createWorkDisclosures} from '../ui/work-disclosures.js';
+import {renderUsageSettings} from '../ui/usage-settings.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
@@ -25,8 +27,10 @@ function fixture({language='en',online=true,live=false}={}){
  const c={bindAttachmentImages,workProgress,renderWorkEntry,textEditor:{renderSettings:()=>'',bind(){},load:async()=>{},dispose(){}},nativeTray:{sync(){},dispose(){}},downloads:{bind(){}},filePreview:{bind(){},syncModal:value=>value},document,Event,window:{},app:document.querySelector('#app'),reconcile,icons:lucide,formatPresence,formatCallDuration,fallbackLanguage:language,state:{conversationId:'same-vm',settings:{...appearanceDefaults,language,vm:{host:'vm.test',port:22,user:'dant'}},worker:{status:online?'online':'offline',models:[]},controller:{status:online?'online':'offline'},messages:[],queue:[],active:null,call:live?call:null,credentials:{items:[],requests:[]},skills:{items:[{name:'computer-check',description:'Inspect the computer',path:'.agents/skills/computer-check',enabled:true}]}},vmDraft:null,eventConnected:online,page:'chat',modal:null,emojiFor:null,showComputer:false,chatMode:live?'voice':'text',callMini:false,callMuted:false,callConnected:live,callStarting:false,callStops:{pending:false},callChannel:{readyState:'open'},pc:live?peer:null,stream:live?stream:null,audio:live?audio:null,callId:live?call.id:null,callProvider:'subscription',composerDraft:'Keep my draft',attachmentMenu:false,dictating:false,speakingId:null,pendingActions:new Set(),localStorage:{setItem(){}},chatHistory:{onClose(){},bind(){},bindModal(){},renderSettings:()=>''},toast:message=>toasts.push(message),errorText:error=>error.message||String(error),humanControl:()=>false,resizeComposer(){},positionReactionMenus(){},updateRead(){},restartScreen(){},bindSteer(){},bindProvision(){},bindVoiceKey(){},bindTelegram(){},bindAppearance(){},bindVMSettings(){},bindComputerInput(){},clearTelegramPairing(){},loadTelegram:async()=>{},loadFonts:async()=>{},loadVoices:async()=>{},renderAppearance:()=>'',renderVoiceSettings:()=>'',renderVMSettings:()=>'',renderLoginDetails:()=>'',renderTelegramSettings:()=>'',renderMemory:()=>'',renderSchedules:()=>'',renderCallReady:()=>'',renderComputer:()=>'',eyes:()=>'<i class="call-avatar"></i>'};
  c.createElement=definition=>{const previous=globalThis.document;globalThis.document=document;try{return lucide.createElement(definition);}finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}};
  c.renderWorkSummary=renderWorkSummary;
+ c.renderUsageSettings=renderUsageSettings;
  c.appearance=createAppearance({document,storage:null,matchMedia:()=>null});c.floatingCall={sync(){}};c.nativeCallOverlay={update(){}};
  c.progressActions={bind(){},renderConfirmation:()=>'',onClose(){},busy:false};
+ c.callSubtitles=createCallSubtitles();
  c.workDisclosures=createWorkDisclosures({getState:()=>c.state,document});c.scheduledTasks=createSchedules({getState:()=>c.state,document,connected:()=>c.eventConnected,render:()=>c.render(),request:async()=>({items:c.state.schedules||[]})});c.renderSchedules=()=>c.scheduledTasks.renderPage();
  c.callDuration=createCallDuration({now:()=>18000,schedule:fn=>{timers.set(++nextTimer,fn);return nextTimer;},cancel:id=>timers.delete(id)});if(live)c.callDuration.start(call.id,call.connectedAt);
  c.renderChat=()=>`<div id="messages"></div><textarea id="composer">${c.composerDraft}</textarea>`;

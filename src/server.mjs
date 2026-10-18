@@ -16,6 +16,7 @@ import {createSecretStore,validateApiKey} from './secrets.mjs';
 import {AttachmentStore,MAX_ATTACHMENT_BYTES,MAX_MESSAGE_ATTACHMENTS} from './attachments.mjs';
 import {AudioTranscriber} from './audio-transcription.mjs';
 import {DeliverableCollector} from './deliverables.mjs';
+import {installOutputLinkRecoveryRoute} from './output-link-recovery.mjs';
 import {MemoryStore} from './memory.mjs';
 import {installMemoryViewRoutes} from './memory-view.mjs';
 import {ComputerSession} from './computer-session.mjs';
@@ -33,6 +34,7 @@ import {observeHttp,observeTasks,serviceVersion,diagnosticWorkerStatus} from './
 import {UpdateService,installUpdateRoutes} from './updates.mjs';
 import {Scheduler,scheduleTimeZone} from './scheduler.mjs';
 import {WorkContinuationSupervisor} from './work-continuation.mjs';
+import {TaskPlanBindingConflict,taskPlanBindingFeedback} from './task-plan-conflict.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 export function createApp(options={}){
  const dataDir=options.dataDir||process.env.DANT_DATA||path.join(root,'data');
@@ -60,8 +62,9 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
   const reactions=buildReactionContext(store.state.messages);if(reactionsOnly)return credentials.redact(reactions);
   const lines=store.state.messages.filter(message=>['user','assistant'].includes(message.role)).map(message=>JSON.stringify({messageId:message.id,role:message.role,text:String(message.text||''),attachments:(message.attachments||[]).slice(0,5).map(file=>String(file.name||'')),assistantReaction:message.assistantReaction||null}));
   return credentials.redact(lines.join('\n')+'\n\n'+reactions);
- },hangupTimeoutMs:2000});
+ },redactSubtitle:(text,additionalSecrets)=>credentials.redact(text,{partial:true,additionalSecrets}),hangupTimeoutMs:2000});
  engine.voice=voice;
+ voice.on('usage',event=>{try{engine.usage.observeApiVoice(event);}catch{engine.emit('notice','Token usage could not be saved.');}});
  const nativeVoice=nativeVoiceFactory({worker,engine});engine.nativeVoice=nativeVoice;
  const workContinuation=new WorkContinuationSupervisor({store,engine,worker});
  nativeVoice.on('diagnostic',event=>{if(['voice_executor_stop_required','voice_shutdown_unconfirmed','voice_shutdown','voice_observer_image_omitted','voice_observer_payload_omitted','voice_handoff_tracked','voice_handoff_confirmed'].includes(event?.code)){const {code,...metadata}=event;diagnostics.log(code,metadata);}});
@@ -70,6 +73,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  voice.on('closed',event=>{const call=engine.call;if(call?.provider!=='api'||event?.callId!==call.id)return;callScopedKey=null;credentials.cancelOwner(call.id);engine.handleVoiceClosed(event);engine.emit('realtime',{method:'thread/realtime/closed',params:{callId:call.id}});});
  nativeVoice.on('closed',event=>{if(event?.callId&&!event.workContinues)credentials.cancelOwner(event.callId);});
  voice.on('notice',message=>engine.emit('notice',message));
+ voice.on('subtitle',event=>{if(engine.call?.provider==='api'&&event?.params?.callId===engine.call.id)engine.emit('realtime',event);});
  const contextAttempts=new Map();
  async function syncVoiceContext(kind,message,call){
   if(!call||!['api','subscription'].includes(call.provider))return null;
@@ -120,14 +124,17 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
   const taskPlan=req.body?.tool==='task_plan',taskCancel=req.body?.tool==='task_cancel',taskProgress=taskPlan||req.body?.tool==='task_list';
   if(!['task_plan','task_list','task_cancel','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','schedule_list','schedule_save','schedule_delete'].includes(req.body?.tool)||!req.body.arguments||typeof req.body.arguments!=='object'||Array.isArray(req.body.arguments))return res.status(400).json({error:taskProgress?'The task progress request could not be completed.':taskCancel?'The task cancellation request could not be completed.':'Invalid credential operation.'});
   try{const result=await engine.tool(req.body.tool,req.body.arguments,scope);if(!scope.isCurrent())return res.status(409).json({error:taskProgress?'The task progress request is no longer active.':taskCancel?'The task cancellation request is no longer active.':'The credential operation is no longer active.'});res.json(result);}
-  catch(error){const code=taskPlan&&['work_not_found','work_conflict','work_not_continuable','work_stale_turn'].includes(error?.code)?error.code:null;res.status(400).json({error:taskProgress?'The task progress request could not be completed.':taskCancel?'The task cancellation request could not be completed.':'The credential operation could not be completed.',...(code?{code}:{})});}
+  catch(error){
+   if(taskPlan&&error instanceof TaskPlanBindingConflict&&scope.isCurrent()&&error.activeWorkId===scope.task.continuation?.workId)return res.json(taskPlanBindingFeedback(error.activeWorkId));
+   const code=taskPlan&&['work_not_found','work_conflict','work_not_continuable','work_stale_turn'].includes(error?.code)?error.code:null;res.status(400).json({error:taskProgress?'The task progress request could not be completed.':taskCancel?'The task cancellation request could not be completed.':'The credential operation could not be completed.',...(code?{code}:{})});
+  }
  });
  app.get('/api/session',(req,res)=>res.json({token,product:'dant',mode:'worker'}));
  app.use('/api',(req,res,next)=>{if(req.headers['x-dant-token']!==token&&req.query.token!==token)return res.sendStatus(401);next();});
  installUpdateRoutes(app,updates);
  app.get('/api/diagnostics',(req,res)=>res.json({status:diagnostics.status(),recent:diagnostics.recent(50)}));
  app.all('/api/diagnostics',(req,res)=>res.status(405).json({error:'Diagnostics are read-only.'}));
- const snapshot=()=>{const key=voiceKeys.status(),native=nativeVoice.state;return {mode:'vm-worker',conversationId:store.state.conversationId,messages:store.state.messages,completions:store.state.completions||[],workTasks:store.state.workTasks||[],presence:{lastActiveAt:store.state.presence?.lastActiveAt||null},credentials:credentials.snapshot(),skills:skillSnapshot(),memory:store.state.memory,memoryFiles:memory.snapshot(),settings:store.state.settings,telegram:telegram.status(),worker:{status:worker.status,error:worker.error||null,account:worker.account?.account,models:worker.models?.data||[],realtime:{available:native.available,reason:native.available?null:'vm-offline',provider:'subscription',billing:'subscription',subscription:{available:native.available,version:'v3',error:native.error||null,lastStop:native.lastStop||null},api:{available:key.configured,billing:'api'},key}},active:engine.progress||nativeVoice.progress||(engine.active?{messageId:engine.active.messageId,turnId:engine.active.turnId}:nativeVoice.active||null),queue:engine.queue.map(m=>m.id),takeover:computer.state.status==='human',computer:computer.snapshot(),call:engine.call,schedules:store.state.schedules,provisioning:provisioning.snapshot()};};
+ const snapshot=()=>{const key=voiceKeys.status(),native=nativeVoice.state;return {mode:'vm-worker',conversationId:store.state.conversationId,messages:store.state.messages,completions:store.state.completions||[],workTasks:store.state.workTasks||[],presence:{lastActiveAt:store.state.presence?.lastActiveAt||null},credentials:credentials.snapshot(),skills:skillSnapshot(),memory:store.state.memory,memoryFiles:memory.snapshot(),usage:engine.usage.snapshot(),settings:store.state.settings,telegram:telegram.status(),worker:{status:worker.status,error:worker.error||null,account:worker.account?.account,models:worker.models?.data||[],realtime:{available:native.available,reason:native.available?null:'vm-offline',provider:'subscription',billing:'subscription',subscription:{available:native.available,version:'v3',error:native.error||null,lastStop:native.lastStop||null},api:{available:key.configured,billing:'api'},key}},active:engine.progress||nativeVoice.progress||(engine.active?{messageId:engine.active.messageId,turnId:engine.active.turnId}:nativeVoice.active||null),queue:engine.queue.map(m=>m.id),takeover:computer.state.status==='human',computer:computer.snapshot(),call:engine.call,schedules:store.state.schedules,provisioning:provisioning.snapshot()};};
  const wss=new WebSocketServer({noServer:true,maxPayload:1024*1024});
  server.on('upgrade',(req,socket,head)=>{const url=new URL(req.url,'http://localhost');if(url.pathname!=='/events'||url.searchParams.get('token')!==token){socket.destroy();return;}const origin=req.headers.origin;if(origin&&!/^http:\/\/(127\.0\.0\.1|localhost):431[78]$/.test(origin)&&origin!=='http://tauri.localhost'&&origin!=='tauri://localhost'){socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));});
  const broadcast=(type,data)=>{const payload=JSON.stringify({type,data});for(const ws of wss.clients)if(ws.readyState===1)ws.send(payload);};
@@ -138,6 +145,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  provisioning.on('change',progress=>{if(closing)return;importBinding();engine.change();if(progress.status==='ready'&&lastProvisionStatus!=='ready'&&!engine.active&&!engine.pendingFollowups.size&&!engine.callReferences.size&&!nativeVoice.active&&!engine.call){engine.loaded=false;worker.connect().catch(e=>engine.emit('notice',e.message));}lastProvisionStatus=progress.status;});
  wss.on('connection',ws=>ws.send(JSON.stringify({type:'state',data:snapshot()})));
  app.get('/api/state',(req,res)=>res.json(snapshot()));
+ installOutputLinkRecoveryRoute(app,{store,collector:deliverables,outputDir:()=>engine.outputDir,onChange:()=>engine.change()});
  const historyAction=(res,operation,action)=>{try{return res.json(action());}catch(error){return res.status([400,404,409].includes(error.status)?error.status:409).json({error:'The '+operation+' could not be completed. Check the request and stop active work before changing history.'});}};
  app.patch('/api/messages/:id',(req,res)=>historyAction(res,'message edit',()=>{const body=req.body;if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['text','resubmit'].includes(key))||body.resubmit!==undefined&&typeof body.resubmit!=='boolean')throw Object.assign(Error('Invalid message edit'),{status:400});return history.edit(req.params.id,{text:body.text,resubmit:body.resubmit===true});}));
  app.delete('/api/messages/:id',(req,res)=>historyAction(res,'message removal',()=>history.remove(req.params.id)));
@@ -204,6 +212,8 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  app.post('/api/tasks/pause',async(req,res)=>{await engine.pause();res.json({ok:true});});
  app.post('/api/tasks/resume',(req,res)=>{if(!Array.isArray(req.body.ids)||req.body.ids.length>100)throw Error('Choose the paused tasks to resume');engine.resumePaused(req.body.ids,{confirmUnknown:req.body.confirmUnknown===true});res.json({ok:true});});
  app.post('/api/tasks/:id/accept',(req,res)=>res.json(engine.confirm(req.params.id)));
+ app.post('/api/tasks/:id/pause',async(req,res)=>{try{res.json(await engine.pauseProgress(req.params.id,req.body?.kind,{turnId:req.body?.turnId,callId:req.body?.callId}));}catch(error){res.status([400,404,409].includes(error.status)?error.status:409).json({error:'The task pause could not be confirmed. Check its current status.',...(error.unknownOutcome?{unknownOutcome:true,code:'pause_unconfirmed'}:{})});}});
+ app.post('/api/tasks/:id/resume',(req,res)=>{try{res.json(engine.resumeProgress(req.params.id,req.body?.kind,{turnId:req.body?.turnId}));}catch(error){res.status([400,404,409].includes(error.status)?error.status:409).json({error:'The paused task could not be resumed. Check its current status.'});}});
  app.post('/api/tasks/:id/cancel',async(req,res)=>{try{res.json(await engine.cancelProgress(req.params.id,req.body?.kind,{turnId:req.body?.turnId,callId:req.body?.callId}));}catch(error){res.status([400,404,409].includes(error.status)?error.status:409).json({error:'The task could not be cancelled. Its current execution must confirm that it stopped.',...(error.unknownOutcome?{unknownOutcome:true,code:'cancel_unconfirmed'}:{})});}});
  app.post('/api/tasks/clear-completed',(req,res)=>{try{res.json(engine.clearCompletedProgress());}catch{res.status(409).json({error:'Completed work progress could not be cleared.'});}});
  app.post('/api/tasks/:id/priority',(req,res)=>{try{res.json(engine.setProgressPriority(req.params.id,req.body?.kind,req.body?.priority));}catch(error){res.status([400,404,409].includes(error.status)?error.status:409).json({error:'Work progress priority could not be changed.'});}});

@@ -8,6 +8,19 @@ const field=(value,name,max,{optional=false}={})=>{if(optional&&value===undefine
 const metadata=({id,name,service,username,createdAt,updatedAt})=>({id,name,service,username,createdAt,updatedAt});
 const validId=id=>typeof id==='string'&&/^[0-9a-f-]{36}$/i.test(id);
 
+// Streaming subtitles can end midway through a credential. Suppress a matching
+// secret prefix before it becomes a complete value in a later transport frame.
+function matchingSuffix(text,pattern){
+ const table=new Uint32Array(pattern.length);for(let i=1,j=0;i<pattern.length;i++){while(j&&pattern[i]!==pattern[j])j=table[j-1];if(pattern[i]===pattern[j])j++;table[i]=j;}
+ let matched=0;const tail=text.slice(-pattern.length);for(let i=0;i<tail.length;i++){while(matched&&tail[i]!==pattern[matched])matched=table[matched-1];if(tail[i]===pattern[matched])matched++;if(matched===pattern.length)matched=table[matched-1];}return matched;
+}
+export function redactCredentialText(value,secrets,{partial=false}={}){
+ let result=String(value);for(const secret of [...secrets].filter(value=>typeof value==='string'&&value.length>=4).sort((a,b)=>b.length-a.length)){
+  result=result.split(secret).join('[credential redacted]');
+  if(partial){const count=matchingSuffix(result,secret);if(count>=4)result=result.slice(0,-count)+'[credential redacted]';}
+ }return result;
+}
+
 /** VM-owned encrypted vault. The master key is restricted to the ordinary VM user. */
 export class CredentialVault{
  constructor({dataDir}){this.dir=path.join(path.resolve(dataDir),'credentials');this.file=path.join(this.dir,'vault.enc');this.keyFile=path.join(this.dir,'master.key');}
@@ -49,7 +62,10 @@ export class CredentialVault{
  }
  remove(id){if(!validId(id))throw Error('Invalid credential identifier.');const entries=this.read(),filtered=entries.filter(item=>item.id!==id);if(filtered.length===entries.length)throw Error('Credential not found.');this.write(filtered);return {removed:true,id};}
  containsSecret(value){return this.read().some(item=>item.secret.length>=4&&String(value).includes(item.secret));}
- redact(value){let result=String(value);for(const item of this.read().sort((a,b)=>b.secret.length-a.secret.length))if(item.secret.length>=4)result=result.split(item.secret).join('[credential redacted]');return result;}
+ redact(value,{partial=false,additionalSecrets=[]}={}){
+  if(!Array.isArray(additionalSecrets)||additionalSecrets.some(secret=>typeof secret!=='string'))throw Error('Invalid additional redaction values.');
+  return redactCredentialText(value,[...this.read().map(item=>item.secret),...additionalSecrets],{partial});
+ }
  toJSON(){return {items:this.list()};}
 }
 
@@ -62,7 +78,7 @@ export class CredentialRequests{
  upsert(input){const item=this.vault.upsert(input);this.change();return item;}
  remove(id){const result=this.vault.remove(id);this.change();return result;}
  containsSecret(value){return this.vault.containsSecret(value);}
- redact(value){return this.vault.redact(value);}
+ redact(value,options){return this.vault.redact(value,options);}
  request(input,{owner,isCurrent}={}){
   if(this.closed||typeof owner!=='string'||typeof isCurrent!=='function'||!isCurrent())return Promise.reject(Error('The credential request is no longer active.'));
   const name=field(input?.name,'name',100).trim(),service=field(input.service??'','service',200,{optional:true}).trim(),reason=field(input.reason??'','reason',500,{optional:true});

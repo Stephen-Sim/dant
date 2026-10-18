@@ -42,6 +42,13 @@ test('idle unfinished work continues with one durable identity and no new human 
  assert.equal(f.store.state.workTasks[0].status,'review');assert.equal(f.store.state.workTasks[0].continuation.dispatch,undefined);assert.equal(f.store.state.messages.filter(item=>item.role==='user').length,1);assert.equal(f.store.state.messages.at(-1).text,'The requested change has been verified.');assert.equal(await scheduler.tick(),null);assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,1);
 });
 
+test('an automatic continuation rejects an unrelated task ID with its actual bound ID and preserves both tasks',async t=>{
+ const f=fixture(t),first=unfinished(f,'first-task'),second=unfinished(f,'second-task');await f.engine.continueRegisteredWork(first.record.id,{expectedTurnId:first.record.turnId});const before=structuredClone(f.store.state.workTasks),starts=f.worker.calls.filter(call=>call.method==='turn/start').length;
+ for(const workId of [undefined,second.record.id])await assert.rejects(f.engine.tool('task_plan',{...(workId?{workId}:{}),title:second.record.title,steps:plan()}),error=>error.code==='work_conflict'&&error.activeWorkId===first.record.id&&error.message.includes(first.record.id)&&/cannot switch|Do not switch/.test(error.message));
+ assert.deepEqual(f.store.state.workTasks,before);assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,starts);assert.equal((await f.engine.tool('task_list',{})).activeWorkId,first.record.id);
+ const saved=await f.engine.tool('task_plan',{workId:first.record.id,title:first.record.title,steps:plan().map(step=>({...step,status:'completed'}))});assert.equal(saved.saved,true);assert.equal(saved.workId,first.record.id);assert.deepEqual(f.store.state.workTasks.find(record=>record.id===second.record.id),before.find(record=>record.id===second.record.id));await terminal(f);
+});
+
 test('an unfinished automatic turn is scheduled after a delay and repeated ticks cannot duplicate its live owner',async t=>{
  const f=fixture(t),{record}=unfinished(f),scheduler=new WorkContinuationSupervisor({engine:f.engine});await scheduler.tick();assert.equal(await scheduler.tick(),null);await terminal(f);const saved=f.store.state.workTasks[0];assert.equal(saved.status,'continuing');assert.equal(saved.continuation.noProgressCount,1);assert.ok(saved.continuation.nextAt>Date.now());assert.equal(await scheduler.tick(),null);assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,1);assert.equal(new Store(f.dir).state.workTasks[0].id,record.id);
 });

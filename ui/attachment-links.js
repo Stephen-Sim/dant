@@ -36,17 +36,26 @@ export function resolveMessageAttachmentLink(href,attachments=[]){
  return {local:true,file:matches.length===1?matches[0]:null};
 }
 
-// Only immutable files already attached to this message can satisfy a local link.
-// Unmatched paths are never handed to the browser or operating system.
-export function bindMessageAttachmentLink(link,{getMessage,onImage,onFile,onDownload,onUnavailable=()=>{},onError=()=>{}}={}){
+// Local links open an immutable attachment, with an optional scoped recovery
+// of the exact saved reference. Paths never navigate the browser or OS.
+export function bindMessageAttachmentLink(link,{getMessage,onImage,onFile,onDownload,onResolve,getScope=()=>null,getModal=()=>null,onUnavailable=()=>{},onError=()=>{}}={}){
  const article=link.closest('.message[data-id]');if(!article)return false;
  const href=link.getAttribute('href'),messageId=article.dataset.id;
  if(!resolveMessageAttachmentLink(href,getMessage(messageId)?.attachments).local)return false;
  const button=link.ownerDocument.createElement('button');button.type='button';button.className='attachment-link';if(link.title)button.title=link.title;button.append(...link.childNodes);link.replaceWith(button);
+ let pending=null;
+ const open=file=>String(file.type||'').startsWith('image/')?onImage(file):canPreviewFile(file)?onFile(file):onDownload(file);
  button.onclick=event=>{
   event.preventDefault();event.stopPropagation();
-  const file=resolveMessageAttachmentLink(href,getMessage(messageId)?.attachments).file;if(!file){onUnavailable();return;}
-  try{const operation=String(file.type||'').startsWith('image/')?onImage(file):canPreviewFile(file)?onFile(file):onDownload(file);Promise.resolve(operation).catch(onError);}catch(error){onError(error);}
+  if(pending)return pending;
+  const message=getMessage(messageId),file=resolveMessageAttachmentLink(href,message?.attachments).file;
+  if(file){try{return Promise.resolve(open(file)).catch(onError);}catch(error){onError(error);return;}}
+  if(typeof onResolve!=='function'){onUnavailable();return;}
+  const scope=getScope(),modal=getModal(),text=message?.text;
+  const current=()=>{const latest=getMessage(messageId);return Boolean(latest)&&getScope()===scope&&getModal()===modal&&latest.text===text;};
+  button.disabled=true;button.setAttribute('aria-busy','true');
+  pending=Promise.resolve().then(()=>current()?onResolve({messageId,href}):null).then(restored=>{if(!current())return;if(!restored){onUnavailable();return;}return open(restored);}).catch(error=>{if(current())onError(error);}).finally(()=>{pending=null;button.disabled=false;button.removeAttribute('aria-busy');});
+  return pending;
  };
  return true;
 }

@@ -8,6 +8,7 @@ import {SCHEDULE_INSTRUCTIONS} from './scheduler.mjs';
 import {TASK_CANCEL_INSTRUCTIONS} from './task-cancel.mjs';
 import {prepareObserverEvent,getObserverProjectionKind,observerEventMetadata} from './observer-event.mjs';
 import {DANT_IDENTITY_INSTRUCTIONS} from './identity.mjs';
+import {createSpokenSubtitles} from './call-subtitles.mjs';
 import {startTaskProgress,advanceTaskProgress,observeTaskProgress,taskProgressSnapshot,voiceCompletionWork,registeredWorkFinalStatus,isTaskExecutionEvent,TASK_PLAN_INSTRUCTIONS} from './task-progress.mjs';
 
 export const NATIVE_REALTIME_MODEL='gpt-live-1-codex';
@@ -378,6 +379,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(turn.done)return;turn.done=true;s.finished.add(turn.turnId);this.engine.completedTurns.add(turn.turnId);while(this.engine.completedTurns.size>1000)this.engine.completedTurns.delete(this.engine.completedTurns.values().next().value);
   turn.finalStatus=turn.cancelRequested&&status==='interrupted'?'cancelled':status==='completed'?'review':['interrupted','paused'].includes(status)?'paused':'failed';turn.error=readableError(error);
   if(turn.finalStatus==='cancelled')this.engine.rememberCancellation(turn);
+  if(turn.pauseOnly&&turn.finalStatus==='paused')this.engine.rememberPause(turn);
   try{await this.finishTurn(s,turn);}finally{turn.resolveStopped();}
  }
  async finishTurn(s,turn){
@@ -388,10 +390,11 @@ export class NativeRealtimeVoice extends EventEmitter {
     if(turn.background)this.engine.deliverBackgroundText(text,turn);
     else if(turn.explicitMessageIds.length&&text.trim()&&!turn.deliveredTexts?.has(text.trim())){const message=this.engine.store.add({role:'assistant',text,status:'completed',taskId:turn.messageId});turn.assistantIds.push(message.id);turn.deliveredTexts ||= new Set();turn.deliveredTexts.add(text.trim());}
     if(!turn.explicitMessageIds.length&&!turn.background){const links=finalLinks(text,turn.assistantIds.map(id=>this.engine.task(id)?.text||'').join('\n'));if(links)this.engine.deliverText(links,turn);}
-    if(this.engine.deliverables?.archive){try{const files=await this.engine.deliverables.archive({baseline:turn.baseline,outputDir:this.engine.outputDir,workspace:this.engine.workspace,explicitPaths:turn.explicitPaths,text,conversationId:this.engine.store.state.conversationId,messageId:turn.messageId,turnId:turn.turnId});this.engine.attach(turn,files||[]);}catch(error){if(turn.background)this.engine.deliverText(this.engine.store.state.settings.language==='en'?'The output files could not be added to chat. Check the work computer for the task\'s files.':'任务输出文件未能添加到聊天，请到工作电脑检查。',turn);else this.emit('notice','Voice output could not be archived: '+readableError(error.message));}}
+    await this.engine.archiveLinkedMessages(turn);
+    if(this.engine.deliverables?.archive){try{const files=await this.engine.deliverables.archive({baseline:turn.baseline,outputDir:this.engine.outputDir,workspace:this.engine.workspace,explicitPaths:turn.explicitPaths,excludePaths:this.engine.deliveredOutputPaths(turn),text,conversationId:this.engine.store.state.conversationId,messageId:turn.messageId,turnId:turn.turnId});this.engine.attach(turn,files||[]);}catch(error){if(turn.background)this.engine.deliverText(this.engine.store.state.settings.language==='en'?'The output files could not be added to chat. Check the work computer for the task\'s files.':'任务输出文件未能添加到聊天，请到工作电脑检查。',turn);else this.emit('notice','Voice output could not be archived: '+readableError(error.message));}}
     if(turn.background){this.engine.deliverBackgroundText(text,turn);if(!turn.assistantIds.length){const unfinished=['continuing','waiting_user'].includes(registeredWorkFinalStatus(turn,turn.finalStatus));this.engine.deliverText(this.engine.store.state.settings.language==='en'?(unfinished?'This task is unfinished. Its execution turn has ended; the remaining steps are kept in Work progress.':'The background task has finished.'):(unfinished?'这项任务尚未完成。本轮执行已结束，剩余步骤保留在工作进度中。':'后台任务已结束。'),turn);}}
    }
-   if(turn.background&&!['review','cancelled'].includes(turn.finalStatus)){const detail=this.engine.redact(turn.error||'');this.engine.deliverText((this.engine.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),turn);}
+   if(turn.background&&!turn.pauseOnly&&!['review','cancelled'].includes(turn.finalStatus)){const detail=this.engine.redact(turn.error||'');this.engine.deliverText((this.engine.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),turn);}
    for(const id of turn.explicitMessageIds)this.engine.store.update(id,{status:turn.finalStatus,error:turn.error||null,pauseReason:turn.finalStatus==='paused'?'executor-stopped':null});
    if((turn.finalStatus==='review'||turn.background)&&turn.assistantIds.length)this.engine.store.addCompletion?.({turnId:turn.turnId,messageIds:turn.assistantIds,taskId:turn.messageId,...(turn.source==='voice'?{work:voiceCompletionWork(turn,turn.finalStatus)}:{})});
   }catch(error){this.emit('notice','Voice task result could not be saved: '+readableError(error.message));}
@@ -430,6 +433,10 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(this.session!==s)return;event=prepareObserverEvent(event);const p=event.params||{},id=turnIdOf(event),method=event.method;
   if(method.startsWith('thread/realtime/')){
    const sessionId=p.realtimeSessionId||p.item?.realtime_session_id||p.item?.realtimeSessionId;if(sessionId&&s.retiredRealtimeIds?.has(sessionId)||(sessionId&&s.realtimeSessionId&&sessionId!==s.realtimeSessionId)||(p.callId&&p.callId!==mediaId(s)))return;
+   if(!s.stopping&&!s.closed&&!s.background&&['negotiating','connected'].includes(s.status)&&this.engine.call?.id===mediaId(s)&&this.engine.call.provider==='subscription'){
+    if(s.subtitles?.snapshot.callId!==mediaId(s))s.subtitles=createSpokenSubtitles({callId:mediaId(s),provider:'subscription',redact:text=>this.engine.credentials?.redact?this.engine.credentials.redact(text,{partial:true}):this.engine.redact(text),emit:event=>{if(this.session===s&&this.engine.call?.id===event.params.callId&&!s.stopping&&!s.closed)this.engine.emit('realtime',event);}});
+    s.subtitles.native(method,p);
+   }
    if(method==='thread/realtime/transcript/done'&&!s.stopping&&!s.closed&&['negotiating','connected'].includes(s.status)&&['user','assistant'].includes(p.role)&&typeof p.text==='string'&&p.text)s.spokenContext.push({role:p.role,text:p.text});
    if(method==='thread/realtime/itemAdded'&&p.item?.type==='handoff_request')this.observeHandoff(s,event);
    if(method==='thread/realtime/started'){
@@ -439,10 +446,12 @@ export class NativeRealtimeVoice extends EventEmitter {
    if(method==='thread/realtime/sdp'){if(!validSdp(p.sdp)){s.failure.reject(Error('The VM returned an invalid audio connection answer'));return;}s.answer=p.sdp;}
    if(s.started&&s.answer)s.ready.resolve();
    if(method==='thread/realtime/closed'){
+    s.subtitles?.clear();
     s.closed=true;s.closedSignal.resolve();s.failure.reject(Error('The voice connection closed before it was ready'));
     if(!s.stopping&&!s.background&&!s.continueWork)queueMicrotask(()=>{if(this.session===s&&s.mediaGeneration===media.generation)void this.stop(media.callId,{continueWork:true}).catch(error=>this.emit('notice',error.message));});
    }
    if(method==='thread/realtime/error'){
+    s.subtitles?.clear();
     const message=readableError(p.message)||'The subscription voice service failed';this.error=message;this.emit('notice',message);s.failure.reject(Error(message));
     if(s.startAccepted&&!s.stopping&&!s.background&&!s.continueWork)queueMicrotask(()=>{if(this.session===s&&s.mediaGeneration===media.generation)void this.stop(media.callId,{continueWork:true}).catch(error=>this.emit('notice',error.message));});
    }
@@ -517,11 +526,11 @@ export class NativeRealtimeVoice extends EventEmitter {
   if(name==='send_message')return this.engine.deliverLinkedText(args.text,turn);
   return this.engine.tool(name,args);
  }
- cancelWork(turnId,{callId}={}){
+ cancelWork(turnId,{callId,pauseOnly=false}={}){
   const s=this.session,turn=s?.turns?.get(turnId);
   if(!s||s.id!==callId||!turn||turn.done||turn.finalized||s.unknown||s.pausing||s.stopping||s.submitting||this.pendingHandoffs(s)||turn.pendingSubmissions)throw Object.assign(Error('The active voice task changed.'),{status:409});
-  s.pausing=true;s.workEpoch++;turn.cancelRequested=true;turn.pauseRequested=true;this.engine.cancelCredentials(s.id);for(const id of turn.explicitMessageIds)this.engine.safeUpdate(id,{status:'pausing'});this.change();
-  return within(this.interruptTurn(s,turn),this.stopTimeoutMs,'The current voice task did not confirm cancellation').then(()=>{if(turn.finalStatus!=='cancelled')throw Object.assign(Error('The voice task ended before cancellation was confirmed.'),{status:409});return {cancelled:true,callId:s.id,callContinues:!s.background};}).catch(error=>{if(!turn.done&&this.session===s&&!s.stopping){this.unknown(s,'pause-unconfirmed');error.unknownOutcome=true;}throw error;}).finally(()=>{if(this.session===s){s.pausing=false;this.change();this.finishBackground(s);}});
+  s.pausing=true;s.workEpoch++;if(!pauseOnly)turn.cancelRequested=true;turn.pauseRequested=true;this.engine.cancelCredentials(s.id);for(const id of turn.explicitMessageIds)this.engine.safeUpdate(id,{status:'pausing'});this.change();
+  return within(this.interruptTurn(s,turn),this.stopTimeoutMs,'The current voice task did not confirm that it stopped').then(()=>{if(turn.finalStatus!==(pauseOnly?'paused':'cancelled'))throw Object.assign(Error('The voice task ended before its stop was confirmed.'),{status:409});return {...(pauseOnly?{paused:true}:{cancelled:true}),callId:s.id,callContinues:!s.background};}).catch(error=>{if(!turn.done&&this.session===s&&!s.stopping){this.unknown(s,'pause-unconfirmed');error.unknownOutcome=true;}throw error;}).finally(()=>{if(this.session===s){s.pausing=false;this.change();this.finishBackground(s);}});
  }
  pauseWork(){
   const s=this.session;if(!s)return Promise.resolve({paused:true,callContinues:false,turnIds:[]});

@@ -9,6 +9,7 @@ import {createMessageSubmissions,createCallStops} from './pending.js';
 import {SpeechHelper} from './speech.js';
 import {createAppearance,exportAppearance as serializeAppearance,importAppearance as parseAppearance} from './appearance.js';
 import {createCallDuration,formatCallDuration} from './call-duration.js';
+import {createCallSubtitles} from './call-subtitles.js';
 import {createFloatingCall} from './floating-call.js';
 import {createDownloads} from './downloads.js';
 import {bindAttachmentImages} from './attachment-images.js';
@@ -33,6 +34,7 @@ import {createNativeUpdates} from './native-updates.js';
 import {createUpdateDraft,updateDraftScope} from './update-draft.js';
 import {createMemorySettings} from './memory-settings.js';
 import {createSettingsNavigation} from './settings-navigation.js';
+import {renderUsageSettings} from './usage-settings.js';
 import packageInfo from '../package.json';
 const icons={MessageCircle,Monitor,Settings,Brain,ArrowUp,Plus,Phone,Mic,Square,X,ArrowLeft,Reply,Smile,Check,CheckCheck,Paperclip,Volume2,Clock,Minimize2,Maximize2,MicOff,LogIn,RefreshCw,ExternalLink,ChevronRight,Download,Pause,Play,MoreHorizontal,ChevronDown,FileText,ArrowDown,Search,Puzzle};
 const base=window.__TAURI_INTERNALS__?'http://127.0.0.1:4317':'';
@@ -45,6 +47,7 @@ let apiVoiceChoices=[],callId=null,callChannel=null,callConnected=false,callProv
 const speech=new SpeechHelper();
 const readVisibility=createReadVisibility({desktop:Boolean(window.__TAURI_INTERNALS__),onChange:()=>{if(!unloading)updateRead();}});
 const callDuration=createCallDuration({onTick:()=>updateCallDuration()});
+const callSubtitles=createCallSubtitles({onChange:()=>callSubtitles.update(document)});
 const floatingCall=createFloatingCall({window});
 const workDisclosures=createWorkDisclosures({getState:()=>state,document});
 const chatScroll=createChatScroll({document,window,getScope:()=>JSON.stringify([state?.conversationId??null,state?.settings?.vm?.host??null,state?.settings?.vm?.user??null,state?.settings?.vm?.port??null,state?.settings?.vm?.keyPath??null])});
@@ -276,6 +279,7 @@ function renderSettings(){
   appearance:renderAppearance(),voice:renderVoiceSettings(settings),
   computer:`${renderVMSettings()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing?`<p class="card-description">${t('currentPermissions')}</p>${button('computer','monitor',t('viewComputer'),'text-btn')}`:`<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo?'selected':''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo?'selected':''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo?'permissionsAdminHint':'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
   account:`<section class="settings-section setting-card" data-setting-card="account"><div class="card-label"><h2>${t('accountSubscription')}</h2></div><div class="card-content"><div class="setting-row"><div><strong>${esc(state.worker.account?.email||'ChatGPT')}</strong><small>${esc(state.worker.account?.planType||t('offline'))}</small></div><button type="button" class="text-btn ${state.worker.account?'':'primary'}" data-action="${state.worker.account?'logout':'login'}">${t(state.worker.account?'logout':'login')}</button></div><p class="card-description">${t('subscriptionTasks')}</p><div id="login-details">${renderLoginDetails()}</div><div class="setting-row model-setting"><span>${t('model')}</span><select id="model" aria-label="${t('model')}"><option value="">${t('default')}</option>${state.worker.models.map(model=>`<option value="${esc(model.model)}" ${model.model===settings.model?'selected':''}>${esc(model.displayName||model.model)}</option>`).join('')}</select></div></div></section>`,
+  usage:renderUsageSettings({usage:state.usage,language:language(),cached:state.controller?.cached===true}),
   credentials:managedSettings.renderCredentials(),
   history:`${chatHistory.renderSettings()}<div class="settings-links">${button('memory','brain',t('memory'),'text-btn')}</div>`,
   telegram:renderTelegramSettings(),about:appUpdates.render(),
@@ -395,7 +399,7 @@ function updateCallDuration(){for(const node of document.querySelectorAll('[data
 function renderCall(){
  if(!pc&&!callStarting&&!state.call&&!callStops.pending)return '';
  const recovering=!pc&&!callStarting,provider=state.call?.provider||callProvider;
- return `<div data-key="call-view" class="call-view ${callMini?'mini':''}"><div class="call-top"><span>${callMini?'dant':t('voiceMode')}</span>${button('call-size',callMini?'maximize-2':'minimize-2',t(callMini?'expandCall':'minimizeToChat'),'icon-btn call-size-toggle')}</div>${eyes('call-avatar')}${provider==='api'?`<small class="call-provider">${t('voiceApiActive')}</small>`:''}<p>${t(recovering?(callStops.pending?'callPendingStop':'callRecover'):callConnected&&pc?.connectionState==='connected'&&callChannel?.readyState==='open'?'talking':'calling')}</p>${callDuration.snapshot.confirmed?`<span class="call-duration" data-call-duration aria-label="${t('callDuration')}">${formatCallDuration(callDuration.snapshot.seconds)}</span>`:''}<div class="call-controls">${stream?button('mute',callMuted?'mic-off':'mic',t(callMuted?'unmute':'mute'),'icon-btn '+(callMuted?'muted-mic':'')):''}${button('hangup','phone',t('hangup'),'icon-btn hangup')}</div></div>`;
+ return `<div data-key="call-view" class="call-view ${callMini?'mini':''}"><div class="call-top"><span>${callMini?'dant':t('voiceMode')}</span>${button('call-size',callMini?'maximize-2':'minimize-2',t(callMini?'expandCall':'minimizeToChat'),'icon-btn call-size-toggle')}</div>${eyes('call-avatar')}${provider==='api'?`<small class="call-provider">${t('voiceApiActive')}</small>`:''}<p>${t(recovering?(callStops.pending?'callPendingStop':'callRecover'):callConnected&&pc?.connectionState==='connected'&&callChannel?.readyState==='open'?'talking':'calling')}</p>${callDuration.snapshot.confirmed?`<span class="call-duration" data-call-duration aria-label="${t('callDuration')}">${formatCallDuration(callDuration.snapshot.seconds)}</span>`:''}${callSubtitles.render({mini:callMini,language:language()})}<div class="call-controls">${stream?button('mute',callMuted?'mic-off':'mic',t(callMuted?'unmute':'mute'),'icon-btn '+(callMuted?'muted-mic':'')):''}${button('hangup','phone',t('hangup'),'icon-btn hangup')}</div></div>`;
 }
 function publishCallOverlay(){
  const clock=callDuration.snapshot,id=callId||state?.call?.id||state?.call?.callId||(callStops.pending?clock.callId:null);
@@ -412,6 +416,19 @@ async function handleNativeCallAction(value){
 }
 function renderUnconfirmedMessage(){const uncertain=messageSubmissions.unknown;return uncertain?`<div class="unconfirmed-send" role="status"><strong>${t('sendUnknown')}</strong><p>${t('sendUnknownHint')}</p><small>${uncertain.kind==='voice'?t('sendVoice'):esc(uncertain.payload.text.slice(0,140))}</small><div><button type="button" class="text-btn" data-action="check-send">${t('checkSend')}</button><button type="button" class="text-btn" data-action="confirm-resend" ${sending?'disabled':''}>${t('confirmResend')}</button></div></div>`:'';}
 function conversationFiles(){const files=new Map();for(const message of state.messages)for(const file of message.attachments||[])files.set(file.id,{...file,role:message.role,time:message.time});return [...files.values()];}
+const outputLinkRecoveries=new Map();
+function outputLinkScope(){const vm=state?.settings?.vm;return JSON.stringify([state?.conversationId??null,vm?.host??null,vm?.user??null,vm?.port??null,vm?.keyPath??null,page]);}
+function resolveMessageOutputLink({messageId,href}){
+ const scope=outputLinkScope(),conversationId=state?.conversationId,message=state?.messages.find(item=>item.id===messageId),text=message?.text,key=JSON.stringify([scope,messageId,href]);
+ if(outputLinkRecoveries.has(key))return outputLinkRecoveries.get(key);
+ if(!eventConnected||state?.controller?.cached===true||state?.controller&&state.controller.status!=='online'||!conversationId||message?.role!=='assistant')return Promise.reject(Error(language()==='zh'?'请连接原工作电脑后重试这个文件。':'Reconnect the original work computer and try this file again.'));
+ const operation=post('/messages/'+encodeURIComponent(messageId)+'/output-link/resolve',{conversationId,href}).then(result=>{
+  if(outputLinkScope()!==scope)return null;const current=state.messages.find(item=>item.id===messageId);
+  if(current?.role!=='assistant'||current.text!==text||result?.conversationId!==conversationId||result.messageId!==messageId||typeof result.attachment?.id!=='string')return null;
+  current.attachments=(current.attachments||[]).some(file=>file.id===result.attachment.id)?current.attachments.map(file=>file.id===result.attachment.id?result.attachment:file):[...(current.attachments||[]),result.attachment];render();return result.attachment;
+ }).finally(()=>{if(outputLinkRecoveries.get(key)===operation)outputLinkRecoveries.delete(key);});
+ outputLinkRecoveries.set(key,operation);return operation;
+}
 function renderProgress(){
  const model=workProgress(state,{language:language(),connected:eventConnected}),{active,queue,ongoing,history}=model;
  const recent=model.recent||history.filter(entry=>entry.status!=='completed'),completed=model.completed||[],busy=progressActions.busy||!model.reliable;
@@ -425,7 +442,7 @@ function renderProgress(){
   return `<div class="progress-item" data-key="progress-${esc(message.id)}"><span class="progress-state ${status}">${status==='completed'?ico('check'):ico('clock')}</span><div><p>${esc(message.text||message.attachments?.map(file=>file.name).join(', ')||'')}</p><small>${t(status==='read'?'review':status)} · ${formatTime(message.time,true)}</small>${renderWorkPriority({message},model.labels,{pending})}${taskActions(message,status)}</div>${dismiss}</div>`;
  };
  const nativeCall=state.call?.provider==='subscription';
- const historyItem=entry=>entry.registered?renderWorkTaskHistory(entry,model.labels,{pending:busy||pendingActions.has('task:'+entry.id)||pendingActions.has('task:'+entry.taskId),actions:entry.message?taskActions(entry.message,entry.status):'',planOpen:workDisclosures.isOpen(entry.id)}):entry.voice?renderVoiceWorkHistory(entry,model.labels,{pending:busy||pendingActions.has('task:'+entry.id)}):item(entry.message,entry.status);
+ const historyItem=entry=>entry.registered?renderWorkTaskHistory(entry,model.labels,{pending:busy||pendingActions.has('task:'+entry.id)||pendingActions.has('task:'+entry.taskId),actions:entry.message&&(entry.status!=='paused'||unknownTask(entry.message))?taskActions(entry.message,entry.status):'',planOpen:workDisclosures.isOpen(entry.id)}):entry.voice?renderVoiceWorkHistory(entry,model.labels,{pending:busy||pendingActions.has('task:'+entry.id)}):item(entry.message,entry.status);
  const ongoingHtml=ongoing.length?`<h4>${esc(model.labels.ongoing)}</h4>${ongoing.map(historyItem).join('')}`:'';
  const changed=steerExpectedTurn&&steerExpectedTurn!==state.active?.turnId,steerDisabled=changed||!state.active?.turnId||pendingActions.has('steer');
  const completedHtml=model.completedCount?`<div class="progress-section-heading"><h4>${esc(model.labels.completedTasks)} <small>(${model.completedCount})</small></h4><button type="button" class="text-btn" data-progress-clear-completed aria-label="${esc(model.labels.completedTasks+': '+model.labels.clearCompleted)}" ${busy?'disabled':''}>${esc(model.labels.clearCompleted)}</button></div>${completed.slice(0,12).map(historyItem).join('')}`:'';
@@ -491,7 +508,7 @@ function bind(){
  if(document.querySelector('.schedules-page'))scheduledTasks.bind();
  const handle=document.querySelector('.resize-handle');if(handle){const setWidth=width=>{const bounded=Math.max(320,Math.min(Math.max(320,innerWidth-52-320),width));document.querySelector('.computer-panel').style.width=bounded+'px';localStorage.setItem('computerWidth',bounded);};handle.onpointerdown=e=>{e.preventDefault();handle.setPointerCapture(e.pointerId);handle.onpointermove=ev=>setWidth(innerWidth-ev.clientX);handle.onpointerup=handle.onpointercancel=()=>handle.onpointermove=null;};handle.onkeydown=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();setWidth(document.querySelector('.computer-panel').offsetWidth+(e.key==='ArrowLeft'?20:-20));}};}
  bindComputerInput();
- document.querySelectorAll('.markdown a,#login-details a,.voice-settings a,.telegram-settings a').forEach(link=>{link.onclick=null;if(bindMessageAttachmentLink(link,{getMessage:id=>state.messages.find(message=>message.id===id),onImage:file=>openModal({type:'image',fileId:file.id}),onFile:file=>filePreview.open(file),onDownload:file=>downloads.save(file),onUnavailable:()=>toast(language()==='zh'?'这个本地文件尚未作为附件交付，请让 dant 重新发送文件。':'This local file has not been delivered as an attachment. Ask dant to send the file again.'),onError:error=>toast(errorText(error))}))return;link.target='_blank';link.rel='noopener noreferrer';if(window.__TAURI_INTERNALS__)link.onclick=e=>{e.preventDefault();openExternal(link.href).catch(error=>toast(errorText(error)));};});
+ document.querySelectorAll('.markdown a,#login-details a,.voice-settings a,.telegram-settings a').forEach(link=>{link.onclick=null;if(bindMessageAttachmentLink(link,{getMessage:id=>state.messages.find(message=>message.id===id),onResolve:resolveMessageOutputLink,getScope:outputLinkScope,getModal:()=>modal,onImage:file=>openModal({type:'image',fileId:file.id}),onFile:file=>filePreview.open(file),onDownload:file=>downloads.save(file),onUnavailable:()=>toast(language()==='zh'?'这个本地文件暂时无法恢复，请检查原工作电脑中的输出文件。':'This local file could not be restored. Check its output file on the original work computer.'),onError:error=>toast(errorText(error))}))return;link.target='_blank';link.rel='noopener noreferrer';if(window.__TAURI_INTERNALS__)link.onclick=e=>{e.preventDefault();openExternal(link.href).catch(error=>toast(errorText(error)));};});
 }
 async function taskRequest(id,route,body={}){const key='task:'+id;if(pendingActions.has(key))return;pendingActions.add(key);render();try{const result=await post(route,body);state=await api('/state');return result;}catch(error){if(route.endsWith('/cancel'))try{state=await api('/state');}catch{}throw error;}finally{pendingActions.delete(key);render();}}
 function resumeTask(id,confirmUnknown){const message=state.messages.find(item=>item.id===id);if(!message||message.status==='cancelled')return Promise.resolve();if(state.call?.provider==='subscription'){toast(t('resumeAfterCall'));return Promise.resolve();}if(unknownTask(message)&&!confirmUnknown){progressExpanded=true;openModal({type:'details'});return Promise.resolve();}return taskRequest(id,'/tasks/resume',{ids:[id],...(confirmUnknown?{confirmUnknown:true}:{})});}
@@ -689,11 +706,13 @@ async function startCall(provider='subscription'){
   const result=await post('/call',{sdp:offer.sdp,provider});
   if(generation!==callGeneration){if(result.callId){callStops.add(result.callId);await flushCallStops();}return;}
   callId=result.callId||state.call?.callId||state.call?.id||null;
+  callSubtitles.sync({id:callId,provider});
   const answer=result.sdp||result.transport?.sdp;if(answer&&!peer.remoteDescription)await peer.setRemoteDescription({type:'answer',sdp:answer});
   callStarting=false;callTimeout=setTimeout(()=>{if(pc===peer&&!callConnected){toast(t('callFailed'));endCall().catch(()=>{});}},30000);confirmConnection();render();
  }catch(error){if(generation===callGeneration){const id=callId;cleanupCall();if(id){callStops.add(id);flushCallStops();}render();throw error;}}
 }
 function cleanupCall(){
+ callSubtitles.end();
  callDuration.stop(callId||state?.call?.id||callDuration.snapshot.callId);clearTimeout(callTimeout);callGeneration++;callStarting=false;callConnected=false;callId=null;const dc=callChannel;callChannel=null;if(dc){dc.onopen=null;dc.onclose=null;dc.onerror=null;dc.onmessage=null;}const peer=pc;pc=null;if(peer){peer.onconnectionstatechange=null;peer.ontrack=null;peer.close();}stream?.getTracks().forEach(track=>track.stop());stream=null;audio?.pause();if(audio)audio.srcObject=null;audio=null;callMuted=false;callMini=false;
 }
 async function flushCallStops(){if(!eventConnected||unloading||!callStops.pending)return;const errors=await callStops.flush();if(!errors.length)try{state=await api('/state');callDuration.sync(state.call,state.messages);}catch{}if(state)render();if(errors.length)toast(t('callNeedsStop'));}
@@ -809,13 +828,14 @@ function updateRead(){
 }
 async function handleEvent(event){
  if(event.type==='state'){
-  eventConnected=true;state=event.data;await restoreUpdateDraft();callDuration.sync(state.call,state.messages);if(state.telegram||state.worker.telegram){telegramStatus=state.telegram||state.worker.telegram;if(telegramStatus.paired)clearTelegramPairing();}fallbackLanguage=language();localStorage.setItem('dant.language',fallbackLanguage);if(speechBlocked()&&(dictating||speakingId))stopSpeech().catch(()=>{});if(state.worker.account)loginDetails=null;
+  eventConnected=true;state=event.data;await restoreUpdateDraft();callDuration.sync(state.call,state.messages);callSubtitles.sync(state.call);if(state.telegram||state.worker.telegram){telegramStatus=state.telegram||state.worker.telegram;if(telegramStatus.paired)clearTelegramPairing();}fallbackLanguage=language();localStorage.setItem('dant.language',fallbackLanguage);if(speechBlocked()&&(dictating||speakingId))stopSpeech().catch(()=>{});if(state.worker.account)loginDetails=null;
   for(const message of state.messages.filter(item=>item.role==='assistant'&&item.status==='completed')){if(initialized&&!lastAssistant.has(message.id)&&(document.hidden||!document.hasFocus()||page!=='chat'))notify(message.text.slice(0,160)||t('completed')).catch(()=>{});lastAssistant.add(message.id);}initialized=true;
   if(!state.call&&pc&&!callStarting)cleanupCall();render();loadVoices();
  }
  if(event.type==='notice')toast(errorText(event.data.message,'serviceNotice'));
  if(event.type==='realtime'){
   const eventData=event.data,eventCallId=eventData.params?.callId;if(eventCallId&&eventCallId!==callId)return;
+  if(eventData.method==='dant/call/subtitle')callSubtitles.receive(eventData);
   if(eventData.method==='thread/realtime/sdp'&&pc?.signalingState==='have-local-offer')await pc.setRemoteDescription({type:'answer',sdp:eventData.params.sdp});
   if(eventData.method==='thread/realtime/error'){toast(errorText(eventData.params.message||t('callFailed')));cleanupCall();render();}
   if(eventData.method==='thread/realtime/closed'){cleanupCall();render();}

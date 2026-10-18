@@ -1,5 +1,6 @@
 import {bindAttachmentImages} from '../ui/attachment-images.js';
 import test from 'node:test';
+import {createCallSubtitles} from '../ui/call-subtitles.js';
 import {canPreviewFile} from '../ui/file-preview.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,6 +15,7 @@ import {formatPresence} from '../ui/presence.js';
 import {createSchedules} from '../ui/schedules.js';
 import {createMemorySettings} from '../ui/memory-settings.js';
 import {telegramConnectionError,telegramDeliveryNotice} from '../ui/telegram-delivery.js';
+import {renderUsageSettings} from '../ui/usage-settings.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
@@ -22,9 +24,9 @@ function fixture(selected='zh'){
  const context={progressActions:{bind(){},renderConfirmation:()=>'',onClose(){},busy:false},workDisclosures:{capture(){},bind(){},isOpen:()=>false},bindAttachmentImages,textEditor:{renderSettings:()=>'',bind(){},load:async()=>{},dispose(){}},canPreviewFile,workProgress,renderWorkPriority,renderWorkEntry,renderActiveWork,renderVoiceWorkHistory,downloads:{bind(){}},filePreview:{bind(){},syncModal:value=>value},settingsNavigation:{render:sections=>Object.values(sections).join('')},appUpdates:{render:()=>'',dispose(){}},formatPresence,managedSettings:{renderRequests:()=>'',renderCredentials:()=>'',renderSkills:()=>'',renderModal:()=>null,bind(){},load:async()=>{},onClose(){}},chatHistory:{renderActions:()=>'',renderEdited:()=>'',renderSettings:()=>'',renderModal:()=>null,bind(){},bindModal(){},onClose(){}},defaultReactions,emojiFor:null,formatCallDuration,callDuration:{snapshot:{callId:null,confirmed:false,seconds:0,finalized:false}},document:{documentElement:{dataset:{theme:'light'}}},appearance:{preferences:{theme:'system',font:'system',fontSize:13}},fontInventory:null,fontLoading:false,fontError:'',fontSearch:'',fontMenuOpen:false,appearanceAdvanced:false,vmProviderInfo:null,vmProvidersBusy:false,vmProvidersError:'',vmProfiles:null,vmProfilesVisible:false,vmProfilesBusy:false,vmProfilesError:'',selectedVMProfile:'',legacyVMDirectory:'',telegramStatus:null,telegramLoading:false,telegramError:'',telegramPairing:null,telegramPairTimer:null,fallbackLanguage:'zh',state:{settings:{language:selected,vm:{host:'',user:'dant',port:22,keyPath:''},nativeVoice:'ember',apiVoice:'marin',notifications:false,model:''},worker:{status:'online',account:null,models:[],realtime:{subscription:{available:true},key:{configured:false}}},messages:[],queue:[],schedules:[],active:null,call:null,memory:''},page:'chat',chatMode:'text',showComputer:false,eventConnected:true,pc:null,stream:null,callStarting:false,callMini:false,callMuted:false,callConnected:false,callChannel:null,callProvider:'subscription',callStops:{pending:false},messageSubmissions:{unknown:null},pendingActions:new Set(),voiceChoices:['ember'],apiVoiceChoices:['marin'],voiceApiExpanded:false,voiceError:'',vmDraft:null,manualVMExpanded:false,provisionDraft:{provider:'auto',cpu:4,memoryGB:6,diskGB:40,adminSudo:false},provisionExpanded:false,steerExpectedTurn:null,steerDraft:'',progressExpanded:false,scheduleDraft:{text:'',at:''},composerDraft:'',replyTo:null,attachments:[],uploading:0,sending:false,recording:null,recordStarting:false,recordDraft:null,dictating:false,speakingId:null,attachmentMenu:false,screenURL:'',screenError:'',innerWidth:1440,modal:null,
  localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},api:async(route,options)=>{requests.push({route,options});return {ok:true};},render:()=>{},esc:value=>String(value??''),ico:name=>`<svg>${name}</svg>`,button:(action,icon,label)=>`<button data-action="${action}" aria-label="${label}">${label}</button>`,eyes:()=>'',md:text=>text,formatTime:()=>'',humanControl:()=>false,unknownTask:message=>message?.submission==='unknown',speechBlocked:()=>false,renderLoginDetails:()=>'',fileURL:file=>'/fixture/'+file.id,
  };
- Object.assign(context,{telegramConnectionError,telegramDeliveryNotice});context.scheduledTasks=createSchedules({getState:()=>context.state,document:parseHTML('<html><body></body></html>').document,request:context.api,connected:()=>true});
+ Object.assign(context,{telegramConnectionError,telegramDeliveryNotice,renderUsageSettings});context.scheduledTasks=createSchedules({getState:()=>context.state,document:parseHTML('<html><body></body></html>').document,request:context.api,connected:()=>true});
  context.memorySettings=createMemorySettings({getState:()=>context.state,getLanguage:()=>context.state?.settings?.language||context.fallbackLanguage,request:context.api,connected:()=>false});
- vm.createContext(context);vm.runInContext([
+ context.callSubtitles=createCallSubtitles();vm.createContext(context);vm.runInContext([
  section('const zh={','const subscriptionVoiceUnavailable='),
  section('const subscriptionVoiceUnavailable=','const esc='),
  section('function renderHeader(status){','function renderAttachmentOptions(){'),

@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {MemoryStore} from './memory.mjs';
+import {outputReference} from './deliverables.mjs';
 import {readableError} from './errors.mjs';
 import {isReaction} from './reactions.mjs';
 import {buildReactionContext} from './reaction-context.mjs';
@@ -16,6 +17,8 @@ import {SKILL_SUPPORT_FILE_LIMIT} from './skill-limits.mjs';
 import {TASK_LIST_SCHEMA,TASK_LIST_DESCRIPTION,TASK_CANCEL_SCHEMA,TASK_CANCEL_DESCRIPTION,TASK_CANCEL_INSTRUCTIONS,taskListInput,taskCancelInput} from './task-cancel.mjs';
 import {startTaskProgress,advanceTaskProgress,observeTaskProgress,taskProgressSnapshot,voiceCompletionWork,TASK_PLAN_SCHEMA,TASK_PLAN_DESCRIPTION,TASK_PLAN_INSTRUCTIONS,taskPlanInput,publicTaskPlan,isTaskExecutionEvent,registeredWorkFinalStatus} from './task-progress.mjs';
 import {canContinueRegisteredWork,continueRegisteredWork,hasUnconfirmedExecution} from './engine-continuation.mjs';
+import {TokenUsageStore} from './token-usage.mjs';
+import {TaskPlanBindingConflict} from './task-plan-conflict.mjs';
 
 const tool=(name,description,properties,required=[])=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
 const string={type:'string'};
@@ -57,7 +60,9 @@ export class Engine extends EventEmitter {
   if(Array.isArray(store.state.callInputHistory)&&store.state.callInputHistory.some(item=>item?.submission==='pending')){store.state.callInputHistory=store.state.callInputHistory.map(item=>item?.submission==='pending'?{...item,submission:'unknown'}:item);store.save();}
   this.skills=skills;if(skills)worker.skills=skills;
   this.queue=[];this.active=null;this.takeover=false;this.acquiring=false;this.items=new Map();this.completedItems=new Set();this.completedTurns=new Set();this.pendingFollowups=new Map();this.callReferences=new Map();this.followupEpoch=0;this.followupPauseReason='user-paused';
-  this.eventMedia=new WeakMap();this.call=null;this.voiceTasks=new Map();this.nextVoiceTask=0;this.pendingUserRequests=new Map();this.finishing=null;this.confirmedCancellations=new Map();
+  this.eventMedia=new WeakMap();this.call=null;this.voiceTasks=new Map();this.nextVoiceTask=0;this.pendingUserRequests=new Map();this.finishing=null;this.confirmedCancellations=new Map();this.confirmedPauses=new Map();
+  this.usage=new TokenUsageStore(store,{onChange:()=>this.change()});
+  worker.on('event',event=>{if(event?.method!=='thread/tokenUsage/updated'||event.params?.threadId!==this.store.state.threadId)return;try{this.usage.observeCodex(event.params,{runtimeId:this.runtimeId});}catch{this.emit('notice','Token usage could not be saved.');}});
   worker.on('event',event=>void this.handle(event).catch(error=>this.emit('notice',error.message)));
   worker.on('status',()=>{
    if(worker.status==='offline'){
@@ -353,7 +358,13 @@ export class Engine extends EventEmitter {
   if(this.progressOwned(entry,kind))throw Object.assign(Error('Active work cannot be dismissed. Wait for it to stop or finish.'),{status:409});
   const result=this.store.dismissProgress(id,kind,options);this.change();return result;
  }
- cancelProgress(id,kind,{turnId,callId,validateOnly=false}={}){
+ pauseProgress(id,kind,options={}){return this.cancelProgress(id,kind,{...options,pauseOnly:true});}
+ resumeProgress(id,kind,{turnId}={}){
+  const entry=this.store.progressRecord(id,kind);
+  if(kind!=='work'||entry.turnId!==turnId||this.worker.status!=='online'||this.takeover||this.acquiring||this.cancelling||this.progressOwned(entry,kind)||this.queue.some(message=>message.turnId===turnId))throw Object.assign(Error('The paused task is no longer available.'),{status:409});
+  const result=this.store.resumeWork({workId:id,turnId});this.change();return result;
+ }
+ cancelProgress(id,kind,{turnId,callId,validateOnly=false,pauseOnly=false}={}){
   const conflict=()=>Object.assign(Error('The task changed or its cancellation cannot be confirmed.'),{status:409});
   if(!['task','work','active'].includes(kind)||kind==='active'&&id!=='current'||turnId!==null&&(typeof turnId!=='string'||!turnId||turnId.length>256)||callId!==undefined&&callId!==null&&(typeof callId!=='string'||!callId||callId.length>256))throw Object.assign(Error('Invalid task cancellation request.'),{status:400});
   const entry=kind==='active'?null:this.store.progressRecord(id,kind);
@@ -363,19 +374,26 @@ export class Engine extends EventEmitter {
   const active=this.active,session=this.nativeVoice?.session,native=turnId?session?.turns?.get(turnId):null;
   const owner=active&&(turnId?active.turnId===turnId:kind==='task'&&active.messageIds.includes(id)&&!active.turnId)?active:native&&!native.done&&!native.finalized?native:null;
   if(!owner){
-   const confirmed=this.confirmedCancellations.get(turnId||id);
+   const paused=pauseOnly&&this.confirmedPauses.get(turnId||id);
+   if(paused){
+    if(paused.workId&&record?.id!==paused.workId)throw conflict();const ids=new Set(paused.messageIds),messages=this.store.state.messages.filter(message=>message.role==='user'&&ids.has(message.id));
+    if(messages.some(message=>(message.turnId||null)!==paused.turnId||this.progressOwned(message,'task')||this.pendingFollowups.has(message.id)||this.callReferences.has(message.id))||entry&&this.progressOwned(entry,kind))throw conflict();
+    const result=this.store.pauseWork(paused);this.change();return Promise.resolve(result);
+   }
+   if(pauseOnly&&entry?.status==='paused'&&!this.progressOwned(entry,kind)){const result=this.store.pauseWork({turnId,messageIds:kind==='task'?[entry.id]:[],workId:record?.id});this.change();return Promise.resolve(result);}
+   const confirmed=!pauseOnly&&this.confirmedCancellations.get(turnId||id);
    if(confirmed){
     const ids=new Set(confirmed.messageIds),messages=this.store.state.messages.filter(message=>message.role==='user'&&ids.has(message.id));
     if(messages.some(message=>(message.turnId||null)!==confirmed.turnId||this.progressOwned(message,'task')||this.pendingFollowups.has(message.id)||this.callReferences.has(message.id)))throw conflict();
     const result=this.store.cancelWork(confirmed);this.change();return Promise.resolve(result);
    }
-   if(entry?.status==='cancelled'){const result=this.store.cancelWork({turnId,messageIds:kind==='task'?[entry.id]:[],workId:record?.id});this.change();return Promise.resolve(result);}
+   if(!pauseOnly&&entry?.status==='cancelled'){const result=this.store.cancelWork({turnId,messageIds:kind==='task'?[entry.id]:[],workId:record?.id});this.change();return Promise.resolve(result);}
    if(kind!=='work'||!['continuing','waiting_user'].includes(entry.status)||entry.status==='waiting_user'&&!entry.executionEndedAt||this.progressOwned(entry,kind)||this.queue.some(message=>message.turnId===turnId)||this.pendingFollowups.size||this.callReferences.size)throw conflict();
-   const result=this.store.cancelWork({turnId,workId:entry.id});this.change();return Promise.resolve(result);
+   const result=pauseOnly?this.store.pauseWork({turnId,workId:entry.id}):this.store.cancelWork({turnId,workId:entry.id});this.change();return Promise.resolve(result);
   }
   const nativeOwner=owner===native,ownerCallId=nativeOwner?session.id:owner.callId||null;
   if((callId||null)!==ownerCallId||kind==='task'&&!owner.messageIds?.includes(id)&&!owner.explicitMessageIds?.includes(id)||kind==='work'&&record?.turnId!==owner.turnId||kind==='active'&&!turnId)throw conflict();
-  if(owner.cancelOperation)return owner.cancelOperation;
+  if(owner.cancelOperation){if(owner.pauseOnly!==pauseOnly)throw conflict();return owner.cancelOperation;}
   if(this.worker.status!=='online'||this.takeover||this.acquiring||this.cancelling||owner.finishing||owner.stopRequested||owner.pauseRequested||owner.steerUnconfirmed||session?.unknown||nativeOwner&&(session.pausing||session.stopping||session.submitting||this.nativeVoice.pendingHandoffs(session)||owner.pendingSubmissions)||this.pendingFollowups.size||this.callReferences.size||this.store.state.messages.some(message=>message.role==='user'&&(message.turnId===turnId||owner.messageIds?.includes(message.id)||owner.explicitMessageIds?.includes(message.id))&&(message.unknownOutcome===true||['unknown','submitting'].includes(message.submission)&&owner.startAcknowledged)))throw conflict();
   if(validateOnly)return {cancelRequested:true};
   // A real voice-owned turn may have no chat task. Retain an observed history
@@ -384,14 +402,14 @@ export class Engine extends EventEmitter {
    const label=this.store.state.settings.language==='en'?'Task from a call':'通话任务';
    owner.workRecord=this.store.registerWork({turnId:owner.turnId,source:'voice',title:label,plan:{steps:[{step:label,status:'inProgress'}]},startedAt:owner.workProgress?.startedAt,observed:true});
   }
-  const cancellation={owner};this.cancelling=cancellation;this.followupEpoch++;this.followupPauseReason='user-cancelled';owner.cancelRequested=true;
+  const cancellation={owner};this.cancelling=cancellation;this.followupEpoch++;this.followupPauseReason=pauseOnly?'user-paused':'user-cancelled';owner.pauseOnly=pauseOnly;if(!pauseOnly)owner.cancelRequested=true;
   const operation=(async()=>{
    try{
-    if(nativeOwner)await this.nativeVoice.cancelWork(turnId,{callId:ownerCallId});
+    if(nativeOwner)await this.nativeVoice.cancelWork(turnId,{callId:ownerCallId,pauseOnly});
     else await this.waitStopped(owner);
-    if(owner.finalStatus!=='cancelled')throw conflict();
+    if(owner.finalStatus!==(pauseOnly?'paused':'cancelled'))throw conflict();
     const currentRecord=this.store.state.workTasks.find(item=>item.turnId===owner.turnId),messageIds=[...(owner.messageIds||[]),...(owner.explicitMessageIds||[])];
-    const result=this.store.cancelWork({turnId:owner.turnId,messageIds,workId:currentRecord?.id});this.change();return result;
+    const target={turnId:owner.turnId,messageIds,workId:currentRecord?.id},result=pauseOnly?this.store.pauseWork(target):this.store.cancelWork(target);this.change();return result;
    }catch(error){
     if(!owner.finalStatus&&!nativeOwner&&this.active===owner){owner.cancelUnconfirmed=true;this.change();}
     if(!owner.finalStatus)error.unknownOutcome=true;
@@ -404,6 +422,10 @@ export class Engine extends EventEmitter {
   const record=this.store.state.workTasks.find(item=>item.turnId===owner.turnId);
   this.confirmedCancellations.set(key,{turnId:owner.turnId||null,messageIds:[...(owner.messageIds||[]),...(owner.explicitMessageIds||[])],workId:record?.id});while(this.confirmedCancellations.size>300)this.confirmedCancellations.delete(this.confirmedCancellations.keys().next().value);
  }
+ rememberPause(owner){
+  const key=owner.turnId||owner.messageId;if(!key)return;const record=this.store.state.workTasks.find(item=>item.turnId===owner.turnId);
+  this.confirmedPauses.set(key,{turnId:owner.turnId||null,messageIds:[...(owner.messageIds||[]),...(owner.explicitMessageIds||[])],workId:record?.id});while(this.confirmedPauses.size>300)this.confirmedPauses.delete(this.confirmedPauses.keys().next().value);
+ }
  workManagementScope(context){
   const call=this.call,api=context&&call?.provider==='api'&&context.owner===call.id&&context.callId===call.id&&['negotiating','connected'].includes(call.status)&&typeof context.isCurrent==='function'&&context.isCurrent();
   if(this.worker.status!=='online'||this.takeover||this.acquiring)throw Error('Task cancellation requires current authorized work.');
@@ -411,7 +433,8 @@ export class Engine extends EventEmitter {
  }
  listWorkTasks(context){
   this.workManagementScope(context);
-  return {items:this.store.state.workTasks.slice(-300).map(record=>({workId:record.id,title:this.redact(record.title).slice(0,240),status:record.status,steps:record.plan?{completed:record.plan.steps.filter(step=>step.status==='completed').length,total:record.plan.steps.length}:null}))};
+  const activeWorkId=(context?.task||this.active)?.continuation?.workId;
+  return {...(activeWorkId?{activeWorkId}:{}),items:this.store.state.workTasks.slice(-300).map(record=>({workId:record.id,title:this.redact(record.title).slice(0,240),status:record.status,steps:record.plan?{completed:record.plan.steps.filter(step=>step.status==='completed').length,total:record.plan.steps.length}:null}))};
  }
  requestWorkCancellation(workId,context){
   if(typeof workId!=='string'||!workId||workId.length>128||/[\x00-\x20\x7f]/.test(workId))throw Error('A real work ID is required to cancel a task.');
@@ -597,9 +620,10 @@ export class Engine extends EventEmitter {
    if(text===null)return;
    if(!active.voiceOutput){let message=this.items.get(item.id);if(active.deliveredTexts?.has(text.trim())){if(message){this.store.state.messages=this.store.state.messages.filter(entry=>entry.id!==message.id);active.assistantIds=active.assistantIds.filter(id=>id!==message.id);this.items.delete(item.id);this.store.save();}}else if(message)this.store.update(message.id,{text,status:'completed'});else{message=this.store.add({role:'assistant',text,status:'completed',taskId:active.messageId});active.assistantIds.push(message.id);this.items.set(item.id,message);}}
    bounded(this.completedItems,item.id);this.change();
+   const message=this.items.get(item.id);if(message)await this.archiveLinkedMessage(active,message.id);
   }
   if(event.method==='item/completed'&&parameters.item?.type==='mcpToolCall')await this.acceptMcpResult(parameters.item,active);
-  if(event.method==='turn/completed'){if(active?.continuation)active.continuation.terminalConfirmed=true;await this.finish(parameters.turn?.status,parameters.turn?.error?.message);}
+  if(event.method==='turn/completed'){active.terminalConfirmed=true;if(active?.continuation)active.continuation.terminalConfirmed=true;await this.finish(parameters.turn?.status,parameters.turn?.error?.message);}
   if(event.method==='error')this.emit('notice',readableError(parameters.error?.message)||'Agent error');
   // Native voice owns its exact thread; stale realtime notices cannot close a later API call.
  }
@@ -647,7 +671,7 @@ export class Engine extends EventEmitter {
  }
  registerTaskPlan(args,context){
   const {task,isCurrent}=this.taskPlanScope(context),safe=taskPlanInput(args,{redact:text=>this.redact(text)});if(!isCurrent())throw Error('The task plan no longer belongs to active work.');
-  if(task.continuation&&safe.workId!==task.continuation.workId)throw Error('Automatic continuation must keep its exact registered workId.');
+  if(task.continuation&&safe.workId!==task.continuation.workId)throw new TaskPlanBindingConflict(task.continuation.workId);
   const waiting=safe.status===undefined?task.planWaitingForUser===true:safe.status==='waiting_user';
   if(waiting&&safe.status===undefined)taskPlanInput({...args,status:'waiting_user'},{redact:text=>this.redact(text)});
   const record=this.store.registerWork({turnId:task.turnId,messageId:this.task(task.messageId)?.role==='user'?task.messageId:null,source:this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice',...safe,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput||waiting?'waiting_user':'running'});
@@ -746,17 +770,36 @@ export class Engine extends EventEmitter {
   onSaved?.();
   // Only model-owned explicit deliveries can nominate output links. The
   // collector still resolves and validates every file inside current output/.
-  if(!active||!this.deliverables?.archive||!Array.from(message.text.matchAll(/\]\(([^)]+)\)/g),match=>match[1]).some(candidate=>!/^\s*[a-z][a-z\d+.-]*:\/\//i.test(candidate.replace(/^<|>$/g,''))))return result;
-  try{
-   const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:[],onlyExplicit:true,text:message.text,conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});
-   const attached=this.attach(active,files||[],{messageId:message.id});
-   return {...result,files:attached.map(file=>({id:file.id,name:file.name}))};
-  }catch{
-   // The text is already saved. Do not return an error that invites duplicate
-   // delivery, and never expose a rejected local path through a transport error.
-   this.emit('notice','The linked output files could not be added to chat.');return {...result,files:[]};
-  }
+  if(!active||!this.hasOutputLinks(message.text))return result;
+  const attached=await this.archiveLinkedMessage(active,message.id);
+  return {...result,files:attached.map(file=>({id:file.id,name:file.name}))};
  }
+ hasOutputLinks(text){return typeof text==='string'&&Array.from(text.matchAll(/\]\(([^)]+)\)/g),match=>match[1]).some(candidate=>!/^\s*(?!file:)[a-z][a-z\d+.-]*:\/\//i.test(candidate.replace(/^<|>$/g,'')));}
+ archiveLinkedMessage(active,messageId){
+  const message=this.task(messageId);if(!active||!this.deliverables?.archive||message?.role!=='assistant'||!active.assistantIds.includes(messageId)||!this.hasOutputLinks(message.text))return Promise.resolve([]);
+  active.linkedArchives ||= new Map();if(active.linkedArchives.has(messageId))return active.linkedArchives.get(messageId);
+  const root=path.resolve(this.outputDir),bound=new Set((message.attachments||[]).map(file=>file.sourcePath).filter(Boolean));
+  const paths=[...new Set(Array.from(message.text.matchAll(/\]\(([^)]+)\)/g),match=>outputReference(root,match[1])).filter(Boolean).map(relative=>path.join(root,relative)).filter(file=>!bound.has(file)))];
+  if(!paths.length)return Promise.resolve([]);
+  const text=message.text,operation=(async()=>{
+   try{
+    const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:paths,onlyExplicit:true,text:'',conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});
+    // A deleted or edited message cannot inherit files from its old text.
+    if(this.task(messageId)!==message||message.text!==text)return [];
+    return this.attach(active,files||[],{messageId});
+   }catch{
+    // Text already exists. Do not invite duplicate delivery or expose paths.
+    this.emit('notice','The linked output files could not be added to chat.');return [];
+   }
+  })();
+  active.linkedArchives.set(messageId,operation);
+  void operation.finally(()=>{if(active.linkedArchives.get(messageId)===operation)active.linkedArchives.delete(messageId);});return operation;
+ }
+ async archiveLinkedMessages(active){
+  await Promise.all(active.linkedArchives?.values()||[]);
+  for(const id of [...active.assistantIds])await this.archiveLinkedMessage(active,id);
+ }
+ deliveredOutputPaths(active){return active.assistantIds.flatMap(id=>(this.task(id)?.attachments||[]).map(file=>file.sourcePath).filter(Boolean));}
  deliverBackgroundText(text,active){
   text=this.redact(text);if(!text.trim()||active.deliveredTexts?.has(text.trim()))return;
   for(let offset=0;offset<text.length;){let end=Math.min(offset+100000,text.length);if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;this.deliverText(text.slice(offset,end),active);offset=end;}
@@ -787,13 +830,21 @@ export class Engine extends EventEmitter {
   active.deliveredMcpIds.add(item.id);return true;
  }
  attach(active,attachments,{messageId}={}){
-  const existing=new Set(active.assistantIds.flatMap(id=>(this.task(id)?.attachments||[]).map(file=>file.sha256||file.hash||file.id)));
+  const prior=active.assistantIds.flatMap(id=>this.task(id)?.attachments||[]),existing=new Set(prior.map(file=>file.sha256||file.hash||file.id));
+  let message=this.task(messageId||active.assistantIds.at(-1));if(messageId&&(!message||!active.assistantIds.includes(messageId)))throw Error('The file delivery message is no longer available');
   const existingCount=existing.size;
-  const unique=attachments.filter(file=>{const identity=file.sha256||file.hash||file.id;if(existing.has(identity))return false;existing.add(identity);return true;});
-  const capacity=Math.max(0,5-existingCount);const selected=unique.slice(0,capacity);
-  if(selected.length<unique.length)this.emit('notice','A work round can deliver at most five files. Remaining files stayed in output.');
+  const selected=[],target=new Set((message?.attachments||[]).map(file=>(file.sha256||file.hash||file.id)+'\0'+(file.sourcePath||''))),sources=new Set((message?.attachments||[]).map(file=>file.sourcePath).filter(Boolean));let added=0,overflow=false;
+  for(const file of attachments){
+   const identity=file.sha256||file.hash||file.id,key=identity+'\0'+(file.sourcePath||'');
+   if(target.has(key)||file.sourcePath&&sources.has(file.sourcePath)||!messageId&&existing.has(identity))continue;
+   if(!existing.has(identity)&&existingCount+added>=5||messageId&&(message?.attachments?.length||0)+selected.length>=5){overflow=true;continue;}
+   if(!existing.has(identity)){existing.add(identity);added++;}
+   // Reuse an immutable archived copy when another message links to it.
+   const saved=prior.find(item=>(item.sha256||item.hash||item.id)===identity);selected.push(saved?{...saved,...(file.sourcePath?{sourcePath:file.sourcePath}:{})}:file);target.add(key);if(file.sourcePath)sources.add(file.sourcePath);
+  }
+  if(overflow)this.emit('notice','A work round can deliver at most five files. Remaining files stayed in output.');
   if(!selected.length)return [];
-  let message=this.task(messageId||active.assistantIds.at(-1));if(messageId&&(!message||!active.assistantIds.includes(messageId)))throw Error('The file delivery message is no longer available');if(!message){message=this.store.add({role:'assistant',text:'',status:'completed',taskId:active.messageId,attachments:[],...(active.voiceOutput||active.source==='voice'?{source:{type:'voice-call',conversationId:this.store.state.conversationId}}:{})});active.assistantIds.push(message.id);}
+  if(!message){message=this.store.add({role:'assistant',text:'',status:'completed',taskId:active.messageId,attachments:[],...(active.voiceOutput||active.source==='voice'?{source:{type:'voice-call',conversationId:this.store.state.conversationId}}:{})});active.assistantIds.push(message.id);}
   this.store.update(message.id,{attachments:[...(message.attachments||[]),...selected]});this.change();return selected;
  }
  deliverAttachments(active,attachments){this.attach(active,attachments);const delivered=active.assistantIds.flatMap(id=>this.task(id)?.attachments||[]).filter(file=>attachments.some(candidate=>(candidate.hash||candidate.sha256||candidate.id)===(file.hash||file.sha256||file.id)));if(!delivered.length)throw Error('The five-file delivery limit was reached; this file has not been sent');return {sent:true,files:delivered.map(file=>({id:file.id,name:file.name}))};}
@@ -811,14 +862,19 @@ export class Engine extends EventEmitter {
    const taskStatus=cancelled?'cancelled':status==='completed'?'review':['interrupted','paused'].includes(status)?'paused':'failed';
   active.finalStatus=taskStatus;
    if(cancelled)this.rememberCancellation(active);
+   if(active.pauseOnly&&taskStatus==='paused'&&(active.terminalConfirmed||!active.startSubmitted))this.rememberPause(active);
   try{
+   if(status==='completed'){
+    if(active.backgroundVoice)this.deliverBackgroundText(this.redact([...(active.voiceOutputs?.values()||[])].map(output=>output.text).join('\n\n')),active);
+    await this.archiveLinkedMessages(active);
+   }
    if(status==='completed'&&this.deliverables?.archive){
-    try{const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:active.explicitPaths,text:[...active.outputs.values()].join('\n\n'),conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});this.attach(active,files||[]);}catch(archiveError){if(active.backgroundVoice)this.deliverText(this.store.state.settings.language==='en'?'The output files could not be added to chat. Check the work computer for the task\'s files.':'任务输出文件未能添加到聊天，请到工作电脑检查。',active);else this.emit('notice','Output could not be archived: '+archiveError.message);}
+    try{const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:active.explicitPaths,excludePaths:this.deliveredOutputPaths(active),text:[...active.outputs.values()].join('\n\n'),conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});this.attach(active,files||[]);}catch(archiveError){if(active.backgroundVoice)this.deliverText(this.store.state.settings.language==='en'?'The output files could not be added to chat. Check the work computer for the task\'s files.':'任务输出文件未能添加到聊天，请到工作电脑检查。',active);else this.emit('notice','Output could not be archived: '+archiveError.message);}
    }
    if(active.backgroundVoice){
     const result=this.redact([...(active.voiceOutputs?.values()||[])].map(output=>output.text).join('\n\n'));
     if(status==='completed'){this.deliverBackgroundText(result,active);if(!active.assistantIds.length)this.deliverText(this.store.state.settings.language==='en'?'The background task has finished.':'后台任务已结束。',active);}
-    if(status!=='completed'&&!cancelled){const detail=this.redact(error||'');this.deliverText((this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),active);}
+    if(status!=='completed'&&!cancelled&&!active.pauseOnly){const detail=this.redact(error||'');this.deliverText((this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),active);}
    }
    for(const id of active.messageIds)this.updateWork(id,{status:taskStatus,error,pauseReason:taskStatus==='paused'?'executor-stopped':null});
    for(const [itemId,message] of this.items){if(message.status==='streaming')message.status=status==='completed'?'completed':'paused';bounded(this.completedItems,itemId);}

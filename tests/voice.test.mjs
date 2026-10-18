@@ -37,6 +37,11 @@ function emit(socket,event){socket.emit('message',Buffer.from(JSON.stringify(eve
 function completed(output,status='completed'){return {type:'response.done',response:{status,output}};}
 function call(name,args,id='call_tool'){return {type:'function_call',status:'completed',name,arguments:JSON.stringify(args),call_id:id};}
 
+test('completed API voice responses expose provider usage independently of transcripts and tools',async t=>{
+ const {voice,sockets}=harness(t),usage=[];voice.on('usage',event=>usage.push(event));await voice.start({sdp:SDP,callId:'usage-call'});
+ const reported={input_tokens:40,output_tokens:10,total_tokens:50,input_token_details:{cached_tokens:5}};emit(sockets[0],{type:'response.done',response:{id:'response-usage',status:'cancelled',output:[],usage:reported}});await tick();assert.deepEqual(usage,[{callId:'usage-call',responseId:'response-usage',usage:reported}]);assert.equal(voice.call.status,'active');
+});
+
 test('voice uses the host key only for API and sideband authentication and returns SDP alone',async t=>{
  const {voice,requests,sockets,events}=harness(t);
  assert.equal(voice.call,null);assert.equal(requests.length,0);

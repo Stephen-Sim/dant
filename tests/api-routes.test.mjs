@@ -28,6 +28,12 @@ async function fixture(t,options={}){
  return {...instance,worker,api,base,token,dir};
 }
 
+test('state exposes durable native and optional API voice usage without launching work',async t=>{
+ const {api,worker,engine,store}=await fixture(t);let state=await (await api('/state')).json();assert.equal(state.usage.subscription.available,false);assert.equal(state.usage.apiVoice.available,false);
+ store.state.threadId='usage-thread';worker.emit('event',{method:'thread/tokenUsage/updated',params:{threadId:'usage-thread',turnId:'usage-turn',tokenUsage:{total:{inputTokens:100,cachedInputTokens:30,outputTokens:20,reasoningOutputTokens:5,totalTokens:120},last:{inputTokens:10,cachedInputTokens:3,outputTokens:2,reasoningOutputTokens:1,totalTokens:12},modelContextWindow:128000}}});
+ engine.voice.emit('usage',{callId:'usage-call',responseId:'usage-response',usage:{input_tokens:40,output_tokens:10,total_tokens:50}});state=await (await api('/state')).json();assert.equal(state.usage.subscription.totals.totalTokens,120);assert.equal(state.usage.apiVoice.totals.totalTokens,50);assert.equal(state.usage.apiVoice.totals.cachedInputTokens,null);assert.equal(worker.calls.length,0);assert.equal(engine.active,null);
+});
+
 test('VM account and configuration APIs preserve ownership and reject changes during active work',async t=>{
  const {api,worker,engine,store}=await fixture(t);
  assert.equal((await api('/connect',{})).status,200);

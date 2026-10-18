@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {createCallSubtitles} from '../ui/call-subtitles.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -12,7 +13,7 @@ function style(selector){return Object.fromEntries([...css.matchAll(/([^{}]+)\{(
 function fixture(language){
  const {document}=parseHTML('<html><body><main id="app"></main></body></html>');
  const c={document,formatCallDuration,fallbackLanguage:language,state:{settings:{language},call:{id:'call-a',provider:'subscription'}},pc:{connectionState:'connected'},callMini:true,callStarting:false,callConnected:true,callChannel:{readyState:'open'},callProvider:'subscription',stream:{},callMuted:false,callStops:{pending:false},callDuration:{snapshot:{confirmed:true,seconds:123}},ico:name=>`<svg data-icon="${name}"></svg>`};
- vm.createContext(c);vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('const button=','async function api(')+'\n'+part('function updateCallDuration(){','function renderUnconfirmedMessage(){')+'\nglobalThis.words={t};',c);
+ c.callSubtitles=createCallSubtitles();vm.createContext(c);vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('const button=','async function api(')+'\n'+part('function updateCallDuration(){','function renderUnconfirmedMessage(){')+'\nglobalThis.words={t};',c);
  c.callId='call-a';c.nativeCallOverlay={update(){}};const render=()=>{const template=document.createElement('template');template.innerHTML=c.renderCall();reconcile(document.querySelector('#app'),template.content);};render();return {c,document,render};
 }
 

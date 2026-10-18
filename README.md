@@ -18,6 +18,7 @@ See [the companion model and task continuity](docs/companion.md) for its product
 - Paired Telegram Bot private chats with two-way new-message and attachment sync, sharing the desktop app's VM conversation and task queue.
 - Serial VM tasks with pause, explicit resume, review, and acceptance; uncertain submissions are never automatically replayed.
 - Open **Work progress** in the chat header to see task status, steps, queued work and recent results. A small marker highlights results awaiting review.
+- Pause one task while retaining its checklist and partial results, then resume the same work ID when ready; the call and unrelated queue are preserved.
 - Related follow-ups reuse one work record across execution turns; ordinary conversation creates no task entry. Unfinished plans stay **In progress** until verified.
 - **Scheduled tasks** has its own sidebar page with search, editing and pause controls. Ask dant in chat or a call to manage the same one-time schedules.
 - VM memory, scheduled tasks, shared desktop control with an expiring lease, and unread message notifications for results or requests for input. A sidebar badge and first-unread shortcut keep unseen dant replies available; a reply becomes read after it is visible in the foreground chat.
@@ -30,9 +31,11 @@ See [the companion model and task continuity](docs/companion.md) for its product
 - Structured diagnostics with automatic three-day retention and bounded disk usage. See [diagnostics](docs/diagnostics.md).
 - Stable/Beta update channels, background installer downloads with checksum verification, and a separate guarded **Install and restart** action. See [updates](docs/updates.md).
 - Categorized Settings with bilingual search that opens the matching control. **Connect my computer** opens Work computer directly. See [settings](docs/settings.md).
+- **Settings → Usage** separates recorded ChatGPT and API voice token counts, with input/cache/output breakdowns and the latest model response. Missing usage is not estimated.
 - Codex-managed context windows and automatic compaction, without an extra dant token budget. See [context management](docs/context.md).
 - The composer microphone opens a voice-message recorder with elapsed time, pause/resume, preview, cancellation and explicit sending. Original audio stays playable in chat; the VM recognizes Chinese and English speech locally and sends it internally to the same model conversation. Telegram voice messages use this path too, without an extra API key. **Speech to text** remains a separate attachment-menu option; the header phone starts a realtime call. See [audio processing](docs/architecture.md#voice).
 - A draggable horizontal call bar stays available inside the app. Minimizing the Windows app during a call shows a separate floating desktop bar with the same call controls.
+- The full call view displays dant's current speech as transient live captions, using the existing transcript stream without adding chat messages.
 
 ## Run locally
 

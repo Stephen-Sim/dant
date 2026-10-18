@@ -1,5 +1,6 @@
 import {bindAttachmentImages} from '../ui/attachment-images.js';
 import test from 'node:test';
+import {createCallSubtitles} from '../ui/call-subtitles.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -17,6 +18,7 @@ function fixture(language='en',theme='light'){
  const peer={connectionState:'connected',close(){throw Error('View changes must not close the peer');}},track={stop(){throw Error('View changes must not stop media');}},stream={getTracks:()=>[track]},audio={play:async()=>{},pause(){throw Error('View changes must not pause audio');}},call={id:'live-call',provider:'subscription',status:'connected',connectedAt:1000};
  const c={bindAttachmentImages,downloads:{bind(){}},filePreview:{bind(){},syncModal:value=>value},modal:null,managedSettings:{renderRequests:()=>'',renderCredentials:()=>'',renderSkills:()=>'',renderModal:()=>null,bind(){},load:async()=>{},onClose(){}},chatHistory:{renderActions:()=>'',renderEdited:()=>'',renderSettings:()=>'',renderModal:()=>null,bind(){},bindModal(){},onClose(){}},document,Event,window:{},icons:lucide,formatCallDuration,esc:value=>String(value??''),eyes:()=>'<i class="call-avatar"></i>',fallbackLanguage:language,state:{settings:{...appearanceDefaults,theme,language},call,messages:[]},eventConnected:true,pc:peer,stream,audio,callId:call.id,callConnected:true,callStarting:false,callChannel:{readyState:'open'},callMini:false,callMuted:false,callProvider:'subscription',callStops:{pending:false},page:'chat',chatMode:'voice',pendingActions:new Set(),render(){},toast(message){throw Error(message);},bindSteer(){},bindProvision(){},bindVoiceKey(){},bindTelegram(){},bindAppearance(){},bindVMSettings(){},bindComputerInput(){}};
  c.progressActions={bind(){},renderConfirmation:()=>'',onClose(){},busy:false};
+ c.callSubtitles=createCallSubtitles();
  c.workDisclosures=createWorkDisclosures({getState:()=>c.state,document});
  c.createElement=definition=>{const previous=globalThis.document;globalThis.document=document;try{return lucide.createElement(definition);}finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}};
  c.callDuration=createCallDuration({now:()=>now,schedule:fn=>{intervals.set(++nextTimer,fn);return nextTimer;},cancel:id=>intervals.delete(id)});c.callDuration.start(call.id,call.connectedAt);

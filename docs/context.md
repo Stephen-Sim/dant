@@ -43,3 +43,5 @@ Supplementary message-ID and reaction lookup snapshots contain short labels. The
 The interface and voice adapter also consume protocol notifications. These duplicate observations are separate from the model context. Large recognized notification-only results can be reduced to metadata, including Codex's serialized screenshot text previews; the model's original tool result remains intact. Actual RPC requests, delivery results, task ownership and shutdown controls retain their checks.
 
 The 1 MiB voice observer queue, request-body limits, attachment limits and 64 KiB memory-file storage limit are transport or storage boundaries. They are not a model token budget. See [diagnostics](diagnostics.md) for failure metadata and [architecture](architecture.md) for data ownership. Exact automated and real-device verification is recorded in [verification](verification.md).
+
+The [Usage settings](settings.md#token-usage) page records provider-reported consumption for display. It does not change model context windows, compaction, output limits or provider billing, and it does not estimate unavailable voice usage.

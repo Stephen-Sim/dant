@@ -171,6 +171,26 @@ export class Store {
     }
     return entry;
   }
+  pauseWork({turnId=null,messageIds=[],workId}={}){
+    const record=workId?this.state.workTasks.find(item=>item.id===workId):turnId?this.state.workTasks.find(item=>item.turnId===turnId):null;
+    const conflict=()=>progressError(409,'The task pause cannot be confirmed.');
+    if(workId&&(!record||record.turnId!==turnId))throw conflict();
+    const ids=new Set(messageIds),messages=this.state.messages.filter(item=>item.role==='user'&&(ids.has(item.id)||turnId&&item.turnId===turnId)),entries=[...messages,...(record?[record]:[])];
+    if(!entries.length||messages.some(item=>(item.turnId||null)!==turnId)||entries.some(entry=>unconfirmedProgress(entry)||!(entry===record?['running','waiting_user','continuing','paused','pausing']:['running','waiting_user','continuing','paused','pausing','review']).includes(entry.status)||entry.continuation?.invalid||entry.continuation?.dispatch))throw conflict();
+    const now=Date.now(),patches=[];
+    for(const entry of entries){
+      const patch={status:'paused',pauseReason:'user-paused',error:null,...(entry===record?{executionEndedAt:entry.executionEndedAt||now,updatedAt:now,...(entry.continuation?{continuation:{...entry.continuation,nextAt:null}}:{})}:{})};
+      patches.push({entry,prior:Object.fromEntries(Object.keys(patch).map(key=>[key,{had:Object.hasOwn(entry,key),value:entry[key]}]))});Object.assign(entry,patch);
+    }
+    try{this.save();}catch(error){for(const {entry,prior} of patches)for(const [key,value] of Object.entries(prior)){if(value.had)entry[key]=value.value;else delete entry[key];}throw error;}
+    return {ok:true,paused:true};
+  }
+  resumeWork({workId,turnId}={}){
+    const index=this.state.workTasks.findIndex(item=>item.id===workId),record=this.state.workTasks[index];
+    if(!record||record.turnId!==turnId||record.status!=='paused'||!continuationTime(record.executionEndedAt)||unconfirmedProgress(record)||record.continuation?.invalid||record.continuation?.dispatch||!record.plan&&record.provisional!==true||record.plan&&!record.plan.steps.some(step=>step.status!=='completed')||this.state.messages.some(message=>message.role==='user'&&(message.turnId===turnId||message.workId===workId)&&unconfirmedProgress(message)))throw progressError(409,'This task cannot be resumed safely.');
+    const now=Date.now(),next={...record,status:'continuing',updatedAt:now,pauseReason:null,continuation:{nextAt:now,attempts:record.continuation?.attempts||0,noProgressCount:0,lastCheckpoint:workContinuationCheckpoint(record.plan)}};delete next.progressDismissedAt;
+    this.commitWorkContinuation(index,next);return {ok:true,resumed:true,queued:true,workId:record.id,status:next.status};
+  }
   cancelWork({turnId=null,messageIds=[],workId}={}){
     const record=workId?this.state.workTasks.find(item=>item.id===workId):turnId?this.state.workTasks.find(item=>item.turnId===turnId):null;
     if(workId&&(!record||record.turnId!==turnId))throw progressError(409,'The task to cancel changed.');

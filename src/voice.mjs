@@ -5,6 +5,8 @@ import {randomUUID} from 'node:crypto';
 import {buildCallContext,buildMemoryContext,LiveContextQueue} from './call-context.mjs';
 import {isReaction} from './reactions.mjs';
 import {buildCallInput} from './call-input.mjs';
+import {createSpokenSubtitles} from './call-subtitles.mjs';
+import {redactCredentialText} from './credentials.mjs';
 import {SCHEDULE_SAVE_SCHEMA,SCHEDULE_ID_SCHEMA,SCHEDULE_INSTRUCTIONS} from './scheduler.mjs';
 import {SKILL_SUPPORT_FILE_LIMIT} from './skill-limits.mjs';
 import {TASK_LIST_SCHEMA,TASK_LIST_DESCRIPTION,TASK_CANCEL_SCHEMA,TASK_CANCEL_DESCRIPTION,TASK_CANCEL_INSTRUCTIONS,taskListInput,taskCancelInput} from './task-cancel.mjs';
@@ -71,10 +73,11 @@ function toolArguments(name,raw){
 
 /** Independent API-billed voice transport; it never logs in/out of the ChatGPT worker. */
 export class Voice extends EventEmitter {
- #getKey;#runTask;#tool;#context;#onConversationItem;#fetch;#Socket;#session=null;#disposed=false;#lastError=null;
- constructor({getKey,runTask,tool,context='',onConversationItem=()=>{},fetchImpl=fetch,WebSocketImpl=WebSocket,model=DEFAULT_VOICE_MODEL,connectTimeoutMs=15000,requestTimeoutMs=30000,hangupTimeoutMs=10000,contextTimeoutMs=5000}={}){
+ #getKey;#runTask;#tool;#context;#onConversationItem;#redactSubtitle;#fetch;#Socket;#session=null;#disposed=false;#lastError=null;
+ constructor({getKey,runTask,tool,context='',onConversationItem=()=>{},redactSubtitle=(text,additionalSecrets)=>redactCredentialText(text,additionalSecrets,{partial:true}),fetchImpl=fetch,WebSocketImpl=WebSocket,model=DEFAULT_VOICE_MODEL,connectTimeoutMs=15000,requestTimeoutMs=30000,hangupTimeoutMs=10000,contextTimeoutMs=5000}={}){
   super();if(typeof getKey!=='function'||typeof runTask!=='function'||typeof tool!=='function')throw Error('Voice requires key storage and coworker task/tool callbacks');
   this.#getKey=getKey;this.#runTask=runTask;this.#tool=tool;this.#context=context;this.#onConversationItem=onConversationItem;this.#fetch=fetchImpl;this.#Socket=WebSocketImpl;
+  this.#redactSubtitle=redactSubtitle;
   this.model=model;this.connectTimeoutMs=connectTimeoutMs;this.requestTimeoutMs=requestTimeoutMs;this.hangupTimeoutMs=hangupTimeoutMs;this.contextTimeoutMs=contextTimeoutMs;
  }
  get call(){const s=this.#session;return s?{callId:s.callId,started:s.started,status:s.status,provider:'openai-realtime',model:this.model,voice:s.voice}:null;}
@@ -86,6 +89,7 @@ export class Voice extends EventEmitter {
   if(!validSDP(sdp))throw Error('A valid WebRTC audio offer is required');
   if(!VOICES.includes(voice))throw Error('Unsupported voice');
   const s={callId,started:Date.now(),status:'connecting',voice,abort:new AbortController(),tools:new Set(),pendingTools:0,activeResponse:false,needsResponse:false,ready:false,closed:false,contextEntries:new Map(),conversationItems:new Map(),conversationCallbacks:Promise.resolve(),conversationWaiters:new Set(),messageChain:Promise.resolve(),messages:new Map()};
+  s.subtitles=createSpokenSubtitles({callId,provider:'api',redact:text=>this.#redactSubtitle(text,[secrets.get(s)]),emit:event=>{if(this.#session===s&&!s.closed&&!s.stopping)this.emit('subtitle',event);}});
   this.#session=s;this.#lastError=null;this.change();
   try{
    let key;try{key=await this.#getKey();}catch{throw Error('The stored voice API key could not be read. Save it again in Voice settings.');}
@@ -250,6 +254,7 @@ export class Voice extends EventEmitter {
  }
  handle(s,event){
   if(!event||typeof event!=='object'||this.#session!==s||s.closed)return;
+  if(!s.stopping)s.subtitles.api(event);
   if(['conversation.item.added','conversation.item.done'].includes(event.type)&&s.inputAck){
    const pending=s.inputAck,item=event.item,entry=pending.entry;
    if(item?.id===entry.itemId&&item.type==='message'&&item.role==='user'&&Array.isArray(item.content)&&item.content.length===1&&item.content[0].type==='input_text'&&item.content[0].text===entry.text){entry.submission='confirmed';entry.confirmedAt=Date.now();pending.finish();}
@@ -268,6 +273,7 @@ export class Voice extends EventEmitter {
   // effects only after the enclosing response reports completed.
   if(event.type==='response.done'){
    s.activeResponse=false;
+   this.emit('usage',{callId:s.callId,responseId:event.response?.id,usage:event.response?.usage});
    for(const item of event.response?.output||[]){
     if(item.type!=='message'||item.role!=='assistant')continue;const node=this.conversationItem(s,item.id);if(!node||node.emitted)continue;
     const text=(item.content||[]).filter(part=>['audio','output_audio'].includes(part.type)&&typeof part.transcript==='string').map(part=>part.transcript).join('\n');
@@ -316,7 +322,7 @@ export class Voice extends EventEmitter {
  cleanup(s,reason){
   if(s.cleanup)return s.cleanup;
   if(reason==='connection-lost'&&s.contextAck?.sent)s.unconfirmedContextId=s.contextAck.contextId;
-  s.stopping=true;s.status='stopping';s.contextQueue?.close();if(s.contextAck){const pending=s.contextAck;s.contextAck=null;pending.reject(Error('Voice call cancelled.'));}s.inputAck?.finish(Error('Voice call cancelled.'));s.abort.abort();this.change();
+  s.subtitles?.clear();s.stopping=true;s.status='stopping';s.contextQueue?.close();if(s.contextAck){const pending=s.contextAck;s.contextAck=null;pending.reject(Error('Voice call cancelled.'));}s.inputAck?.finish(Error('Voice call cancelled.'));s.abort.abort();this.change();
   s.cleanup=(async()=>{
    let error;
    try{await this.drainConversation(s,this.hangupTimeoutMs);}catch{this.emit('notice','Some final voice context was not confirmed before hangup. It will not be retried automatically.');}

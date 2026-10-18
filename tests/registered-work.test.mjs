@@ -155,3 +155,17 @@ test('MCP private task-plan bridge checks token, active owned scope, durable sav
  assert.equal((await h.internal(plan())).status,200);assert.equal(h.instance.store.state.workTasks[1].source,'voice');
  session.unknown=true;assert.equal((await h.internal(plan())).status,409);session.unknown=false;session.turns.set('second',{turnId:'second',done:false});assert.equal((await h.internal(plan())).status,409);assert.equal(h.instance.store.state.workTasks.length,2);assert.equal(active.turnId,'owned-turn');
 });
+
+test('MCP continuation binding conflicts return a recoverable unsaved receipt without switching or mutating tasks',async t=>{
+ const h=await apiSetup(t),{store,engine}=h.instance;store.state.threadId='thread';store.state.threadRuntime=engine.runtimeId;store.state.threadConversationId=store.state.conversationId;engine.loaded=true;
+ const first=store.registerWork({turnId:'first-old-turn',source:'chat',title:'Verify the hard drop',plan:{steps:steps()}}),second=store.registerWork({turnId:'second-old-turn',source:'chat',title:'Optimize another task',plan:{steps:steps()}});
+ for(const record of [first,second])store.updateRegisteredWork(record.turnId,{status:'continuing',executionEnded:true,at:Date.now()-10000});
+ h.worker.request=async(method,params)=>{h.worker.calls.push({method,params});if(method==='thread/read')return {thread:{id:'thread',status:{type:'idle'},turns:store.state.workTasks.map(record=>({id:record.turnId,status:'completed'}))}};if(method==='turn/start')return {turn:{id:'automatic-owned-turn'}};return {};};
+ await engine.continueRegisteredWork(first.id,{expectedTurnId:first.turnId});const before=structuredClone(store.state.workTasks),starts=h.worker.calls.filter(call=>call.method==='turn/start').length;
+ for(const workId of [undefined,second.id]){
+  const response=await h.internal({...(workId?{workId}:{}),title:second.title,steps:steps()});assert.equal(response.status,200);const body=await response.json();assert.equal(body.saved,false);assert.equal(body.code,'work_conflict');assert.equal(body.activeWorkId,first.id);assert.match(body.guidance,/not saved/);assert.ok(body.guidance.includes(first.id));assert.ok(!body.guidance.includes(second.id));
+ }
+ assert.deepEqual(store.state.workTasks,before);assert.equal(h.worker.calls.filter(call=>call.method==='turn/start').length,starts);
+ const original=engine.tool;engine.tool=async()=>{throw Object.assign(Error('private conflict detail'),{code:'work_conflict',activeWorkId:first.id});};const unknown=await h.internal({workId:second.id,title:second.title,steps:steps()});assert.equal(unknown.status,400);assert.deepEqual(await unknown.json(),{error:'The task progress request could not be completed.',code:'work_conflict'});engine.tool=original;
+ const response=await h.internal({workId:first.id,title:first.title,steps:steps()});assert.equal(response.status,200);const saved=await response.json();assert.equal(saved.saved,true);assert.equal(saved.workId,first.id);assert.equal(store.state.workTasks.length,2);assert.deepEqual(store.state.workTasks.find(record=>record.id===second.id),before.find(record=>record.id===second.id));assert.equal(h.worker.calls.filter(call=>call.method==='turn/start').length,starts);
+});
