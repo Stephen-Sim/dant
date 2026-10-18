@@ -32,6 +32,7 @@ import {Diagnostics} from './diagnostics.mjs';
 import {observeHttp,observeTasks,serviceVersion,diagnosticWorkerStatus} from './diagnostic-events.mjs';
 import {UpdateService,installUpdateRoutes} from './updates.mjs';
 import {Scheduler,scheduleTimeZone} from './scheduler.mjs';
+import {WorkContinuationSupervisor} from './work-continuation.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 export function createApp(options={}){
  const dataDir=options.dataDir||process.env.DANT_DATA||path.join(root,'data');
@@ -62,6 +63,7 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  },hangupTimeoutMs:2000});
  engine.voice=voice;
  const nativeVoice=nativeVoiceFactory({worker,engine});engine.nativeVoice=nativeVoice;
+ const workContinuation=new WorkContinuationSupervisor({store,engine,worker});
  nativeVoice.on('diagnostic',event=>{if(['voice_executor_stop_required','voice_shutdown_unconfirmed','voice_shutdown','voice_observer_image_omitted','voice_observer_payload_omitted','voice_handoff_tracked','voice_handoff_confirmed'].includes(event?.code)){const {code,...metadata}=event;diagnostics.log(code,metadata);}});
  nativeVoice.on('notice',message=>engine.emit('notice',message));nativeVoice.on('change',()=>engine.change());
  const telegram=telegramFactory({dataDir,store,engine,attachments:attachmentStore});telegram.on('change',()=>engine.change());
@@ -224,11 +226,12 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  app.patch('/api/schedules/:id',(req,res)=>{if(req.body.id!==undefined&&req.body.id!==req.params.id)throw Object.assign(Error('The scheduled task id changed.'),{status:400});res.json(scheduler.save({...req.body,id:req.params.id}));});
  app.delete('/api/schedules/:id',(req,res)=>res.json(scheduler.remove(req.params.id)));
  scheduler.start();
+ workContinuation.start();
  app.use(express.static(path.join(root,'dist')));
  app.use((err,req,res,next)=>{if(res.headersSent)return next(err);res.status(err.status||(err.unknownOutcome?502:400)).json({error:err.type==='entity.parse.failed'?'Invalid JSON request.':err.type==='entity.too.large'?'The request exceeds its size limit.':err.message,...(err.unknownOutcome?{unknownOutcome:true}:{})});});
  let closePromise;
  telegram.start();
- return {app,server,store,worker,engine,voice,nativeVoice,telegram,voiceKeys,provisioning,computer,credentials,skills,history,diagnostics,updates,scheduler,close:()=>{if(closePromise)return closePromise;closing=true;updates.close();credentials.close();computer.close();provisioning.close();skillImporter.close?.();engine.pauseQueue('service-stopping');if(engine.active){engine.active.stopRequested=true;engine.active.preparation?.abort();}scheduler.close();clearTimeout(broadcastTimer);closePromise=Promise.allSettled([voice.close(),nativeVoice.close(),telegram.close(),audioTranscriber.close?.()]).finally(()=>{callScopedKey=null;try{worker.disconnect();}finally{diagnostics.log('service.closed',{version});diagnostics.close();}});for(const ws of wss.clients)ws.terminate();wss.close();server.close();return closePromise;}};
+ return {app,server,store,worker,engine,voice,nativeVoice,telegram,voiceKeys,provisioning,computer,credentials,skills,history,diagnostics,updates,scheduler,workContinuation,close:()=>{if(closePromise)return closePromise;closing=true;engine.continuationStopped=true;workContinuation.close();updates.close();credentials.close();computer.close();provisioning.close();skillImporter.close?.();engine.pauseQueue('service-stopping');if(engine.active){engine.active.stopRequested=true;engine.active.preparation?.abort();}scheduler.close();clearTimeout(broadcastTimer);closePromise=Promise.allSettled([voice.close(),nativeVoice.close(),telegram.close(),audioTranscriber.close?.()]).finally(()=>{callScopedKey=null;try{worker.disconnect();}finally{diagnostics.log('service.closed',{version});diagnostics.close();}});for(const ws of wss.clients)ws.terminate();wss.close();server.close();return closePromise;}};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const mode=process.argv.includes('--vm-worker')?'vm-worker':process.argv.includes('--prepare')?'prepare':'vm-controller';

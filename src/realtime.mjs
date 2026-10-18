@@ -41,6 +41,7 @@ const stopReasons=Object.freeze({
  'text-submission-unconfirmed':'A voice text task submission was not acknowledged.',
  'pause-unconfirmed':'A voice task did not confirm that it paused.',
  'pending-submission':'The voice call ended while a text task submission was pending.',
+ 'continuation-unconfirmed':'Automatic task continuation could not be matched to confirmed execution ownership.',
  'shutdown-unconfirmed':'The voice call or its background work did not confirm shutdown.'
 });
 const observedMethods=new Set(['turn/started','turn/completed','turn/plan/updated','item/started','item/completed','item/agentMessage/delta','item/tool/call','thread/realtime/itemAdded','thread/realtime/started','thread/realtime/sdp','thread/realtime/closed','thread/realtime/error']);
@@ -61,7 +62,7 @@ export class NativeRealtimeVoice extends EventEmitter {
  constructor({worker,engine,terminateExecutor,connectTimeoutMs=20000,stopTimeoutMs=10000,contextTimeoutMs=5000}={}){
   super();if(!worker||!engine)throw Error('Native voice requires the VM executor and conversation engine');
   this.worker=worker;this.engine=engine;this.terminateExecutor=terminateExecutor||(()=>worker.terminateConfirmed());this.connectTimeoutMs=connectTimeoutMs;this.stopTimeoutMs=stopTimeoutMs;
-  this.session=null;this.error=null;this.lastStop=null;this.contextTimeoutMs=contextTimeoutMs;this.voices=[...NATIVE_VOICES];this.finishedHandoffs=new Set();engine.nativeVoice=this;
+  this.session=null;this.error=null;this.lastStop=null;this.contextTimeoutMs=contextTimeoutMs;this.voices=[...NATIVE_VOICES];this.finishedHandoffs=new Set();this.continuationAdmissions=new WeakMap();this.continuationReplays=new WeakSet();engine.nativeVoice=this;
   const settings=engine.store.state.settings,selected=settings.nativeVoice||settings.voice;
   const nativeVoice=this.voices.includes(selected)?selected:DEFAULT_NATIVE_VOICE;
   if(settings.voice!==nativeVoice||settings.nativeVoice!==nativeVoice||!settings.apiVoice){settings.voice=settings.nativeVoice=nativeVoice;settings.apiVoice ||= 'marin';engine.store.save();}
@@ -160,7 +161,59 @@ export class NativeRealtimeVoice extends EventEmitter {
    throw Error(this.error);
   }
  }
- captureExternalTurn(s){const task=this.engine.active;if(task?.startAcknowledged&&task.turnId){s.externalTurns ||= new Map();s.externalTurns.set(task.turnId,task);}return task?.startAcknowledged&&!task.finishing&&!task.finalStatus&&!task.stopRequested?task:null;}
+ canContinueWhileIdle(active){
+  const s=this.session,call=this.engine.call;
+  if(!s)return call?.provider!=='subscription';
+  const admission=s.continuationAdmission;
+  if(call?.provider!=='subscription'||mediaId(s)!==call.id||call.status!=='connected'||!call.connectedAt||s.status!=='connected'||!s.connectedAt||!s.started||!s.startAccepted||!s.threadId||s.threadId!==this.engine.store.state.threadId||s.closed||s.background||s.continueWork||s.stopping||s.pausing||s.reconnecting||s.mediaUnconfirmed||s.unknown||s.submitting||s.queuedEvents||this.worker.status!=='online'||this.engine.takeover||this.engine.acquiring||this.engine.active&&this.engine.active!==active)return false;
+  if(admission&&(admission.active!==active||!this.continuationScopeCurrent(admission)||admission.conflict)||this.pendingHandoffs(s)||[...s.turns.values()].some(turn=>!turn.done||!turn.resultSaved||turn.pendingSubmissions)||[...(s.callInputs?.values()||[])].some(input=>!input.settled)||s.contextQueue&&(s.contextQueue.running||s.contextQueue.pending.length||s.contextQueue.uncertain||s.contextQueue.closed))return false;
+  return true;
+ }
+ continuationScopeCurrent(admission){
+  const s=admission?.session;
+  return Boolean(s&&this.session===s&&s.threadId===admission.threadId&&this.engine.store.state.threadId===admission.threadId&&s.mediaGeneration===admission.generation&&mediaId(s)===admission.callId&&s.workEpoch===admission.epoch);
+ }
+ beginContinuationAdmission(active){
+  if(!active?.continuation||this.engine.active!==active||active.startSubmitted||active.startAcknowledged||!this.canContinueWhileIdle(active))return false;
+  const s=this.session;if(!s)return true;
+  if(this.continuationAdmissions.has(active)||active.threadId&&active.threadId!==s.threadId)return false;
+  const admission={active,session:s,threadId:s.threadId,callId:mediaId(s),generation:s.mediaGeneration,epoch:s.workEpoch,attemptId:active.continuation.attemptId,conflict:false,retained:[]};
+  this.continuationAdmissions.set(active,admission);s.continuationAdmission=admission;active.continuationAdmission={threadId:admission.threadId,callId:admission.callId,generation:admission.generation,epoch:admission.epoch,attemptId:admission.attemptId};return true;
+ }
+ async replayContinuationEvents(active,events,{notSubmitted=false}={}){
+  const admission=this.continuationAdmissions.get(active);
+  if(!admission)return this.session?{owned:[],conflict:true}:{owned:events,conflict:false};
+  if(!Array.isArray(events)||events.length>128)throw Error('Invalid automatic continuation event buffer');
+  const projected=events.map(prepareObserverEvent),bytes=projected.reduce((total,event)=>total+Buffer.byteLength(JSON.stringify(event)),0);
+  if(bytes>1024*1024)throw Error('Automatic continuation event buffer exceeded its limit');
+  const current=this.continuationScopeCurrent(admission)&&this.engine.active===active,ack=active.startAcknowledged&&handoffId(active.turnId),owned=[],foreign=[];
+  for(const event of projected){if(event.params?.threadId!==admission.threadId||!event.method?.startsWith('turn/')&&!event.method?.startsWith('item/')){this.engine.rejectEvent(event,'Inactive continuation thread');continue;}if(ack&&turnIdOf(event)===active.turnId)owned.push(event);else foreign.push(event);}
+  // A failed/late RPC is not proof that no turn started. Keep its events and
+  // ownership uncertain rather than inventing a native owner or resubmitting.
+  const unknown=active.startSubmitted&&!ack&&!notSubmitted;
+  const conflict=!current||Boolean(ack&&(admission.conflict||foreign.length||admission.session.turns.has(active.turnId)||admission.session.finished.has(active.turnId)));
+  if(!current||unknown){admission.retained=projected;active.continuationConflict=true;if(this.session===admission.session){admission.session.continuationUncertain=admission;this.unknown(admission.session,'continuation-unconfirmed');}return {owned:current?owned:[],conflict:true};}
+  if(conflict){admission.retained=projected;active.continuationConflict=true;admission.session.continuationUncertain=admission;this.unknown(admission.session,'continuation-unconfirmed');}
+  // The acknowledged automatic turn is external to native media. Only exact
+  // ownership admits it; a handoff observed during admission stays unbound.
+  if(ack&&!conflict){admission.checked=true;admission.retained=projected;}
+  for(const event of foreign){this.continuationReplays.add(event);try{void this.handleEvent(event).catch(error=>this.emit('notice',readableError(error.message)));}finally{this.continuationReplays.delete(event);}}
+  return {owned,conflict};
+ }
+ confirmContinuationAdmission(active){
+  const admission=this.continuationAdmissions.get(active),s=admission?.session;
+  const confirmed=Boolean(admission?.checked&&this.continuationScopeCurrent(admission)&&this.engine.call?.provider==='subscription'&&this.engine.call.id===admission.callId&&this.engine.call.status==='connected'&&s.status==='connected'&&this.engine.active===active&&active.startAcknowledged&&handoffId(active.turnId)&&!admission.conflict&&!active.continuationConflict&&!s.unknown&&!s.submitting&&!s.queuedEvents&&!s.stopping&&!s.pausing&&!s.closed&&!s.mediaUnconfirmed&&!s.reconnecting&&!this.pendingHandoffs(s)&&![...s.turns.values()].some(turn=>!turn.done||!turn.resultSaved||turn.pendingSubmissions)&&!s.turns.has(active.turnId)&&!s.finished.has(active.turnId)&&!this.engine.completedTurns.has(active.turnId)&&![...(s.callInputs?.values()||[])].some(input=>!input.settled)&&!s.contextQueue?.uncertain);
+  if(!confirmed){if(admission&&active.startSubmitted&&active.startAcknowledged){active.continuationConflict=true;if(this.session===s){s.continuationUncertain=admission;this.unknown(s,'continuation-unconfirmed');}}return false;}
+  // The Engine calls this immediately before its synchronous durable binding.
+  // No await may separate this fence, external ownership and that write.
+  admission.acknowledged=true;this.captureExternalTurn(s);return true;
+ }
+ finishContinuationAdmission(active){
+  const admission=this.continuationAdmissions.get(active);if(!admission)return;
+  if(admission.session.continuationAdmission===admission)delete admission.session.continuationAdmission;
+  this.continuationAdmissions.delete(active);delete active.continuationAdmission;
+ }
+ captureExternalTurn(s){const task=this.engine.active,admission=task&&this.continuationAdmissions.get(task);if(task?.continuation&&(task.continuationConflict||admission&&!admission.acknowledged))return null;if(task?.startAcknowledged&&task.turnId){s.externalTurns ||= new Map();s.externalTurns.set(task.turnId,task);}return task?.startAcknowledged&&!task.finishing&&!task.finalStatus&&!task.stopRequested?task:null;}
  externalTurn(s,id){const task=s.externalTurns?.get(id);return task&&this.engine.active===task&&!task.finishing?task:null;}
  hasAcceptedWork(s){return [...s.turns.values()].some(turn=>!turn.done||!turn.resultSaved)||Boolean(this.engine.active?.startAcknowledged&&s.externalTurns?.get(this.engine.active.turnId)===this.engine.active);}
  async resumeMedia({sdp,voice=DEFAULT_NATIVE_VOICE,callId,memory=''}){
@@ -298,6 +351,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   // Empty delegations are emitted, but Codex routes no task for them.
   if(!item.input_transcript.length&&!item.active_transcript.length)return;
   if(s.handoffs.size>=128){this.unknown(s,'untracked-handoff',event);return;}
+  if(s.continuationAdmission&&(!s.continuationAdmission.active.startAcknowledged||s.continuationAdmission.active.continuation?.bindingPending))s.continuationAdmission.conflict=true;
   const active=[...s.turns.values()].filter(turn=>!turn.done),external=this.captureExternalTurn(s);if(active.length+(external?1:0)>1){this.unknown(s,'ambiguous-turns',event);return;}
   // Codex admits/steers work before publishing this receipt, but it supplies
   // no turn ID. Keep it pending rather than guessing an older completed turn.
@@ -356,7 +410,10 @@ export class NativeRealtimeVoice extends EventEmitter {
   return event.method?.startsWith('thread/realtime/')||event.method?.startsWith('turn/')||event.method?.startsWith('item/');
  }
  handleEvent(event){
-  const s=this.session;if(!s||!this.ownsEvent(event))return Promise.resolve();
+  const s=this.session;if(!s||!this.ownsEvent(event)&&!this.continuationReplays.has(event))return Promise.resolve();
+  // Record the receipt before queueing: archive/tool awaits may let the start
+  // acknowledgement arrive before observeHandoff processes this same event.
+  if(s.continuationAdmission&&(!s.continuationAdmission.active.startAcknowledged||s.continuationAdmission.active.continuation?.bindingPending)&&event.method==='thread/realtime/itemAdded'&&event.params?.item?.type==='handoff_request')s.continuationAdmission.conflict=true;
   const original=event;event=prepareObserverEvent(event);
   // Closing media cannot wait for an accepted tool that is awaiting the user.
   // The ordinary event queue still handles all task data in its existing order.
@@ -418,7 +475,7 @@ export class NativeRealtimeVoice extends EventEmitter {
    const identity=String(p.callId||event.id);if(s.tools.has(identity)){this.engine.rejectEvent(event,'Duplicate voice tool call');return;}
    if(s.tools.size>=1000){this.unknown(s,'tool-limit',event);this.engine.rejectEvent(event,'Voice tool limit reached');return;}s.tools.add(identity);
    try{
-    if(s.stopping&&!s.continueWork||turn.pauseRequested)throw Error('The voice task is stopping');
+    if(s.stopping&&!s.continueWork||turn.pauseRequested||s.continuationUncertain)throw Error('The voice task is stopping or its execution ownership is unconfirmed');
     const args=typeof p.arguments==='string'?JSON.parse(p.arguments):p.arguments;
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('Invalid voice tool arguments');
     const result=await this.tool(s,turn,p.tool,args);

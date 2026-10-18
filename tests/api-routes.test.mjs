@@ -255,11 +255,11 @@ test('authenticated text and steering pass complete input beyond 100000 characte
 });
 
 test('schedules dispatch once only when the VM executor is online and can be removed',async t=>{
- const {api,worker,store}=await fixture(t);worker.status='offline';
- assert.equal((await api('/schedules',{text:'too late',at:Date.now()-1})).status,400);
- const response=await api('/schedules',{text:'One scheduled task',at:Date.now()+30});assert.equal(response.status,200);const schedule=await response.json();
- await new Promise(resolve=>setTimeout(resolve,1030));assert.equal(store.state.schedules[0].status,'pending');assert.equal(store.state.messages.length,0);
- worker.status='online';await new Promise(resolve=>setTimeout(resolve,1030));assert.equal(store.state.schedules[0].status,'dispatched');assert.equal(store.state.messages.filter(message=>message.scheduled).length,1);
+ const {api,worker,store,scheduler}=await fixture(t);worker.status='offline';let at=Date.now();scheduler.now=()=>at;
+ assert.equal((await api('/schedules',{text:'too late',at:at-1})).status,400);
+ const response=await api('/schedules',{text:'One scheduled task',at:at+1000});assert.equal(response.status,200);const schedule=await response.json();
+ at+=2000;scheduler.tick();assert.equal(store.state.schedules[0].status,'pending');assert.equal(store.state.messages.length,0);
+ worker.status='online';scheduler.tick();scheduler.tick();assert.equal(store.state.schedules[0].status,'dispatched');assert.equal(store.state.messages.filter(message=>message.scheduled).length,1);
  assert.equal((await api('/schedules/'+schedule.id,{},'DELETE')).status,200);assert.equal(store.state.schedules.length,0);
  assert.equal((await api('/tasks/pause',{})).status,200);assert.equal((await api('/stop',{})).status,200);
 });

@@ -15,6 +15,7 @@ import {SCHEDULE_SAVE_SCHEMA,SCHEDULE_ID_SCHEMA,SCHEDULE_INSTRUCTIONS} from './s
 import {SKILL_SUPPORT_FILE_LIMIT} from './skill-limits.mjs';
 import {TASK_LIST_SCHEMA,TASK_LIST_DESCRIPTION,TASK_CANCEL_SCHEMA,TASK_CANCEL_DESCRIPTION,TASK_CANCEL_INSTRUCTIONS,taskListInput,taskCancelInput} from './task-cancel.mjs';
 import {startTaskProgress,advanceTaskProgress,observeTaskProgress,taskProgressSnapshot,voiceCompletionWork,TASK_PLAN_SCHEMA,TASK_PLAN_DESCRIPTION,TASK_PLAN_INSTRUCTIONS,taskPlanInput,publicTaskPlan,isTaskExecutionEvent,registeredWorkFinalStatus} from './task-progress.mjs';
+import {canContinueRegisteredWork,continueRegisteredWork,hasUnconfirmedExecution} from './engine-continuation.mjs';
 
 const tool=(name,description,properties,required=[])=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
 const string={type:'string'};
@@ -74,9 +75,11 @@ export class Engine extends EventEmitter {
  }
  get progress(){
   const active=this.active;if(!active)return null;
-  const task=this.task(active.messageId),status=active.cancelUnconfirmed?'unknown':active.stopRequested?'pausing':task?.submission==='unknown'||active.steerUnconfirmed?'unknown':active.credentialWaits||this.pendingUserRequests.size||active.awaitingChatInput||active.planWaitingForUser?'waiting_user':'running';
-  return {...taskProgressSnapshot(active,{source:active.voiceOutput?'voice':'chat',background:active.backgroundVoice===true,status,startedAt:task?.time,redact:text=>this.redact(text),saving:Boolean(active.finishing)}),callId:active.callId||null,...(status==='running'&&active.conversationalInput&&!active.workRecord&&!active.workObserved?{visible:false}:{}),canSteer:Boolean(active.startAcknowledged&&active.turnId&&!active.stopRequested&&!active.finishing&&!active.steerUnconfirmed&&!this.takeover&&!this.acquiring&&(!active.voiceOutput||active.backgroundVoice))};
+  const task=this.task(active.messageId),status=active.cancelUnconfirmed||active.continuation?.unknown?'unknown':active.stopRequested?'pausing':task?.submission==='unknown'||active.steerUnconfirmed?'unknown':active.credentialWaits||this.pendingUserRequests.size||active.awaitingChatInput||active.planWaitingForUser?'waiting_user':'running';
+  return {...taskProgressSnapshot(active,{source:active.source|| (active.voiceOutput?'voice':'chat'),background:active.backgroundVoice===true,status,startedAt:task?.time,redact:text=>this.redact(text),saving:Boolean(active.finishing)}),callId:active.callId||null,...(status==='running'&&active.conversationalInput&&!active.workRecord&&!active.workObserved?{visible:false}:{}),canSteer:Boolean(active.startAcknowledged&&active.turnId&&!active.stopRequested&&!active.finishing&&!active.steerUnconfirmed&&!this.takeover&&!this.acquiring&&(!active.voiceOutput||active.backgroundVoice))};
  }
+ canContinueRegisteredWork(owner){return canContinueRegisteredWork.call(this,owner);}
+ continueRegisteredWork(workId,options){return continueRegisteredWork.call(this,workId,options);}
  get presence(){const at=this.store.state.presence?.lastActiveAt;return {lastActiveAt:typeof at==='number'&&Number.isFinite(at)&&at>0&&at<=8640000000000000?at:null};}
  touchActivity(now=Date.now()){
   if(typeof now!=='number'||!Number.isFinite(now)||now<=0||now>8640000000000000)return false;
@@ -202,7 +205,7 @@ export class Engine extends EventEmitter {
    this.followup(message,()=>this.nativeVoice.answerBackground(message,{interactive:true,expectedTurnId:this.nativeVoice.active?.turnId}));return message;
   }
   const active=this.active;
-  if(interactive&&active?.startAcknowledged&&!active.finishing&&!active.stopRequested&&!active.steerUnconfirmed&&(!active.voiceOutput||active.backgroundVoice)){
+  if(interactive&&active?.startAcknowledged&&!active.continuation&&!active.finishing&&!active.stopRequested&&!active.steerUnconfirmed&&(!active.voiceOutput||active.backgroundVoice)){
    const expectedTurnId=active.turnId;this.followup(message,epoch=>this.steer(message,expectedTurnId,{followupEpoch:epoch}),active);return message;
   }
   this.updateWork(message.id,{status:'queued',pauseReason:null});this.queue.push(message);this.change();void this.pump();return message;
@@ -479,7 +482,7 @@ export class Engine extends EventEmitter {
   void Promise.allSettled(pending).then(()=>{if(!this.call&&this.queue[0]?.scheduled)void this.pump();});
  }
  async pump(){
-  if(this.active||this.finishing||this.cancelling||this.takeover||this.acquiring||this.nativeVoice?.active||this.nativeVoice?.session?.background||this.call?.provider==='subscription'||this.worker.status!=='online'||!this.queue.length)return;
+  if(this.active||this.finishing||this.cancelling||this.takeover||this.acquiring||this.nativeVoice?.active||this.nativeVoice?.session?.background||this.call?.provider==='subscription'||this.worker.status!=='online'||!this.queue.length||hasUnconfirmedExecution.call(this,undefined,{includeMessages:false}))return;
   let index=0;
   if(this.queue[0].scheduled&&this.call){index=this.queue.findIndex(message=>!message.scheduled&&this.voiceTasks.get(message.id)?.callId===this.call.id);if(index<0)return;}
   if(this.queue[index].scheduled&&(this.call||this.pendingFollowups.size||this.callReferences.size||this.referencePending))return;
@@ -561,6 +564,7 @@ export class Engine extends EventEmitter {
   const isTurn=event.method?.startsWith('turn/')||event.method?.startsWith('item/');
   if(isTurn&&active?.finishing){this.rejectEvent(event,'Turn is finishing');return;}
   if(isTurn&&active?.startSubmitted&&!active.startAcknowledged){this.bufferEvent(active,event);return;}
+  if(isTurn&&active?.continuation?.bindingPending){this.bufferEvent(active,event);return;}
   if(isTurn&&(!active||!active.startAcknowledged)){this.rejectEvent(event,'No accepted active turn');return;}
   if(id&&active?.turnId&&id!==active.turnId){this.rejectEvent(event,'Inactive turn');return;}
   if(active?.startAcknowledged&&parameters.threadId===active.threadId&&id===active.turnId&&observeTaskProgress(active,event,{redact:text=>this.redact(text)})){if(isTaskExecutionEvent(event))this.observeRegisteredExecution(active);if(event.method==='turn/plan/updated')this.observeRegisteredPlan(active,parameters.plan);this.change();}
@@ -595,7 +599,7 @@ export class Engine extends EventEmitter {
    bounded(this.completedItems,item.id);this.change();
   }
   if(event.method==='item/completed'&&parameters.item?.type==='mcpToolCall')await this.acceptMcpResult(parameters.item,active);
-  if(event.method==='turn/completed')await this.finish(parameters.turn?.status,parameters.turn?.error?.message);
+  if(event.method==='turn/completed'){if(active?.continuation)active.continuation.terminalConfirmed=true;await this.finish(parameters.turn?.status,parameters.turn?.error?.message);}
   if(event.method==='error')this.emit('notice',readableError(parameters.error?.message)||'Agent error');
   // Native voice owns its exact thread; stale realtime notices cannot close a later API call.
  }
@@ -643,6 +647,7 @@ export class Engine extends EventEmitter {
  }
  registerTaskPlan(args,context){
   const {task,isCurrent}=this.taskPlanScope(context),safe=taskPlanInput(args,{redact:text=>this.redact(text)});if(!isCurrent())throw Error('The task plan no longer belongs to active work.');
+  if(task.continuation&&safe.workId!==task.continuation.workId)throw Error('Automatic continuation must keep its exact registered workId.');
   const waiting=safe.status===undefined?task.planWaitingForUser===true:safe.status==='waiting_user';
   if(waiting&&safe.status===undefined)taskPlanInput({...args,status:'waiting_user'},{redact:text=>this.redact(text)});
   const record=this.store.registerWork({turnId:task.turnId,messageId:this.task(task.messageId)?.role==='user'?task.messageId:null,source:this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice',...safe,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput||waiting?'waiting_user':'running'});
@@ -671,8 +676,14 @@ export class Engine extends EventEmitter {
   }catch(error){this.emit('notice','Could not save the public task plan: '+error.message);}
  }
  finalizeRegisteredWork(task,status){
+  if(task.continuation?.bindingUnconfirmed&&task.continuation.terminalConfirmed){
+   try{return this.store.finishUnboundWorkContinuation(task.continuation.workId,task.continuation.attemptId,{turnId:task.turnId,status:status==='cancelled'?'cancelled':'paused'});}catch(error){this.emit('notice','Could not save the confirmed continuation stop: '+error.message);return null;}
+  }
   // The executor has ended even when a separate chat/result save fails. Keep
   // its durable task status independent of those optional delivery writes.
+  if(task.continuation&&!task.continuation.terminalConfirmed){
+   try{return this.store.settleWorkContinuation(task.continuation.workId,task.continuation.attemptId,{status:status==='cancelled'?'cancelled':'paused',submitted:task.startSubmitted===true});}catch(error){this.emit('notice','Could not save unconfirmed task continuation: '+error.message);return null;}
+  }
   if(task.workObserved&&!task.workRecord)this.observeRegisteredExecution(task);
   try{return this.store.updateRegisteredWork(task.turnId,{status:registeredWorkFinalStatus(task,status),executionEnded:true});}catch(error){this.emit('notice','Could not save final task progress: '+error.message);return null;}
  }
@@ -816,7 +827,10 @@ export class Engine extends EventEmitter {
   try{await Promise.race([(async()=>{await this.interrupt(active);await active.stopped;})(),new Promise((resolve,reject)=>timer=setTimeout(()=>reject(Error('Agent has not stopped yet')),15000))]);}
   finally{clearTimeout(timer);}
  }
- async pause(){this.pauseQueue();await this.waitStopped(this.active);if(this.call?.provider==='subscription'||this.nativeVoice?.active)return this.nativeVoice.pauseWork();return {paused:true};}
+ async pause(){
+  let failure;try{this.store.pauseContinuingWork();}catch(error){failure=error;}
+  this.pauseQueue();await this.waitStopped(this.active);const result=this.call?.provider==='subscription'||this.nativeVoice?.active?await this.nativeVoice.pauseWork():{paused:true};if(failure)throw failure;return result;
+ }
  assertTakeoverCall(){
   const call=this.call;if(!call)return;
   const unavailable=()=>Error('Wait for the voice call to connect and confirm its work before taking control.');
