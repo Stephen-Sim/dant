@@ -337,11 +337,18 @@ class VoiceAndMCPTests(unittest.TestCase):
         self.assertIn('not retry', text)
 
     def test_mcp_skill_tools_use_the_same_private_owned_bridge_without_reading_or_writing_files(self):
+        save_tool = next(tool for tool in desktop_mcp.TOOLS if tool['name'] == 'skill_save')
+        self.assertEqual(save_tool['inputSchema']['properties']['files']['maxProperties'], 128)
         with tempfile.TemporaryDirectory() as folder, patch.object(desktop_mcp, 'credential_bridge', return_value={'saved': True}) as bridge:
             for name, args in [('skill_list', {}), ('skill_get', {'name': 'known'}), ('skill_save', {'name': 'known', 'description': 'Reusable', 'instructions': 'Check first'})]:
                 response = desktop_mcp.invoke(name, args, folder)
                 self.assertEqual(response['structuredContent'], {'skillResult': {'saved': True}})
                 bridge.assert_called_with(name, args)
+            files = {f'scripts/helper-{index}.py': f'print({index})\n' for index in range(30)}
+            args = {'name': 'complete-skill', 'description': 'All helpers', 'instructions': 'Use the packaged helpers.', 'files': files}
+            response = desktop_mcp.invoke('skill_save', args, folder)
+            bridge.assert_called_with('skill_save', args)
+            self.assertEqual(response['structuredContent'], {'skillResult': {'saved': True}})
             self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
 
     def test_mcp_schedule_tools_share_the_private_owned_service_without_executing_or_writing_jobs_locally(self):

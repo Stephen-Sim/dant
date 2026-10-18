@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {SKILL_SUPPORT_FILE_LIMIT} from '../src/skill-limits.mjs';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {Voice,VOICES,VOICE_TOOLS,DEFAULT_VOICE_MODEL} from '../src/voice.mjs';
@@ -390,4 +391,9 @@ test('API credential and skill tools validate required, nullable and structured 
  const invalid=[['credential_get',{}],['credential_store',{name:'Work',service:'',username:''}],['credential_request',{name:'Work',service:'',reason:2}],['credential_find',{query:4}],['skill_get',{name:'x',extra:'forbidden'}],['skill_save',{name:'x',description:'Test',instructions:'Test',enabled:'false'}],['skill_save',{name:'x',description:'Test',instructions:'Test',files:[]}],['skill_save',{name:'x',description:'Test',instructions:'Test',files:{'scripts/check.py':false}}],['react_message',{messageId:'user'}]];
  for(const [index,[name,args]]of invalid.entries())emit(socket,completed([call(name,args,'invalid-'+index)]));await tick();assert.equal(received.length,valid.length);for(let index=0;index<invalid.length;index++)assert.equal(JSON.parse(socket.sent.find(event=>event.item?.call_id==='invalid-'+index).item.output).success,false);
  const scope=received[0].scope;await h.voice.stop();assert.equal(scope.isCurrent(),false);assert.equal(scope.signal.aborted,true);await h.voice.start({sdp:SDP,callId:'later-session'});assert.equal(scope.isCurrent(),false);
+});
+
+test('API voice skill input accepts all 128 supporting files and rejects 129 before dispatch without truncating',async t=>{
+ const received=[],h=harness(t,{tool:async(name,args)=>{received.push({name,args});return {saved:true};}});await h.voice.start({sdp:SDP});const socket=h.sockets[0],files=Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT},(_,index)=>[`scripts/helper-${index}.py`,`print(${index})\n`])),args={name:'complete-skill',description:'A complete skill.',instructions:'Use all packaged helpers.',files};
+ emit(socket,completed([call('skill_save',args,'full-skill')]));await tick();assert.equal(received.length,1);assert.deepEqual(received[0],{name:'skill_save',args});emit(socket,completed([call('skill_save',{...args,files:{...files,'scripts/overflow.py':'extra'}},'overflow-skill')]));await tick();assert.equal(received.length,1);assert.equal(JSON.parse(socket.sent.find(event=>event.item?.call_id==='overflow-skill').item.output).success,false);
 });

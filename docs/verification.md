@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.5 growing skill edit follow-up
+
+The installed TETR.IO skill had grown to 30 supporting files, while its edit reader still allowed only 20. The list could read its metadata, but Edit returned HTTP 400 when loading the complete directory. Edit, save, ZIP import/export and the text/voice tool contracts now share a limit of 128 supporting files. Directory and archive traversal remain bounded at 4,096 entries, and the managed metadata index accommodates the supported path count. Existing byte, path, link and secret checks remain in place; reads never silently truncate the file map.
+
+The final local JavaScript coverage run passed **1,245 tests, zero failures and zero skips**. Coverage is **98.79% lines, 91.12% branches and 91.68% functions**; every configured gate passed. All **54 Python VM/MCP tests**, seven separate version/coverage gate checks, the frontend production build and all 102 local documentation links passed. Regressions cover 30-file edit/save preservation, the 128/129-file boundary, long paths, maximum depth, ZIP/GitHub imports and safe limit errors.
+
+A read-only VM check ran the candidate reader and ZIP packager in memory against the current skill. It read all 30 supporting files and produced all 31 archive files including SKILL.md, with source contents and the instruction/managed-index hashes unchanged. No skill files, runtime services, calls or tasks were modified. This verifies the candidate core reader and packager, not the installed GUI: the changes remain local source and have not been installed, deployed or published.
+
 ## 0.4.5 task priority and completed-history cleanup follow-up
 
 The final local JavaScript coverage run passed **1,232 tests, zero failures and zero skips**. Coverage is **98.78% lines, 91.06% branches and 91.67% functions**; every configured gate passed. The frontend production build and all 102 local documentation links passed validation.

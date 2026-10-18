@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {SkillLibrary} from '../src/skill-library.mjs';
+import {SKILL_SUPPORT_FILE_LIMIT} from '../src/skill-limits.mjs';
 const base=path.resolve('.cache/tests');fs.mkdirSync(base,{recursive:true});
 const sample={name:'inspect-desktop',description:'Observe the VM desktop when verifying browser work.',instructions:'Use the shared desktop bridge. Read scripts/inspect.py before use.',files:{'scripts/inspect.py':'print("checked")\n','references/workflow.md':'Observe before acting.'}};
 function setup(t,options={}){const workspace=fs.mkdtempSync(path.join(base,'skills-'));t.after(()=>fs.rmSync(workspace,{recursive:true,force:true}));return {workspace,skills:new SkillLibrary({workspace,...options})};}
@@ -56,7 +57,25 @@ test('skill validation rejects path escape, excessive content and secret embeddi
  const {skills}=setup(t,{containsSecret:value=>value.includes('test-vault-secret')});const before=skills.save(sample);
  const invalid=[null,{}, {...sample,name:'../escape'}, {...sample,name:'UPPER'}, {...sample,description:''}, {...sample,instructions:''}, {...sample,enabled:'yes'}, {...sample,files:[]}, {...sample,files:null}, {...sample,files:{'scripts/../../outside':'x'}}, {...sample,files:{'scripts\\escape.py':'x'}}, {...sample,files:{'/absolute':'x'}}, {...sample,files:{'scripts/C:/escape':'x'}}, {...sample,files:{'scripts/helper.py':42}}, {...sample,files:{'scripts/helper.py':'x'.repeat(65537)}}, {...sample,instructions:'test-vault-secret'}];
  for(const input of invalid)assert.throws(()=>skills.save(input));assert.deepEqual(skills.get(sample.name),before);assert.throws(()=>skills.setEnabled(sample.name,'yes'));assert.throws(()=>skills.inside(skills.workspace));assert.throws(()=>skills.inside(path.dirname(skills.workspace)));assert.throws(()=>skills.get('../escape'));
- const many=Object.fromEntries(Array.from({length:21},(_,n)=>['scripts/'+n+'.txt','x']));assert.throws(()=>skills.save({...sample,files:many}));const large=Object.fromEntries(Array.from({length:5},(_,n)=>['assets/'+n+'.txt','x'.repeat(65536)]));assert.throws(()=>skills.save({...sample,files:large}));
+ const many=Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT+1},(_,n)=>['scripts/'+n+'.txt','x']));assert.throws(()=>skills.save({...sample,files:many}),error=>error.code==='size_limit');const large=Object.fromEntries(Array.from({length:5},(_,n)=>['assets/'+n+'.txt','x'.repeat(65536)]));assert.throws(()=>skills.save({...sample,files:large}));
+});
+
+test('128 long supporting paths retain their marker index through save, edit, list and restart while the 129th is rejected intact',t=>{
+ const {workspace,skills}=setup(t),files=Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT},(_,index)=>['references/'+String(index).padStart(3,'0')+'-'+'x'.repeat(162)+'.md','Preserved source '+index])),saved=skills.save({...sample,files}),marker=path.join(path.dirname(saved.path),'.dant-managed.json');
+ assert.equal(Object.keys(saved.files).length,128);assert.ok(fs.statSync(marker).size>8192);assert.equal(skills.list().length,1);assert.deepEqual(skills.get(saved.name).files,files);assert.deepEqual(new SkillLibrary({workspace}).get(saved.name).files,files);
+ const edited=skills.save({name:saved.name,description:'Updated only the description',instructions:sample.instructions});assert.deepEqual(edited.files,files);const before=fs.readFileSync(marker),instructions=fs.readFileSync(saved.path);
+ assert.throws(()=>skills.save({...sample,files:{...files,'scripts/extra.mjs':'export const extra=true;'}}),error=>error.code==='size_limit');assert.deepEqual(fs.readFileSync(marker),before);assert.deepEqual(fs.readFileSync(saved.path),instructions);assert.deepEqual(skills.get(saved.name).files,files);
+ const overflow=path.join(path.dirname(saved.path),'scripts','extra.mjs');fs.mkdirSync(path.dirname(overflow),{recursive:true});fs.writeFileSync(overflow,'export const extra=true;');assert.equal(skills.list().length,1);assert.throws(()=>skills.get(saved.name),error=>error.code==='size_limit');assert.throws(()=>skills.save({name:saved.name,description:'Must not discard files',instructions:sample.instructions}),error=>error.code==='size_limit');assert.equal(fs.readFileSync(overflow,'utf8'),'export const extra=true;');assert.deepEqual(fs.readFileSync(marker),before);
+});
+
+test('expanded marker metadata remains bounded and oversized markers never change the skill',t=>{
+ const {skills}=setup(t),saved=skills.save(sample),marker=path.join(path.dirname(saved.path),'.dant-managed.json'),instructions=fs.readFileSync(saved.path),oversized=JSON.stringify({owner:'dant',name:saved.name,padding:'x'.repeat(8192+SKILL_SUPPORT_FILE_LIMIT*1100)});fs.writeFileSync(marker,oversized);
+ assert.throws(()=>skills.get(saved.name),/not managed/);assert.deepEqual(skills.list(),[]);assert.equal(fs.readFileSync(marker,'utf8'),oversized);assert.deepEqual(fs.readFileSync(saved.path),instructions);
+});
+
+test('the maximum file count at the existing maximum directory depth remains readable after save and restart',t=>{
+ const {workspace,skills}=setup(t),files=Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT},(_,index)=>['scripts/'+index+'/'+'nested/'.repeat(14)+'helper.mjs','export const value='+index+';\n'])),saved=skills.save({...sample,files});
+ assert.deepEqual(saved.files,files);assert.equal(skills.list().length,1);assert.deepEqual(new SkillLibrary({workspace}).get(saved.name).files,files);
 });
 test('unmanaged folders are preserved and failed file staging leaves the old skill usable',t=>{
  const {workspace,skills}=setup(t);skills.save(sample);const external=path.join(workspace,'.agents/skills/external');fs.mkdirSync(external);fs.writeFileSync(path.join(external,'SKILL.md'),'User-owned');assert.equal(skills.list().length,1);assert.throws(()=>skills.save({...sample,name:'external'}));assert.equal(fs.readFileSync(path.join(external,'SKILL.md'),'utf8'),'User-owned');

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
 import {reconcile} from '../ui/dom.js';
 import {createManagedSettings,parseSkillFiles} from '../ui/managed-settings.js';
+import {SKILL_SUPPORT_FILE_LIMIT} from '../src/skill-limits.mjs';
 
 const settle=async()=>{await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));};
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
@@ -25,6 +26,12 @@ test('bilingual skills page imports a reviewed GitHub skill without modifying or
   assert.deepEqual(f.calls[0],{route:'/skills/import/preview',method:'POST',body:{url:'https://github.com/example/skills/tree/main/browser'}});assert.equal(f.calls.length,1);assert.equal(f.document.querySelector('[name="name"]').value,'browser-check');assert.equal(f.document.querySelector('.skill-import-preview img'),null);assert.match(f.document.querySelector('#skill-import-instructions pre').textContent,/<img src=x/);assert.match(f.document.querySelector('.skill-import-files').textContent,/LICENSE/);assert.match(f.document.querySelector('.skill-import-files').textContent,/1\.0 KiB/);
   f.input('name','browser-custom');const enabled=f.document.querySelector('[name="enabled"]');enabled.checked=false;enabled.dispatchEvent(new f.Event('change',{bubbles:true}));f.render();assert.equal(f.document.querySelector('[name="name"]').value,'browser-custom');await f.submit();
   assert.deepEqual(f.calls.find(call=>call.route==='/skills/import').body,{id:'preview-1',name:'browser-custom',enabled:false});assert.equal(f.modal,null);assert.ok(f.document.querySelector('[data-key="skill-card-browser-custom"]'));assert.equal(f.toasts.length,1);assert.equal(f.calls.some(call=>/exec|tool|turn|messages/.test(call.route)),false);
+ }
+});
+
+test('import preview accepts SKILL.md plus 128 supporting files and rejects a larger file list without partial import',async()=>{
+ for(const extra of [0,1]){
+  const f=fixture();f.handlers.set('/skills/import/preview',()=>({...f.preview(),files:[{path:'SKILL.md',size:100},...Array.from({length:SKILL_SUPPORT_FILE_LIMIT+extra},(_,index)=>({path:`scripts/helper-${index}.py`,size:10}))]}));await f.open();await f.load();assert.equal(Boolean(f.document.querySelector('.skill-import-preview')),extra===0);assert.equal(f.calls.some(call=>call.route==='/skills/import'),false);if(extra===0){assert.equal(f.document.querySelectorAll('.skill-import-files li').length,129);await f.submit();assert.equal(f.calls.filter(call=>call.route==='/skills/import').length,1);}else{assert.ok(f.document.querySelector('[role="status"]'));assert.equal(f.document.querySelector('#skill-import-form [type="submit"]'),null);}
  }
 });
 

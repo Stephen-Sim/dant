@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {deflateRawSync,crc32} from 'node:zlib';
 import {SkillLibrary} from '../src/skill-library.mjs';
 import {SkillImporter} from '../src/skill-import.mjs';
+import {SKILL_SUPPORT_FILE_LIMIT,SKILL_TREE_ENTRY_LIMIT} from '../src/skill-limits.mjs';
 
 const base=path.resolve('.cache/tests');fs.mkdirSync(base,{recursive:true});
 const source='---\nname: inspect-desktop\ndescription: Inspect the work computer safely.\n---\n\nRead scripts/check.py before using this skill.\n';
@@ -58,6 +59,12 @@ test('ZIP wrappers preserve every supported helper, root license, notice, and RE
  const preview=await importer.preview({name:'download.zip',data:zip(files)});assert.equal(skills.list().length,0);assert.equal(preview.files.length,7);const saved=importer.commit({id:preview.id});assert.equal(Object.keys(saved.files).length,6);assert.equal(saved.files['LICENSE.txt'],'MIT fixture');assert.match(saved.files['scripts/check.py'],/never execute/);
 });
 
+test('ZIP directory entries have their own 4096 bound while all 128 supporting files remain intact',async t=>{
+ const {importer,skills}=fixture(t),support=Array.from({length:SKILL_SUPPORT_FILE_LIMIT},(_,index)=>({name:'package/references/'+index+'.md',data:'Reference '+index})),files=[{name:'package/SKILL.md',data:source},...support,...Array.from({length:SKILL_TREE_ENTRY_LIMIT-support.length-1},(_,index)=>({name:'package/unused-'+index+'/'}))];
+ assert.equal(files.length,4096);const preview=await importer.preview({name:'complete.zip',data:zip(files)});assert.equal(preview.files.length,129);const saved=importer.commit({id:preview.id});for(let index=0;index<128;index++)assert.equal(saved.files['references/'+index+'.md'],'Reference '+index);assert.deepEqual(skills.get(saved.name).files,saved.files);
+ await assert.rejects(importer.preview({name:'one-too-many.zip',data:zip([...files,{name:'package/one-more/'}])}),errorCode('size_limit'));assert.deepEqual(skills.get(saved.name).files,saved.files);
+});
+
 test('existing managed or unmanaged names never overwrite and the same preview can be renamed',async t=>{
  const {importer,skills,workspace}=fixture(t);const original=skills.save({name:'inspect-desktop',description:'Existing',instructions:'Preserve existing instructions.'}),preview=await importer.preview({name:'SKILL.md',data:Buffer.from(source)});
  assert.throws(()=>importer.commit({id:preview.id}),errorCode('name_exists'));assert.deepEqual(skills.get(original.name),original);
@@ -105,8 +112,8 @@ test('ZIP integrity, file count, compressed size and inflated-size lies are boun
  const {importer,skills}=fixture(t),cases=[
   {name:'too-big.zip',data:Buffer.alloc(1024*1024+1)},
   {name:'huge.zip',data:zip([{name:'SKILL.md',data:source},{name:'assets/huge.txt',data:'a'.repeat(65537)}])},
-  {name:'many.zip',data:zip([{name:'SKILL.md',data:source},...Array.from({length:21},(_,i)=>({name:'references/'+i+'.txt',data:'x'}))])},
-  {name:'entries.zip',data:zip(Array.from({length:129},(_,i)=>({name:'folder'+i+'/',data:''})))},
+  {name:'many.zip',data:zip([{name:'SKILL.md',data:source},...Array.from({length:SKILL_SUPPORT_FILE_LIMIT+1},(_,i)=>({name:'references/'+i+'.txt',data:'x'}))])},
+  {name:'entries.zip',data:zip(Array.from({length:SKILL_TREE_ENTRY_LIMIT+1},(_,i)=>({name:'folder'+i+'/',data:''})))},
   {name:'bomb.zip',data:zip([{name:'SKILL.md',data:source},{name:'assets/bomb.txt',data:'a'.repeat(200000),size:1}])},
   {name:'corrupt.zip',data:zip([{name:'SKILL.md',data:source,crc:123}])},
  ];
@@ -121,6 +128,12 @@ test('public GitHub sources resolve one commit and verify every downloaded blob 
   assert.ok(network.calls.filter(call=>call.url.includes('/commits?')).length<=17);assert.ok(network.calls.some(call=>call.url.includes('?recursive=1')));
   for(const {url,options}of network.calls){assert.equal(new URL(url).hostname,'api.github.com');assert.equal(options.redirect,'error');assert.equal(options.credentials,'omit');assert.equal(options.headers.Authorization,undefined);}
  }
+});
+
+test('GitHub imports retain 128 supporting files and reject 129 before any blob download',async t=>{
+ const files={'SKILL.md':source,...Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT},(_,index)=>['scripts/helper-'+index+'.mjs','export const value='+index+';\n']))},network=github({files}),{importer}=fixture(t,{fetchImpl:network.fetchImpl}),preview=await importer.preview({url:'https://github.com/owner/repo'}),saved=importer.commit({id:preview.id});
+ assert.equal(preview.files.length,129);assert.deepEqual(saved.files,Object.fromEntries(Object.entries(files).filter(([name])=>name!=='SKILL.md')));
+ const oversized=github({files:{...files,'scripts/extra.mjs':'export const extra=true;\n'}}),second=fixture(t,{fetchImpl:oversized.fetchImpl});await assert.rejects(second.importer.preview({url:'https://github.com/owner/repo'}),errorCode('size_limit'));assert.equal(oversized.calls.some(call=>call.url.includes('/git/blobs/')),false);assert.deepEqual(second.skills.list(),[]);
 });
 
 test('slash-bearing branches and tags resolve their longest existing prefix before path traversal',async t=>{
@@ -139,7 +152,7 @@ test('GitHub URL validation prevents arbitrary hosts, credentialed requests, red
 test('remote truncation, unsupported entries, excessive data, changed blob hashes, and malformed JSON fail closed',async t=>{
  for(const options of [
   {treeChange:tree=>({...tree,truncated:true})},
-  {treeChange:tree=>({...tree,tree:[...tree.tree,...Array.from({length:129},(_,i)=>({path:'dir'+i,type:'tree',mode:'040000'}))]})},
+  {treeChange:tree=>({...tree,tree:[...tree.tree,...Array.from({length:SKILL_TREE_ENTRY_LIMIT+1},(_,i)=>({path:'dir'+i,type:'tree',mode:'040000'}))]})},
   {treeChange:tree=>({...tree,tree:tree.tree.map(item=>({...item,mode:'120000'}))})},
   {treeChange:tree=>({...tree,tree:tree.tree.map(item=>({...item,size:65537}))})},
   {blobChange:blob=>({...blob,content:Buffer.from('changed').toString('base64')})},

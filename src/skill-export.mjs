@@ -1,4 +1,5 @@
 import {crc32} from 'node:zlib';
+import {SKILL_SUPPORT_FILE_LIMIT} from './skill-limits.mjs';
 
 // Stored ZIP entries keep these small text skills portable without another
 // compressor dependency or executing any of the exported helpers.
@@ -6,7 +7,8 @@ export function exportSkillZip(skills,name){
  if(typeof name!=='string'||!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(name))throw Error('Invalid managed skill for export.');
  const skill=skills.exportSnapshot(name),support=skill.files??{},validText=value=>typeof value==='string'&&!/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value);
  if(skill.name!==name||!validText(skill.description)||!skill.description.trim()||Buffer.byteLength(skill.description)>1000||!validText(skill.instructions)||!skill.instructions.trim()||!support||typeof support!=='object'||Array.isArray(support))throw Error('Invalid managed skill for export.');
- if(Buffer.byteLength(skill.instructions)>49152||Object.keys(support).length>20)throw Error('The skill exceeds its export limit.');
+ if(Object.keys(support).length>SKILL_SUPPORT_FILE_LIMIT)throw Object.assign(Error('The skill exceeds its export file count.'),{code:'size_limit'});
+ if(Buffer.byteLength(skill.instructions)>49152)throw Error('The skill exceeds its export limit.');
  let managedBytes=Buffer.byteLength(skill.instructions);const paths=new Set(['skill.md']);
  for(const [relative,text]of Object.entries(support)){
   skills.fileName(relative);if(/[\x00-\x1f\x7f]/.test(relative)||paths.has(relative.toLowerCase())||!validText(text)||/^(?:%PDF-|PK\x03\x04|RIFF|OggS|GIF8[79]a)/.test(text))throw Error('Invalid managed skill for export.');paths.add(relative.toLowerCase());

@@ -2,12 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {ordinaryDirectory,renameManaged} from './managed-path.mjs';
+import {SKILL_SUPPORT_FILE_LIMIT,SKILL_TREE_ENTRY_LIMIT} from './skill-limits.mjs';
 
 const slug=name=>typeof name==='string'&&/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(name);
 const text=(value,max)=>typeof value==='string'&&!value.includes('\0')&&Buffer.byteLength(value)<=max;
 const marker='.dant-managed.json';
+const markerByteLimit=8192+SKILL_SUPPORT_FILE_LIMIT*1100;
 const generatedCaches=new Set(['__pycache__','.pytest_cache','.mypy_cache','.ruff_cache','node_modules']);
 const exportFailure=()=>Error('Invalid managed skill files for export.');
+const countFailure=()=>Object.assign(Error('The skill exceeds its supported file count.'),{code:'size_limit'});
 function instructionBody(source){const boundary=source.indexOf('\n---\n',4);if(!source.startsWith('---\n')||boundary<0)throw Error('Invalid managed skill frontmatter.');return source.slice(boundary+5).trim();}
 function snapshotText(library,directory,relative){
  const file=library.inside(path.join(directory,relative));library.ordinary(path.dirname(file));const before=fs.lstatSync(file);
@@ -31,7 +34,7 @@ export class SkillLibrary{
  ordinary(directory,{create=false}={}){
   this.inside(directory);ordinaryDirectory(directory,{create});
  }
- locate(name){if(!slug(name))throw Error('Invalid skill name.');for(const [root,enabled]of [[this.enabledRoot,true],[this.disabledRoot,false]]){const directory=this.inside(path.join(root,name));if(fs.lstatSync(directory,{throwIfNoEntry:false})){this.ordinary(directory);const file=path.join(directory,marker),stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>8192)throw Error('This skill is not managed by dant.');const meta=JSON.parse(fs.readFileSync(file,'utf8'));if(meta.owner!=='dant'||meta.name!==name)throw Error('This skill is not managed by dant.');return {directory,enabled,meta};}}return null;}
+ locate(name){if(!slug(name))throw Error('Invalid skill name.');for(const [root,enabled]of [[this.enabledRoot,true],[this.disabledRoot,false]]){const directory=this.inside(path.join(root,name));if(fs.lstatSync(directory,{throwIfNoEntry:false})){this.ordinary(directory);const file=path.join(directory,marker),stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>markerByteLimit)throw Error('This skill is not managed by dant.');const meta=JSON.parse(fs.readFileSync(file,'utf8'));if(meta.owner!=='dant'||meta.name!==name)throw Error('This skill is not managed by dant.');return {directory,enabled,meta};}}return null;}
  list(){const items=[];for(const root of [this.enabledRoot,this.disabledRoot]){if(!fs.existsSync(root))continue;this.ordinary(root);for(const entry of fs.readdirSync(root,{withFileTypes:true})){if(!entry.isDirectory()||!slug(entry.name))continue;try{const found=this.locate(entry.name);if(!found||items.some(item=>item.name===entry.name))continue;items.push({name:entry.name,description:found.meta.description,enabled:found.enabled,path:path.join(found.directory,'SKILL.md'),updatedAt:found.meta.updatedAt});}catch{/* User/system skill folders are not managed here. */}}}return items.sort((a,b)=>a.name.localeCompare(b.name));}
  get(name){const snapshot=this.exportSnapshot(name);return {...snapshot,files:{...snapshot.files}};}
  exportSnapshot(name){
@@ -40,14 +43,14 @@ export class SkillLibrary{
   const walk=(folder,prefix='',depth=0)=>{
    this.ordinary(folder);if(depth>16)throw exportFailure();
    for(const entry of fs.readdirSync(folder,{withFileTypes:true}).sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0)){
-    if(++entries>128)throw exportFailure();const relative=prefix+entry.name,full=this.inside(path.join(folder,entry.name)),stat=fs.lstatSync(full);
+    if(++entries>SKILL_TREE_ENTRY_LIMIT)throw countFailure();const relative=prefix+entry.name,full=this.inside(path.join(folder,entry.name)),stat=fs.lstatSync(full);
     if(stat.isSymbolicLink()||!stat.isFile()&&!stat.isDirectory())throw exportFailure();
     if(!prefix&&(entry.name===marker||entry.name==='SKILL.md')){if(!stat.isFile())throw exportFailure();continue;}
     if(/[\x00-\x1f\x7f]/.test(relative))throw exportFailure();
     if(stat.isDirectory()){
      if(generatedCaches.has(entry.name))continue;this.fileName(relative+'/x');walk(full,relative+'/',depth+1);
     }else{
-     this.fileName(relative);if(Object.keys(files).length>=20)throw exportFailure();const value=snapshotText(this,directory,relative);total+=Buffer.byteLength(value);if(total>262144)throw exportFailure();files[relative]=value;
+     this.fileName(relative);if(Object.keys(files).length>=SKILL_SUPPORT_FILE_LIMIT)throw countFailure();const value=snapshotText(this,directory,relative);total+=Buffer.byteLength(value);if(total>262144)throw exportFailure();files[relative]=value;
     }
    }
   };
@@ -58,7 +61,7 @@ export class SkillLibrary{
   if(!input||!slug(input.name)||!text(input.description,1000)||!input.description.trim()||!text(input.instructions,49152)||!input.instructions.trim()||(input.enabled!==undefined&&typeof input.enabled!=='boolean'))throw Error('Invalid skill name, description, or instructions.');
   const existing=this.locate(input.name);if(existing&&!overwrite)throw Object.assign(Error('A skill with this name already exists.'),{code:'EEXIST'});
   // Omitted files edit metadata/instructions; an explicit file map replaces supporting files.
-  const files=input.files===undefined?(existing?this.get(input.name).files:{}):input.files;if(!files||typeof files!=='object'||Array.isArray(files)||Object.keys(files).length>20)throw Error('Attach at most twenty text skill files.');let bytes=Buffer.byteLength(input.instructions);
+  const files=input.files===undefined?(existing?this.get(input.name).files:{}):input.files;if(!files||typeof files!=='object'||Array.isArray(files))throw Error('Invalid supporting skill files.');if(Object.keys(files).length>SKILL_SUPPORT_FILE_LIMIT)throw countFailure();let bytes=Buffer.byteLength(input.instructions);
   for(const [relative,value]of Object.entries(files)){this.fileName(relative);if(!text(value,65536))throw Error('Invalid supporting skill file.');bytes+=Buffer.byteLength(value);}
   if(bytes>262144)throw Error('The skill exceeds its size limit.');if([input.name,input.description,input.instructions,...Object.keys(files),...Object.values(files)].some(value=>this.containsSecret(value)))throw Error('Keep credentials in the credential vault, not in skills.');
   const enabled=input.enabled??existing?.enabled??true,root=enabled?this.enabledRoot:this.disabledRoot;this.ordinary(root,{create:true});

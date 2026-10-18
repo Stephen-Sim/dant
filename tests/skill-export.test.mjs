@@ -6,6 +6,7 @@ import {crc32} from 'node:zlib';
 import {exportSkillZip} from '../src/skill-export.mjs';
 import {SkillLibrary} from '../src/skill-library.mjs';
 import {SkillImporter} from '../src/skill-import.mjs';
+import {SKILL_SUPPORT_FILE_LIMIT,SKILL_TREE_ENTRY_LIMIT} from '../src/skill-limits.mjs';
 
 const base=path.resolve('.cache/tests');fs.mkdirSync(base,{recursive:true});
 const sample={name:'inspect-desktop',description:'Review "the VM" safely. 中文说明。',instructions:'Read scripts/check.py before use.\n先观察，再执行。',enabled:false,files:{'scripts/check.py':'raise RuntimeError("Do not execute during export")\n','references/流程.md':'Review the visible desktop first.\n','assets/schema.json':'{"safe":true}\n','LICENSE.txt':'MIT fixture license\n','NOTICE':'Copyright fixture\n','README.md':'Read before use.\n'}};
@@ -50,9 +51,17 @@ test('maximum managed instruction and aggregate byte budgets roundtrip without i
  assert.equal(saved.instructions,input.instructions);assert.deepEqual({...saved.files},input.files);assert.equal(storedEntries(exported.data).size,5);
 });
 
-test('all twenty supporting files are exported and remain importable',async t=>{
- const {skills,importer}=fixture(t),input={name:'many-files',description:'Maximum supporting file count.',instructions:'Read references before acting.',files:Object.fromEntries(Array.from({length:20},(_,index)=>['references/'+index+'.md','Reference '+index]))};skills.save(input);
- const exported=exportSkillZip(skills,input.name);assert.equal(storedEntries(exported.data).size,21);const preview=await importer.preview({name:exported.name,data:exported.data});assert.equal(preview.files.length,21);assert.deepEqual({...importer.commit({id:preview.id}).files},input.files);
+test('all 128 supporting files are exported and remain importable',async t=>{
+ const {skills,importer}=fixture(t),input={name:'many-files',description:'Maximum supporting file count.',instructions:'Read references before acting.',files:Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT},(_,index)=>['references/'+index+'.md','Reference '+index]))};skills.save(input);
+ const exported=exportSkillZip(skills,input.name);assert.equal(storedEntries(exported.data).size,129);const preview=await importer.preview({name:exported.name,data:exported.data});assert.equal(preview.files.length,129);assert.deepEqual({...importer.commit({id:preview.id}).files},input.files);
+});
+
+test('a shell-grown 30-file skill keeps every helper through edit, toggles, export and import',async t=>{
+ const {skills,importer}=fixture(t),initial=Object.fromEntries(Array.from({length:20},(_,index)=>['scripts/helper-'+index+'.mjs','export const value='+index+';\n'])),saved=skills.save({...sample,files:initial}),directory=path.dirname(saved.path),files={...initial};
+ for(let index=20;index<30;index++){const relative='scripts/helper-'+index+'.mjs',text='// 中文 helper '+index+'\nexport const value='+index+';\n';files[relative]=text;fs.writeFileSync(path.join(directory,relative),text);}
+ assert.deepEqual(skills.get(saved.name).files,files);const edited=skills.save({name:saved.name,description:'Updated complete skill',instructions:'Use the included 30 helpers.'});assert.deepEqual(edited.files,files);
+ skills.setEnabled(saved.name,true);skills.setEnabled(saved.name,false);assert.deepEqual(skills.get(saved.name).files,files);const exported=exportSkillZip(skills,saved.name),entries=storedEntries(exported.data);assert.equal(entries.size,31);for(const [relative,text]of Object.entries(files))assert.deepEqual(entries.get(saved.name+'/'+relative),Buffer.from(text));
+ const preview=await importer.preview({name:exported.name,data:exported.data}),restored=importer.commit({id:preview.id});assert.deepEqual(restored.files,files);assert.equal(restored.instructions,edited.instructions);assert.deepEqual(skills.get(saved.name).files,files);
 });
 
 test('export rejects missing, invalid, unmanaged and redirected sources without reading outside managed storage',t=>{
@@ -109,8 +118,8 @@ test('unlisted unsafe content, invalid UTF-8, links and explicit walk limits fai
  const alter=operation=>{saved=skills.save(sample);directory=path.dirname(saved.path);operation();assert.throws(()=>exportSkillZip(skills,sample.name));};
  alter(()=>fs.writeFileSync(path.join(directory,'assets/unlisted.bin'),Buffer.from([255,254,253])));
  alter(()=>fs.writeFileSync(path.join(directory,'assets/unlisted.txt'),'x'.repeat(65537)));
- alter(()=>{for(let index=0;index<15;index++)fs.writeFileSync(path.join(directory,'references','extra-'+index+'.md'),'Extra source.');});
- alter(()=>{for(let index=0;index<129;index++)fs.mkdirSync(path.join(directory,'scripts','empty-'+index));});
+ alter(()=>{for(let index=0;index<SKILL_SUPPORT_FILE_LIMIT;index++)fs.writeFileSync(path.join(directory,'references','extra-'+index+'.md'),'Extra source.');});
+ alter(()=>{for(let index=0;index<SKILL_TREE_ENTRY_LIMIT+1;index++)fs.mkdirSync(path.join(directory,'scripts','empty-'+index));});
  alter(()=>fs.mkdirSync(path.join(directory,'references',...Array.from({length:17},()=> 'nested')),{recursive:true}));
  alter(()=>{const outside=path.join(fixtureDirectory,'outside-directory');fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'private.txt'),'outside fixture');fs.symlinkSync(outside,path.join(directory,'scripts','__pycache__'),process.platform==='win32'?'junction':'dir');});
  alter(()=>{const outside=path.join(fixtureDirectory,'outside-hardlink.txt');fs.writeFileSync(outside,'outside fixture');fs.linkSync(outside,path.join(directory,'references/linked.txt'));});
@@ -119,6 +128,6 @@ test('unlisted unsafe content, invalid UTF-8, links and explicit walk limits fai
 
 test('export validates returned managed shape, collision paths and filename secrets before creating any archive',()=>{
  const normal={...sample,files:{...sample.files}},fileName=relative=>new SkillLibrary({workspace:base}).fileName(relative),fake=value=>({exportSnapshot:()=>value,fileName,containsSecret:value=>value.includes('vault-fixture-value')});
- for(const value of [{...normal,name:'../outside'},{...normal,description:null},{...normal,instructions:''},{...normal,instructions:'\0bad'},{...normal,files:[]},{...normal,files:{'references/check.md':3}},{...normal,files:{'references/vault-fixture-value.md':'safe'}},{...normal,files:{'references/A.md':'a','references/a.md':'b'}},{...normal,files:{'references/path':'file','references/path/file.md':'nested'}},{...normal,files:Object.fromEntries(Array.from({length:21},(_,index)=>['references/'+index+'.md','small']))}])assert.throws(()=>exportSkillZip(fake(value),sample.name));
+ for(const value of [{...normal,name:'../outside'},{...normal,description:null},{...normal,instructions:''},{...normal,instructions:'\0bad'},{...normal,files:[]},{...normal,files:{'references/check.md':3}},{...normal,files:{'references/vault-fixture-value.md':'safe'}},{...normal,files:{'references/A.md':'a','references/a.md':'b'}},{...normal,files:{'references/path':'file','references/path/file.md':'nested'}},{...normal,files:Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT+1},(_,index)=>['references/'+index+'.md','small']))}])assert.throws(()=>exportSkillZip(fake(value),sample.name));
  assert.equal(storedEntries(exportSkillZip(fake({...normal,files:null}),sample.name).data).size,1);
 });

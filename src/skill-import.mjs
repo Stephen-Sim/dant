@@ -1,7 +1,8 @@
 import {randomUUID,createHash} from 'node:crypto';
 import yauzl from 'yauzl';
+import {SKILL_SUPPORT_FILE_LIMIT,SKILL_TREE_ENTRY_LIMIT} from './skill-limits.mjs';
 
-const MAX_ARCHIVE=1024*1024,MAX_FILE=65536,MAX_TOTAL=262144,MAX_ENTRIES=128,TTL=10*60*1000;
+const MAX_ARCHIVE=1024*1024,MAX_FILE=65536,MAX_TOTAL=262144,TTL=10*60*1000;
 const sha=value=>typeof value==='string'&&/^[a-f0-9]{40}$/.test(value);
 const slug=value=>typeof value==='string'&&/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value);
 const rootDoc=/^(?:README\.md|(?:LICENSE|NOTICE)(?:\.(?:txt|md))?)$/;
@@ -48,7 +49,7 @@ function select(files){
  if(candidates.length!==1)throw fail('invalid_skill',candidates.length?'Multiple skills were found. Choose one specific skill directory.':'No SKILL.md was found in the source.');
  const skillPath=candidates[0],prefix=skillPath.slice(0,-8),selected=new Map();
  for(const [name,value]of files)if(name.startsWith(prefix)){const relative=name.slice(prefix.length);if(relative!=='SKILL.md')supported(relative);selected.set(relative,value);}
- if(selected.size>21)throw limited();const paths=new Set([...selected.keys()].map(value=>value.toLowerCase()));for(const file of paths){const parts=file.split('/');for(let count=1;count<parts.length;count++)if(paths.has(parts.slice(0,count).join('/')))throw fail('invalid_skill','The skill contains conflicting file and directory paths.');}return selected;
+ if(selected.size>SKILL_SUPPORT_FILE_LIMIT+1)throw limited();const paths=new Set([...selected.keys()].map(value=>value.toLowerCase()));for(const file of paths){const parts=file.split('/');for(let count=1;count<parts.length;count++)if(paths.has(parts.slice(0,count).join('/')))throw fail('invalid_skill','The skill contains conflicting file and directory paths.');}return selected;
 }
 async function withSignal(promise,signal){
  let abort;try{return await Promise.race([promise,new Promise((resolve,reject)=>{abort=()=>reject(remoteFailure());signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();})]);}finally{signal.removeEventListener('abort',abort);}
@@ -80,7 +81,7 @@ async function unzip(data,signal){
    const cleanup=()=>signal.removeEventListener('abort',abort);zip.once('end',()=>{cleanup();resolve();});zip.once('error',()=>{cleanup();reject(fail('invalid_skill','The ZIP archive is invalid or unsupported.'));});
    zip.on('entry',entry=>{
     try{
-     if(++count>MAX_ENTRIES||zip.entryCount>MAX_ENTRIES)throw limited();const directory=entry.fileName.endsWith('/'),name=directory?entry.fileName.slice(0,-1):entry.fileName;
+     if(++count>SKILL_TREE_ENTRY_LIMIT||zip.entryCount>SKILL_TREE_ENTRY_LIMIT)throw limited();const directory=entry.fileName.endsWith('/'),name=directory?entry.fileName.slice(0,-1):entry.fileName;
      if(!safePath(name)||names.has(name.toLowerCase()))throw fail('invalid_skill','The ZIP contains unsafe or duplicate paths.');names.add(name.toLowerCase());
      const mode=(entry.externalFileAttributes>>>16)&0xf000;if(entry.isEncrypted()||(mode&&mode!==(directory?0x4000:0x8000)))throw fail('unsupported_file','Encrypted archives, links, and special files are not supported.');
      if(!Number.isSafeInteger(entry.uncompressedSize)||entry.uncompressedSize<0||entry.uncompressedSize>MAX_FILE||!Number.isSafeInteger(entry.compressedSize)||entry.compressedSize<0||entry.compressedSize>MAX_ARCHIVE)throw limited();
@@ -114,8 +115,8 @@ export class SkillImporter{
   // revision prefix, then freeze all reads to its immutable commit/tree/blob IDs.
   for(const candidate of candidates){try{const commits=await this.request(base+'/commits?sha='+encodeURIComponent(candidate.ref)+'&per_page=1',signal);if(!Array.isArray(commits)||commits.length!==1)throw remoteFailure();commit=commits[0];directory=candidate.directory;break;}catch(error){if(error.code!=='not_found')throw error;}}
   if(!commit)throw fail('not_found','The public GitHub repository, revision, or skill was not found.',404);if(!sha(commit.sha)||!sha(commit?.commit?.tree?.sha))throw remoteFailure();let treeId=commit.commit.tree.sha;
-  for(const segment of directory?directory.split('/'):[]){const tree=await this.request(base+'/git/trees/'+treeId,signal,MAX_ARCHIVE);if(tree?.truncated!==false||!Array.isArray(tree.tree)||tree.tree.length>1000)throw limited();const item=tree.tree.find(item=>item.path===segment);if(!item||item.type!=='tree'||item.mode!=='040000'||!sha(item.sha))throw fail('not_found','The selected GitHub skill directory was not found.',404);treeId=item.sha;}
-  const tree=await this.request(base+'/git/trees/'+treeId+'?recursive=1',signal,MAX_ARCHIVE);if(tree?.truncated!==false||!Array.isArray(tree.tree)||tree.tree.length>MAX_ENTRIES)throw limited();
+  for(const segment of directory?directory.split('/'):[]){const tree=await this.request(base+'/git/trees/'+treeId,signal,MAX_ARCHIVE);if(tree?.truncated!==false||!Array.isArray(tree.tree)||tree.tree.length>SKILL_TREE_ENTRY_LIMIT)throw limited();const item=tree.tree.find(item=>item.path===segment);if(!item||item.type!=='tree'||item.mode!=='040000'||!sha(item.sha))throw fail('not_found','The selected GitHub skill directory was not found.',404);treeId=item.sha;}
+  const tree=await this.request(base+'/git/trees/'+treeId+'?recursive=1',signal,MAX_ARCHIVE);if(tree?.truncated!==false||!Array.isArray(tree.tree)||tree.tree.length>SKILL_TREE_ENTRY_LIMIT)throw limited();
   const files=new Map(),names=new Set();for(const entry of tree.tree){if(!safePath(entry.path)||names.has(entry.path.toLowerCase()))throw remoteFailure();names.add(entry.path.toLowerCase());if(entry.type==='tree'&&entry.mode==='040000')continue;files.set(entry.path,entry);}
   const selected=select(files),result=new Map();let total=0;
   for(const [name,entry]of selected){if(entry.type!=='blob'||!['100644','100755'].includes(entry.mode)||!sha(entry.sha))throw fail('unsupported_file','GitHub links, submodules, and special files are not supported.');if(!Number.isSafeInteger(entry.size)||entry.size<0||entry.size>MAX_FILE)throw limited();total+=entry.size;if(total>MAX_TOTAL+MAX_FILE)throw limited();}
@@ -135,7 +136,7 @@ export class SkillImporter{
    else{if(!Buffer.isBuffer(input.data)||input.data.length>MAX_ARCHIVE)throw limited();source=typeof input.name==='string'?input.name.replaceAll('\\','/').split('/').at(-1):'';if(source==='SKILL.md'){if(input.data.length>MAX_FILE)throw limited();files=new Map([['SKILL.md',input.data]]);}else if(/\.zip$/i.test(source))files=await unzip(input.data,controller.signal);else throw fail('unsupported_file','Choose a ZIP archive or a file named SKILL.md.');if(/[\x00-\x1f\x7f]/.test(source)||source.length>180)throw fail('invalid_source','The local skill file name is invalid.');}
    const candidate=manifest(files.get('SKILL.md'),source),support=Object.create(null);let total=Buffer.byteLength(candidate.instructions);const listed=[{path:'SKILL.md',size:files.get('SKILL.md').length}];
    for(const [name,data]of files)if(name!=='SKILL.md'){supported(name);if(data.length>MAX_FILE)throw limited();const text=plain(data);support[name]=text;total+=Buffer.byteLength(text);listed.push({path:name,size:Buffer.byteLength(text)});}
-   if(total>MAX_TOTAL||Object.keys(support).length>20)throw limited();for(const value of [candidate.name,candidate.description,candidate.instructions,...Object.keys(support),...Object.values(support)])if(this.skills?.containsSecret?.(value))throw fail('invalid_skill','Keep credentials in the credential vault, not in imported skills.');
+   if(total>MAX_TOTAL||Object.keys(support).length>SKILL_SUPPORT_FILE_LIMIT)throw limited();for(const value of [candidate.name,candidate.description,candidate.instructions,...Object.keys(support),...Object.values(support)])if(this.skills?.containsSecret?.(value))throw fail('invalid_skill','Keep credentials in the credential vault, not in imported skills.');
    if(this.closed||controller.signal.aborted)throw remoteFailure();const id=randomUUID(),expiresAt=this.now()+TTL,value={...candidate,files:support};this.previews.set(id,{value,source,expiresAt});return {id,source,...candidate,files:listed,expiresAt};
   }finally{clearTimeout(timer);this.controllers.delete(controller);this.inflight--;}
  }

@@ -6,6 +6,7 @@ import {EventEmitter} from 'node:events';
 import {randomUUID} from 'node:crypto';
 import {createWorkerApp} from '../src/server.mjs';
 import {Store} from '../src/store.mjs';
+import {SKILL_SUPPORT_FILE_LIMIT} from '../src/skill-limits.mjs';
 
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
 class Worker extends EventEmitter{
@@ -146,6 +147,20 @@ test('recorded voice API preserves original playback while recognized speech rea
  const snapshot=await api('/state').then(response=>response.json());assert.equal(JSON.stringify(snapshot).includes(recognized),false);assert.equal(JSON.stringify(store.state).includes(recognized),false);
  const playback=await api('/files/'+file.id);assert.equal(playback.headers.get('content-type'),'audio/webm');assert.deepEqual(Buffer.from(await playback.arrayBuffer()),audio);
  await engine.handle({method:'turn/completed',params:{threadId:'api-thread',turn:{id:engine.active.turnId,status:'completed'}}});
+});
+
+test('editing a skill grown beyond twenty helpers preserves every current file and the shared conversation',async t=>{
+ const {api,skills,store,worker}=await fixture(t),files=Object.fromEntries(Array.from({length:20},(_,index)=>['scripts/helper-'+index+'.mjs','export const value = '+index+';\n'])),saved=skills.save({name:'growing-skill',description:'Growing source tree',instructions:'Read the helpers.',files}),directory=path.dirname(saved.path),marker=fs.readFileSync(path.join(directory,'.dant-managed.json')),before=structuredClone(store.state.messages);
+ for(let index=20;index<30;index++){const name='scripts/helper-'+index+'.mjs',value='export const value = '+index+';\n';files[name]=value;fs.writeFileSync(path.join(directory,name),value);}
+ const read=await api('/skills/growing-skill',undefined,'GET');assert.equal(read.status,200);const draft=await read.json();assert.deepEqual(draft.files,files);assert.deepEqual(fs.readFileSync(path.join(directory,'.dant-managed.json')),marker,'opening Edit is read-only');
+ const response=await api('/skills/growing-skill',{description:'Updated description',instructions:draft.instructions,files:draft.files,enabled:true},'PATCH');assert.equal(response.status,200);assert.deepEqual((await response.json()).files,files);assert.deepEqual(skills.get('growing-skill').files,files);for(const [name,value] of Object.entries(files))assert.equal(fs.readFileSync(path.join(directory,name),'utf8'),value);
+ assert.deepEqual(store.state.messages,before);assert.equal(worker.calls.some(call=>call.method==='turn/start'),false);
+});
+
+test('skill read count failures expose only a safe size code and preserve the complete directory',async t=>{
+ const {api,skills}=await fixture(t),files=Object.fromEntries(Array.from({length:SKILL_SUPPORT_FILE_LIMIT},(_,index)=>['references/'+index+'.txt','Reference '+index])),saved=skills.save({name:'bounded-skill',description:'Bounded source tree',instructions:'Read references.',files}),directory=path.dirname(saved.path),marker=fs.readFileSync(path.join(directory,'.dant-managed.json'));
+ fs.writeFileSync(path.join(directory,'references/new.txt'),'Keep this authored helper');
+ const response=await api('/skills/bounded-skill',undefined,'GET');assert.equal(response.status,400);assert.deepEqual(await response.json(),{error:'The skill action could not be completed. Existing skills were preserved.',code:'size_limit'});assert.deepEqual(fs.readFileSync(path.join(directory,'.dant-managed.json')),marker);assert.equal(fs.readFileSync(path.join(directory,'references/new.txt'),'utf8'),'Keep this authored helper');
 });
 
 test('skill import previews are read-only, commits refresh discovery and name collisions preserve both previews and existing skills',async t=>{

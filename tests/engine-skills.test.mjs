@@ -8,6 +8,8 @@ import {Store} from '../src/store.mjs';
 import {Engine,dynamicTools} from '../src/engine.mjs';
 import {SkillLibrary} from '../src/skill-library.mjs';
 import {LocalWorker} from '../src/local-worker.mjs';
+import {VOICE_TOOLS} from '../src/voice.mjs';
+import {SKILL_SUPPORT_FILE_LIMIT} from '../src/skill-limits.mjs';
 
 function fixture(t){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dant-skill-engine-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
@@ -27,6 +29,10 @@ test('discovery failure does not misreport a durable saved skill or run arbitrar
  const {engine,worker}=fixture(t);worker.request=async()=>{throw Error('Discovery unavailable');};const saved=await engine.tool('skill_save',{name:'manual-check',description:'Manual verification',instructions:'Use the documented procedure.'});
  assert.equal(saved.saved,true);assert.equal(saved.discovery.refreshed,false);assert.ok(fs.existsSync(saved.skill.path));assert.equal(engine.loaded,false);
  const active=engine.active;engine.active=null;await assert.rejects(engine.tool('skill_list',{}),/accepted active task/);engine.active=active;await assert.rejects(engine.tool('skill_get',{name:'manual-check'},{owner:'ended-call',isCurrent:()=>false}),/no longer belongs/);
+});
+
+test('text and voice skill schemas admit complete thirty-file skills under the shared 128-file limit',async t=>{
+ const {engine}=fixture(t),files=Object.fromEntries(Array.from({length:30},(_,index)=>[`scripts/check-${index}.py`,`print(${index})\n`]));assert.equal(SKILL_SUPPORT_FILE_LIMIT,128);assert.equal(dynamicTools.find(tool=>tool.name==='skill_save').inputSchema.properties.files.maxProperties,SKILL_SUPPORT_FILE_LIMIT);assert.equal(VOICE_TOOLS.find(tool=>tool.name==='skill_save').parameters.properties.files.maxProperties,SKILL_SUPPORT_FILE_LIMIT);const saved=await engine.tool('skill_save',{name:'complete-skill',description:'All supporting helpers.',instructions:'Use the packaged helpers.',files});assert.deepEqual(saved.skill.files,files);assert.deepEqual((await engine.tool('skill_get',{name:'complete-skill'})).files,files);
 });
 
 test('LocalWorker passes the bridge token only through process environment and injects fresh skill indices',async t=>{

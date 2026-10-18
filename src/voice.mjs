@@ -6,6 +6,7 @@ import {buildCallContext,buildMemoryContext,LiveContextQueue} from './call-conte
 import {isReaction} from './reactions.mjs';
 import {buildCallInput} from './call-input.mjs';
 import {SCHEDULE_SAVE_SCHEMA,SCHEDULE_ID_SCHEMA,SCHEDULE_INSTRUCTIONS} from './scheduler.mjs';
+import {SKILL_SUPPORT_FILE_LIMIT} from './skill-limits.mjs';
 
 // https://developers.openai.com/api/docs/guides/voice-webrtc?voice-api=realtime
 // https://developers.openai.com/api/docs/guides/voice-server-controls?voice-api=realtime
@@ -26,7 +27,7 @@ export const VOICE_TOOLS=Object.freeze([
  defineTool('credential_store','Save an authorized credential in the encrypted vault. Keep secret values out of chat, memory and skills.',{id:{type:'string',minLength:1,maxLength:128},name:{type:'string',minLength:1,maxLength:100},service:{type:'string',maxLength:200},username:{type:'string',maxLength:300},secret:{type:'string',minLength:1,maxLength:16384}},['name','service','username','secret']),
  defineTool('skill_list','List dant-managed reusable skills and their enabled state.'),
  defineTool('skill_get','Read a dant-managed skill before using or updating it.',{name:{type:'string',minLength:1,maxLength:64}},['name']),
- defineTool('skill_save','Create or update a reusable skill in the VM workspace. Never include credentials. Saving does not mean its helper scripts were tested.',{name:{type:'string',minLength:1,maxLength:64},description:{type:'string',minLength:1,maxLength:1000},instructions:{type:'string',minLength:1,maxLength:49152},enabled:{type:'boolean'},files:{type:'object',maxProperties:20,additionalProperties:{type:'string',maxLength:65536}}},['name','description','instructions']),
+ defineTool('skill_save','Create or update a reusable skill in the VM workspace. Never include credentials. Saving does not mean its helper scripts were tested.',{name:{type:'string',minLength:1,maxLength:64},description:{type:'string',minLength:1,maxLength:1000},instructions:{type:'string',minLength:1,maxLength:49152},enabled:{type:'boolean'},files:{type:'object',maxProperties:SKILL_SUPPORT_FILE_LIMIT,additionalProperties:{type:'string',maxLength:65536}}},['name','description','instructions']),
  defineTool('send_file','Deliver an existing completed file from the Ubuntu VM to the same chat.',{path:{type:'string',maxLength:4096,minLength:1}},['path']),
  defineTool('schedule_list','List saved one-time tasks, their IDs, intended timezones and state.'),
  defineTool('schedule_save','Create or manage a one-time scheduled task only when the human requests it. New tasks need text, an ISO time with explicit UTC offset and IANA timeZone; id updates, enabled:false pauses. Saving never executes it now or creates recurrence.',SCHEDULE_SAVE_SCHEMA),
