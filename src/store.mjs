@@ -7,6 +7,7 @@ const pauseBuffer=new Int32Array(new SharedArrayBuffer(4));
 export const TASK_STATES=Object.freeze(['draft','accepted','queued','running','waiting_user','pausing','paused','failed','review','completed']);
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const progressError=(status,message)=>Object.assign(Error(message),{status});
+const workError=(code,message)=>Object.assign(Error(message),{code});
 const dismissibleStates=new Set(['continuing','paused','failed','review','completed']);
 const progressPriorities=new Set(['high','normal','low']);
 const unconfirmedProgress=entry=>entry?.unknownOutcome===true||['unknown','submitting'].includes(entry?.submission);
@@ -25,6 +26,7 @@ export class Store {
       const restored={id:entry.id,turnId:entry.turnId,turnIds,messageId:typeof entry.messageId==='string'?entry.messageId:null,source:entry.source,title,plan,status,startedAt:entry.startedAt,updatedAt:entry.updatedAt};
       if(typeof entry.progressDismissedAt==='number'&&entry.progressDismissedAt>0)restored.progressDismissedAt=entry.progressDismissedAt;
       if(Object.hasOwn(entry,'progressPriority'))restored.progressPriority=progressPriorities.has(entry.progressPriority)?entry.progressPriority:'normal';
+      if(entry.provisional===true)restored.provisional=true;
       if(typeof entry.executionEndedAt==='number'&&Number.isFinite(entry.executionEndedAt)&&entry.executionEndedAt>0)restored.executionEndedAt=entry.executionEndedAt;
       if(['running','pausing','unknown'].includes(restored.status)||restored.status==='waiting_user'&&!restored.executionEndedAt){restored.status='paused';restored.pauseReason='restart';restored.updatedAt=Date.now();}else if(entry.pauseReason)restored.pauseReason=entry.pauseReason;
       return [restored];}catch{return [];}
@@ -68,17 +70,19 @@ export class Store {
     const next=[...records];next[index]={...next[index]};delete next[index].progressDismissedAt;this.state.workTasks=next;
     try{this.save();}catch(error){this.state.workTasks=records;throw error;}
   }
-  registerWork({workId,turnId,messageId=null,source='chat',title,plan,startedAt,status='running'}){
-    if(typeof turnId!=='string'||!turnId||turnId.length>256||!['chat','voice'].includes(source))throw Error('Registered work requires a real owned turn.');
-    const safe=taskPlanInput({title,steps:plan?.steps}),before=this.state.workTasks,current=before.findIndex(entry=>entry.turnId===turnId),index=workId===undefined?current:before.findIndex(entry=>entry.id===workId),previous=before[index],now=Date.now();
-    if(workId!==undefined&&(!previous||typeof workId!=='string'))throw Error('The task to continue was not found.');
-    if(current>=0&&index!==current)throw Error('This turn already belongs to a different task.');
-    if(previous&&previous.turnId!==turnId){if(!['continuing','waiting_user','paused'].includes(previous.status))throw Error('Only inactive unfinished work can continue in a different turn.');if(previous.turnIds?.includes(turnId))throw Error('A previous task turn cannot replace its current turn.');}
-    if(!previous&&before.some(entry=>entry.turnIds?.includes(turnId)))throw Error('This turn already belongs to a different task.');
+  registerWork({workId,turnId,messageId=null,source='chat',title,plan,startedAt,status='running',observed=false}){
+    if(typeof turnId!=='string'||!turnId||turnId.length>256||!['chat','voice'].includes(source))throw workError('work_stale_turn','Registered work requires a real owned turn.');
+    const safe=taskPlanInput({title,steps:plan?.steps}),before=this.state.workTasks,current=before.findIndex(entry=>entry.turnId===turnId),index=workId===undefined?current:before.findIndex(entry=>entry.id===workId),previous=before[index],automatic=before[current],observing=observed===true,now=Date.now();
+    if(workId!==undefined&&(!previous||typeof workId!=='string'))throw workError('work_not_found','The task to continue was not found.');
+    const supersede=current>=0&&index!==current&&!observing&&automatic.provisional===true&&['running','waiting_user'].includes(automatic.status)&&Array.isArray(automatic.turnIds)&&automatic.turnIds.length===1&&automatic.turnIds[0]===turnId;
+    if(current>=0&&index!==current&&!supersede)throw workError('work_conflict','This turn already belongs to a different task.');
+    if(previous&&previous.turnId!==turnId){if(!['continuing','waiting_user','paused','review'].includes(previous.status))throw workError('work_not_continuable','Only inactive unfinished work can continue in a different turn.');if(previous.turnIds?.includes(turnId))throw workError('work_stale_turn','A previous task turn cannot replace its current turn.');}
+    if(!previous&&before.some(entry=>entry.turnIds?.includes(turnId)))throw workError('work_stale_turn','This turn already belongs to a different task.');
     const turnIds=[...new Set([...(previous?.turnIds||[]),...(previous?[previous.turnId]:[]),turnId])];
     const priority=this.state.messages.find(message=>message.id===messageId&&message.role==='user')?.progressPriority;
-    const record={...(previous||{id:randomUUID(),source,startedAt:typeof startedAt==='number'&&Number.isFinite(startedAt)&&startedAt>0?startedAt:now,...(progressPriorities.has(priority)?{progressPriority:priority}:{})}),turnId,turnIds,messageId:previous?.messageId||messageId||null,...safe,status:['running','waiting_user','pausing','unknown'].includes(status)?status:'running',updatedAt:now};
-    delete record.progressDismissedAt;delete record.pauseReason;delete record.executionEndedAt;const next=[...before];if(index<0)next.push(record);else next[index]=record;this.state.workTasks=next.slice(-300);
+    const record={...(previous||{id:randomUUID(),source,startedAt:typeof startedAt==='number'&&Number.isFinite(startedAt)&&startedAt>0?startedAt:now,...(progressPriorities.has(priority)?{progressPriority:priority}:{}),...(observing?{provisional:true}:{})}),turnId,turnIds,messageId:previous?.messageId||messageId||null,...safe,status:['running','waiting_user','pausing','unknown'].includes(status)?status:'running',updatedAt:now};
+    if(!observing||record.provisional!==true)delete record.provisional;
+    delete record.progressDismissedAt;delete record.pauseReason;delete record.executionEndedAt;let next=[...before];if(index<0)next.push(record);else next[index]=record;if(supersede)next=next.filter((entry,position)=>position!==current);this.state.workTasks=next.slice(-300);
     try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;
   }
   updateRegisteredWork(turnId,{status,plan,executionEnded=false}={}){

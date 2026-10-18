@@ -20,7 +20,7 @@ def tool(name, description, properties, required=()):
 NUMBER = {'type': 'integer', 'minimum': 0, 'maximum': 4096}
 TEXT = {'type': 'string'}
 TOOLS = [
-    tool('task_plan', 'Register entrusted work before execution and wait for its saved acknowledgement. Reuse the returned workId for related follow-ups across turns, updating the actual title and steps. Decide whether a request belongs to that task; ordinary conversation creates no task. A reply does not finish unfinished work. This never starts execution, grants permission, or completes it.', {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'title': {'type': 'string', 'minLength': 1, 'maxLength': 240}, 'steps': {'type': 'array', 'minItems': 1, 'maxItems': 128, 'items': {'type': 'object', 'properties': {'step': {'type': 'string', 'minLength': 1, 'maxLength': 5000}, 'status': {'type': 'string', 'enum': ['pending', 'inProgress', 'completed']}}, 'required': ['step', 'status'], 'additionalProperties': False}}}, ['title', 'steps']),
+    tool('task_plan', 'Register entrusted work before execution and wait for its saved acknowledgement. Reuse the returned workId for related follow-ups across turns, updating the actual title and steps, including human-requested revisions of unaccepted review results. Accepted completed tasks stay closed. Decide whether a request belongs to that task; ordinary conversation creates no task. A reply does not finish unfinished work. This never starts execution, grants permission, or completes it.', {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'title': {'type': 'string', 'minLength': 1, 'maxLength': 240}, 'steps': {'type': 'array', 'minItems': 1, 'maxItems': 128, 'items': {'type': 'object', 'properties': {'step': {'type': 'string', 'minLength': 1, 'maxLength': 5000}, 'status': {'type': 'string', 'enum': ['pending', 'inProgress', 'completed']}}, 'required': ['step', 'status'], 'additionalProperties': False}}}, ['title', 'steps']),
     tool('screenshot', 'Observe the current VM desktop.', {}),
     tool('click', 'Click the VM desktop at screenshot coordinates.', {'x': NUMBER, 'y': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['x', 'y']),
     tool('drag', 'Drag on the VM desktop.', {'startX': NUMBER, 'startY': NUMBER, 'endX': NUMBER, 'endY': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['startX', 'startY', 'endX', 'endY']),
@@ -52,6 +52,14 @@ class NoCredentialRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+TASK_PLAN_REJECTIONS = {
+    'work_not_found': 'Task progress request rejected: the specified work ID was not found. Check Work progress and use its exact workId.',
+    'work_conflict': 'Task progress request rejected: this turn is already bound to a different current task. Reuse that task\'s workId.',
+    'work_not_continuable': 'Task progress request rejected: this task cannot be continued while completed, active, failed, pausing, or unconfirmed. Check its saved state; do not create a replacement task to bypass this rejection.',
+    'work_stale_turn': 'Task progress request rejected: this historical or inactive turn cannot replace the current task owner. Refresh the task context before updating its plan.',
+}
+
+
 def credential_bridge(name, args):
     token = os.environ.get('DANT_CREDENTIAL_BRIDGE_TOKEN', '')
     if not token or len(token) > 256 or any(ord(char) < 33 or ord(char) > 126 for char in token):
@@ -72,10 +80,24 @@ def credential_bridge(name, args):
                 raise ValueError('Credential result exceeds its size limit')
             return json.loads(raw)
     except urllib.error.HTTPError as error:
+        if name == 'task_plan':
+            message = f'Task progress request was rejected (HTTP {error.code})'
+            if error.code == 400:
+                try:
+                    raw = error.read(4097)
+                    body = json.loads(raw.decode('utf-8')) if len(raw) <= 4096 else None
+                    code = body.get('code') if isinstance(body, dict) else None
+                    if isinstance(code, str):
+                        message = TASK_PLAN_REJECTIONS.get(code, message)
+                except Exception:
+                    pass
+            raise ValueError(message) from None
         raise ValueError(f'The credential request was rejected (HTTP {error.code})') from None
     except (OSError, ValueError):
         # Do not include request bodies, response bodies, tokens, or credentials
         # in diagnostics. Writes with a lost response must not be blindly retried.
+        if name == 'task_plan':
+            raise ValueError('The task progress result is unconfirmed. Do not retry a task progress write automatically.') from None
         raise ValueError('The private credential result is unconfirmed. Do not retry a credential write automatically.') from None
 
 def invoke(name, args, output_dir):

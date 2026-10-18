@@ -18,6 +18,7 @@ test('task plan continuations use an explicit work ID rather than interpreting a
  const parsed=taskPlanInput({...plan(),workId:'stable-work'});assert.equal(parsed.workId,'stable-work');assert.equal(TASK_PLAN_SCHEMA.workId.type,'string');assert.deepEqual(parsed.plan.steps,steps());
  for(const workId of [null,7,'','with spaces','x'.repeat(129)])assert.throws(()=>taskPlanInput({...plan(),workId}),/task plan/);
  assert.equal(Object.hasOwn(taskPlanInput(plan()),'workId'),false);
+ assert.throws(()=>taskPlanInput({...plan(),observed:true}),/task plan/,'observer provenance is not a model-controlled argument');
 });
 
 test('unfinished registered work remains continuing after a successful executor turn without claiming an executor is active',()=>{
@@ -35,12 +36,59 @@ test('unrelated work with the same title creates a separate task and never steal
 });
 
 test('task continuation rejects unknown IDs, conflicting owners, finalized tasks and historical-turn reuse',t=>{
- const {store}=storeFixture(t),first=register(store,'first');assert.throws(()=>register(store,'next',{workId:'unknown'}),/not found/);for(const status of ['running','unknown','pausing','review','completed','failed']){store.updateRegisteredWork('first',{status});assert.throws(()=>register(store,'next',{workId:first.id}),/inactive unfinished/);}
+ const {store}=storeFixture(t),first=register(store,'first');assert.throws(()=>register(store,'next',{workId:'unknown'}),error=>error.code==='work_not_found');for(const status of ['running','unknown','pausing','completed','failed']){store.updateRegisteredWork('first',{status});assert.throws(()=>register(store,'next',{workId:first.id}),error=>error.code==='work_not_continuable');}
  store.updateRegisteredWork('first',{status:'paused'});const second=register(store,'second',{workId:first.id});const other=register(store,'other');assert.throws(()=>register(store,'other',{workId:first.id}),/different task/);assert.throws(()=>register(store,'second',{workId:other.id}),/different task/);store.updateRegisteredWork('second',{status:'continuing'});assert.throws(()=>register(store,'first',{workId:first.id}),/previous task turn/);assert.throws(()=>register(store,'first'),/different task/);assert.equal(store.state.workTasks[0].turnId,second.turnId);assert.equal(store.state.workTasks.length,2);
 });
 
 test('continuation rebinding rolls back atomically on save failure and continuing history survives restart',t=>{
  const {store,dir}=storeFixture(t),first=register(store,'first',{startedAt:100});store.updateRegisteredWork('first',{status:'continuing'});const before=structuredClone(store.state.workTasks),save=store.save;store.save=()=>{throw Error('Disk is full');};assert.throws(()=>register(store,'second',{workId:first.id}),/Disk is full/);assert.deepEqual(store.state.workTasks,before);store.save=save;const restored=new Store(dir);assert.equal(restored.state.workTasks[0].status,'continuing');assert.deepEqual(restored.state.workTasks[0].turnIds,['first']);assert.equal(restored.state.workTasks[0].startedAt,100);const next=register(restored,'second',{workId:first.id});assert.equal(next.id,first.id);assert.equal(next.status,'running');assert.equal(new Store(dir).state.workTasks[0].status,'paused');
+});
+
+test('a verified result awaiting review can continue with the same stable identity before acceptance, including after restart',t=>{
+ const {store,dir}=storeFixture(t),message=store.add({role:'user',text:'Keep this request',status:'review',turnId:'verified-turn'}),first=register(store,'verified-turn',{messageId:message.id,startedAt:100});store.setProgressPriority(first.id,'work','high');store.updateRegisteredWork(first.turnId,{status:'review',plan:{steps:steps().map(step=>({...step,status:'completed'}))},executionEnded:true});
+ const restored=new Store(dir),review=restored.state.workTasks[0],beforeMessages=structuredClone(restored.state.messages);assert.equal(review.status,'review');
+ const continued=register(restored,'related-followup',{workId:first.id,title:'Simplify the description further',startedAt:900,source:'chat'});assert.equal(continued.id,first.id);assert.equal(continued.startedAt,100);assert.equal(continued.messageId,message.id);assert.equal(continued.source,'voice');assert.equal(continued.progressPriority,'high');assert.deepEqual(continued.turnIds,['verified-turn','related-followup']);assert.equal(continued.executionEndedAt,undefined);assert.equal(continued.status,'running');assert.equal(restored.state.workTasks.length,1);assert.deepEqual(restored.state.messages,beforeMessages);
+ restored.updateRegisteredWork(continued.turnId,{status:'completed'});assert.throws(()=>register(restored,'after-acceptance',{workId:continued.id}),error=>error.code==='work_not_continuable');
+});
+
+test('only automatic first registration is provisional and explicit registration removes observer provenance',t=>{
+ const {store}=storeFixture(t),automatic=register(store,'observed',{observed:true});assert.equal(automatic.provisional,true);
+ const updated=register(store,'observed',{observed:true,title:'Updated observed plan'});assert.equal(updated.provisional,true);assert.equal(updated.id,automatic.id);
+ const explicit=register(store,'observed',{title:'Explicitly registered task'});assert.equal(explicit.provisional,undefined);assert.equal(explicit.id,automatic.id);assert.equal(register(store,'observed',{observed:true}).provisional,undefined);
+ assert.equal(register(store,'not-a-boolean',{observed:'true'}).provisional,undefined);assert.equal(register(store,'ordinary').provisional,undefined);
+});
+
+test('explicit continuation atomically supersedes only its own single-turn provisional plan and preserves the older task identity',t=>{
+ for(const provisionalStatus of ['running','waiting_user']){
+  const {store}=storeFixture(t),older=register(store,'original',{startedAt:100,messageId:'original-message'});store.setProgressPriority(older.id,'work','low');store.updateRegisteredWork('original',{status:'review',plan:{steps:steps().map(step=>({...step,status:'completed'}))},executionEnded:true});const unrelated=register(store,'unrelated'),automatic=register(store,'current',{observed:true,status:provisionalStatus,startedAt:900});store.setProgressPriority(automatic.id,'work','high');
+  const continued=register(store,'current',{workId:older.id,title:'Continue the original entrusted work',startedAt:900});assert.equal(continued.id,older.id);assert.deepEqual(continued.turnIds,['original','current']);assert.equal(continued.startedAt,100);assert.equal(continued.messageId,'original-message');assert.equal(continued.progressPriority,'low');assert.equal(continued.provisional,undefined);assert.equal(continued.executionEndedAt,undefined);assert.equal(continued.status,'running');assert.deepEqual(store.state.workTasks.map(record=>record.id),[older.id,unrelated.id]);assert.equal(store.state.workTasks[1],unrelated);assert.equal(store.updateRegisteredWork('original',{status:'failed'}),null);
+ }
+});
+
+test('failed provisional supersession restores both records, provenance and disk bytes before a retry can succeed',t=>{
+ const {store}=storeFixture(t),older=register(store,'old',{startedAt:100});store.updateRegisteredWork('old',{status:'review'});const automatic=register(store,'current',{observed:true}),records=store.state.workTasks,before=structuredClone(records),saved=fs.readFileSync(store.file),save=store.save;
+ store.save=()=>{throw Error('Storage unavailable');};assert.throws(()=>register(store,'current',{workId:older.id}),/Storage unavailable/);assert.equal(store.state.workTasks,records);assert.deepEqual(store.state.workTasks,before);assert.equal(store.state.workTasks.find(record=>record.id===automatic.id).provisional,true);assert.deepEqual(fs.readFileSync(store.file),saved);store.save=save;
+ const continued=register(store,'current',{workId:older.id});assert.equal(continued.id,older.id);assert.equal(store.state.workTasks.length,1);assert.equal(continued.provisional,undefined);
+});
+
+test('provisional replacement cannot steal explicit, historical, inactive or uncertain current records',t=>{
+ for(const patch of [{provisional:undefined},{provisional:false},{provisional:'true'},{turnIds:['prior','current']},...['paused','review','failed','unknown','pausing','completed','continuing'].map(status=>({status}))]){
+  const {store}=storeFixture(t),older=register(store,'old');store.updateRegisteredWork('old',{status:'review'});const current=register(store,'current',{observed:true});Object.assign(current,patch);const before=structuredClone(store.state.workTasks);
+  assert.throws(()=>register(store,'current',{workId:older.id}),error=>error.code==='work_conflict');assert.deepEqual(store.state.workTasks,before);
+ }
+ const {store}=storeFixture(t),older=register(store,'old');store.updateRegisteredWork('old',{status:'review'});register(store,'current',{observed:true});const before=structuredClone(store.state.workTasks);assert.throws(()=>register(store,'current',{workId:older.id,observed:true}),error=>error.code==='work_conflict');assert.deepEqual(store.state.workTasks,before);
+});
+
+test('a provisional current record is preserved when its requested continuation target is absent, live, unknown or accepted',t=>{
+ for(const status of ['running','unknown','pausing','failed','completed']){
+  const {store}=storeFixture(t),older=register(store,'old');store.updateRegisteredWork('old',{status});register(store,'current',{observed:true});const before=structuredClone(store.state.workTasks);assert.throws(()=>register(store,'current',{workId:older.id}),error=>error.code==='work_not_continuable');assert.deepEqual(store.state.workTasks,before);
+ }
+ const {store}=storeFixture(t);register(store,'current',{observed:true});const before=structuredClone(store.state.workTasks);assert.throws(()=>register(store,'current',{workId:'private-unknown-id'}),error=>error.code==='work_not_found'&&!error.message.includes('private-unknown-id'));assert.deepEqual(store.state.workTasks,before);assert.throws(()=>register(store,''),error=>error.code==='work_stale_turn');
+});
+
+test('restart retains only a strict true provisional flag and cannot make a historical turn the current owner again',t=>{
+ const {store,dir}=storeFixture(t),ids=[];for(const provisional of [true,false,'true',1,{},[],undefined]){const record=register(store,'turn-'+ids.length);record.provisional=provisional;ids.push(record.id);}store.save();const restored=new Store(dir);for(const [index,id] of ids.entries())assert.equal(restored.state.workTasks.find(record=>record.id===id).provisional,index===0?true:undefined);assert.equal(restored.state.workTasks[0].status,'paused');
+ const older=register(restored,'anchor');restored.updateRegisteredWork('anchor',{status:'review'});const next=register(restored,'latest',{workId:older.id});restored.updateRegisteredWork('latest',{status:'review'});assert.throws(()=>register(restored,'anchor',{workId:next.id}),error=>error.code==='work_stale_turn');assert.throws(()=>register(restored,'anchor'),error=>error.code==='work_stale_turn');
 });
 
 test('historical task messages cannot resume an older execution, including an entire mixed resume batch',t=>{

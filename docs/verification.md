@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.5 task review continuation follow-up
+
+Read-only inspection of the existing VM conversation confirmed that exact, previously saved work IDs were rejected with HTTP 400 when related follow-ups tried to revise unaccepted review results. Creating a new record and updating that same turn succeeded. This was a continuation-state restriction, separate from the skill file-count error below. No live task, call, runtime or stored record was changed during diagnosis.
+
+Unaccepted review results can now continue under their original work ID, preserving start time, priority, source and turn history. A public plan first observed in a new turn is provisional; explicit continuation can atomically supersede only that same turn's single-turn provisional record. Explicit ownership, accepted completion, uncertain/live targets and historical-turn protections remain. Failed saves roll back both records, and the model cannot supply observer provenance. Conversation references include up to 20 unaccepted review results without starting work. Private task-plan errors expose four fixed safe codes and bounded actionable MCP messages; credential errors remain separate and no retry is added.
+
+The final local JavaScript coverage run passed **1,256 tests, zero failures and zero skips**. Coverage is **98.79% lines, 91.18% branches and 91.69% functions**; all configured gates passed. All **56 Python VM/MCP tests**, seven separate version/coverage checks and 102 local documentation links passed. Lifecycle checks cover chat/native ownership, review revisions, public-plan ordering, stable message association, rollback, restart, explicit conflicts and accepted results. HTTP/MCP checks cover fixed errors, hostile response bodies, stale ownership and unconfirmed writes. These are local protocol and simulated-provider checks; the fix has not been installed, deployed or published, and existing recovery records were not altered.
+
 ## 0.4.5 growing skill edit follow-up
 
 The installed TETR.IO skill had grown to 30 supporting files, while its edit reader still allowed only 20. The list could read its metadata, but Edit returned HTTP 400 when loading the complete directory. Edit, save, ZIP import/export and the text/voice tool contracts now share a limit of 128 supporting files. Directory and archive traversal remain bounded at 4,096 entries, and the managed metadata index accommodates the supported path count. Existing byte, path, link and secret checks remain in place; reads never silently truncate the file map.

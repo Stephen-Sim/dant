@@ -42,6 +42,21 @@ test('VM account and configuration APIs preserve ownership and reject changes du
  assert.equal((await api('/voice-key',{},'DELETE')).status,200);assert.equal((await api('/logout',{})).status,200);assert.equal(worker.calls.at(-1).method,'account/logout');
 });
 
+test('private task progress failures expose only fixed whitelisted codes without leaking exceptions or changing credential errors',async t=>{
+ const {base,worker,engine}=await fixture(t),originalTool=engine.tool,secret='private-task-plan-diagnostic-and-arguments',active={turnId:'safe-error-owner',messageIds:[],startAcknowledged:true,stopRequested:false,finishing:false};let calls=0,code;
+ const internal=(tool,args={},token=worker.credentialBridgeToken)=>fetch(base+'/api/internal/credentials',{method:'POST',headers:{'Content-Type':'application/json','X-Dant-Credential-Token':token},body:JSON.stringify({tool,arguments:args})});
+ engine.tool=async()=>{calls++;throw Object.assign(Error(secret),{code});};
+ try{
+  assert.equal((await internal('task_plan',{title:secret},'forged-token')).status,403);assert.equal((await internal('task_plan',{title:secret})).status,409);assert.equal(calls,0);engine.active=active;
+  for(code of ['work_not_found','work_conflict','work_not_continuable','work_stale_turn',secret,undefined]){
+   const response=await internal('task_plan',{title:secret});assert.equal(response.status,400);assert.deepEqual(await response.json(),{error:'The task progress request could not be completed.',...(['work_not_found','work_conflict','work_not_continuable','work_stale_turn'].includes(code)?{code}:{})});
+  }
+  const before=calls,response=await internal('task_plan',[]);assert.equal(response.status,400);assert.deepEqual(await response.json(),{error:'The task progress request could not be completed.'});assert.equal(calls,before);
+  code='work_not_found';const credential=await internal('credential_get',{id:secret});assert.equal(credential.status,400);assert.deepEqual(await credential.json(),{error:'The credential operation could not be completed.'});
+  let release;engine.tool=()=>new Promise(resolve=>release=resolve);const pending=internal('task_plan',{title:secret});while(!release)await new Promise(resolve=>setImmediate(resolve));active.stopRequested=true;release({secret});const stale=await pending;assert.equal(stale.status,409);assert.deepEqual(await stale.json(),{error:'The task progress request is no longer active.'});
+ }finally{engine.active=null;engine.tool=originalTool;}
+});
+
 test('standalone Worker work summaries default hidden and persist both toggle values across Store reloads',async t=>{
  const {api,store,dir}=await fixture(t);assert.equal((await api('/state').then(response=>response.json())).settings.showWorkSummary,false);
  for(const showWorkSummary of [true,false,true]){

@@ -336,6 +336,91 @@ class VoiceAndMCPTests(unittest.TestCase):
         self.assertNotIn('private-token', text)
         self.assertIn('not retry', text)
 
+    def test_task_progress_http_rejections_use_only_fixed_codes_and_never_retry_or_echo_bodies(self):
+        messages = {
+            'work_not_found': 'specified work ID was not found',
+            'work_conflict': 'already bound to a different current task',
+            'work_not_continuable': 'completed, active, failed, pausing, or unconfirmed',
+            'work_stale_turn': 'historical or inactive turn cannot replace the current task owner',
+        }
+        secret = 'private-token-and-plan-content'
+
+        class Body(io.BytesIO):
+            def __init__(self, data):
+                super().__init__(data)
+                self.read_sizes = []
+            def read(self, count=-1):
+                self.read_sizes.append(count)
+                return super().read(count)
+
+        class Opener:
+            def __init__(self, body, status=400):
+                self.body, self.status, self.calls = body, status, 0
+            def open(self, request, timeout):
+                self.calls += 1
+                raise desktop_mcp.urllib.error.HTTPError(request.full_url, self.status, secret, {}, self.body)
+
+        class BrokenBody(Body):
+            def read(self, count=-1):
+                self.read_sizes.append(count)
+                raise RuntimeError(secret)
+
+        for code, expected in messages.items():
+            with self.subTest(code=code):
+                body = Body(json.dumps({'code': code, 'error': secret, 'arguments': secret}).encode())
+                opener = Opener(body)
+                with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+                    response = desktop_mcp.dispatch({'id': 99, 'method': 'tools/call', 'params': {'name': 'task_plan', 'arguments': {'title': secret}}}, pathlib.Path('.'))
+                self.assertTrue(response['result']['isError'])
+                text = response['result']['content'][0]['text']
+                self.assertIn('Task progress request rejected:', text)
+                self.assertIn(expected, text)
+                self.assertNotIn(secret, text)
+                self.assertEqual(body.read_sizes, [4097])
+                self.assertEqual(opener.calls, 1)
+
+        malformed = [b'not json ' + secret.encode(), b'\xff', b'[' * 4000,
+                     json.dumps({'code': [secret], 'error': secret}).encode(),
+                     json.dumps({'code': secret}).encode(),
+                     json.dumps({'code': 'work_not_found', 'padding': secret * 200}).encode()]
+        for data in malformed:
+            with self.subTest(body_size=len(data)):
+                body, opener = Body(data), None
+                opener = Opener(body)
+                with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+                    with self.assertRaisesRegex(ValueError, '^Task progress request was rejected \\(HTTP 400\\)$'):
+                        desktop_mcp.credential_bridge('task_plan', {'title': secret})
+                self.assertEqual(body.read_sizes, [4097])
+                self.assertEqual(opener.calls, 1)
+
+        body = BrokenBody(b'')
+        opener = Opener(body)
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(ValueError, '^Task progress request was rejected \\(HTTP 400\\)$'):
+                desktop_mcp.credential_bridge('task_plan', {'title': secret})
+        self.assertEqual(body.read_sizes, [4097])
+        self.assertEqual(opener.calls, 1)
+
+        for name, status, expected in [('task_plan', 409, 'Task progress request was rejected (HTTP 409)'),
+                                       ('credential_get', 400, 'The credential request was rejected (HTTP 400)')]:
+            body = Body(json.dumps({'code': 'work_not_found', 'error': secret}).encode())
+            opener = Opener(body, status)
+            with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+                with self.assertRaises(ValueError) as raised:
+                    desktop_mcp.credential_bridge(name, {'id': secret})
+            self.assertEqual(str(raised.exception), expected)
+            self.assertEqual(body.read_sizes, [])
+            self.assertEqual(opener.calls, 1)
+
+    def test_task_progress_lost_response_remains_unconfirmed_without_retry_or_diagnostic_echo(self):
+        opener = unittest.mock.Mock()
+        opener.open.side_effect = OSError('private-plan-and-token-in-transport-error')
+        with patch.dict(os.environ, {'DANT_CREDENTIAL_BRIDGE_TOKEN': 'private-test-token'}), patch.object(desktop_mcp.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaises(ValueError) as raised:
+                desktop_mcp.credential_bridge('task_plan', {'title': 'private-plan'})
+        self.assertEqual(str(raised.exception), 'The task progress result is unconfirmed. Do not retry a task progress write automatically.')
+        self.assertEqual(opener.open.call_count, 1)
+
     def test_mcp_skill_tools_use_the_same_private_owned_bridge_without_reading_or_writing_files(self):
         save_tool = next(tool for tool in desktop_mcp.TOOLS if tool['name'] == 'skill_save')
         self.assertEqual(save_tool['inputSchema']['properties']['files']['maxProperties'], 128)

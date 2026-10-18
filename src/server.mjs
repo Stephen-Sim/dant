@@ -114,9 +114,10 @@ export function createWorkerApp({dataDir=process.env.DANT_DATA||path.join(root,'
  app.post('/api/internal/credentials',async(req,res)=>{
   if(req.headers['x-dant-credential-token']!==credentialToken)return res.status(403).json({error:'Credential bridge authorization failed.'});
   const scope=credentialScope();if(!scope)return res.status(409).json({error:'A current acknowledged VM task is required.'});
-  if(!['task_plan','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','schedule_list','schedule_save','schedule_delete'].includes(req.body?.tool)||!req.body.arguments||typeof req.body.arguments!=='object'||Array.isArray(req.body.arguments))return res.status(400).json({error:'Invalid credential operation.'});
-  try{const result=await engine.tool(req.body.tool,req.body.arguments,scope);if(!scope.isCurrent())return res.status(409).json({error:'The credential operation is no longer active.'});res.json(result);}
-  catch{res.status(400).json({error:'The credential operation could not be completed.'});}
+  const taskPlan=req.body?.tool==='task_plan';
+  if(!['task_plan','credential_find','credential_get','credential_request','credential_store','skill_list','skill_get','skill_save','schedule_list','schedule_save','schedule_delete'].includes(req.body?.tool)||!req.body.arguments||typeof req.body.arguments!=='object'||Array.isArray(req.body.arguments))return res.status(400).json({error:taskPlan?'The task progress request could not be completed.':'Invalid credential operation.'});
+  try{const result=await engine.tool(req.body.tool,req.body.arguments,scope);if(!scope.isCurrent())return res.status(409).json({error:taskPlan?'The task progress request is no longer active.':'The credential operation is no longer active.'});res.json(result);}
+  catch(error){const code=taskPlan&&['work_not_found','work_conflict','work_not_continuable','work_stale_turn'].includes(error?.code)?error.code:null;res.status(400).json({error:taskPlan?'The task progress request could not be completed.':'The credential operation could not be completed.',...(code?{code}:{})});}
  });
  app.get('/api/session',(req,res)=>res.json({token,product:'dant',mode:'worker'}));
  app.use('/api',(req,res,next)=>{if(req.headers['x-dant-token']!==token&&req.query.token!==token)return res.sendStatus(401);next();});
