@@ -17,8 +17,8 @@ test('HTTP diagnostics retain templates and fixed reasons, never route parameter
 
 test('task and call diagnostics log transitions once without reading message text or replaying historical tasks',()=>{
  const entries=[],logger={log:(event,metadata)=>entries.push({event,...metadata})},store={state:{messages:[{id:'old',role:'user',status:'review',text:'historical private text'}]}},engine={call:null};const observe=observeTasks(logger,store,engine);observe();assert.deepEqual(entries,[]);
- const message={id:'new',role:'user',status:'queued',text:'new private text'};store.state.messages.push(message);observe();observe();message.status='running';engine.call={id:'call',provider:'subscription',status:'connected',sdp:'private-sdp'};observe();observe();engine.call=null;observe();
- assert.deepEqual(entries.map(entry=>entry.event),['task.status','task.status','call.status','call.closed']);assert.equal(JSON.stringify(entries).includes('private'),false);
+ const message={id:'new',role:'user',status:'queued',text:'new private text'};store.state.messages.push(message);observe();observe();message.status='accepted';observe();observe();assert.equal(entries.at(-1).status,'accepted');message.status='running';engine.call={id:'call',provider:'subscription',status:'connected',sdp:'private-sdp'};observe();observe();engine.call=null;observe();
+ assert.deepEqual(entries.map(entry=>entry.event),['task.status','task.status','task.status','call.status','call.closed']);assert.equal(JSON.stringify(entries).includes('private'),false);
  store.state.messages=[];observe();store.state.messages=[{id:'new',role:'user',status:'paused'}];observe();assert.equal(entries.at(-1).status,'paused');
 });
 

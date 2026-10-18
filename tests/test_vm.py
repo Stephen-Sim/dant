@@ -11,6 +11,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 import zlib
@@ -179,7 +181,7 @@ class DesktopTests(unittest.TestCase):
     def test_model_mcp_desktop_actions_stay_blocked_through_reservation_and_human_control(self):
         import control
         session = control.command({'action': 'acquire'})
-        with patch.object(desktop_mcp, 'screenshot', return_value=b'PNG') as capture, patch.object(desktop_mcp.subprocess, 'run') as run:
+        with patch.object(desktop_mcp, 'screenshot', return_value=b'PNG') as capture, patch.object(desktop_mcp.subprocess, 'run') as run, patch.object(desktop_mcp.subprocess, 'Popen') as launch:
             for confirmed in (False, True):
                 if confirmed:
                     control.command({'action': 'confirm', 'sessionId': session['sessionId']})
@@ -188,9 +190,130 @@ class DesktopTests(unittest.TestCase):
                         desktop_mcp.invoke(name, arguments, pathlib.Path(self.folder.name))
             capture.assert_not_called()
             run.assert_not_called()
+            launch.assert_not_called()
             control.command({'action': 'release', 'sessionId': session['sessionId']})
             desktop_mcp.invoke('screenshot', {}, pathlib.Path(self.folder.name))
             capture.assert_called_once()
+
+
+class BrowserLaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.output = pathlib.Path(self.folder.name).resolve()
+        self.env = patch.dict(os.environ, {'DANT_CONTROL_FILE': str(self.output / 'control.json')})
+        self.env.start()
+        self.processes = []
+
+    def tearDown(self):
+        # Fixtures end themselves; never terminate a launcher or its children.
+        for process in self.processes:
+            process.wait(timeout=8)
+        self.env.stop()
+        self.folder.cleanup()
+
+    def launcher_fixture(self, source):
+        real_popen = subprocess.Popen
+        def launch(arguments, **options):
+            self.assertEqual(arguments, ['xdg-open', 'https://example.invalid/private-url'])
+            self.assertEqual(options, {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL,
+                                       'stderr': subprocess.DEVNULL, 'close_fds': True, 'start_new_session': True})
+            process = real_popen([sys.executable, '-c', source, str(self.output)], **options)
+            self.processes.append(process)
+            return process
+        return patch.object(desktop_mcp.subprocess, 'Popen', side_effect=launch)
+
+    def invoke(self):
+        return desktop_mcp.invoke('open_url', {'url': 'https://example.invalid/private-url'}, self.output)['structuredContent']
+
+    def wait_for_file(self, name):
+        target = self.output / name
+        deadline = time.monotonic() + 7
+        while not target.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(target.exists(), name)
+
+    def test_launcher_does_not_wait_for_descendant_standard_streams(self):
+        child = "import pathlib,sys,time;p=pathlib.Path(sys.argv[1]);(p/'child-ready').write_text('ready');time.sleep(3);(p/'child-done').write_text('done')"
+        source = f"import subprocess,sys;subprocess.Popen([sys.executable,'-c',{child!r},sys.argv[1]])"
+        with self.launcher_fixture(source) as launch:
+            started = time.monotonic()
+            value = self.invoke()
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.5)
+        self.assertTrue(value['launchRequested'])
+        self.assertFalse(value['pageVerified'])
+        self.assertNotIn('opened', value)
+        launch.assert_called_once()
+        self.wait_for_file('child-ready')
+        self.assertFalse((self.output / 'child-done').exists())
+        self.wait_for_file('child-done')
+
+    def test_long_lived_launcher_releases_lease_before_wait_and_is_reaped_without_killing(self):
+        import control
+        waiting = threading.Event()
+        result_values, errors = [], []
+        source = "import pathlib,sys,time;p=pathlib.Path(sys.argv[1]);time.sleep(2);(p/'launcher-done').write_text('done')"
+        with self.launcher_fixture(source) as launch, patch.object(desktop_mcp, 'OPEN_URL_STARTUP_SECONDS', 0.6):
+            original_launch = launch.side_effect
+            def instrument_launch(arguments, **options):
+                process = original_launch(arguments, **options)
+                original_wait = process.wait
+                def wait(timeout=None):
+                    if timeout is not None:
+                        waiting.set()
+                    return original_wait(timeout=timeout)
+                process.wait = wait
+                return process
+            launch.side_effect = instrument_launch
+            def invoke():
+                try:
+                    result_values.append(self.invoke())
+                except Exception as error:
+                    errors.append(error)
+            caller = threading.Thread(target=invoke)
+            caller.start()
+            self.assertTrue(waiting.wait(3))
+            acquired = time.monotonic()
+            session = control.command({'action': 'acquire'})
+            self.assertLess(time.monotonic() - acquired, 0.3)
+            control.command({'action': 'release', 'sessionId': session['sessionId']})
+            caller.join(3)
+            self.assertFalse(caller.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(result_values, [{'launchRequested': True, 'launcherStatus': 'running', 'pageVerified': False}])
+        self.assertIsNone(self.processes[0].returncode)
+        self.wait_for_file('launcher-done')
+        deadline = time.monotonic() + 3
+        while self.processes[0].returncode is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.processes[0].returncode, 0)
+
+    def test_immediate_launcher_failure_is_safe_and_not_retried(self):
+        with self.launcher_fixture("import sys;sys.stderr.write('private-url private-error');sys.exit(7)") as launch, patch.object(desktop_mcp, 'OPEN_URL_STARTUP_SECONDS', 2):
+            response = desktop_mcp.dispatch({'id': 87, 'method': 'tools/call', 'params': {'name': 'open_url', 'arguments': {'url': 'https://example.invalid/private-url'}}}, self.output)
+        self.assertTrue(response['result']['isError'])
+        message = response['result']['content'][0]['text']
+        self.assertEqual(message, 'The browser launcher exited unsuccessfully; page loading was not verified. Do not retry automatically.')
+        self.assertNotIn('private', message)
+        launch.assert_called_once()
+
+    def test_failed_process_start_is_safe_and_not_retried(self):
+        for error in [FileNotFoundError('private executable path'), PermissionError('private-url')]:
+            with self.subTest(error=type(error).__name__), patch.object(desktop_mcp.subprocess, 'Popen', side_effect=error) as launch:
+                with self.assertRaisesRegex(ValueError, '^The browser launch request could not be started\\.$'):
+                    self.invoke()
+                launch.assert_called_once()
+
+    def test_successful_launcher_exit_does_not_claim_page_loaded(self):
+        with self.launcher_fixture('pass'), patch.object(desktop_mcp, 'OPEN_URL_STARTUP_SECONDS', 2):
+            self.assertEqual(self.invoke(), {'launchRequested': True, 'launcherStatus': 'exited', 'pageVerified': False})
+
+    def test_invalid_urls_never_start_a_launcher(self):
+        with patch.object(desktop_mcp.subprocess, 'Popen') as launch:
+            for url in ['javascript:alert(1)', 'file:///tmp/private', 'https://', 'https://' + 'x' * 8192, None, 42]:
+                with self.subTest(url_type=type(url).__name__), self.assertRaises(ValueError):
+                    desktop_mcp.invoke('open_url', {'url': url}, self.output)
+            launch.assert_not_called()
 
 
 class VoiceAndMCPTests(unittest.TestCase):

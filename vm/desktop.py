@@ -47,13 +47,17 @@ def _act(action):
     return {'ok':True}
 def screenshot():
     # Xvfb builds may omit DPMS. Disabling a missing optional extension must
-    # not prevent screenshots from being returned.
+    # not prevent screenshots from being returned or exhaust the HTTP budget.
     for args in [('xset','s','off'),('xset','-dpms')]:
-        subprocess.run(args,capture_output=True,timeout=10,check=False)
+        try:
+            subprocess.run(args,capture_output=True,timeout=1,check=False)
+        except (OSError,subprocess.TimeoutExpired):
+            pass
     with tempfile.TemporaryDirectory() as folder:
         target=folder+'/screen.png'
         run('scrot','-z',target)
-        return open(target,'rb').read()
+        with open(target,'rb') as image:
+            return image.read()
 if __name__=='__main__':
     p=argparse.ArgumentParser(description='dant desktop: screenshot PATH | click X Y | drag X1 Y1 X2 Y2 | text TEXT | key ctrl+l | scroll N')
     p.add_argument('action',choices=['screenshot','click','drag','text','key','scroll']);p.add_argument('args',nargs='*');a=p.parse_args()

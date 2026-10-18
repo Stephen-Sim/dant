@@ -7,6 +7,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import threading
 from urllib.parse import urlparse
 import urllib.error
 import urllib.request
@@ -27,7 +28,7 @@ TOOLS = [
     tool('key', 'Press a key chord such as ctrl+l or Return.', {'key': TEXT}, ['key']),
     tool('type_text', 'Paste Unicode text into the active VM application.', {'text': TEXT}, ['text']),
     tool('scroll', 'Scroll the active VM application; negative is up.', {'delta': {'type': 'integer', 'minimum': -12, 'maximum': 12}}, ['delta']),
-    tool('open_url', 'Open an HTTP or HTTPS page in the VM browser.', {'url': TEXT}, ['url']),
+    tool('open_url', 'Submit an HTTP or HTTPS URL to the VM browser. The result acknowledges launch only; use a screenshot to verify the page. Do not automatically retry an unconfirmed launch.', {'url': TEXT}, ['url']),
     tool('send_chat_message', 'Explicitly deliver text or links to the current chat. The application validates and publishes this result.', {'text': TEXT}, ['text']),
     tool('react_message', 'Optionally request dant\'s own one-emoji reaction on a real user message ID from chat references. Use sparingly; null removes it. The application validates and applies this result independently of user reactions.', {'messageId': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'emoji': {'type': ['string', 'null'], 'maxLength': 64}}, ['messageId', 'emoji']),
     tool('credential_find', 'Find saved credential metadata in the encrypted VM vault before asking the user. No secret values are returned.', {'query': {'type': 'string', 'maxLength': 300}}, ['query']),
@@ -45,6 +46,40 @@ TOOLS = [
 
 def result(value):
     return {'content': [{'type': 'text', 'text': json.dumps(value, ensure_ascii=False)}], 'structuredContent': value, 'isError': False}
+
+
+OPEN_URL_STARTUP_SECONDS = 0.25
+
+
+def reap_browser_launcher(process):
+    # xdg-open may remain alive for the browser's entire lifetime. Reap only the
+    # launcher, without keeping MCP alive or terminating its browser descendants.
+    try:
+        process.wait()
+    except OSError:
+        pass
+
+
+def open_browser_url(url):
+    # Submit synchronously under the same lease as all other desktop input. No
+    # deferred thread can issue a new launch after human control is acquired.
+    with desktop_access():
+        try:
+            process = subprocess.Popen(['xdg-open', url], stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       close_fds=True, start_new_session=True)
+        except OSError:
+            raise ValueError('The browser launch request could not be started.') from None
+    # Browser descendants must not retain MCP pipes. Wait briefly for immediate
+    # launcher failures, outside the desktop lock, then acknowledge only launch.
+    try:
+        code = process.wait(timeout=OPEN_URL_STARTUP_SECONDS)
+    except subprocess.TimeoutExpired:
+        threading.Thread(target=reap_browser_launcher, args=(process,), daemon=True).start()
+        return {'launchRequested': True, 'launcherStatus': 'running', 'pageVerified': False}
+    if code != 0:
+        raise ValueError('The browser launcher exited unsuccessfully; page loading was not verified. Do not retry automatically.')
+    return {'launchRequested': True, 'launcherStatus': 'exited', 'pageVerified': False}
 
 
 class NoCredentialRedirect(urllib.request.HTTPRedirectHandler):
@@ -123,9 +158,7 @@ def invoke(name, args, output_dir):
         url = args.get('url', '')
         if not isinstance(url, str) or len(url) > 8192 or urlparse(url).scheme not in ('http', 'https') or not urlparse(url).hostname:
             raise ValueError('Only HTTP(S) URLs can be opened')
-        with desktop_access():
-            subprocess.run(['xdg-open', url], capture_output=True, timeout=15, check=True)
-        return result({'opened': True})
+        return result(open_browser_url(url))
     if name == 'send_chat_message':
         text = args.get('text')
         if not isinstance(text, str) or not text.strip() or len(text) > 100000:

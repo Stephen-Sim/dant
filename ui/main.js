@@ -433,7 +433,7 @@ function bind(){
  document.querySelectorAll('[data-speak]').forEach(el=>el.onclick=()=>readAloud(el.dataset.speak).catch(error=>toast(errorText(error))));
  document.querySelectorAll('[data-picker]').forEach(el=>el.onclick=()=>{emojiFor=emojiFor===el.dataset.picker?null:el.dataset.picker;render();});
  document.querySelectorAll('[data-preview]').forEach(el=>el.onclick=()=>openModal({type:'image',fileId:el.dataset.preview}));
- bindAttachmentImages(document);
+ bindAttachmentImages(document,{ready:eventConnected&&(!state.controller||state.controller.status==='online'&&state.controller.cached!==true),scope:JSON.stringify([state.conversationId??null,state.settings?.vm?.host??null,state.settings?.vm?.user??null,state.settings?.vm?.port??null,state.settings?.vm?.keyPath??null])});
  filePreview.bind(id=>conversationFiles().find(file=>file.id===id));
  downloads.bind(id=>conversationFiles().find(file=>file.id===id),()=>toast(language()==='zh'?'文件保存失败，请检查连接和保存位置后重试。':'Could not save the file. Check the connection and destination, then try again.'));
  document.querySelectorAll('[data-progress-message]').forEach(node=>node.onclick=()=>{const id=node.dataset.progressMessage;if(!state.messages.some(message=>message.id===id))return;closeModal();revealMessage(id);const target=[...document.querySelectorAll('.message[data-id]')].find(element=>element.dataset.id===id);if(target){target.scrollIntoView({block:'center',behavior:'auto'});target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}updateRead();});

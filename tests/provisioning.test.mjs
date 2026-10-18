@@ -178,7 +178,9 @@ test('VMware process startup errors stay on VMware and are reported without star
 
 test('guest readiness failures retry only checks and closing aborts the pending retry',async t=>{
  const dir=directory(t),scripts=[];writeBinding(dir,'vmware');let checks=0;
- const p=new Provisioning({dataDir:dir,platform:'win32',probeIntervalMs:1,installTimeoutMs:500,spawnProcess:(_command,args)=>{
+ // This checks retry/abort behavior, not a wall-clock deadline. Concurrent
+ // coverage and filesystem work must not exhaust its synthetic setup budget.
+ const p=new Provisioning({dataDir:dir,platform:'win32',probeIntervalMs:1,installTimeoutMs:10000,spawnProcess:(_command,args)=>{
   scripts.push(path.basename(args[args.indexOf('-File')+1]));const child=fakeChild();queueMicrotask(()=>child.emit('close',++checks===1?1:0));return child;
  }});t.after(()=>p.close());p.resumeMonitoring();await p.task;assert.deepEqual(scripts,['check-vm.ps1','check-vm.ps1']);assert.equal(p.snapshot().status,'ready');
  const waitingDir=directory(t);writeBinding(waitingDir,'vmware');const waiting=new Provisioning({dataDir:waitingDir,platform:'win32',probeIntervalMs:1000,spawnProcess:()=>{const child=fakeChild();queueMicrotask(()=>child.emit('close',1));return child;}});t.after(()=>waiting.close());

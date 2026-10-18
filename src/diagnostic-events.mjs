@@ -6,7 +6,7 @@ export const diagnosticRpcMethod=method=>rpcMethods.has(method)?method:'other';
 export function serviceVersion(projectRoot){try{const version=JSON.parse(fs.readFileSync(path.join(projectRoot,'package.json'),'utf8')).version;return typeof version==='string'&&/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)?version:'unknown';}catch{return 'unknown';}}
 const workerStates=new Set(['offline','connecting','online']);
 export const diagnosticWorkerStatus=status=>workerStates.has(status)?status:'unknown';
-const taskStates=new Set(['draft','queued','running','waiting_user','pausing','paused','failed','review','completed','cancelled','interrupted']);
+const taskStates=new Set(['draft','accepted','queued','running','waiting_user','pausing','paused','failed','review','completed','cancelled','interrupted']);
 export function observeTasks(diagnostics,store,engine){
  const states=new Map((store.state.messages||[]).filter(message=>message.role==='user').map(message=>[message.id,message.status]));let call=engine.call?{id:engine.call.id,status:engine.call.status,provider:engine.call.provider}:null;
  return ()=>{const present=new Set();for(const message of store.state.messages||[]){if(message.role!=='user')continue;present.add(message.id);if(states.get(message.id)!==message.status){states.set(message.id,message.status);diagnostics.log('task.status',{messageId:message.id,status:taskStates.has(message.status)?message.status:'unknown'});}}for(const id of states.keys())if(!present.has(id))states.delete(id);

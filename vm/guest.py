@@ -3,12 +3,17 @@ import base64,json,mimetypes,pathlib,uuid,os
 from http.server import BaseHTTPRequestHandler,HTTPServer
 from desktop import act,screenshot
 from control import command
-ROOT=pathlib.Path('/home/dant/work');ROOT.mkdir(parents=True,exist_ok=True)
+ROOT=pathlib.Path('/home/dant/work')
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def send(self,data,kind='application/json',status=200):
         raw=json.dumps(data).encode() if kind=='application/json' else data
-        self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+        try:
+            self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+        except (BrokenPipeError,ConnectionResetError):
+            # A cancelled screen request must not trigger another reply to the
+            # same closed socket or an HTTP-server traceback.
+            self.close_connection=True
     def do_GET(self):
         try:
             if self.path=='/screen': self.send(screenshot(),'image/png')
@@ -35,4 +40,8 @@ class Handler(BaseHTTPRequestHandler):
                 data=target.read_bytes();self.send({'data':base64.b64encode(data).decode(),'name':target.name,'type':mimetypes.guess_type(target)[0] or 'application/octet-stream','size':len(data)})
             else:self.send({'error':'Not found'},status=404)
         except Exception as e:self.send({'error':str(e)},status=400)
-HTTPServer(('127.0.0.1',int(os.environ.get('DANT_GUEST_PORT','4319'))),Handler).serve_forever()
+def main():
+    ROOT.mkdir(parents=True,exist_ok=True)
+    HTTPServer(('127.0.0.1',int(os.environ.get('DANT_GUEST_PORT','4319'))),Handler).serve_forever()
+
+if __name__=='__main__':main()
