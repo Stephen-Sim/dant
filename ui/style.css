@@ -167,3 +167,5 @@
 @media(max-width:600px){.file-preview-dialog .dialog-header{align-items:flex-start;flex-wrap:wrap}.file-preview-body{padding:12px}.file-preview-dialog .dialog-header>div{margin-left:auto}}
 
 .details-actions{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}
+.markdown .attachment-link{display:inline;padding:0;border:0;border-radius:0;background:transparent;font:inherit;line-height:inherit;color:inherit;text-align:inherit;text-decoration:underline;overflow-wrap:anywhere}
+.telegram-delivery-notice{margin-top:18px;padding:12px 14px;border:1px solid var(--warning-border);border-radius:8px;background:var(--warning-surface);font-size:calc(var(--app-font-size) * 11 / 13);line-height:1.7}.telegram-delivery-notice>strong{display:block;font-weight:500;color:var(--warning-text)}.telegram-delivery-notice>small{display:block;margin-top:5px;color:var(--text-muted)}.telegram-delivery-notice>p{margin:7px 0 0;color:var(--text-soft)}

@@ -514,7 +514,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   }
   if(typeof args.text!=='string'||args.text.length>100000)throw Error('Invalid voice tool text');
   if(name==='send_message'&&!args.text.trim())throw Error('Message cannot be empty');
-  if(name==='send_message')return this.engine.deliverText(args.text,turn);
+  if(name==='send_message')return this.engine.deliverLinkedText(args.text,turn);
   return this.engine.tool(name,args);
  }
  cancelWork(turnId,{callId}={}){

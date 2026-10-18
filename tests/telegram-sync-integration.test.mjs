@@ -48,11 +48,12 @@ class TelegramApi{
   if(parsed.pathname.startsWith('/file/bot'))return new Response(Buffer.from('OggSsynthetic-voice'));
   const method=parsed.pathname.split('/').at(-1),body=options.body instanceof FormData?options.body:JSON.parse(options.body);
   this.calls.push({method,body});
-  const result=method==='getMe'?{id:123456,is_bot:true,username:'dant_test_bot'}:method==='getWebhookInfo'?{url:''}:method==='getFile'?{file_path:'voice/synthetic.ogg'}:['sendMessage','sendDocument'].includes(method)?{message_id:this.calls.length}:null;
+  const result=method==='getMe'?{id:123456,is_bot:true,username:'dant_test_bot'}:method==='getWebhookInfo'?{url:''}:method==='getFile'?{file_path:'voice/synthetic.ogg'}:['sendMessage','sendPhoto','sendDocument'].includes(method)?{message_id:this.calls.length}:null;
   assert.ok(result,'Unexpected simulated Telegram method');return Response.json({ok:true,result});
  };
  texts(){return this.calls.filter(call=>call.method==='sendMessage').map(call=>call.body.text);}
  documents(){return this.calls.filter(call=>call.method==='sendDocument');}
+ photos(){return this.calls.filter(call=>call.method==='sendPhoto');}
 }
 
 async function fixture(t,options={}){
@@ -152,4 +153,17 @@ test('worker HTTP language settings immediately control the next Telegram prompt
  await f.request('/api/settings',{language:'zh'},'PATCH');assert.equal(f.store.state.settings.language,'zh');const chinese=await help(3,'en');assert.match(chinese,/已连接 dant/);assert.doesNotMatch(chinese,/Send text|Shared work progress|Stop only this Telegram/);
  await f.request('/api/settings',{language:'en'},'PATCH');assert.equal(f.store.state.settings.language,'en');const english=await help(4,'zh-hans');assert.match(english,/Connected to dant/);assert.doesNotMatch(english,/\p{Script=Han}/u);
  assert.deepEqual(f.store.state.messages.map(message=>({id:message.id,text:message.text})),before);assert.equal(f.worker.calls.some(call=>['turn/start','turn/steer','thread/realtime/start'].includes(call.method)),false);
+});
+
+const linkedPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jrxsAAAAASUVORK5CYII=','base64');
+
+test('an existing screenshot linked by an explicit MCP chat reply becomes one desktop snapshot and one Telegram photo',async t=>{
+ const f=await fixture(t);await f.engine.thread();const file=path.join(f.engine.outputDir,'40lines-no-idle-result.png');fs.writeFileSync(file,linkedPng);await f.gateway.receive(update(2,'Send the screenshot'));await waitFor(()=>f.engine.active?.startAcknowledged,'The image request should reach the shared executor');const turnId=f.engine.active.turnId,text=`本轮截图：[本轮截图](${file})`,item={id:'linked-image-delivery',type:'mcpToolCall',server:'dant_desktop',tool:'send_chat_message',status:'completed',arguments:{text},result:{structuredContent:{dantMessage:{text}}}};
+ await f.engine.handle(event('item/completed',{turnId,item}));await f.engine.handle(event('item/completed',{turnId,item}));const message=f.store.state.messages.find(message=>message.text===text);assert.equal(message.attachments.length,1);assert.equal(message.attachments[0].sourcePath,file);assert.equal(message.attachments[0].type,'image/png');await f.gateway.flush();assert.equal(f.api.photos().length,1);assert.equal(f.api.documents().length,0);assert.deepEqual(Buffer.from(await f.api.photos()[0].body.get('photo').arrayBuffer()),linkedPng);assert.deepEqual(f.api.texts(),['本轮截图：本轮截图']);
+ await f.engine.handle(event('turn/completed',{turn:{id:turnId,status:'completed'}}));await f.gateway.flush();assert.equal(f.api.photos().length,1);assert.equal(message.attachments.length,1);assert.equal(f.store.state.messages.filter(message=>message.text===text).length,1);
+ await f.gateway.close();const restarted=new TelegramGateway({dataDir:f.dir,store:f.store,engine:f.engine,attachments:new AttachmentStore(path.join(f.dir,'attachments')),fetchImpl:f.api.fetch,autoPoll:false});t.after(()=>restarted.close());await restarted.flush();assert.equal(f.api.photos().length,1);
+});
+
+test('an explicit local screenshot link sent during a native call is visible in chat and uploaded as a Telegram photo without ending media',async t=>{
+ const f=await fixture(t);await f.engine.thread();const file=path.join(f.engine.outputDir,'call-screenshot.png');fs.writeFileSync(file,linkedPng);const call=await f.engine.startCall(sdp);f.engine.confirmCallConnected(call.callId);const turnId='linked-native-photo';await f.engine.handle(event('turn/started',{turn:{id:turnId,status:'inProgress'}}));const text=`[截图](${file})`,delivery=event('item/tool/call',{turnId,callId:'linked-native-photo-call',tool:'send_message',arguments:{text}},181);await f.engine.handle(delivery);await f.engine.handle(delivery);await f.gateway.flush();const message=f.store.state.messages.find(message=>message.text===text);assert.equal(message.attachments.length,1);assert.equal(message.attachments[0].sourcePath,file);assert.equal(f.api.photos().length,1);assert.deepEqual(Buffer.from(await f.api.photos()[0].body.get('photo').arrayBuffer()),linkedPng);assert.equal(f.engine.call.id,call.callId);assert.equal(f.engine.call.status,'connected');assert.equal(f.worker.responses.filter(response=>response.id===181&&response.result?.success).length,1);await f.engine.handle(event('turn/completed',{turn:{id:turnId,status:'completed'}}));await f.gateway.flush();assert.equal(f.api.photos().length,1);await f.engine.stopCall(call.callId);
 });

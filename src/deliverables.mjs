@@ -63,7 +63,7 @@ export class DeliverableCollector extends EventEmitter{
    const selected=[...explicit,...(!onlyExplicit&&baseline?.valid?[...files.keys()].filter(name=>baseline.hashes.get(name)!==files.get(name).hash):[])];
    const result=[];
    for(const name of [...new Set(selected)].slice(0,MAX_MESSAGE_ATTACHMENTS)){
-    const file=files.get(name);result.push(this.attachments.put({name:file.name,data:file.data}));
+    const file=files.get(name);result.push({...this.attachments.put({name:file.name,data:file.data}),sourcePath:path.join(root,name)});
    }
    return result;
   }catch(error){this.emit('notice','Files were not automatically delivered: '+error.message);return [];}
@@ -72,6 +72,6 @@ export class DeliverableCollector extends EventEmitter{
   const root=path.resolve(outputDir),target=path.resolve(filePath),rel=path.relative(root,target).split(path.sep).join('/');
   if(!rel||rel.startsWith('../')||rel==='..')throw Error('Only current output directory files can be delivered.');
   const file=scan(root).get(rel);if(!file)throw Error('The output file is missing, restricted or exceeds 10 MiB.');
-  return this.attachments.put({name:file.name,data:file.data});
+  return {...this.attachments.put({name:file.name,data:file.data}),sourcePath:target};
  }
 }

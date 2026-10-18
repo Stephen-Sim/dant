@@ -616,7 +616,7 @@ export class Engine extends EventEmitter {
    case 'skill_list':case 'skill_get':case 'skill_save':return this.skillTool(name,args,context);
    case 'schedule_list':case 'schedule_save':case 'schedule_delete':return this.scheduleTool(name,args,context);
    case 'memory_write':{const file=args.file||'working-memory.md';await this.saveMemory(file,args.text);return {saved:true,file};}
-   case 'send_message':return this.deliverText(args.text);
+   case 'send_message':return this.deliverLinkedText(args.text);
    case 'react_message':return this.reactMessage(args);
    case 'create_voice_message':{
     if(typeof args.text!=='string'||!args.text.trim()||args.text.length>100000)throw Error('Invalid voice message text');
@@ -741,6 +741,22 @@ export class Engine extends EventEmitter {
   if(active){active.assistantIds.push(message.id);active.deliveredTexts ||= new Set();active.deliveredTexts.add(text.trim());}
   this.change();return {sent:true,messageId:message.id};
  }
+ async deliverLinkedText(text,active=this.active,{onSaved}={}){
+  const result=this.deliverText(text,active),message=this.task(result.messageId);
+  onSaved?.();
+  // Only model-owned explicit deliveries can nominate output links. The
+  // collector still resolves and validates every file inside current output/.
+  if(!active||!this.deliverables?.archive||!Array.from(message.text.matchAll(/\]\(([^)]+)\)/g),match=>match[1]).some(candidate=>!/^\s*[a-z][a-z\d+.-]*:\/\//i.test(candidate.replace(/^<|>$/g,''))))return result;
+  try{
+   const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:[],onlyExplicit:true,text:message.text,conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});
+   const attached=this.attach(active,files||[],{messageId:message.id});
+   return {...result,files:attached.map(file=>({id:file.id,name:file.name}))};
+  }catch{
+   // The text is already saved. Do not return an error that invites duplicate
+   // delivery, and never expose a rejected local path through a transport error.
+   this.emit('notice','The linked output files could not be added to chat.');return {...result,files:[]};
+  }
+ }
  deliverBackgroundText(text,active){
   text=this.redact(text);if(!text.trim()||active.deliveredTexts?.has(text.trim()))return;
   for(let offset=0;offset<text.length;){let end=Math.min(offset+100000,text.length);if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;this.deliverText(text.slice(offset,end),active);offset=end;}
@@ -756,7 +772,9 @@ export class Engine extends EventEmitter {
   if(!payload||typeof payload!=='object'||Array.isArray(payload))return false;
   if(item.tool==='send_chat_message'){
    const text=payload.dantMessage?.text;if(typeof text!=='string'||text!==item.arguments?.text)return false;
-   this.deliverText(text,active);
+   // A duplicate event may arrive while linked-file archival yields. The
+   // synchronous text receipt is the point after which it must not be replayed.
+   await this.deliverLinkedText(text,active,{onSaved:()=>active.deliveredMcpIds.add(item.id)});
   }else if(item.tool==='react_message'){
    const reaction=payload.dantReaction;if(!reaction||typeof reaction!=='object'||Array.isArray(reaction)||reaction.messageId!==item.arguments?.messageId||!Object.hasOwn(reaction,'emoji')||reaction.emoji!==item.arguments?.emoji)return false;
    this.reactMessage(reaction);
@@ -768,14 +786,14 @@ export class Engine extends EventEmitter {
   }
   active.deliveredMcpIds.add(item.id);return true;
  }
- attach(active,attachments){
+ attach(active,attachments,{messageId}={}){
   const existing=new Set(active.assistantIds.flatMap(id=>(this.task(id)?.attachments||[]).map(file=>file.sha256||file.hash||file.id)));
   const existingCount=existing.size;
   const unique=attachments.filter(file=>{const identity=file.sha256||file.hash||file.id;if(existing.has(identity))return false;existing.add(identity);return true;});
   const capacity=Math.max(0,5-existingCount);const selected=unique.slice(0,capacity);
   if(selected.length<unique.length)this.emit('notice','A work round can deliver at most five files. Remaining files stayed in output.');
   if(!selected.length)return [];
-  let message=this.task(active.assistantIds.at(-1));if(!message){message=this.store.add({role:'assistant',text:'',status:'completed',taskId:active.messageId,attachments:[],...(active.voiceOutput||active.source==='voice'?{source:{type:'voice-call',conversationId:this.store.state.conversationId}}:{})});active.assistantIds.push(message.id);}
+  let message=this.task(messageId||active.assistantIds.at(-1));if(messageId&&(!message||!active.assistantIds.includes(messageId)))throw Error('The file delivery message is no longer available');if(!message){message=this.store.add({role:'assistant',text:'',status:'completed',taskId:active.messageId,attachments:[],...(active.voiceOutput||active.source==='voice'?{source:{type:'voice-call',conversationId:this.store.state.conversationId}}:{})});active.assistantIds.push(message.id);}
   this.store.update(message.id,{attachments:[...(message.attachments||[]),...selected]});this.change();return selected;
  }
  deliverAttachments(active,attachments){this.attach(active,attachments);const delivered=active.assistantIds.flatMap(id=>this.task(id)?.attachments||[]).filter(file=>attachments.some(candidate=>(candidate.hash||candidate.sha256||candidate.id)===(file.hash||file.sha256||file.id)));if(!delivered.length)throw Error('The five-file delivery limit was reached; this file has not been sent');return {sent:true,files:delivered.map(file=>({id:file.id,name:file.name}))};}

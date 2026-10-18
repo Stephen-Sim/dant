@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {createAppearance,exportAppearance as serializeAppearance,importAppearance as parseAppearance} from '../ui/appearance.js';
+import {telegramConnectionError,telegramDeliveryNotice} from '../ui/telegram-delivery.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
@@ -13,7 +14,7 @@ function fixture(){
  localStorage:{getItem:key=>stored.get(key)||null,setItem:(key,value)=>stored.set(key,value)},render:()=>{},toast:message=>toasts.push(message),esc:value=>String(value??''),ico:()=>'',button:(action,icon,label)=>`<button data-action="${action}">${label}</button>`,formatTime:value=>new Date(value).toISOString(),
  api:async(route,options={})=>{requests.push({route,...options});if(route==='/state')return context.state;if(route==='/vm/profiles')return {current:null,candidates:[],requiresSelection:false};if(route==='/telegram')return {enabled:false,configured:false,connected:false,paired:false};return {ok:true};},
  };
- context.post=(route,body={})=>context.api(route,{method:'POST',body});context.appearance=createAppearance({document,storage:context.localStorage,matchMedia:()=>null,save:body=>context.api('/settings',{method:'PATCH',body})});
+ Object.assign(context,{telegramConnectionError,telegramDeliveryNotice});context.post=(route,body={})=>context.api(route,{method:'POST',body});context.appearance=createAppearance({document,storage:context.localStorage,matchMedia:()=>null,save:body=>context.api('/settings',{method:'PATCH',body})});
  context.updateInstalling=false;vm.createContext(context);vm.runInContext([
   section('const zh={','const subscriptionVoiceUnavailable='),
   section('const subscriptionVoiceUnavailable=','const esc='),
@@ -74,6 +75,20 @@ test('Telegram unconfigured and offline states disable configuration actions wit
 test('new appearance, existing-computer, and Telegram surfaces follow English and authoritative pairing updates',()=>{
  const f=fixture();f.c.state.settings.language='en';assert.match(f.c.renderAppearance(),/Appearance|Follow system|Sans serif|Monospace/);assert.match(f.c.renderVMSettings(),/Use existing computer/);assert.match(f.c.renderVMSettings(),/Save and connect/);assert.match(f.c.renderTelegramSettings(),/No bot token configured/);
  f.c.state.telegram={enabled:true,configured:true,connected:true,bot:{username:'live_bot'},paired:true,owner:{userId:12,chatId:13}};assert.equal(f.c.currentTelegram().paired,true);const html=f.c.renderTelegramSettings();assert.match(html,/Account paired/);assert.match(html,/@live_bot/);assert.match(html,/Telegram connected/);assert.match(html,/Unpair account/);
+});
+
+test('Telegram historical delivery issues do not mask a healthy paired connection and remain single-language',()=>{
+ for(const language of ['zh','en']){
+  const f=fixture();f.c.state.settings.language=language;f.c.state.telegram={enabled:true,configured:true,connected:true,paired:true,bot:{username:'fixture_bot'},owner:{userId:12,chatId:13},connectionError:null,lastError:'Request failed',delivery:{unknown:26,failed:1,lastIssue:{status:'unknown',at:1234,reason:'timeout'}}};
+  const html=f.c.renderTelegramSettings();assert.doesNotMatch(html,/Request failed|telegram-connection-error/);assert.match(html,/class="telegram-delivery-notice" role="status"/);assert.match(html,/1970-01-01T00:00:01.234Z/);assert.doesNotMatch(html,/data-action="telegram-(?:retry|resend)"/);assert.equal(f.requests.length,0);
+  if(language==='zh'){assert.match(html,/Telegram 已连接/);assert.match(html,/账号已配对/);assert.match(html,/26 条消息的发送结果未确认/);assert.match(html,/1 条消息未送达/);assert.match(html,/请求超时/);assert.match(html,/连接和账号配对仍然有效，新消息可以继续发送/);assert.match(html,/先检查 Telegram/);assert.doesNotMatch(html,/unconfirmed delivery|New messages can still/);}
+  else{assert.match(html,/Telegram connected/);assert.match(html,/Account paired/);assert.match(html,/26 messages with unconfirmed delivery/);assert.match(html,/1 message was not delivered/);assert.match(html,/Request timed out/);assert.match(html,/New messages can still be sent/);assert.doesNotMatch(html,/[\u4e00-\u9fff]/);}
+ }
+});
+
+test('Telegram settings operations and actual connection errors display independently with legacy fallback',()=>{
+ const f=fixture();f.c.state.telegram={enabled:true,configured:true,connected:false,paired:true,connectionError:'Connection unavailable',lastError:'Old delivery failed',delivery:{unknown:2}};f.c.telegramError='Settings operation rejected';let html=f.c.renderTelegramSettings();assert.match(html,/Settings operation rejected/);assert.match(html,/class="error telegram-connection-error"[^>]*>[^<]*Connection unavailable/);assert.doesNotMatch(html,/Old delivery failed|连接和账号配对仍然有效/);
+ f.c.telegramError='';delete f.c.state.telegram.connectionError;html=f.c.renderTelegramSettings();assert.match(html,/Old delivery failed/);f.c.state.telegram.connected=true;html=f.c.renderTelegramSettings();assert.doesNotMatch(html,/Old delivery failed|telegram-connection-error/);assert.match(html,/2 条消息的发送结果未确认/);
 });
 
 test('Telegram token form sends only to configuration, clears on success, and never persists or renders the token',async()=>{

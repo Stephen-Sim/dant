@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## Unreleased screenshot delivery and Telegram status fixes
+
+Explicit `send_message` and successful MCP `send_chat_message` replies now archive referenced current-output files onto the exact saved message, even when those files predate the current turn. Unrelated files are not delivered. Validated source-path metadata resolves a local Markdown link to the same-message immutable image or file; unmatched old links show a resend hint instead of opening VM paths. PNG and JPEG attachments use Telegram photo delivery, with original-document fallback only after a definite photo rejection. Missing message IDs, malformed acknowledgements and server errors remain unknown without fallback or replay.
+
+Read-only inspection found a valid Telegram pairing and 26 historical unconfirmed text deliveries, interspersed with successful sends. The old transport discarded underlying failure categories, so their exact cause cannot be reconstructed. A read-only `getMe` probe using the actual Worker's Node runtime and environment returned HTTP 200 with `ok:true` in 678 ms; no message was sent. The UI now separates current connectivity from historical delivery counts, timestamps and whitelisted failure reasons. Confirmed polling recovery clears a connection error without removing uncertainty or sending old messages again.
+
+All **1,565 JavaScript tests** passed with zero failures or skips; coverage was **99.05% lines, 91.78% branches and 91.99% functions**, with every gate passing. The frontend production build passed. These changes are not installed or released. Real photo rendering and end-to-end Telegram delivery still require acceptance after installation; automated delivery tests use simulated Bot API responses and exact attachment bytes.
+
 ## Unreleased automatic continuation of unfinished work
 
 The Worker now checks saved unfinished tasks every 30 seconds and coalesces a check about five seconds after progress changes. It continues one eligible task in the existing conversation, preserving its work ID, source, priority and turn history without adding a fake human message or replaying attachments. Human input and the normal queue take precedence. A fresh executor read must confirm the previous turn ended and the shared thread is idle before submission. Actual waiting, pause, cancellation, review, human control and uncertain outcomes remain excluded. Three automatic rounds without a changed public-plan checkpoint pause the task with a visible reason.

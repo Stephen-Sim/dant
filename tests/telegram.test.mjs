@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {EventEmitter} from 'node:events';
-import {TelegramGateway,splitTelegramText} from '../src/telegram.mjs';
+import {TelegramGateway,splitTelegramText,telegramMirrorText} from '../src/telegram.mjs';
 import {Store} from '../src/store.mjs';
 import {AttachmentStore,MAX_ATTACHMENT_BYTES} from '../src/attachments.mjs';
 import {createWorkerApp} from '../src/server.mjs';
@@ -31,7 +31,7 @@ class MockApi{
   if(method==='getUpdates')return json([]);
   if(method==='getFile')return json({file_id:body.file_id,file_path:this.filePath,file_size:this.fileData.length});
   if(method==='download')return new Response(this.fileData);
-  if(method==='sendMessage'||method==='sendDocument')return json({message_id:77});
+  if(method==='sendMessage'||method==='sendPhoto'||method==='sendDocument')return json({message_id:77});
   throw Error('Unexpected Telegram method');
  };
  count(method){return this.calls.filter(call=>call.method===method).length;}
@@ -417,4 +417,66 @@ test('Telegram reads dant language on each new reply, ignores sender language_co
 test('Telegram control acknowledgements use the latest language after awaiting confirmed engine work',async t=>{
  const context=setup(t,{language:'zh'}),{gateway,store,engine}=context;await paired(context);let resolvePause;engine.active={messageId:'pausing-current'};engine.pause=()=>new Promise(resolve=>resolvePause=()=>{engine.active=null;resolve();});const pausing=gateway.receive(update(2,'/pause'));await tick();assert.equal(typeof resolvePause,'function');store.state.settings.language='en';resolvePause();await pausing;await gateway.flush();assertPromptLanguage(commandText(context,2),'en');
  await gateway.receive(update(3,'Telegram-origin work'));const own=store.state.messages.find(message=>message.clientMessageId==='tg:123456:3');engine.active={messageId:own.id,messageIds:[own.id]};let resolveStop;engine.waitStopped=()=>new Promise(resolve=>resolveStop=()=>{engine.active=null;resolve();});const stopping=gateway.receive(update(4,'/stop'));await tick();assert.equal(typeof resolveStop,'function');store.state.settings.language='zh';resolveStop();await stopping;await gateway.flush();assertPromptLanguage(commandText(context,4),'zh');
+});
+
+const photoBytes=()=>Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jrxsAAAAASUVORK5CYII=','base64');
+
+test('recognized PNG and JPEG attachments upload as photos while other bytes retain document delivery',async t=>{
+ const context=setup(t);await paired(context);const files=[context.attachments.put({name:'screenshot.png',data:photoBytes()}),context.attachments.put({name:'photo.jpg',data:Buffer.from([255,216,255,224,0,2,255,217])}),context.attachments.put({name:'looks-like-photo.png',data:Buffer.from('A text document, not image content')})];
+ const message=context.store.add({role:'assistant',text:'Pictures',status:'completed',attachments:files});await context.gateway.flush();assert.equal(context.api.count('sendPhoto'),2);assert.equal(context.api.count('sendDocument'),1);const photos=context.api.calls.filter(call=>call.method==='sendPhoto');assert.equal(photos[0].body.get('chat_id'),'11');assert.equal(photos[0].body.get('photo').type,'image/png');assert.equal(photos[1].body.get('photo').type,'image/jpeg');assert.deepEqual(Buffer.from(await photos[0].body.get('photo').arrayBuffer()),photoBytes());assert.equal(photos[0].body.has('document'),false);assert.equal(context.api.calls.find(call=>call.method==='sendDocument').body.get('document').type,'text/plain');assert.equal(message.telegramMirror.files.length,3);
+ const count=context.api.calls.length;await context.gateway.flush();assert.equal(context.api.calls.length,count);
+ const desktop=context.store.add({role:'user',text:'',attachments:[files[0]]});await context.gateway.flush();const forwarded=context.api.calls.filter(call=>call.method==='sendPhoto').at(-1);assert.equal(forwarded.body.get('caption'),'You · desktop');assert.equal(context.gateway.config.outbox.find(item=>item.localMessageId===desktop.id).status,'sent');
+});
+
+test('an explicit photo rejection falls back once to the original file with durable deduplication',async t=>{
+ const context=setup(t);await paired(context);context.api.handlers.set('sendPhoto',()=>new Response(JSON.stringify({ok:false,error_code:400,description:'PHOTO_INVALID_DIMENSIONS'}),{status:400}));const file=context.attachments.put({name:'wide-screen.png',data:photoBytes()}),message=context.store.add({role:'assistant',text:'',attachments:[file],status:'completed'});await context.gateway.flush();assert.equal(context.api.count('sendPhoto'),1);assert.equal(context.api.count('sendDocument'),1);assert.deepEqual(Buffer.from(await context.api.calls.find(call=>call.method==='sendDocument').body.get('document').arrayBuffer()),photoBytes());const item=context.gateway.config.outbox.find(item=>item.localMessageId===message.id);assert.equal(item.status,'sent');assert.equal(item.documentFallback,true);assert.equal(item.attempts,2);await context.gateway.close();const restarted=setup(t,{dir:context.dir});await restarted.gateway.flush();assert.equal(restarted.api.count('sendPhoto'),0);assert.equal(restarted.api.count('sendDocument'),0);
+});
+
+test('unknown photo outcomes never fall back, repeat, or release later attachments after restart',async t=>{
+ for(const mode of ['network','server']){
+  const context=setup(t);await paired(context);context.api.handlers.set('sendPhoto',()=>{if(mode==='network')throw Error('Lost photo acknowledgement');return new Response(JSON.stringify({ok:false,error_code:500}),{status:500});});const file=context.attachments.put({name:'result.png',data:photoBytes()}),message=context.store.add({role:'assistant',text:'',attachments:[file],status:'completed'});await context.gateway.flush();assert.equal(context.gateway.status().delivery.unknown,1);assert.equal(context.api.count('sendPhoto'),1);assert.equal(context.api.count('sendDocument'),0);const later=context.attachments.put({name:'later.txt',data:Buffer.from('Later attachment')});context.store.update(message.id,{attachments:[file,later]});await context.gateway.flush();await context.gateway.close();const restarted=setup(t,{dir:context.dir});await restarted.gateway.flush();assert.equal(restarted.api.count('sendPhoto'),0);assert.equal(restarted.api.count('sendDocument'),0);assert.equal(restarted.gateway.status().delivery.unknown,1);
+ }
+});
+
+test('photo throttling only retries an explicit safe retry-after and access rejection never changes media method',async t=>{
+ const delays=[],context=setup(t,{gateway:{delay:async ms=>delays.push(ms)}});await paired(context);let count=0;context.api.handlers.set('sendPhoto',()=>++count===1?new Response(JSON.stringify({ok:false,error_code:429,parameters:{retry_after:1}}),{status:429}):json({message_id:45}));const file=context.attachments.put({name:'retry.png',data:photoBytes()});context.store.add({role:'assistant',text:'',attachments:[file],status:'completed'});await context.gateway.flush();assert.deepEqual(delays,[1000]);assert.equal(context.api.count('sendPhoto'),2);assert.equal(context.api.count('sendDocument'),0);
+ context.api.handlers.set('sendPhoto',()=>new Response(JSON.stringify({ok:false,error_code:403}),{status:403}));context.store.add({role:'assistant',text:'',attachments:[file],status:'completed'});await context.gateway.flush();await context.gateway.flush();assert.equal(context.api.count('sendPhoto'),3);assert.equal(context.api.count('sendDocument'),0);assert.equal(context.gateway.status().delivery.failed,1);
+});
+
+test('oversized photos use the document limit and queued legacy attachments gain photo delivery without historical replay',async t=>{
+ const context=setup(t);await paired(context);const bytes=Buffer.alloc(10000001);photoBytes().copy(bytes);const large=context.attachments.put({name:'large.png',data:bytes}),small=context.attachments.put({name:'small.png',data:photoBytes()});context.store.add({role:'assistant',text:'',attachments:[large,small],status:'completed'});context.gateway.scanResults();assert.ok(context.gateway.config.outbox.some(item=>item.kind==='document'&&item.attachmentId===small.id&&item.status==='queued'));await context.gateway.close();const restarted=setup(t,{dir:context.dir});await restarted.gateway.flush();assert.equal(restarted.api.count('sendPhoto'),1);assert.equal(restarted.api.count('sendDocument'),1);assert.equal(restarted.api.calls.find(call=>call.method==='sendDocument').body.get('document').size,bytes.length);assert.equal(restarted.api.calls.find(call=>call.method==='sendPhoto').body.get('photo').size,photoBytes().length);
+});
+
+test('assistant local file links keep their labels in Telegram while web links and human input remain unchanged',async t=>{
+ const source='[本轮截图](/home/dant/project/output/result.png) ![Preview](<output/result%20two.png>) [Windows](C:\\work\\output\\image.png) [Web](https://example.test/result.png)';assert.equal(telegramMirrorText(source),'本轮截图 Preview Windows [Web](https://example.test/result.png)');assert.equal(telegramMirrorText('[Bad](output/%zz.png)'), '[Bad](output/%zz.png)');assert.equal(telegramMirrorText('[Network](//example.test/picture.png)'), '[Network](//example.test/picture.png)');
+ const context=setup(t);await paired(context);const initial=context.api.count('sendMessage');context.store.add({role:'assistant',text:source,status:'completed'});context.store.add({role:'user',text:source});await context.gateway.flush();assert.deepEqual(context.api.calls.filter(call=>call.method==='sendMessage').slice(initial).map(call=>call.body.text),[telegramMirrorText(source),'You · desktop:\n'+source]);
+});
+
+test('delivery uncertainty is independent of a healthy connection and preserves only fixed diagnostic reasons',async t=>{
+ const context=setup(t);await paired(context);context.gateway.connected=true;context.api.handlers.set('sendMessage',()=>{throw Object.assign(Error('PRIVATE '+TOKEN+' https://private.test'),{cause:{code:'ENOTFOUND'}});});context.gateway.queueText('unknown-dns','A reply');await context.gateway.flush();const status=context.gateway.status();assert.equal(status.connected,true);assert.equal(status.paired,true);assert.equal(status.connectionError,null);assert.equal(status.delivery.unknown,1);assert.equal(status.delivery.lastIssue.reason,'dns');assert.equal(status.delivery.lastIssue.status,'unknown');assert.ok(status.delivery.lastIssue.at>0);assert.equal(JSON.stringify(status).includes(TOKEN),false);assert.equal(JSON.stringify(context.gateway.config.outbox).includes('private.test'),false);
+ context.gateway.connected=false;assert.equal(context.gateway.status().connectionError,null,'historical outgoing uncertainty is not a polling failure');context.gateway.config.pollError='Telegram could not be reached or returned an invalid response';context.gateway.config.lastError=context.gateway.config.pollError;assert.match(context.gateway.status().connectionError,/could not be reached/);context.gateway.connectionRestored();assert.equal(context.gateway.status().connectionError,null);assert.equal(context.gateway.status().lastError,null);assert.equal(context.gateway.status().delivery.unknown,1);assert.equal(context.gateway.status().delivery.lastIssue.reason,'dns');await context.gateway.close();const restarted=setup(t,{dir:context.dir});assert.equal(restarted.gateway.status().delivery.lastIssue.reason,'dns');await restarted.gateway.flush();assert.equal(restarted.api.count('sendMessage'),0);
+});
+
+test('invalid and oversized Telegram photo responses remain unknown with fixed reasons and no document fallback',async t=>{
+ for(const [reason,response]of [['invalid-response',()=>new Response('PRIVATE INVALID RESPONSE '+TOKEN)],['response-too-large',()=>new Response('x',{headers:{'Content-Length':String(3*1024*1024)}})]]){
+  const context=setup(t);await paired(context);context.api.handlers.set('sendPhoto',response);const file=context.attachments.put({name:'photo.png',data:photoBytes()});context.store.add({role:'assistant',text:'',attachments:[file],status:'completed'});await context.gateway.flush();assert.equal(context.gateway.status().delivery.lastIssue.reason,reason);assert.equal(context.gateway.status().delivery.unknown,1);assert.equal(context.api.count('sendPhoto'),1);assert.equal(context.api.count('sendDocument'),0);assert.equal(JSON.stringify(context.gateway.config.outbox).includes(TOKEN),false);
+ }
+});
+
+test('legacy delivery issues have a bounded public summary without exposing filenames or private errors',async t=>{
+ const context=setup(t);await paired(context);context.gateway.config.outbox.push({id:'legacy-unknown',status:'unknown',at:12345,error:'PRIVATE '+TOKEN,attachmentId:'PRIVATE FILE'});context.gateway.config.lastError='PRIVATE '+TOKEN;const status=context.gateway.status();assert.deepEqual(status.delivery.lastIssue,{status:'unknown',at:12345,reason:'unconfirmed'});assert.equal(status.connectionError,null);assert.equal(JSON.stringify(status).includes(TOKEN),false);assert.equal(JSON.stringify(status).includes('PRIVATE FILE'),false);context.gateway.config.outbox.at(-1).failureReason='PRIVATE '+TOKEN;assert.equal(context.gateway.status().delivery.lastIssue.reason,'unconfirmed');
+});
+
+test('outgoing success requires a real Telegram message receipt, including text, photos and documents',async t=>{
+ for(const kind of ['text','photo','document']){
+  const context=setup(t);await paired(context);const method=kind==='text'?'sendMessage':kind==='photo'?'sendPhoto':'sendDocument',before=context.api.count(method);context.api.handlers.set(method,()=>json({}));
+  if(kind==='text')context.gateway.queueText('missing-receipt','A text reply');else{const file=context.attachments.put({name:kind==='photo'?'image.png':'file.txt',data:kind==='photo'?photoBytes():Buffer.from('Document bytes')});context.store.add({role:'assistant',text:'',attachments:[file],status:'completed'});}
+  await context.gateway.flush();assert.equal(context.gateway.status().delivery.unknown,1);assert.equal(context.gateway.status().delivery.lastIssue.reason,'invalid-response');assert.equal(context.api.count(method),before+1);if(kind==='photo')assert.equal(context.api.count('sendDocument'),0);await context.gateway.flush();assert.equal(context.api.count(method),before+1);
+ }
+});
+
+test('server errors and malformed rejection envelopes cannot authorize photo fallback or replay',async t=>{
+ for(const [status,body,reason]of [[500,{ok:false,error_code:400},'server'],[500,{ok:false,error_code:429,parameters:{retry_after:1}},'server'],[429,{ok:false,error_code:500},'server'],[400,{ok:true,result:{message_id:77}},'invalid-response'],[200,{},'invalid-response']]){
+  const context=setup(t);await paired(context);context.api.handlers.set('sendPhoto',()=>new Response(JSON.stringify(body),{status}));const file=context.attachments.put({name:'photo.png',data:photoBytes()});context.store.add({role:'assistant',text:'',attachments:[file],status:'completed'});await context.gateway.flush();assert.equal(context.api.count('sendPhoto'),1);assert.equal(context.api.count('sendDocument'),0);assert.equal(context.gateway.status().delivery.unknown,1);assert.equal(context.gateway.status().delivery.lastIssue.reason,reason);
+ }
 });
