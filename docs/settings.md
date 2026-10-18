@@ -4,11 +4,15 @@ English · [简体中文](zh-CN/settings.md)
 
 Settings is organized into a category menu: General, Appearance, Voice, Work computer, ChatGPT, Credentials, Chat & data, Telegram, and About. On narrow windows, the menu uses a compact layout.
 
+**Connect my computer** in the welcome screen or disconnected Computer panel opens **Settings → Work computer** directly and focuses the connection card. Any settings search is cleared, while connection form drafts are preserved. Opening this category does not save a configuration or start a connection.
+
 Use **Search settings** to find a setting across all categories. English and Chinese names and keywords work in either interface language. Selecting a result opens its category and focuses the matching control, including controls inside advanced sections.
 
 Search uses a fixed catalog of setting names and help keywords. It does not search chat history, credential values or account details. Chat history search is a separate chat action.
 
 **Chat & data → Memory & personality** shows dant's actual shared identity and durable reference notes from the work computer. These are the same references used by chat and both voice providers, with credential values omitted. The view is read-only and can be refreshed; a previously loaded copy is labelled when the computer is offline. Scheduled tasks remain in the sidebar.
+
+**Shared personality** currently displays the fixed shared identity instructions, not a separate evolving personality file. **Current memory** displays the full safe contents of `identity.md` and `working-memory.md`. A heading with no notes can be the file's actual saved content, rather than a loading or display limit. Durable notes change only when explicitly saved, such as through dant's `memory_write` tool; chat and call history are separate, and there is no automatic memory consolidation. See [shared context and durable memory](context.md#durable-memory-and-personality).
 
 Switching categories preserves local form drafts and an ongoing call. Some settings require a connected work computer; appearance, application version and update checks are handled locally. See [updates](updates.md).
 

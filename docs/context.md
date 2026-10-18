@@ -20,7 +20,13 @@ Optional API voice supplies finalized human and assistant speech to the same Cod
 
 Ending media does not replace the conversation or cancel an accepted task. A confirmed backing task keeps the same turn and continues producing chat results after normal hangup; its results are available to later text messages and calls through that same thread. Explicit Stop work, executor failure and uncertain task ownership retain their separate interruption rules.
 
-Saving memory from either settings or a model tool refreshes the current voice session and backing thread. API voice replaces its previous memory snapshot after acknowledgement, and completed text replies also reach its live reference context. Speech context does not automatically become a durable preference note; `memory_write` remains explicit. API transcription uses `gpt-transcribe` over the existing WebRTC/sideband connection and still needs a separately configured API key.
+Saving durable memory refreshes the current voice session and backing thread. API voice replaces its previous memory snapshot after acknowledgement, and completed text replies also reach its live reference context. Speech context does not automatically become a durable preference note; `memory_write` remains explicit. API transcription uses `gpt-transcribe` over the existing WebRTC/sideband connection and still needs a separately configured API key.
+
+## Durable memory and personality
+
+Conversation history and durable notes are separate sources. The **Memory & personality** page shows the fixed `DANT_IDENTITY_INSTRUCTIONS` under Shared personality, and the complete credential-redacted `identity.md` and `working-memory.md` under Current memory. `identity.md` starts with an empty **Identity and preferences** heading; `working-memory.md` starts empty, unless older saved notes are migrated. A sparse page does not mean the conversation thread has been emptied.
+
+The model is instructed to use `memory_write` for durable facts and preferences, but dant does not automatically extract or consolidate notes from each message, call or completed task. Without an explicit save, the files can retain their initial content. Saved notes can influence future responses; the fixed identity instructions are not a separately learned personality profile. Refreshing the read-only page reloads saved content and does not generate new notes.
 
 ## Complete content reaches the model
 

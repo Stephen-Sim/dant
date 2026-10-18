@@ -21,14 +21,15 @@ See [the companion model and task continuity](docs/companion.md) for its product
 - Related follow-ups reuse one work record across execution turns; ordinary conversation creates no task entry. Unfinished plans stay **In progress** until verified.
 - **Scheduled tasks** has its own sidebar page with search, editing and pause controls. Ask dant in chat or a call to manage the same one-time schedules.
 - VM memory, scheduled tasks, shared desktop control with an expiring lease, and unread message notifications for results or requests for input. A sidebar badge and first-unread shortcut keep unseen dant replies available; a reply becomes read after it is visible in the foreground chat.
+- **Memory & personality** shows the fixed shared identity and actual saved reference notes. Durable notes require explicit saves; automatic memory consolidation is not implemented. See [durable memory](docs/context.md#durable-memory-and-personality).
 - Up to five attachments per message, each at most 10 MiB, plus automatic delivery of eligible changed files from `output/`.
 - Attachment downloads use a desktop Save As dialog, or a browser file download, while keeping chat and image previews open.
 - VM-owned encrypted credentials with secure request forms, and a plugin-style **Skills** library for searching, creating, editing and enabling reusable skills. Import supported text skills from public GitHub links or local `SKILL.md`/ZIP files with a preview, and download a managed skill as a portable ZIP. See [credentials and skills](docs/credentials-and-skills.md).
 - Chat search and explicit record editing, withdrawal, deletion and clearing; the model session and context remain intact. Saving an edit does not resubmit work unless you choose **Save and send again**.
 - Online and working status, with the last actual task or call activity shown as a relative time.
 - Structured diagnostics with automatic three-day retention and bounded disk usage. See [diagnostics](docs/diagnostics.md).
-- Application version and a manual **Check for updates** action in Settings, with links to newer GitHub releases. See [updates](docs/updates.md).
-- Categorized Settings with bilingual search that opens the matching control. See [settings](docs/settings.md).
+- Stable/Beta update channels, background installer downloads with checksum verification, and a separate guarded **Install and restart** action. See [updates](docs/updates.md).
+- Categorized Settings with bilingual search that opens the matching control. **Connect my computer** opens Work computer directly. See [settings](docs/settings.md).
 - Codex-managed context windows and automatic compaction, without an extra dant token budget. See [context management](docs/context.md).
 - The composer microphone opens a voice-message recorder with elapsed time, pause/resume, preview, cancellation and explicit sending. Original audio stays playable in chat; the VM recognizes Chinese and English speech locally and sends it internally to the same model conversation. Telegram voice messages use this path too, without an extra API key. **Speech to text** remains a separate attachment-menu option; the header phone starts a realtime call. See [audio processing](docs/architecture.md#voice).
 - A draggable horizontal call bar stays available inside the app. Minimizing the Windows app during a call shows a separate floating desktop bar with the same call controls.
