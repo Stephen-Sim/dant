@@ -349,6 +349,10 @@ export class TelegramGateway extends EventEmitter{
   if(this.ensureMirrorBaseline())this.save();this.scanMirrors();
   for(const task of this.store.state.messages){
    if(task.role!=='user'||!this.taskOwned(task)||!terminal.has(task.status))continue;
+   if(['review','completed'].includes(task.status)){
+    const work=(this.store.state.workTasks||[]).filter(record=>record.messageId===task.id||task.turnId&&(record.turnId===task.turnId||record.turnIds?.includes(task.turnId)));
+    if(work.some(record=>!(record.status==='completed'||record.status==='review'&&record.plan?.steps?.length&&record.plan.steps.every(step=>step.status==='completed'))))continue;
+   }
    const legacyKey=`result:${task.id}:${task.turnId||'unsubmitted'}:${['review','completed'].includes(task.status)?'result':task.status}`,key=`result:${this.config.owner.pairingId}:${legacyKey.slice(7)}`,previous=task.telegramDelivery;
    if(previous?.key===key){
     if(previous.status==='scheduling'){this.store.update(task.id,{telegramDelivery:{...previous,status:'unknown'}});this.config.lastError='Telegram reply scheduling was interrupted; it was not automatically repeated';this.save();}

@@ -73,8 +73,8 @@ test('concurrent ticks and repeated changes never submit while a continuation ac
  const f=fixture(t,[work('one'),work('two')]),ack=deferred();f.setContinue(()=>ack.promise);f.supervisor.start();const first=f.supervisor.tick();await f.supervisor.tick();f.engine.emit('change');f.engine.emit('change');await f.clock.advance(30000);assert.equal(f.calls.length,1);ack.resolve({continued:true});assert.deepEqual(await first,{continued:true});assert.equal(f.calls.length,1);assert.equal(f.supervisor.running,false);
 });
 
-test('sync and async failures keep a fixed safe notice and throttle future checks for at least thirty seconds',async t=>{
- for(const reject of [()=>{throw Error('SECRET private task and token');},()=>Promise.reject(Error('SECRET private task and token'))]){const f=fixture(t);f.setContinue(reject);await f.supervisor.tick();assert.equal(f.calls.length,1);assert.deepEqual(f.notices,['Unfinished work could not be continued. Its saved state was preserved.']);f.clock.set(NOW+29999);await f.supervisor.tick();assert.equal(f.calls.length,1);f.clock.set(NOW+30000);f.setContinue(()=>({continued:true}));await f.supervisor.tick();assert.equal(f.calls.length,2);assert.equal(JSON.stringify(f.notices).includes('SECRET'),false);assert.equal(f.store.state.workTasks[0].status,'continuing');}
+test('sync and async retryable failures stay quiet and throttle future checks for at least thirty seconds',async t=>{
+ for(const reject of [()=>{throw Error('SECRET private task and token');},()=>Promise.reject(Error('SECRET private task and token'))]){const f=fixture(t);f.setContinue(reject);await f.supervisor.tick();assert.equal(f.calls.length,1);assert.deepEqual(f.notices,[]);f.clock.set(NOW+29999);await f.supervisor.tick();assert.equal(f.calls.length,1);f.clock.set(NOW+30000);f.setContinue(()=>({continued:true}));await f.supervisor.tick();assert.equal(f.calls.length,2);assert.equal(JSON.stringify(f.notices).includes('SECRET'),false);assert.equal(f.store.state.workTasks[0].status,'continuing');}
 });
 
 test('failure cooldown starts when a delayed failure is observed and never replays persisted unknown submission',async t=>{
@@ -102,5 +102,19 @@ test('closing during an admitted request never schedules another task or emits a
 });
 
 test('a notice observer failure cannot break the supervisor or leak the original rejection',async t=>{
- const f=fixture(t);f.engine.on('notice',()=>{throw Error('bad UI observer');});f.setContinue(()=>Promise.reject(Error('private transport body')));await assert.doesNotReject(f.supervisor.tick());assert.equal(f.supervisor.running,false);f.clock.set(NOW+30000);await assert.doesNotReject(f.supervisor.tick());assert.equal(f.calls.length,2);assert.equal(f.notices.length,2);
+ const f=fixture(t);f.engine.on('notice',()=>{throw Error('bad UI observer');});f.setContinue(()=>{f.store.state.workTasks[0].status='unknown';return Promise.reject(Error('private transport body'));});await assert.doesNotReject(f.supervisor.tick());assert.equal(f.supervisor.running,false);f.clock.set(NOW+30000);await assert.doesNotReject(f.supervisor.tick());assert.equal(f.calls.length,1);assert.equal(f.notices.length,1);assert.equal(JSON.stringify(f.notices).includes('private'),false);
+});
+
+test('repeated admission failures keep retrying actual work without periodic chat or notice output',async t=>{
+ const f=fixture(t);f.setContinue(()=>{throw Object.assign(Error('Executor is not idle yet'),{status:409});});f.supervisor.start();await f.clock.advance(90000);assert.equal(f.calls.length,3);assert.deepEqual(f.notices,[]);assert.deepEqual(f.store.state.messages,[]);
+ f.setContinue(()=>({continued:true,workId:'work-one'}));await f.clock.advance(30000);assert.equal(f.calls.length,4);assert.deepEqual(f.notices,[]);
+});
+
+test('one actionable saved failure is reported once, and explicit state progress permits one new failure report',async t=>{
+ const f=fixture(t);f.setContinue(()=>{const record=f.store.state.workTasks[0];record.status='unknown';record.pauseReason='continuation-unconfirmed';record.continuation=metadata(null,{dispatch:dispatch('unknown')});throw Error('SECRET transport rejection');});f.supervisor.start();await f.clock.advance(30000);assert.equal(f.notices.length,1);await f.clock.advance(90000);assert.equal(f.notices.length,1);assert.equal(f.calls.length,1);assert.deepEqual(f.store.state.messages,[]);
+ f.store.state.workTasks=[work('work-one',{plan:{steps:[{step:'Verify actual new progress',status:'pending'}]}})];f.engine.emit('change');await f.clock.advance(5000);assert.equal(f.calls.length,2);assert.equal(f.notices.length,2);assert.ok(f.notices.every(message=>message==='Unfinished work could not be continued. Its saved state was preserved.'));
+});
+
+test('a newly acknowledged turn with an actionable failure retains the selected work identity in its safe notice',async t=>{
+ const f=fixture(t);f.setContinue(()=>{f.store.state.workTasks=[work('work-one',{turnId:'new-turn',turnIds:['turn-work-one','new-turn'],status:'unknown'})];throw Error('Private acknowledged response');});await f.supervisor.tick();assert.equal(f.notices.length,1);assert.equal(f.calls.length,1);assert.deepEqual(f.store.state.messages,[]);
 });

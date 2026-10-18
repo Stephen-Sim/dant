@@ -1,4 +1,4 @@
-import {continuationEligible,continuationId} from './work-continuation-state.mjs';
+import {continuationEligible,continuationId,workContinuationCheckpoint} from './work-continuation-state.mjs';
 
 const CHANGE_DELAY=5000;
 const FAILURE_DELAY=30000;
@@ -6,6 +6,8 @@ const FAILURE_NOTICE='Unfinished work could not be continued. Its saved state wa
 const priority={high:0,normal:1,low:2};
 const unfinished=plan=>plan===null||Array.isArray(plan?.steps)&&plan.steps.length>0&&plan.steps.every(step=>step&&['pending','inProgress','completed'].includes(step.status))&&plan.steps.some(step=>step.status!=='completed');
 const dueAt=record=>record.continuation?.nextAt??record.executionEndedAt+CHANGE_DELAY;
+const actionableFailure=record=>record&&(['unknown','failed'].includes(record.status)||record.continuation?.invalid||record.continuation?.dispatch||record.status==='paused'&&['automatic-no-progress','continuation-save-failed'].includes(record.pauseReason));
+const failureFingerprint=record=>{let checkpoint;try{checkpoint=workContinuationCheckpoint(record.plan);}catch{checkpoint='invalid';}return JSON.stringify([record.turnId,record.status,record.pauseReason||null,checkpoint,Boolean(record.continuation?.invalid),record.continuation?.dispatch?.phase||null]);};
 
 /** Reconcile saved unfinished work through the Engine's single admission path. */
 export class WorkContinuationSupervisor{
@@ -13,6 +15,7 @@ export class WorkContinuationSupervisor{
   if(!engine||!store||!worker||typeof now!=='function'||typeof setTimer!=='function'||typeof clearTimer!=='function'||!Number.isSafeInteger(intervalMs)||intervalMs<=0)throw Error('Work continuation requires the existing conversation engine and timers.');
   this.engine=engine;this.store=store;this.worker=worker;this.now=now;this.intervalMs=intervalMs;this.setTimer=setTimer;this.clearTimer=clearTimer;
   this.timer=null;this.changeTimer=null;this.started=false;this.closed=false;this.running=false;this.retryAt=0;this.generation=0;
+  this.failureNotices=new Map();
   this.onChange=()=>this.scheduleCheck();
  }
  available(){return !this.closed&&this.worker.status==='online'&&typeof this.engine.canContinueRegisteredWork==='function'&&this.engine.canContinueRegisteredWork()===true;}
@@ -23,20 +26,25 @@ export class WorkContinuationSupervisor{
  }
  async tick(){
   if(this.closed||this.running)return null;
-  this.running=true;const generation=this.generation;
+  this.running=true;const generation=this.generation;let selected=null;
   try{
+   for(const [id,fingerprint]of this.failureNotices){const record=this.store.state.workTasks.find(record=>record.id===id);if(!record||failureFingerprint(record)!==fingerprint)this.failureNotices.delete(id);}
    const at=this.now();if(at<this.retryAt||!this.available())return null;
-   const selected=this.candidate(at);if(!selected||!this.available())return null;
+   selected=this.candidate(at);if(!selected||!this.available())return null;
    const current=this.store.state.workTasks.find(record=>record.id===selected.id);
    if(this.closed||generation!==this.generation||current?.turnId!==selected.turnId||!this.eligible(current,this.now()))return null;
    // No await separates the final selection from the Engine's synchronous
    // reservation. It rechecks the exact saved owner before any submission.
    const result=await this.engine.continueRegisteredWork(selected.id,{expectedTurnId:selected.turnId});
+   this.failureNotices.delete(selected.id);
    return this.closed||generation!==this.generation?null:result;
   }catch{
    if(!this.closed&&generation===this.generation){
     this.retryAt=Math.max(this.retryAt,this.now()+FAILURE_DELAY);
-    try{this.engine.emit?.('notice',FAILURE_NOTICE);}catch{}
+    const record=selected&&this.store.state.workTasks.find(record=>record.id===selected.id&&(record.turnId===selected.turnId||record.turnIds?.includes(selected.turnId)));
+    if(actionableFailure(record)){
+     const fingerprint=failureFingerprint(record);if(this.failureNotices.get(record.id)!==fingerprint){this.failureNotices.set(record.id,fingerprint);try{this.engine.emit?.('notice',FAILURE_NOTICE);}catch{}}
+    }
    }
    return null;
   }finally{this.running=false;}

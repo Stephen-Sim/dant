@@ -372,12 +372,28 @@ class VoiceAndMCPTests(unittest.TestCase):
             self.assertEqual(pathlib.Path(result['path']).parent, output.resolve())
 
     def test_mcp_delivery_is_structured_and_does_not_send_an_http_message(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder, patch.object(desktop_mcp, 'credential_bridge', return_value={'quiet': False}) as bridge:
             response = desktop_mcp.dispatch({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call', 'params': {'name': 'send_chat_message', 'arguments': {'text': 'A verified link'}}}, folder)
-            self.assertEqual(response['result']['structuredContent'], {'dantMessage': {'text': 'A verified link'}})
+            self.assertEqual(response['result']['structuredContent'], {'dantMessage': {'text': 'A verified link'}, 'sent': False, 'pendingPublication': True})
             self.assertFalse(response['result']['isError'])
+            bridge.assert_called_once_with('chat_delivery_policy', {})
             response = desktop_mcp.dispatch({'id': 8, 'method': 'tools/call', 'params': {'name': 'open_url', 'arguments': {'url': 'javascript:alert(1)'}}}, folder)
             self.assertTrue(response['result']['isError'])
+
+    def test_mcp_automatic_chat_receipt_is_quiet_and_policy_uncertainty_cannot_claim_send(self):
+        with patch.object(desktop_mcp, 'credential_bridge', return_value={'quiet': True}) as bridge:
+            response = desktop_mcp.invoke('send_chat_message', {'text': 'Routine work report'}, pathlib.Path('.'))
+            self.assertEqual(response['structuredContent'], {'dantMessage': {'text': 'Routine work report'}, 'sent': False, 'pendingPublication': True, 'quiet': True, 'buffered': True})
+            bridge.assert_called_once_with('chat_delivery_policy', {})
+        for policy in [None, {}, {'quiet': 'true'}]:
+            with patch.object(desktop_mcp, 'credential_bridge', return_value=policy):
+                response = desktop_mcp.dispatch({'id': 99, 'method': 'tools/call', 'params': {'name': 'send_chat_message', 'arguments': {'text': 'Do not claim delivered'}}}, pathlib.Path('.'))
+                self.assertTrue(response['result']['isError'])
+                self.assertNotIn('dantMessage', response['result'].get('structuredContent', {}))
+        with patch.object(desktop_mcp, 'credential_bridge', side_effect=ValueError('Unconfirmed owned scope')):
+            response = desktop_mcp.dispatch({'id': 100, 'method': 'tools/call', 'params': {'name': 'send_chat_message', 'arguments': {'text': 'Do not claim delivered'}}}, pathlib.Path('.'))
+            self.assertTrue(response['result']['isError'])
+        self.assertNotIn('chat_delivery_policy', [tool['name'] for tool in desktop_mcp.TOOLS])
 
     def test_mcp_stdio_negotiation_uses_newline_json(self):
         with tempfile.TemporaryDirectory() as folder:

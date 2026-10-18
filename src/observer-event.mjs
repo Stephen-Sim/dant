@@ -1,4 +1,5 @@
 import {inheritTaskExecutionEvent} from './task-progress.mjs';
+import {inheritContinuationExecutionEvidence} from './continuation-execution.mjs';
 
 const ITEM_BYTES=64*1024,AGENT_TEXT_CHARS=120000;
 const itemTypes=new Set(['userMessage','hookPrompt','agentMessage','plan','reasoning','commandExecution','fileChange','mcpToolCall','dynamicToolCall','collabAgentToolCall','webSearch','imageView','imageGeneration','enteredReviewMode','exitedReviewMode','contextCompaction']);
@@ -21,7 +22,7 @@ export function observerEventMetadata(event){
 
 /** Projection bookkeeping stays outside the protocol object. */
 export function getObserverProjectionKind(event){return event&&typeof event==='object'?projections.get(event)||null:null;}
-function projected(event,item,kind){const result={...event,params:{...event.params,item}};projections.set(result,kind);return inheritTaskExecutionEvent(event,result);}
+function projected(event,item,kind){const result={...event,params:{...event.params,item}};projections.set(result,kind);return inheritContinuationExecutionEvidence(event,inheritTaskExecutionEvent(event,result));}
 function itemMetadata(item){
  const result={id:item.id,type:item.type};
  if(itemStatuses.has(item.status))result.status=item.status;

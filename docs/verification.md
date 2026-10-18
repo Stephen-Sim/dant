@@ -4,7 +4,13 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
-## Unreleased image recovery, captions, usage and task controls
+## 0.4.7-beta.4 source verification
+
+Automatic continuation now executes remaining work quietly in the existing work ID. End-to-end protocol tests run two actual unfinished rounds with no new chat messages, unread records, completion notices or Telegram sends; a third round delivers one verified result and its held immutable image. Tests also cover genuine questions, repeated secure input requests, normal human replies, failures and cancellation, bounded execution evidence, private MCP receipts, asynchronous voice ownership and fresh final images taking precedence over older cached files. Telegram no longer announces finished work while an associated task remains unfinished.
+
+The final source passed **1,668 JavaScript tests**, with zero failures or skips and **99.15% line, 91.87% branch and 92.24% function coverage**. All coverage gates, **74 Python tests**, **10 release/version/coverage gate tests**, the frontend production build and **112 local documentation links** passed. This candidate also includes the following image, caption, usage, task-control and settings checkpoints. Source verification did not install the application or modify live tasks, calls or VM services; release artifact verification is a separate step.
+
+## Image recovery, captions, usage and task controls source checkpoint
 
 A read-only VM audit found both reported screenshot files still present, while their assistant messages had no attachments. The output directory exceeded 6,000 entries and 2.8 GB in the bounded audit, exceeding the collector's 512-entry/64 MiB automatic scan limits. Explicit file reads now avoid unrelated files; an in-memory candidate read both actual PNGs (318,603 and 124,175 bytes) without writing attachments or deploying code. Ordinary replies and native background replies bind images to their exact messages, preserve immutable snapshots and skip redundant final copies. Clicking an old unresolved link can restore the current file from the exact saved assistant reference, without starting work, replaying text or guessing a filename.
 

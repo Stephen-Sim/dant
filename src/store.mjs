@@ -96,7 +96,7 @@ export class Store {
     delete record.progressDismissedAt;delete record.pauseReason;delete record.executionEndedAt;let next=[...before];if(index<0)next.push(record);else next[index]=record;if(supersede)next=next.filter((entry,position)=>position!==current);this.state.workTasks=next.slice(-300);
     try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;
   }
-  updateRegisteredWork(turnId,{status,plan,executionEnded=false,at=Date.now()}={}){
+  updateRegisteredWork(turnId,{status,plan,executionEnded=false,executionObserved=false,at=Date.now()}={}){
     const before=this.state.workTasks,index=before.findIndex(entry=>entry.turnId===turnId);if(index<0)return null;
     const previous=before[index],dispatch=previous.continuation?.dispatch,patch={};if(dispatch&&dispatch.phase!=='acknowledged'||previous.continuation?.invalid)throw continuationConflict();if(previous.status==='cancelled'&&(plan||status!==undefined&&status!=='cancelled'))throw workError('work_not_continuable','Cancelled work cannot be changed by an earlier execution.');if(status!==undefined){if(!['running','waiting_user','pausing','unknown','continuing','paused','failed','review','completed','cancelled'].includes(status))throw Error('Invalid registered work state.');patch.status=status;}
     if(plan)patch.plan=taskPlanInput({title:previous.title,steps:plan.steps}).plan;
@@ -105,7 +105,7 @@ export class Store {
     const record={...previous,...patch,updatedAt:at};
     if(executionEnded&&dispatch){
       if(dispatch.turnId!==turnId||!['continuing','waiting_user','paused','failed','review','completed','cancelled'].includes(record.status))throw continuationConflict();
-      const prior=safeWorkContinuation(previous.continuation);if(!prior)throw continuationConflict();const checkpoint=workContinuationCheckpoint(record.plan),noProgressCount=checkpoint===prior.lastCheckpoint?prior.noProgressCount+1:0;
+      const prior=safeWorkContinuation(previous.continuation);if(!prior)throw continuationConflict();const checkpoint=workContinuationCheckpoint(record.plan),noProgressCount=executionObserved===true?0:checkpoint===prior.lastCheckpoint?prior.noProgressCount+1:0;
       record.continuation={nextAt:record.status==='continuing'?Math.min(8640000000000000,at+continuationDelay(noProgressCount)):null,attempts:prior.attempts,noProgressCount,lastCheckpoint:checkpoint};
       if(record.status==='continuing'&&noProgressCount>=3){record.status='paused';record.pauseReason='automatic-no-progress';record.continuation.nextAt=null;}
     }

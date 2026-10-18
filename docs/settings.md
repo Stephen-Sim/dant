@@ -30,6 +30,8 @@ Your message shows one check after it is saved, and two after the executor ackno
 
 While a call is connected, typed text goes to that same call and dant responds aloud. Quoted replies carry the original message and speaker; both voice providers share the same conversation memory. Work progress remains available from its header button, and task checklist expansion survives status refreshes and reopening the panel.
 
+Automatic continuation performs the remaining entrusted work in the same task. Routine checks and intermediate results stay quiet; dant sends a chat message when the work finishes, fails or actually needs your reply. Ordinary messages you send still receive normal replies. A turn ending does not mean the task is complete.
+
 The full call view shows dant's current spoken response as live captions below the avatar, for subscription and API calls. Captions use existing speech transcript events, are credential-redacted and stay separate from chat history. They clear when interrupted, replaced or hung up, and eight seconds after a finalized utterance. The compact call bar keeps its existing layout.
 
 You can start a call while a confirmed task is running, including work continuing after an earlier call. The existing task and secure input requests keep their identity and progress. Connection failure or ordinary hangup does not pause that work; uncertain call or execution ownership still needs confirmation before another connection.

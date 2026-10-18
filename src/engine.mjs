@@ -19,6 +19,8 @@ import {startTaskProgress,advanceTaskProgress,observeTaskProgress,taskProgressSn
 import {canContinueRegisteredWork,continueRegisteredWork,hasUnconfirmedExecution} from './engine-continuation.mjs';
 import {TokenUsageStore} from './token-usage.mjs';
 import {TaskPlanBindingConflict} from './task-plan-conflict.mjs';
+import {createContinuationExecutionTracker} from './continuation-execution.mjs';
+import {workContinuationCheckpoint} from './work-continuation-state.mjs';
 
 const tool=(name,description,properties,required=[])=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
 const string={type:'string'};
@@ -62,6 +64,7 @@ export class Engine extends EventEmitter {
   this.queue=[];this.active=null;this.takeover=false;this.acquiring=false;this.items=new Map();this.completedItems=new Set();this.completedTurns=new Set();this.pendingFollowups=new Map();this.callReferences=new Map();this.followupEpoch=0;this.followupPauseReason='user-paused';
   this.eventMedia=new WeakMap();this.call=null;this.voiceTasks=new Map();this.nextVoiceTask=0;this.pendingUserRequests=new Map();this.finishing=null;this.confirmedCancellations=new Map();this.confirmedPauses=new Map();
   this.usage=new TokenUsageStore(store,{onChange:()=>this.change()});
+  this.continuationExecution=createContinuationExecutionTracker();
   worker.on('event',event=>{if(event?.method!=='thread/tokenUsage/updated'||event.params?.threadId!==this.store.state.threadId)return;try{this.usage.observeCodex(event.params,{runtimeId:this.runtimeId});}catch{this.emit('notice','Token usage could not be saved.');}});
   worker.on('event',event=>void this.handle(event).catch(error=>this.emit('notice',error.message)));
   worker.on('status',()=>{
@@ -307,14 +310,15 @@ export class Engine extends EventEmitter {
   }
  }
  backgroundCredentialNotice(active){
-  if(!(active?.background||active?.backgroundVoice)||!active.credentialWaits||active.backgroundWaitNotified)return;
-  active.backgroundWaitNotified=true;const sent=this.deliverText(this.store.state.settings.language==='en'?'I need a credential to continue this task. Please complete the secure credential form in chat.':'继续这个任务需要登录凭据，请填写聊天中的安全凭据表单。',active);
+  if(!(active?.background||active?.backgroundVoice||active?.continuation)||!active.credentialWaits||active.backgroundWaitNotified)return;
+  active.backgroundWaitNotified=true;const sent=this.deliverText(this.store.state.settings.language==='en'?'I need a credential to continue this task. Please complete the secure credential form in chat.':'继续这个任务需要登录凭据，请填写聊天中的安全凭据表单。',active,{continuationDelivery:'input'});if(!sent.sent)return;
+  if(active.continuation)active.quietInputCompletion=true;
   active.blockerSequence=(active.blockerSequence||0)+1;this.store.addCompletion?.({turnId:active.turnId+':credential:'+active.blockerSequence,messageIds:[sent.messageId],taskId:active.messageId});
  }
  requestChatInput(event,active){
   active.awaitingChatInput=true;
-  const prompts=(Array.isArray(event.params?.questions)?event.params.questions:[]).slice(0,8).map(item=>typeof item?.question==='string'?item.question.slice(0,5000):'').filter(Boolean),sent=this.deliverText((this.store.state.settings.language==='en'?'I need your input to continue this task.':'继续这个任务需要你提供信息。')+(prompts.length?'\n\n'+prompts.join('\n\n'):''),active);
-  active.blockerSequence=(active.blockerSequence||0)+1;this.store.addCompletion?.({turnId:active.turnId+':input:'+active.blockerSequence,messageIds:[sent.messageId],taskId:active.messageId});
+  const prompts=(Array.isArray(event.params?.questions)?event.params.questions:[]).slice(0,8).map(item=>typeof item?.question==='string'?item.question.slice(0,5000):'').filter(Boolean),sent=this.deliverText((this.store.state.settings.language==='en'?'I need your input to continue this task.':'继续这个任务需要你提供信息。')+(prompts.length?'\n\n'+prompts.join('\n\n'):''),active,{continuationDelivery:'input'});
+  if(sent.sent){if(active.continuation)active.quietInputCompletion=true;active.blockerSequence=(active.blockerSequence||0)+1;this.store.addCompletion?.({turnId:active.turnId+':input:'+active.blockerSequence,messageIds:[sent.messageId],taskId:active.messageId});}
   this.worker.rpc?.send({id:event.id,error:{code:-32601,message:'Ask the human in the existing chat and wait for their reply. This client does not support requestUserInput forms.'}});
  }
  cancelVoiceQueue(reason){
@@ -568,7 +572,7 @@ export class Engine extends EventEmitter {
     assertCurrent();
     this.updateWork(message.id,{submission:'submitting'});submitted=true;
     const waitRevision=active.planWaitRevision;await this.worker.request('turn/steer',{threadId:active.threadId,expectedTurnId,input});
-    this.safeUpdate(message.id,{submission:'confirmed',turnId:expectedTurnId,executorConfirmedAt:Date.now(),...(active.finalStatus?{status:active.finalStatus}:{})});active.messageIds.push(message.id);active.awaitingChatInput=false;if(active.planWaitRevision===waitRevision)active.planWaitingForUser=false;if(active.workRecord||active.workObserved)this.markWorkMessages(active);this.change();return {queued:false,turnId:expectedTurnId};
+    this.safeUpdate(message.id,{submission:'confirmed',turnId:expectedTurnId,executorConfirmedAt:Date.now(),...(active.finalStatus?{status:active.finalStatus}:{})});active.messageIds.push(message.id);active.awaitingChatInput=false;if(active.planWaitRevision===waitRevision)active.planWaitingForUser=false;this.resetContinuationInput(active,{humanResponse:true});if(active.workRecord||active.workObserved)this.markWorkMessages(active);this.change();return {queued:false,turnId:expectedTurnId};
    }catch(error){
     const unknown=submitted&&error.code==null;
     if(unknown)active.steerUnconfirmed=true;
@@ -590,14 +594,14 @@ export class Engine extends EventEmitter {
   if(isTurn&&active?.continuation?.bindingPending){this.bufferEvent(active,event);return;}
   if(isTurn&&(!active||!active.startAcknowledged)){this.rejectEvent(event,'No accepted active turn');return;}
   if(id&&active?.turnId&&id!==active.turnId){this.rejectEvent(event,'Inactive turn');return;}
-  if(active?.startAcknowledged&&parameters.threadId===active.threadId&&id===active.turnId&&observeTaskProgress(active,event,{redact:text=>this.redact(text)})){if(isTaskExecutionEvent(event))this.observeRegisteredExecution(active);if(event.method==='turn/plan/updated')this.observeRegisteredPlan(active,parameters.plan);this.change();}
+  if(active?.startAcknowledged&&parameters.threadId===active.threadId&&id===active.turnId&&observeTaskProgress(active,event,{redact:text=>this.redact(text)})){if(isTaskExecutionEvent(event))this.observeRegisteredExecution(active);if(event.method==='turn/plan/updated')this.observeRegisteredPlan(active,parameters.plan);if(active.continuation&&this.continuationExecution.observe({workId:active.continuation.workId,attemptId:active.continuation.attemptId,checkpoint:workContinuationCheckpoint(active.workRecord?.plan)},event))active.continuationExecutionObserved=true;this.change();}
   if(event.id!==undefined){
    if(event.method==='item/tool/call'){
     try{const args=typeof parameters.arguments==='string'?JSON.parse(parameters.arguments):parameters.arguments;const result=await this.tool(parameters.tool,args||{},parameters.tool==='end_call'?{mediaCallId:this.eventMedia.get(event)}:undefined);this.worker.rpc.reply(event.id,{success:true,contentItems:[{type:'inputText',text:JSON.stringify(result)}]});}
     catch(error){this.worker.rpc.reply(event.id,{success:false,contentItems:[{type:'inputText',text:error.message}]});}return;
    }
    if(event.method==='item/tool/requestUserInput'){
-    if(active.backgroundVoice){this.requestChatInput(event,active);return;}
+    if(active.backgroundVoice||active.continuation){this.requestChatInput(event,active);return;}
     active.awaitingChatInput=true;this.pendingUserRequests.set(event.id,event);for(const messageId of active.messageIds)this.safeUpdate(messageId,{status:'waiting_user'});this.emit('user-input',event);this.change();return;
    }
    this.worker.rpc?.send({id:event.id,error:{code:-32601,message:'Unsupported request: '+event.method}});return;
@@ -609,7 +613,7 @@ export class Engine extends EventEmitter {
    this.captureVoiceOutput(active,parameters.itemId,parameters.delta,true);
    const text=this.output(active,parameters.itemId,(active.outputs.get(parameters.itemId)||'')+parameters.delta);
    if(text===null)return;
-   if(!active.voiceOutput){
+   if(!active.voiceOutput&&!this.quietContinuation(active)){
     let message=this.items.get(parameters.itemId);
     if(!message){message=this.store.add({role:'assistant',text:'',status:'streaming',taskId:active.messageId});this.items.set(parameters.itemId,message);active.assistantIds.push(message.id);}
     const delta=text.slice(message.text.length);message.text=text;this.persistStreaming();this.emit('delta',{id:message.id,delta});this.change();
@@ -618,7 +622,8 @@ export class Engine extends EventEmitter {
   if(event.method==='item/completed'&&parameters.item?.type==='agentMessage'){
    const item=parameters.item;if(this.completedItems.has(item.id))return;this.captureVoiceOutput(active,item.id,item.text||'');const text=this.output(active,item.id,item.text||'');
    if(text===null)return;
-   if(!active.voiceOutput){let message=this.items.get(item.id);if(active.deliveredTexts?.has(text.trim())){if(message){this.store.state.messages=this.store.state.messages.filter(entry=>entry.id!==message.id);active.assistantIds=active.assistantIds.filter(id=>id!==message.id);this.items.delete(item.id);this.store.save();}}else if(message)this.store.update(message.id,{text,status:'completed'});else{message=this.store.add({role:'assistant',text,status:'completed',taskId:active.messageId});active.assistantIds.push(message.id);this.items.set(item.id,message);}}
+   if(this.quietContinuation(active)){active.quietOutputMeta ||= new Map();active.quietOutputMeta.set(item.id,{phase:item.phase,ready:registeredWorkFinalStatus(active,'review')==='review',waiting:active.planWaitingForUser===true||active.awaitingChatInput===true});await this.archiveQuietLinks(text,active);}
+   else if(!active.voiceOutput){let message=this.items.get(item.id);if(active.deliveredTexts?.has(text.trim())){if(message){this.store.state.messages=this.store.state.messages.filter(entry=>entry.id!==message.id);active.assistantIds=active.assistantIds.filter(id=>id!==message.id);this.items.delete(item.id);this.store.save();}}else if(message)this.store.update(message.id,{text,status:'completed'});else{message=this.store.add({role:'assistant',text,status:'completed',taskId:active.messageId});active.assistantIds.push(message.id);this.items.set(item.id,message);}}
    bounded(this.completedItems,item.id);this.change();
    const message=this.items.get(item.id);if(message)await this.archiveLinkedMessage(active,message.id);
   }
@@ -629,13 +634,14 @@ export class Engine extends EventEmitter {
  }
  respondToUser(id,result){
   if(!this.pendingUserRequests.has(id)||!this.active)throw Error('User request is no longer active');
-  this.worker.rpc.reply(id,result);this.pendingUserRequests.delete(id);this.active.awaitingChatInput=this.pendingUserRequests.size>0;this.active.planWaitingForUser=false;for(const messageId of this.active.messageIds)this.safeUpdate(messageId,{status:'running'});this.change();
+  this.worker.rpc.reply(id,result);this.pendingUserRequests.delete(id);this.active.awaitingChatInput=this.pendingUserRequests.size>0;this.active.planWaitingForUser=false;if(!this.active.awaitingChatInput)this.resetContinuationInput(this.active);for(const messageId of this.active.messageIds)this.safeUpdate(messageId,{status:'running'});this.change();
  }
  async tool(name,args,context){
   switch(name){
    case 'task_plan':return this.registerTaskPlan(args,context);
    case 'task_list':taskListInput(args);return this.listWorkTasks(context);
    case 'task_cancel':return this.requestWorkCancellation(taskCancelInput(args),context);
+   case 'chat_delivery_policy':{taskListInput(args);const {task}=this.taskPlanScope(context);return {quiet:this.quietContinuation(task),pendingPublication:true,sent:false};}
    case 'credential_find':case 'credential_get':case 'credential_store':case 'credential_request':return this.credentialTool(name,args,context);
    case 'skill_list':case 'skill_get':case 'skill_save':return this.skillTool(name,args,context);
    case 'schedule_list':case 'schedule_save':case 'schedule_delete':return this.scheduleTool(name,args,context);
@@ -645,15 +651,12 @@ export class Engine extends EventEmitter {
    case 'create_voice_message':{
     if(typeof args.text!=='string'||!args.text.trim()||args.text.length>100000)throw Error('Invalid voice message text');
     if(typeof this.worker.createVoiceMessage!=='function')throw Error('Voice message generation is unavailable');
-    const file=await this.worker.createVoiceMessage({text:args.text,voice:args.voice,outputDir:this.outputDir});return this.tool('send_file',{path:file.path});
+    const active=this.active;if(!active)throw Error('Voice message delivery requires an active task');
+    const operation=(async()=>{const file=await this.worker.createVoiceMessage({text:args.text,voice:args.voice,outputDir:this.outputDir});if(this.active!==active||active.stopRequested)throw Error('The voice message no longer belongs to active work');return this.deliverOutputFile(active,file.path);})();return this.trackQuietDelivery(active,operation);
    }
    case 'send_file':
     if(!this.active)throw Error('File delivery requires an active task');
-    if(typeof args.path!=='string'||!path.isAbsolute(args.path))throw Error('Use an absolute output file path');
-    this.active.explicitPaths.push(args.path);
-    if(this.deliverables?.archive){const attachments=await this.deliverables.archive({baseline:this.active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:[args.path],onlyExplicit:true,text:'',conversationId:this.store.state.conversationId,messageId:this.active.messageId,turnId:this.active.turnId});if(!attachments?.length)throw Error('No eligible output file was archived');return this.deliverAttachments(this.active,attachments);}
-    if(this.deliverFile)return this.deliverFile(args.path);
-    throw Error('File archive is unavailable');
+    return this.trackQuietDelivery(this.active,this.deliverOutputFile(this.active,args.path));
    case 'end_call':if(context&&Object.hasOwn(context,'mediaCallId')){if(context.mediaCallId&&this.call?.id===context.mediaCallId)await this.stopCall(context.mediaCallId);}else await this.stopCall();return {ended:true};
    default:throw Error('Unknown tool');
   }
@@ -709,7 +712,7 @@ export class Engine extends EventEmitter {
    try{return this.store.settleWorkContinuation(task.continuation.workId,task.continuation.attemptId,{status:status==='cancelled'?'cancelled':'paused',submitted:task.startSubmitted===true});}catch(error){this.emit('notice','Could not save unconfirmed task continuation: '+error.message);return null;}
   }
   if(task.workObserved&&!task.workRecord)this.observeRegisteredExecution(task);
-  try{return this.store.updateRegisteredWork(task.turnId,{status:registeredWorkFinalStatus(task,status),executionEnded:true});}catch(error){this.emit('notice','Could not save final task progress: '+error.message);return null;}
+  try{return this.store.updateRegisteredWork(task.turnId,{status:registeredWorkFinalStatus(task,status),executionEnded:true,executionObserved:task.continuationExecutionObserved===true});}catch(error){this.emit('notice','Could not save final task progress: '+error.message);return null;}
  }
  scheduleTool(name,args,context){
   if(!this.scheduler)throw Error('Scheduled tasks are unavailable.');
@@ -735,7 +738,7 @@ export class Engine extends EventEmitter {
   if(name==='credential_store')return this.credentials.upsert(args);
   if(active){active.credentialWaits=(active.credentialWaits||0)+1;for(const id of active.messageIds)this.safeUpdate(id,{status:'waiting_user'});this.backgroundCredentialNotice(active);this.change();}
   try{const value=await this.credentials.request(args,{owner:scope.owner,isCurrent:scope.isCurrent});if(!scope.isCurrent())throw Error('The credential request no longer belongs to active work');return value;}
-  finally{if(active){active.credentialWaits--;if(!active.credentialWaits)active.backgroundWaitNotified=false;if(this.active===active&&scope.isCurrent()&&!active.credentialWaits&&!this.pendingUserRequests.size){for(const id of active.messageIds)if(this.task(id)?.status==='waiting_user')this.safeUpdate(id,{status:'running'});this.change();}}}
+  finally{if(active){active.credentialWaits--;if(!active.credentialWaits)active.backgroundWaitNotified=false;if(this.active===active&&scope.isCurrent()&&!active.credentialWaits&&!this.pendingUserRequests.size){this.resetContinuationInput(active);for(const id of active.messageIds)if(this.task(id)?.status==='waiting_user')this.safeUpdate(id,{status:'running'});this.change();}}}
  }
  cancelCredentials(owner){if(!owner)return;try{this.credentials?.cancelOwner(owner);}catch{this.emit('notice','A secure credential form could not be cancelled cleanly.');}}
  async skillTool(name,args,context){
@@ -757,22 +760,88 @@ export class Engine extends EventEmitter {
   catch(error){for(const key of ['assistantReaction','assistantReactionUpdatedAt'])if(Object.hasOwn(prior,key))message[key]=prior[key];else delete message[key];throw error;}
   this.change();return {reacted:true,messageId:message.id,emoji,changed:true};
  }
- deliverText(text,active=this.active){
-  if(typeof text!=='string'||!text.trim()||text.length>100000)throw Error('Message text must contain 1–100000 characters');
+ resetContinuationInput(active,{humanResponse=false}={}){if(!active?.continuation)return;active.quietInputDelivered=false;active.quietInputCompletion=false;if(humanResponse){if(!active.quietHumanResponse)active.quietHumanResponseStart=active.assistantIds.length;active.quietHumanResponse=true;}}
+ async deliverOutputFile(active,file){
+  if(typeof file!=='string'||!path.isAbsolute(file))throw Error('Use an absolute output file path');active.explicitPaths.push(file);
+  if(this.deliverables?.archive){const attachments=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:[file],onlyExplicit:true,text:'',conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});if(!attachments?.length)throw Error('No eligible output file was archived');return this.deliverAttachments(active,attachments);}
+  if(this.deliverFile&&!this.quietContinuation(active)&&this.active===active)return this.deliverFile(file);
+  throw Error('File archive is unavailable');
+ }
+ quietContinuation(active){return Boolean(active?.continuation)&&active.quietPublishing!==true&&active.quietHumanResponse!==true;}
+ trackQuietDelivery(active,operation){
+  if(!this.quietContinuation(active))return operation;
+  active.quietPending ||= new Set();active.quietPending.add(operation);
+  void operation.then(()=>active.quietPending.delete(operation),()=>active.quietPending.delete(operation));return operation;
+ }
+ quietFiles(active){
+  this.continuationDeliveries ||= new Map();const key=active.continuation.workId;
+  if(!this.continuationDeliveries.has(key))this.continuationDeliveries.set(key,[]);
+  while(this.continuationDeliveries.size>300)this.continuationDeliveries.delete(this.continuationDeliveries.keys().next().value);
+  return this.continuationDeliveries.get(key);
+ }
+ bufferQuietFiles(active,files){
+  const current=this.quietFiles(active);
+  for(const file of files){const key=file.sourcePath||file.hash||file.sha256||file.id,index=current.findIndex(item=>(item.sourcePath||item.hash||item.sha256||item.id)===key);if(index>=0)current.splice(index,1);current.push(file);}
+  if(current.length>5)current.splice(0,current.length-5);
+  return {sent:false,quiet:true,buffered:true,bufferedFiles:files.map(file=>({id:file.id,name:file.name})),retainedInOutput:true};
+ }
+ bufferQuietText(active,text){
+  const entries=active.quietTexts ||= [],previous=entries.findIndex(entry=>entry.text===text);if(previous>=0)entries.splice(previous,1);
+  entries.push({text,ready:registeredWorkFinalStatus(active,'review')==='review',waiting:active.planWaitingForUser===true||active.awaitingChatInput===true||active.credentialWaits>0});
+  while(entries.length>128||entries.reduce((length,entry)=>length+entry.text.length,0)>120000)entries.shift();
+  return {sent:false,quiet:true,buffered:true,message:'Automatic work is continuing quietly. Nothing has been sent to chat.'};
+ }
+ async publishContinuationOutcome(active,status,error,{cancelled=false}={}){
+  const state=registeredWorkFinalStatus(active,status==='completed'?'review':status),kind=status==='completed'&&state==='review'?'result':status==='completed'&&state==='waiting_user'?'input':!cancelled&&!active.pauseOnly&&status==='failed'?'failure':null;
+  if(!kind||kind==='input'&&active.quietInputDelivered)return false;
+  const ordinary=[...active.outputs].map(([id,text])=>({text,...active.quietOutputMeta?.get(id)})).filter(item=>item.text?.trim()),explicit=active.quietTexts||[];
+  const last=ordinary.findLast(item=>item.phase==='final_answer')||ordinary.at(-1),chosen=kind==='input'?[...explicit,...ordinary].findLast(item=>item.waiting)||last:null;
+  let text;
+  if(kind==='failure')text=(this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(error?' '+this.redact(error):'');
+  else if(kind==='input')text=chosen?.text||'';
+  else{
+   const parts=[...new Set([...explicit.filter(item=>item.ready).map(item=>item.text),...(last?[last.text]:[])])];text=parts.join('\n\n')||explicit.at(-1)?.text||'';
+   if(text.length>120000)text=last?.text||explicit.at(-1)?.text||'';
+  }
+  const files=this.continuationDeliveries?.get(active.continuation.workId)||[];
+  if(!text.trim()&&!(kind==='result'&&files.length))return false;
+  active.quietPublishing=true;active.quietOutcome=kind;
+  const sent=text.trim()?this.deliverText(text,active,{continuationDelivery:kind}):(()=>{const message=this.store.add({role:'assistant',text:'',status:'completed',taskId:active.messageId});active.assistantIds.push(message.id);return {sent:true,messageId:message.id};})();
+  await this.archiveLinkedMessage(active,sent.messageId);
+  if(files.length)this.attach(active,files,{messageId:sent.messageId});
+  this.continuationDeliveries?.delete(active.continuation.workId);return true;
+ }
+ deliverText(text,active=this.active,{continuationDelivery}={}){
+  if(typeof text!=='string'||!text.trim()||text.length>(continuationDelivery?120000:100000))throw Error('Message text must contain 1–100000 characters');
   text=this.redact(text);
+  if(this.quietContinuation(active)){
+   if(continuationDelivery==='input'){if(active.quietInputDelivered)return {sent:false,quiet:true,buffered:false,alreadyNotified:true};}
+   else if(!continuationDelivery)return this.bufferQuietText(active,text);
+  }
   if(active&&active.assistantIds.length>=128)throw Error('The task reached its message delivery limit');
   const message=this.store.add({role:'assistant',text,status:'completed',taskId:active?.messageId,...(active?.voiceOutput||active?.source==='voice'?{source:{type:'voice-call',conversationId:this.store.state.conversationId}}:{})});
   if(active){active.assistantIds.push(message.id);active.deliveredTexts ||= new Set();active.deliveredTexts.add(text.trim());}
+  if(active?.continuation&&continuationDelivery==='input')active.quietInputDelivered=true;
   this.change();return {sent:true,messageId:message.id};
  }
  async deliverLinkedText(text,active=this.active,{onSaved}={}){
-  const result=this.deliverText(text,active),message=this.task(result.messageId);
+  const quietInput=this.quietContinuation(active)&&active.planWaitingForUser,result=this.deliverText(text,active,quietInput?{continuationDelivery:'input'}:{});
   onSaved?.();
+  if(result.sent&&quietInput){active.quietInputCompletion=true;active.blockerSequence=(active.blockerSequence||0)+1;this.store.addCompletion?.({turnId:active.turnId+':input:'+active.blockerSequence,messageIds:[result.messageId],taskId:active.messageId});}
+  if(!result.sent){
+   if(result.buffered)await this.archiveQuietLinks(text,active);
+   return result;
+  }
+  const message=this.task(result.messageId);
   // Only model-owned explicit deliveries can nominate output links. The
   // collector still resolves and validates every file inside current output/.
   if(!active||!this.hasOutputLinks(message.text))return result;
   const attached=await this.archiveLinkedMessage(active,message.id);
   return {...result,files:attached.map(file=>({id:file.id,name:file.name}))};
+ }
+ archiveQuietLinks(text,active){
+  if(!this.hasOutputLinks(text)||!this.deliverables?.archive)return Promise.resolve();
+  const operation=(async()=>{try{const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:[],onlyExplicit:true,text,conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});this.bufferQuietFiles(active,files||[]);}catch{}})();return this.trackQuietDelivery(active,operation);
  }
  hasOutputLinks(text){return typeof text==='string'&&Array.from(text.matchAll(/\]\(([^)]+)\)/g),match=>match[1]).some(candidate=>!/^\s*(?!file:)[a-z][a-z\d+.-]*:\/\//i.test(candidate.replace(/^<|>$/g,'')));}
  archiveLinkedMessage(active,messageId){
@@ -824,8 +893,7 @@ export class Engine extends EventEmitter {
   }else{
    const file=payload.voiceFile?.path;if(typeof file!=='string'||!path.isAbsolute(file)||file.includes('\0'))return false;
    if(!this.deliverables?.archive)throw Error('File archive is unavailable');
-   const attachments=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:[file],onlyExplicit:true,text:'',conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});
-   if(!attachments?.length)throw Error('No eligible voice file was archived');active.explicitPaths.push(file);this.deliverAttachments(active,attachments);
+   active.deliveredMcpIds.add(item.id);await this.trackQuietDelivery(active,this.deliverOutputFile(active,file));
   }
   active.deliveredMcpIds.add(item.id);return true;
  }
@@ -847,7 +915,7 @@ export class Engine extends EventEmitter {
   if(!message){message=this.store.add({role:'assistant',text:'',status:'completed',taskId:active.messageId,attachments:[],...(active.voiceOutput||active.source==='voice'?{source:{type:'voice-call',conversationId:this.store.state.conversationId}}:{})});active.assistantIds.push(message.id);}
   this.store.update(message.id,{attachments:[...(message.attachments||[]),...selected]});this.change();return selected;
  }
- deliverAttachments(active,attachments){this.attach(active,attachments);const delivered=active.assistantIds.flatMap(id=>this.task(id)?.attachments||[]).filter(file=>attachments.some(candidate=>(candidate.hash||candidate.sha256||candidate.id)===(file.hash||file.sha256||file.id)));if(!delivered.length)throw Error('The five-file delivery limit was reached; this file has not been sent');return {sent:true,files:delivered.map(file=>({id:file.id,name:file.name}))};}
+ deliverAttachments(active,attachments){if(this.quietContinuation(active))return this.bufferQuietFiles(active,attachments);this.attach(active,attachments);const delivered=active.assistantIds.flatMap(id=>this.task(id)?.attachments||[]).filter(file=>attachments.some(candidate=>(candidate.hash||candidate.sha256||candidate.id)===(file.hash||file.sha256||file.id)));if(!delivered.length)throw Error('The five-file delivery limit was reached; this file has not been sent');return {sent:true,files:delivered.map(file=>({id:file.id,name:file.name}))};}
  finish(status,error){
   const active=this.active;if(!active)return Promise.resolve();if(active.finishing)return active.finishing;
   active.finishing=Promise.resolve().then(()=>this.complete(active,status,error));this.finishing=active.finishing;return active.finishing;
@@ -864,21 +932,28 @@ export class Engine extends EventEmitter {
    if(cancelled)this.rememberCancellation(active);
    if(active.pauseOnly&&taskStatus==='paused'&&(active.terminalConfirmed||!active.startSubmitted))this.rememberPause(active);
   try{
-   if(status==='completed'){
+   if(active.continuation)await Promise.allSettled(active.quietPending||[]);
+   if(active.continuation&&!active.quietHumanResponse)await this.publishContinuationOutcome(active,status,error,{cancelled});
+   if(status==='completed'&&!this.quietContinuation(active)){
     if(active.backgroundVoice)this.deliverBackgroundText(this.redact([...(active.voiceOutputs?.values()||[])].map(output=>output.text).join('\n\n')),active);
     await this.archiveLinkedMessages(active);
    }
-   if(status==='completed'&&this.deliverables?.archive){
+   if(active.continuation&&active.quietHumanResponse&&status==='completed'&&registeredWorkFinalStatus(active,'review')==='review'){
+    const files=this.continuationDeliveries?.get(active.continuation.workId)||[];
+    if(files.length){let messageId=active.assistantIds.slice(active.quietHumanResponseStart||0).at(-1);if(!messageId){const message=this.store.add({role:'assistant',text:'',status:'completed',taskId:active.messageId});active.assistantIds.push(message.id);messageId=message.id;}this.attach(active,files,{messageId});}
+    this.continuationDeliveries?.delete(active.continuation.workId);
+   }
+   if(status==='completed'&&!this.quietContinuation(active)&&this.deliverables?.archive){
     try{const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:active.explicitPaths,excludePaths:this.deliveredOutputPaths(active),text:[...active.outputs.values()].join('\n\n'),conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});this.attach(active,files||[]);}catch(archiveError){if(active.backgroundVoice)this.deliverText(this.store.state.settings.language==='en'?'The output files could not be added to chat. Check the work computer for the task\'s files.':'任务输出文件未能添加到聊天，请到工作电脑检查。',active);else this.emit('notice','Output could not be archived: '+archiveError.message);}
    }
-   if(active.backgroundVoice){
+   if(active.backgroundVoice&&!active.continuation){
     const result=this.redact([...(active.voiceOutputs?.values()||[])].map(output=>output.text).join('\n\n'));
     if(status==='completed'){this.deliverBackgroundText(result,active);if(!active.assistantIds.length)this.deliverText(this.store.state.settings.language==='en'?'The background task has finished.':'后台任务已结束。',active);}
     if(status!=='completed'&&!cancelled&&!active.pauseOnly){const detail=this.redact(error||'');this.deliverText((this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),active);}
    }
    for(const id of active.messageIds)this.updateWork(id,{status:taskStatus,error,pauseReason:taskStatus==='paused'?'executor-stopped':null});
    for(const [itemId,message] of this.items){if(message.status==='streaming')message.status=status==='completed'?'completed':'paused';bounded(this.completedItems,itemId);}
-   if((status==='completed'&&!active.voiceOutput||active.backgroundVoice)&&active.assistantIds.length)this.store.addCompletion?.({turnId:active.turnId,messageIds:active.assistantIds,taskId:active.messageId,...(active.voiceOutput?{work:voiceCompletionWork(active,taskStatus)}:{})});
+   if((status==='completed'&&!active.voiceOutput||active.backgroundVoice||active.continuation&&active.quietOutcome==='failure')&&active.assistantIds.length&&(!active.continuation||active.quietPublishing||active.quietHumanResponse))this.store.addCompletion?.({turnId:active.turnId,messageIds:active.assistantIds,taskId:active.messageId,...(active.voiceOutput?{work:voiceCompletionWork(active,taskStatus)}:{})});
    this.store.save();
   }catch(persistenceError){this.emit('notice','Could not save conversation: '+persistenceError.message);}
   finally{

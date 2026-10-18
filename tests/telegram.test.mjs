@@ -48,6 +48,35 @@ function assertPromptLanguage(text,language){assert.equal(typeof text,'string');
 function commandText(context,id){const parts=context.gateway.config.outbox.filter(item=>item.id.startsWith(`command:${id}:`));assert.ok(parts.length,'a command should queue its own reply');return parts.map(item=>item.text).join('');}
 async function localizedCommand(context,id,text,language){await context.gateway.receive(update(id,text,{from:{id:11,is_bot:false,language_code:language==='en'?'zh-hans':'en'}}));await context.gateway.flush();const reply=commandText(context,id);assertPromptLanguage(reply,language);assert.ok(context.api.calls.some(call=>call.method==='sendMessage'&&reply.includes(call.body.text)),'the localized reply must be sent through the fake Telegram transport');return reply;}
 
+test('an ended Telegram response cannot announce finished work while its authoritative task is still unfinished',async t=>{
+ for(const status of ['running','continuing','waiting_user','paused','unknown','failed','cancelled']){
+  const f=setup(t);await paired(f);await f.gateway.receive(update(2,'Keep working on the requested result'));const task=f.store.state.messages[0];f.store.update(task.id,{status:'review',turnId:'first-turn'});
+  const record=f.store.registerWork({turnId:'first-turn',messageId:task.id,title:'Requested result',plan:{steps:[{step:'Finish the actual result',status:'pending'}]}});f.store.updateRegisteredWork(record.turnId,{status,executionEnded:true});const before=f.api.count('sendMessage');await f.gateway.flush();await f.gateway.flush();assert.equal(f.api.count('sendMessage'),before,status);assert.equal(task.telegramDelivery,undefined,status);
+ }
+});
+
+test('quiet unfinished Telegram work still delivers actual input questions and final text plus images',async t=>{
+ const f=setup(t);await paired(f);await f.gateway.receive(update(2,'Finish and verify the result'));const task=f.store.state.messages[0];f.store.update(task.id,{status:'review',turnId:'first-turn'});
+ const record=f.store.registerWork({turnId:'first-turn',messageId:task.id,title:'Requested result',plan:{steps:[{step:'Verify the result',status:'pending'}]}});f.store.updateRegisteredWork(record.turnId,{status:'continuing',executionEnded:true});await f.gateway.flush();const before=f.api.calls.length;
+ f.store.updateRegisteredWork(record.turnId,{status:'waiting_user',executionEnded:true});f.store.add({role:'assistant',text:'Which folder should I use?',status:'completed',taskId:task.id});await f.gateway.flush();assert.equal(f.api.calls.slice(before).filter(call=>call.method==='sendMessage'&&call.body.text==='Which folder should I use?').length,1);assert.equal(f.api.calls.slice(before).some(call=>call.method==='sendMessage'&&call.body.text.includes('Work finished')),false);
+ const image=f.attachments.put({name:'verified.png',data:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=','base64')});f.store.updateRegisteredWork(record.turnId,{status:'review',plan:{steps:[{step:'Verify the result',status:'completed'}]},executionEnded:true});f.store.add({role:'assistant',text:'The verified result is ready.',status:'completed',taskId:task.id,attachments:[image]});await f.gateway.flush();assert.equal(f.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text==='The verified result is ready.').length,1);assert.equal(f.api.count('sendPhoto'),1);assert.equal(f.api.calls.some(call=>call.method==='sendMessage'&&call.body.text.includes('Work finished')),false);
+});
+
+test('verified complete work and ordinary unregistered results retain their final Telegram fallback',async t=>{
+ for(const registered of [false,true]){
+  const f=setup(t);await paired(f);await f.gateway.receive(update(2,'Produce the requested result'));const task=f.store.state.messages[0];f.store.update(task.id,{status:'review',turnId:'done-turn'});if(registered){f.store.registerWork({turnId:'done-turn',messageId:task.id,title:'Verified result',plan:{steps:[{step:'Verify the actual result',status:'completed'}]}});f.store.updateRegisteredWork('done-turn',{status:'review',executionEnded:true});}
+  await f.gateway.flush();assert.equal(f.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text.includes('Work finished')).length,1);await f.gateway.flush();assert.equal(f.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text.includes('Work finished')).length,1);
+ }
+});
+
+test('an earlier completed record cannot hide another unfinished work record associated with the same Telegram request',async t=>{
+ const f=setup(t);await paired(f);await f.gateway.receive(update(2,'Implement and verify both requested parts'));const task=f.store.state.messages[0];f.store.update(task.id,{status:'review',turnId:'old-turn'});
+ const first=f.store.registerWork({turnId:'old-turn',messageId:task.id,title:'First requested part',plan:{steps:[{step:'Verify first part',status:'completed'}]}});f.store.updateRegisteredWork(first.turnId,{status:'completed',executionEnded:true});
+ const second=f.store.registerWork({turnId:'new-turn',messageId:task.id,title:'Second requested part',plan:{steps:[{step:'Finish second part',status:'pending'}]}});f.store.updateRegisteredWork(second.turnId,{status:'continuing',executionEnded:true});
+ const count=f.api.count('sendMessage');await f.gateway.flush();assert.equal(f.api.count('sendMessage'),count);assert.equal(task.telegramDelivery,undefined);
+ f.store.updateRegisteredWork(second.turnId,{status:'review',plan:{steps:[{step:'Finish second part',status:'completed'}]},executionEnded:true});await f.gateway.flush();assert.equal(f.api.calls.filter(call=>call.method==='sendMessage'&&call.body.text.includes('Work finished')).length,1);
+});
+
 test('Telegram defaults off and has no network activity or token in public state',async t=>{
  const {gateway,api,dir}=setup(t);gateway.start();await gateway.pollOnce();await gateway.flush();assert.equal(api.calls.length,0);assert.equal(gateway.status().enabled,false);assert.equal(gateway.status().configured,false);assert.equal(fs.existsSync(path.join(dir,'telegram.json')),false);
  await gateway.configure({token:TOKEN,enabled:false});assert.equal(api.count('getMe'),1);assert.equal(api.count('getUpdates'),0);assert.equal(JSON.stringify(gateway.status()).includes(TOKEN),false);assert.equal(JSON.stringify(gateway.store.state).includes(TOKEN),false);

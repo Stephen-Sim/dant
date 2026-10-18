@@ -20,6 +20,7 @@ See [the companion model and task continuity](docs/companion.md) for its product
 - Open **Work progress** in the chat header to see task status, steps, queued work and recent results. A small marker highlights results awaiting review.
 - Pause one task while retaining its checklist and partial results, then resume the same work ID when ready; the call and unrelated queue are preserved.
 - Related follow-ups reuse one work record across execution turns; ordinary conversation creates no task entry. Unfinished plans stay **In progress** until verified.
+- Automatic follow-ups quietly continue the remaining work, with chat delivery for final results, failures or actual requests for your input.
 - **Scheduled tasks** has its own sidebar page with search, editing and pause controls. Ask dant in chat or a call to manage the same one-time schedules.
 - VM memory, scheduled tasks, shared desktop control with an expiring lease, and unread message notifications for results or requests for input. A sidebar badge and first-unread shortcut keep unseen dant replies available; a reply becomes read after it is visible in the foreground chat.
 - **Memory & personality** shows the fixed shared identity and actual saved reference notes. Durable notes require explicit saves; automatic memory consolidation is not implemented. See [durable memory](docs/context.md#durable-memory-and-personality).

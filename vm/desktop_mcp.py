@@ -183,7 +183,15 @@ def invoke(name, args, output_dir):
         text = args.get('text')
         if not isinstance(text, str) or not text.strip() or len(text) > 100000:
             raise ValueError('Chat delivery requires 1–100000 text characters')
-        return result({'dantMessage': {'text': text}})
+        # The owned application observer publishes this result. This lookup
+        # cannot send a message or start work, and uncertainty never proves send.
+        policy = credential_bridge('chat_delivery_policy', {})
+        if not isinstance(policy, dict) or not isinstance(policy.get('quiet'), bool):
+            raise ValueError('Chat delivery policy is unconfirmed. Nothing was sent by this tool.')
+        receipt = {'sent': False, 'pendingPublication': True}
+        if policy['quiet']:
+            receipt.update({'quiet': True, 'buffered': True})
+        return result({'dantMessage': {'text': text}, **receipt})
     if name == 'react_message':
         message_id, emoji = args.get('messageId'), args.get('emoji')
         if (not isinstance(message_id, str) or not message_id or len(message_id) > 128 or
