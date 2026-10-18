@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import {parseHTML} from 'linkedom';
 import {createAppearance,exportAppearance as serializeAppearance,importAppearance as parseAppearance} from '../ui/appearance.js';
 import {telegramConnectionError,telegramDeliveryNotice} from '../ui/telegram-delivery.js';
+import {createSettingsNavigation} from '../ui/settings-navigation.js';
+import {reconcile} from '../ui/dom.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
@@ -49,6 +52,21 @@ test('Connect without binding discovers existing configurations and opens manual
  const f=fixture();await f.c.connectVM();assert.equal(f.c.page,'settings');assert.equal(f.c.settingsCategory,'computer');assert.equal(f.c.manualVMExpanded,true);assert.equal(f.c.vmProfilesVisible,true);assert.equal(f.requests[0].route,'/vm/profiles');assert.equal(f.requests.some(item=>item.route==='/connect'||item.route==='/provision'),false);
  const html=f.c.renderVMSettings();assert.match(html,/data-action="use-existing"/);assert.match(html,/id="manual-vm-options" open/);assert.match(html,/保存并连接/);
  f.c.vmProfiles={current:null,candidates:[{id:'old',label:'Previous workspace',host:'172.20.0.5',user:'dant',port:22,directory:'C:/old/data'}]};f.c.selectedVMProfile='old';assert.match(f.c.renderVMProfiles(),/Previous workspace/);assert.doesNotMatch(f.c.renderVMProfiles(),/data-action="import-vm-profile"[^>]*disabled/);
+});
+
+test('computer setup entry points open Work computer and clear search while keeping drafts and generic Settings navigation',async()=>{
+ const f=fixture(),{c}=f,{document,Event}=parseHTML('<main></main>'),main=document.querySelector('main'),loads=[];
+ Object.assign(c,{document,page:'chat',dictating:false,speakingId:null,emojiFor:null,chatMode:'text',clearTelegramPairing:()=>{},eyes:()=>'',replyTo:null,attachments:[],recordDraft:null,recordStarting:false,composerDraft:'',sending:false,uploading:0,recording:null,renderUnreadControl:()=>'',renderUnconfirmedMessage:()=>'',renderVoiceRecorder:()=>'',renderAttachmentOptions:()=>'',speechBlocked:()=>false,computerReachable:()=>false,computerExecutorReady:()=>false,innerWidth:1280,callBlocksControl:()=>false,humanControl:()=>false});
+ vm.runInContext(section('function renderChat(){','function renderDraftAttachment(')+section('function renderComputer(){','function renderSettings(){'),c);c.state.worker.status='offline';
+ const entryActions=[];for(const language of ['zh','en']){c.state.settings.language=language;for(const markup of [c.renderChat(),c.renderComputer()]){const entry=parseHTML(markup).document.querySelector('[data-action="computer-settings"]');assert.ok(entry,language);assert.equal(entry.textContent,language==='en'?'Connect my computer':'连接我的电脑');entryActions.push(entry.dataset.action);}}c.state.settings.language='zh';
+ const draft=c.vmDraft={host:'192.0.2.45',user:'saved-draft',port:2202,keyPath:'C:/draft/key'},settings=JSON.stringify(c.state.settings);
+ c.settingsNavigation=createSettingsNavigation({document,onChange:()=>c.render(),onCategory:async category=>{loads.push(category);await c.loadSettingsCategory(category);}});
+ c.render=()=>{c.settingsNavigation.sync(c.page==='settings');const template=document.createElement('template');template.innerHTML=c.page==='settings'?c.settingsNavigation.render({computer:c.renderVMSettings(),appearance:'<p>Appearance</p>'}):'<p>Chat</p>';reconcile(main,template.content);if(c.page==='settings')c.settingsNavigation.bind();};
+ c.settingsNavigation.select('appearance');await c.action('settings');await new Promise(resolve=>setImmediate(resolve));assert.equal(c.settingsNavigation.category,'appearance');
+ const input=document.querySelector('#settings-search');input.value='Telegram';input.dispatchEvent(new Event('input'));assert.equal(document.querySelector('[data-settings-panel="computer"]').hidden,true);
+ await c.action(entryActions[0]);await new Promise(resolve=>setImmediate(resolve));assert.equal(c.page,'settings');assert.equal(c.settingsNavigation.category,'computer');assert.equal(document.querySelector('[aria-current="page"]').dataset.settingsCategory,'computer');assert.equal(document.querySelector('[data-settings-panel="computer"]').hidden,false);assert.equal(document.querySelector('#settings-search').value,'');assert.equal(document.querySelector('.vm-settings').getAttribute('tabindex'),'-1');assert.equal(document.querySelector('[name="host"]').value,draft.host);assert.equal(c.vmDraft,draft);assert.equal(JSON.stringify(c.state.settings),settings);assert.deepEqual(loads,['appearance','computer']);assert.deepEqual(f.requests,[]);
+ await c.action('chat');c.settingsNavigation.select('appearance');await c.action('settings');assert.equal(c.settingsNavigation.category,'appearance','the general Settings button keeps its existing category behavior');
+ for(const entry of entryActions.slice(1)){await c.action('chat');await c.action(entry);assert.equal(c.settingsNavigation.category,'computer');assert.equal(c.vmDraft,draft);}assert.deepEqual(f.requests,[]);
 });
 
 test('manual form saves before connecting and preserves typed connection details after a connection error',async()=>{

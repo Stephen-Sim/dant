@@ -26,7 +26,7 @@ const visiblePanels=f=>[...f.document.querySelectorAll('[data-settings-panel]')]
 
 test('settings default to General, render a bilingual category menu, and load only the chosen category',async()=>{
  for(const [language,labels]of [['en',['General','Appearance','Voice','Work computer','ChatGPT','Credentials','Chat & data','Telegram','About dant']],['zh',['通用','外观','语音','工作电脑','ChatGPT 账号','凭据与密钥','聊天与数据','Telegram 集成','关于 dant']]]){
-  const f=fixture({language});await settle();assert.deepEqual([...f.document.querySelectorAll('[data-settings-category]')].map(node=>node.textContent),labels);assert.deepEqual(visiblePanels(f),['general']);assert.equal(f.document.querySelector('[aria-current]').dataset.settingsCategory,'general');assert.deepEqual(f.loads,['general']);
+  const f=fixture({language});await settle();assert.deepEqual([...f.document.querySelectorAll('[data-settings-category]')].map(node=>node.textContent),labels);assert.deepEqual(visiblePanels(f),['general']);assert.equal(f.document.querySelector('[aria-current]').dataset.settingsCategory,'general');assert.deepEqual(f.loads,['general']);assert.ok(f.document.querySelector('label[for="settings-search"]'));assert.equal(f.document.querySelector('#settings-search-hint'),null);assert.equal(f.document.querySelector('#settings-search').getAttribute('aria-describedby'),null);assert.doesNotMatch(f.document.body.textContent,/Search setting names in English or Chinese|支持搜索中文或英文设置名称/);
   await f.click('[data-settings-category="appearance"]');assert.deepEqual(visiblePanels(f),['appearance']);assert.deepEqual(f.loads,['general','appearance']);f.render();await settle();assert.deepEqual(f.loads,['general','appearance']);assert.equal(f.ui.isVisible('about'),false);
  }
 });
