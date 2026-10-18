@@ -160,3 +160,5 @@
 .file-preview-caption,.file-preview-status{font-size:calc(var(--app-font-size) * 11 / 13);line-height:1.6;color:var(--text-muted);margin:0 0 12px}
 .file-preview-text{margin:0;white-space:pre;tab-size:2;font-family:Consolas,'Cascadia Code','SFMono-Regular',monospace;font-size:calc(var(--app-font-size) * 12 / 13);line-height:1.65;color:var(--text);min-width:0;outline-offset:3px}
 @media(max-width:600px){.file-preview-dialog .dialog-header{align-items:flex-start;flex-wrap:wrap}.file-preview-body{padding:12px}.file-preview-dialog .dialog-header>div{margin-left:auto}}
+
+.details-actions{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}

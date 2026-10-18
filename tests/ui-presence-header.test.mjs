@@ -15,7 +15,7 @@ function fixture(){
 }
 
 test('presence ticks update real header nodes without rendering or resetting secure inputs, and unload cancels the timer',()=>{
- const f=fixture(),label=f.document.querySelector('[data-presence-label]'),detail=f.document.querySelector('[data-presence-detail]');assert.equal(label.textContent,'Online');assert.match(detail.textContent,/Last active 3 minutes ago/);assert.ok(f.document.querySelector('.presence-status').title.startsWith('Last active: '));assert.equal(f.document.querySelector('[data-chat-search]').getAttribute('aria-label'),'Search chat');
+ const f=fixture(),label=f.document.querySelector('[data-presence-label]'),detail=f.document.querySelector('[data-presence-detail]');assert.equal(label.textContent,'Online');assert.match(detail.textContent,/Last active 3 minutes ago/);assert.ok(f.document.querySelector('.presence-status').title.startsWith('Last active: '));
  f.advance(60000);assert.equal(f.document.querySelector('[data-presence-label]'),label);assert.equal(f.document.querySelector('[data-presence-detail]'),detail);assert.match(detail.textContent,/4 minutes ago/);assert.equal(f.password.value,'private-live-value');assert.equal(f.timers.size,1);f.c.startPresenceTicker();assert.equal(f.timers.size,1,'starting twice never stacks intervals');
  f.listeners.get('beforeunload')();assert.equal(f.timers.size,0);assert.equal(f.c.unloading,true);assert.equal(f.password.value,'');
 });
