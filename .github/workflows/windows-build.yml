@@ -41,6 +41,10 @@ jobs:
         run: npm ci
       - name: Check maintained source and documentation formatting
         run: npm run format:prettier:check
+      - name: Check strict TypeScript contracts and migrated modules
+        run: npm run typecheck
+      - name: Check adopted state domains
+        run: npm run check:states
       - name: Install VM test dependency
         run: python -m pip install --disable-pip-version-check pycdlib==1.14.0
       - name: Require VM test tools and check Bash syntax

@@ -17,12 +17,12 @@ DPAPI 依赖当前 Windows 用户身份和用户配置文件。换账号、迁�
 ## 服务端接入
 
 ```js
-import {VoiceKeyStore} from './secrets.mjs';
+import { VoiceKeyStore } from './secrets.mjs';
 
 const voiceKeys = new VoiceKeyStore(dataDir);
-voiceKeys.status();             // {configured, source, storage}
-await voiceKeys.set(inputKey);  // 返回状态，不返回 Key
-await voiceKeys.clear();        // 删除本地密文，返回状态
+voiceKeys.status(); // {configured, source, storage}
+await voiceKeys.set(inputKey); // 返回状态，不返回 Key
+await voiceKeys.clear(); // 删除本地密文，返回状态
 const key = await voiceKeys.get(); // 仅服务端内部语音请求使用
 ```
 

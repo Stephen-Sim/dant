@@ -107,17 +107,17 @@ References: [cloud-init datasource configuration](https://docs.cloud-init.io/en/
 
 On Windows, `data/vm-setup-status.json` records the stage, last update, log path, and error; installed apps use the selected data directory instead. Hyper-V `data/logs/create-vm-*.log` contains the administrator script's full transcript; VMware uses `data/vmware/logs/`. The setup record includes the provider. Common Hyper-V stages:
 
-| Stage | Meaning |
-| --- | --- |
-| `extracting-image` | Extract the source VHD |
-| `configuring-nocloud` | Validate and prepare first-boot configuration |
-| `allocating-source-disk` | Clear the source sparse flag and allocate its holes |
-| `converting-disk` / `resizing-disk` | Create and enlarge the dynamic disk |
-| `registering-vm` / `booting-vm` | Register and start the Hyper-V VM |
-| `waiting-for-ip` | Wait for Hyper-V integration services to report IPv4 |
-| `guest-installing` | SSH connection saved; VM software is still installing |
-| `ready` | Actual readiness checks passed |
-| `failed:<stage>` | Inspect the error field and referenced log |
+| Stage                               | Meaning                                               |
+| ----------------------------------- | ----------------------------------------------------- |
+| `extracting-image`                  | Extract the source VHD                                |
+| `configuring-nocloud`               | Validate and prepare first-boot configuration         |
+| `allocating-source-disk`            | Clear the source sparse flag and allocate its holes   |
+| `converting-disk` / `resizing-disk` | Create and enlarge the dynamic disk                   |
+| `registering-vm` / `booting-vm`     | Register and start the Hyper-V VM                     |
+| `waiting-for-ip`                    | Wait for Hyper-V integration services to report IPv4  |
+| `guest-installing`                  | SSH connection saved; VM software is still installing |
+| `ready`                             | Actual readiness checks passed                        |
+| `failed:<stage>`                    | Inspect the error field and referenced log            |
 
 Inspect guest installation:
 

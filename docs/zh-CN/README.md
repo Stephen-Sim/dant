@@ -33,7 +33,7 @@ Windows 上的 AI 数字伙伴，既能与你聊天，也能在自己的 Ubuntu 
 <details>
 <summary>从源码运行</summary>
 
-安装 Node.js 22+ 及上述依赖后：
+安装 Node.js 22.18+ LTS / 24+ 及上述依赖后：
 
 ```powershell
 npm ci

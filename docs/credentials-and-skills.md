@@ -36,16 +36,16 @@ The model may discover and create a skill when a procedure is reusable. Saving c
 
 ## API boundaries
 
-| Routes | Purpose |
-| --- | --- |
-| `GET /api/credentials` | Metadata and pending requests only |
-| `POST /api/credentials`, `PATCH/DELETE /api/credentials/:id` | Create, update or remove a saved credential |
-| `POST/DELETE /api/credentials/requests/:id` | Fulfill or cancel the requested credential |
-| `GET /api/skills`, `GET /api/skills/:name` | List metadata or read managed instructions and text files |
-| `POST /api/skills`, `PATCH/DELETE /api/skills/:name` | Save, edit, toggle or remove a managed skill |
-| `POST /api/skills/import/preview`, `POST /api/skills/import` | Preview a GitHub/file source, then save the selected skill without overwriting |
-| `DELETE /api/skills/import/previews/:id` | Discard an unused preview; expiry also releases it |
-| `POST /api/skills/:name/export` | Package a managed skill as a ZIP attachment; download the returned attachment through the normal file route |
+| Routes                                                       | Purpose                                                                                                     |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `GET /api/credentials`                                       | Metadata and pending requests only                                                                          |
+| `POST /api/credentials`, `PATCH/DELETE /api/credentials/:id` | Create, update or remove a saved credential                                                                 |
+| `POST/DELETE /api/credentials/requests/:id`                  | Fulfill or cancel the requested credential                                                                  |
+| `GET /api/skills`, `GET /api/skills/:name`                   | List metadata or read managed instructions and text files                                                   |
+| `POST /api/skills`, `PATCH/DELETE /api/skills/:name`         | Save, edit, toggle or remove a managed skill                                                                |
+| `POST /api/skills/import/preview`, `POST /api/skills/import` | Preview a GitHub/file source, then save the selected skill without overwriting                              |
+| `DELETE /api/skills/import/previews/:id`                     | Discard an unused preview; expiry also releases it                                                          |
+| `POST /api/skills/:name/export`                              | Package a managed skill as a ZIP attachment; download the returned attachment through the normal file route |
 
 All routes use the existing local Controller and VM authentication boundary. An acknowledged write is not automatically repeated if the following metadata refresh fails.
 

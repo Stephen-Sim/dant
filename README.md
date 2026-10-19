@@ -33,7 +33,7 @@ Text tasks and default voice use your ChatGPT subscription allowance; voice avai
 <details>
 <summary>Run from source</summary>
 
-With Node.js 22+ and the prerequisites above:
+With Node.js 22.18+ LTS / 24+ and the prerequisites above:
 
 ```powershell
 npm ci

@@ -36,16 +36,16 @@ GitHub 文件通过公开 API 从同一个已解析的提交读取，不支持�
 
 ## API 边界
 
-| 接口 | 用途 |
-| --- | --- |
-| `GET /api/credentials` | 仅列出元数据与待办请求 |
-| `POST /api/credentials`、`PATCH/DELETE /api/credentials/:id` | 新增、修改或移除凭据 |
-| `POST/DELETE /api/credentials/requests/:id` | 提供或取消请求中的凭据 |
-| `GET /api/skills`、`GET /api/skills/:name` | 列出元数据，或读取托管正文与文本文件 |
-| `POST /api/skills`、`PATCH/DELETE /api/skills/:name` | 保存、编辑、启停或移除托管技能 |
-| `POST /api/skills/import/preview`、`POST /api/skills/import` | 预览 GitHub / 文件来源，再导入技能，不覆盖已有内容 |
-| `DELETE /api/skills/import/previews/:id` | 丢弃不再使用的预览；预览过期后也会释放 |
-| `POST /api/skills/:name/export` | 将托管技能打包为 ZIP 附件，再通过普通文件接口下载返回的附件 |
+| 接口                                                         | 用途                                                        |
+| ------------------------------------------------------------ | ----------------------------------------------------------- |
+| `GET /api/credentials`                                       | 仅列出元数据与待办请求                                      |
+| `POST /api/credentials`、`PATCH/DELETE /api/credentials/:id` | 新增、修改或移除凭据                                        |
+| `POST/DELETE /api/credentials/requests/:id`                  | 提供或取消请求中的凭据                                      |
+| `GET /api/skills`、`GET /api/skills/:name`                   | 列出元数据，或读取托管正文与文本文件                        |
+| `POST /api/skills`、`PATCH/DELETE /api/skills/:name`         | 保存、编辑、启停或移除托管技能                              |
+| `POST /api/skills/import/preview`、`POST /api/skills/import` | 预览 GitHub / 文件来源，再导入技能，不覆盖已有内容          |
+| `DELETE /api/skills/import/previews/:id`                     | 丢弃不再使用的预览；预览过期后也会释放                      |
+| `POST /api/skills/:name/export`                              | 将托管技能打包为 ZIP 附件，再通过普通文件接口下载返回的附件 |
 
 这些接口沿用本地 Controller 与 VM 的认证边界。写入已确认后，即使随后的元数据刷新失败，也不会自动重复写入。
 

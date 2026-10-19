@@ -19,12 +19,12 @@ DPAPI depends on the Windows user and profile. After changing accounts, migratin
 ## Server integration
 
 ```js
-import {VoiceKeyStore} from './secrets.mjs';
+import { VoiceKeyStore } from './secrets.mjs';
 
 const voiceKeys = new VoiceKeyStore(dataDir);
-voiceKeys.status();               // {configured, source, storage}
-await voiceKeys.set(inputKey);    // Returns status, never the key.
-await voiceKeys.clear();          // Deletes saved ciphertext.
+voiceKeys.status(); // {configured, source, storage}
+await voiceKeys.set(inputKey); // Returns status, never the key.
+await voiceKeys.clear(); // Deletes saved ciphertext.
 const key = await voiceKeys.get(); // Internal voice requests only.
 ```
 

@@ -1,0 +1,98 @@
+import { translate } from '../../src/i18n/i18n.mts';
+import { languageInfo } from '../../src/i18n/languages.mts';
+import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { renderUsageActivity } from './usage-activity.js';
+const words = {
+  en: {
+    title: 'Token usage',
+    description:
+      'Provider-reported usage received by dant. Cached tokens are included in input; reasoning tokens are included in output. These counts do not show account quota or costs.',
+    subscription: 'ChatGPT work',
+    subscriptionHint: 'Text chat and computer tasks from calls, as reported by the work computer.',
+    apiVoice: 'Separate API voice',
+    apiHint: 'Usage reported by the optional API voice service. Kept separate from ChatGPT work.',
+    total: 'Recorded total',
+    last: 'Latest model response',
+    empty: 'No token usage has been reported yet.',
+    missing: 'Unavailable',
+    cached: 'Saved statistics. Reconnect the work computer for current usage.',
+    since: 'Recording since',
+    updated: 'Last reported',
+    inputTokens: 'Input tokens',
+    cachedInputTokens: 'Cached input tokens',
+    outputTokens: 'Output tokens',
+    reasoningOutputTokens: 'Reasoning output tokens',
+    totalTokens: 'Total tokens',
+  },
+  zh: {
+    title: 'Token 用量',
+    description:
+      '显示 dant 收到的实际用量。缓存 Token 已计入输入，推理 Token 已计入输出；此处不换算账号剩余额度或费用。',
+    subscription: 'ChatGPT 工作',
+    subscriptionHint: '工作电脑返回的文字聊天，以及通话中的电脑任务用量。',
+    apiVoice: '独立 API 语音',
+    apiHint: '可选 API 语音服务返回的用量，与 ChatGPT 工作分开统计。',
+    total: '已记录总用量',
+    last: '最近一次模型响应',
+    empty: '尚未收到 Token 用量数据。',
+    missing: '暂无数据',
+    cached: '当前为保存的统计，请连接工作电脑获取最新用量。',
+    since: '开始记录时间',
+    updated: '最近上报时间',
+    inputTokens: '输入 Token',
+    cachedInputTokens: '缓存输入 Token',
+    outputTokens: '输出 Token',
+    reasoningOutputTokens: '推理输出 Token',
+    totalTokens: '总 Token',
+  },
+};
+const escape = (value) =>
+  String(value ?? '').replace(
+    /[&<>"']/g,
+    (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
+  );
+const fields = [
+  'inputTokens',
+  'cachedInputTokens',
+  'outputTokens',
+  'reasoningOutputTokens',
+  'totalTokens',
+];
+export function renderUsageSettings({
+  usage,
+  language = 'en',
+  cached = false,
+  mode = 'daily',
+  provider = 'subscription',
+  detailsOpen = false,
+  now = Date.now(),
+} = {}) {
+  const locale = languageInfo(language).locale,
+    tr = localizeMessages(words, language);
+  const number = (value) =>
+    Number.isSafeInteger(value) && value >= 0
+      ? new Intl.NumberFormat(locale).format(value)
+      : tr.missing;
+  const date = (value) =>
+    Number.isSafeInteger(value) && value > 0 && value <= 8640000000000000
+      ? escape(
+          new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(
+            new Date(value),
+          ),
+        )
+      : tr.missing;
+  const metrics = (values, kind) =>
+    `<div class="usage-metrics" data-usage-${kind}>${fields
+      .filter((field) => kind !== 'api' || field !== 'reasoningOutputTokens')
+      .map(
+        (field) =>
+          `<div class="setting-row"><span>${tr[field]}</span><strong data-usage-field="${field}">${number(values?.[field])}</strong></div>`,
+      )
+      .join('')}</div>`;
+  const card = (key, title, hint) => {
+    const provider = usage?.[key],
+      available = provider?.available === true;
+    return `<section class="settings-section setting-card usage-settings" data-usage-provider="${key}"><div class="card-label"><h2>${tr[title]}</h2><p>${tr[hint]}</p></div><div class="card-content">${available ? `<h3>${tr.total}</h3>${metrics(provider.totals, key === 'apiVoice' ? 'api' : 'subscription')}<h3>${tr.last}</h3>${metrics(provider.lastResponse, key === 'apiVoice' ? 'api' : 'subscription')}<small class="muted">${tr.updated} · ${date(provider.lastResponse?.at)}</small>` : `<p class="card-description" role="status">${tr.empty}</p>`}</div></section>`;
+  };
+  return `<section class="settings-section setting-card usage-settings usage-dashboard" data-setting-card="usage" data-usage-dashboard><div class="usage-page-heading"><h2>${tr.title}</h2>${usage?.recordedSince ? `<small class="muted">${tr.since} · ${date(usage.recordedSince)}</small>` : ''}</div><p class="card-description">${tr.description}</p>${cached ? `<p class="card-description" role="status">${tr.cached}</p>` : ''}${renderUsageActivity({ usage, language, mode, provider, now })}<details class="usage-details" data-usage-details${detailsOpen ? ' open' : ''}><summary>${translate(language, 'Usage details', '用量明细')}</summary><div>${card('subscription', 'subscription', 'subscriptionHint')}${card('apiVoice', 'apiVoice', 'apiHint')}</div></details></section>`;
+}

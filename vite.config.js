@@ -1,9 +1,9 @@
-import {defineConfig} from 'vite';
-import {fileURLToPath} from 'node:url';
-import {loadProjectEnv} from './src/config/env.mjs';
-import {readNetworkConfig, PROTOCOL_PATHS} from './src/config/network.mjs';
+import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { loadProjectEnv } from './src/config/env.mts';
+import { readNetworkConfig, PROTOCOL_PATHS } from './src/config/network.mts';
 
-loadProjectEnv({projectRoot: fileURLToPath(new URL('.', import.meta.url))});
+loadProjectEnv({ projectRoot: fileURLToPath(new URL('.', import.meta.url)) });
 const network = readNetworkConfig();
 export default defineConfig({
   root: 'ui',
@@ -13,12 +13,12 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       [PROTOCOL_PATHS.api]: network.api.httpOrigin,
-      [PROTOCOL_PATHS.events]: {target: network.api.wsOrigin, ws: true},
+      [PROTOCOL_PATHS.events]: { target: network.api.wsOrigin, ws: true },
     },
   },
   build: {
     outDir: '../dist',
     emptyOutDir: true,
-    rollupOptions: {input: {main: 'ui/index.html', callOverlay: 'ui/call-overlay.html'}},
+    rollupOptions: { input: { main: 'ui/index.html', callOverlay: 'ui/call-overlay.html' } },
   },
 });

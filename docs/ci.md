@@ -16,6 +16,8 @@ Bash and PowerShell files are parsed without creating a VM or requesting adminis
 
 `Windows build` runs the same Node/Python checks, then builds a Tauri NSIS installer with Rust 1.99.1 and locked Cargo dependencies. The cache contains dependency and compiler intermediates, not user data, VM images, or packaging output. Current artifacts are unsigned.
 
+Both workflows enforce formatting, strict TypeScript checking, and the adopted state contracts. The Windows packaging job runs these gates itself, so a tag cannot produce a release draft while depending on unchecked results from the separate `CI` workflow.
+
 A successful build uploads an Actions artifact retained for 14 days containing:
 
 - `dant_<version>_windows_x64_setup.exe`: NSIS installer.
@@ -34,6 +36,9 @@ Normal jobs have `contents: read`; only the draft-release job receives `contents
 ## Local checks
 
 ```powershell
+npm run format:check
+npm run typecheck
+npm run check:states
 npm run test:coverage
 python -m unittest discover -s tests -p test_vm.py -v
 node scripts/ci/version.mjs

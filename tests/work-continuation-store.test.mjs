@@ -2,126 +2,786 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
-import {Store} from '../src/store.mjs';
-import {continuationEligible,continuationUnconfirmed,safeWorkContinuation,workContinuationCheckpoint,continuationDelay} from '../src/work-continuation-state.mjs';
+import { randomUUID } from 'node:crypto';
+import { Store } from '../src/conversation/store.mjs';
+import {
+  continuationEligible,
+  continuationUnconfirmed,
+  safeWorkContinuation,
+  workContinuationCheckpoint,
+  continuationDelay,
+} from '../src/work/work-continuation-state.mts';
 
-const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
-const steps=()=>[{step:'Inspect the existing result',status:'completed'},{step:'Verify the remaining work',status:'pending'}];
-const options=(turnId='old',attemptId='attempt',at=105000)=>({expectedTurnId:turnId,attemptId,at,runtimeId:'vm:trusted',threadId:'thread'});
-function fixture(t){const dir=fs.mkdtempSync(path.join(root,'work-continuation-store-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return {dir,store:new Store(dir)};}
-function ended(store,{turnId='old',nullPlan=false,...extra}={}){const record=store.registerWork({turnId,title:'Continue the entrusted result',source:'chat',startedAt:1000,plan:nullPlan?null:{steps:steps()},...(nullPlan?{observed:true}:{}),...extra});return store.updateRegisteredWork(record.turnId,{status:'continuing',executionEnded:true,at:100000});}
-function acknowledged(store,id,{attempt='attempt',from='old',to='new',at=105000}={}){store.claimWorkContinuation(id,options(from,attempt,at));store.setWorkContinuationPhase(id,attempt,'submitting');return store.bindWorkContinuation(id,attempt,{turnId:to});}
-const conflict=error=>error.code==='work_continuation_conflict'&&error.status===409;
+const root = path.resolve('.cache/tests');
+fs.mkdirSync(root, { recursive: true });
+const steps = () => [
+  { step: 'Inspect the existing result', status: 'completed' },
+  { step: 'Verify the remaining work', status: 'pending' },
+];
+const options = (turnId = 'old', attemptId = 'attempt', at = 105000) => ({
+  expectedTurnId: turnId,
+  attemptId,
+  at,
+  runtimeId: 'vm:trusted',
+  threadId: 'thread',
+});
+function fixture(t) {
+  const dir = fs.mkdtempSync(path.join(root, 'work-continuation-store-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return { dir, store: new Store(dir) };
+}
+function ended(store, { turnId = 'old', nullPlan = false, ...extra } = {}) {
+  const record = store.registerWork({
+    turnId,
+    title: 'Continue the entrusted result',
+    source: 'chat',
+    startedAt: 1000,
+    plan: nullPlan ? null : { steps: steps() },
+    ...(nullPlan ? { observed: true } : {}),
+    ...extra,
+  });
+  return store.updateRegisteredWork(record.turnId, {
+    status: 'continuing',
+    executionEnded: true,
+    at: 100000,
+  });
+}
+function acknowledged(
+  store,
+  id,
+  { attempt = 'attempt', from = 'old', to = 'new', at = 105000 } = {},
+) {
+  store.claimWorkContinuation(id, options(from, attempt, at));
+  store.setWorkContinuationPhase(id, attempt, 'submitting');
+  return store.bindWorkContinuation(id, attempt, { turnId: to });
+}
+const conflict = (error) => error.code === 'work_continuation_conflict' && error.status === 409;
 
-test('only actual ended unfinished continuing work can receive an atomic due continuation claim',t=>{
- const {store}=fixture(t),record=ended(store);assert.equal(continuationEligible(record,{at:104999}),false);assert.equal(continuationEligible(record,{at:105000}),true);
- for(const patch of [{status:'running'},{status:'waiting_user'},{status:'paused'},{status:'failed'},{status:'cancelled'},{status:'review'},{status:'completed'},{status:'unknown'},{executionEndedAt:undefined},{executionEndedAt:Infinity},{progressDismissedAt:1},{unknownOutcome:true},{submission:'submitting'},{submission:'unknown'},{id:''},{turnId:''},{plan:{steps:steps().map(step=>({...step,status:'completed'}))}},{plan:{steps:[...steps(),{step:'Invalid public status',status:'failed'}]}},{plan:{steps:[...steps(),{step:'',status:'pending'}]}},{plan:null},{plan:undefined}])assert.equal(continuationEligible({...record,...patch},{at:105000}),false,JSON.stringify(patch));
- const claimed=store.claimWorkContinuation(record.id,options());assert.equal(claimed.id,record.id);assert.equal(claimed.turnId,'old');assert.equal(claimed.executionEndedAt,100000);assert.equal(claimed.status,'continuing');assert.equal(claimed.continuation.attempts,1);assert.equal(claimed.continuation.noProgressCount,0);assert.equal(claimed.continuation.lastCheckpoint,workContinuationCheckpoint(record.plan));assert.deepEqual(claimed.continuation.dispatch,{id:'attempt',fromTurnId:'old',runtimeId:'vm:trusted',threadId:'thread',phase:'claimed',createdAt:105000});assert.equal(continuationEligible(claimed,{at:999999}),false);assert.equal(store.state.messages.length,0);assert.equal(store.state.completions.length,0);
- assert.throws(()=>store.claimWorkContinuation(record.id,options()),conflict);assert.throws(()=>store.claimWorkContinuation(record.id,options('old','another')),conflict);
+test('only actual ended unfinished continuing work can receive an atomic due continuation claim', (t) => {
+  const { store } = fixture(t),
+    record = ended(store);
+  assert.equal(continuationEligible(record, { at: 104999 }), false);
+  assert.equal(continuationEligible(record, { at: 105000 }), true);
+  for (const patch of [
+    { status: 'running' },
+    { status: 'waiting_user' },
+    { status: 'paused' },
+    { status: 'failed' },
+    { status: 'cancelled' },
+    { status: 'review' },
+    { status: 'completed' },
+    { status: 'unknown' },
+    { executionEndedAt: undefined },
+    { executionEndedAt: Infinity },
+    { progressDismissedAt: 1 },
+    { unknownOutcome: true },
+    { submission: 'submitting' },
+    { submission: 'unknown' },
+    { id: '' },
+    { turnId: '' },
+    { plan: { steps: steps().map((step) => ({ ...step, status: 'completed' })) } },
+    { plan: { steps: [...steps(), { step: 'Invalid public status', status: 'failed' }] } },
+    { plan: { steps: [...steps(), { step: '', status: 'pending' }] } },
+    { plan: null },
+    { plan: undefined },
+  ])
+    assert.equal(
+      continuationEligible({ ...record, ...patch }, { at: 105000 }),
+      false,
+      JSON.stringify(patch),
+    );
+  const claimed = store.claimWorkContinuation(record.id, options());
+  assert.equal(claimed.id, record.id);
+  assert.equal(claimed.turnId, 'old');
+  assert.equal(claimed.executionEndedAt, 100000);
+  assert.equal(claimed.status, 'continuing');
+  assert.equal(claimed.continuation.attempts, 1);
+  assert.equal(claimed.continuation.noProgressCount, 0);
+  assert.equal(claimed.continuation.lastCheckpoint, workContinuationCheckpoint(record.plan));
+  assert.deepEqual(claimed.continuation.dispatch, {
+    id: 'attempt',
+    fromTurnId: 'old',
+    runtimeId: 'vm:trusted',
+    threadId: 'thread',
+    phase: 'claimed',
+    createdAt: 105000,
+  });
+  assert.equal(continuationEligible(claimed, { at: 999999 }), false);
+  assert.equal(store.state.messages.length, 0);
+  assert.equal(store.state.completions.length, 0);
+  assert.throws(() => store.claimWorkContinuation(record.id, options()), conflict);
+  assert.throws(() => store.claimWorkContinuation(record.id, options('old', 'another')), conflict);
 });
 
-test('claims reject stale owners, invalid scopes and malformed or disabled continuation metadata',t=>{
- const {store}=fixture(t),record=ended(store);for(const patch of [{expectedTurnId:'stale'},{attemptId:''},{attemptId:'bad id'},{runtimeId:''},{runtimeId:'bad\nvalue'},{threadId:'bad thread'},{at:104999},{at:NaN},{at:0}])assert.throws(()=>store.claimWorkContinuation(record.id,{...options(),...patch}),conflict);
- for(const continuation of [{},{nextAt:null},{nextAt:1,attempts:0,noProgressCount:0,lastCheckpoint:'fake'},{nextAt:null,attempts:0,noProgressCount:0,lastCheckpoint:workContinuationCheckpoint(record.plan)},{nextAt:200000,attempts:0,noProgressCount:0,lastCheckpoint:workContinuationCheckpoint(record.plan)}])assert.equal(continuationEligible({...record,continuation},{at:105000}),false);
- assert.equal(store.state.workTasks[0],record);assert.equal(record.continuation,undefined);
+test('claims reject stale owners, invalid scopes and malformed or disabled continuation metadata', (t) => {
+  const { store } = fixture(t),
+    record = ended(store);
+  for (const patch of [
+    { expectedTurnId: 'stale' },
+    { attemptId: '' },
+    { attemptId: 'bad id' },
+    { runtimeId: '' },
+    { runtimeId: 'bad\nvalue' },
+    { threadId: 'bad thread' },
+    { at: 104999 },
+    { at: NaN },
+    { at: 0 },
+  ])
+    assert.throws(
+      () => store.claimWorkContinuation(record.id, { ...options(), ...patch }),
+      conflict,
+    );
+  for (const continuation of [
+    {},
+    { nextAt: null },
+    { nextAt: 1, attempts: 0, noProgressCount: 0, lastCheckpoint: 'fake' },
+    {
+      nextAt: null,
+      attempts: 0,
+      noProgressCount: 0,
+      lastCheckpoint: workContinuationCheckpoint(record.plan),
+    },
+    {
+      nextAt: 200000,
+      attempts: 0,
+      noProgressCount: 0,
+      lastCheckpoint: workContinuationCheckpoint(record.plan),
+    },
+  ])
+    assert.equal(continuationEligible({ ...record, continuation }, { at: 105000 }), false);
+  assert.equal(store.state.workTasks[0], record);
+  assert.equal(record.continuation, undefined);
 });
 
-test('binding uses one real fresh turn and retains task identity, original human receipt, source and complete history',t=>{
- const {store}=fixture(t),message=store.add({role:'user',text:'Original request',status:'review',turnId:'old'}),record=ended(store,{messageId:message.id});store.setProgressPriority(record.id,'work','high');store.claimWorkContinuation(record.id,options());
- assert.throws(()=>store.bindWorkContinuation(record.id,'attempt',{turnId:'new'}),conflict);assert.throws(()=>store.registerWork({workId:record.id,turnId:'another',title:record.title,plan:{steps:steps()}}),conflict);assert.throws(()=>store.registerWork({turnId:'old',title:record.title,plan:{steps:steps()}}),conflict);assert.throws(()=>store.updateRegisteredWork('old',{status:'continuing',executionEnded:true}),conflict);
- store.setWorkContinuationPhase(record.id,'attempt','submitting');assert.equal(continuationUnconfirmed(store.state.workTasks[0]),true);assert.throws(()=>store.setWorkContinuationPhase(record.id,'attempt','submitting'),conflict);assert.throws(()=>store.bindWorkContinuation(record.id,'wrong',{turnId:'new'}),conflict);assert.throws(()=>store.bindWorkContinuation(record.id,'attempt',{turnId:'old'}),conflict);ended(store,{turnId:'other'});assert.throws(()=>store.bindWorkContinuation(record.id,'attempt',{turnId:'other'}),conflict);
- const bound=store.bindWorkContinuation(record.id,'attempt',{turnId:'new'});assert.equal(bound.id,record.id);assert.equal(bound.messageId,message.id);assert.equal(bound.startedAt,1000);assert.equal(bound.source,'chat');assert.equal(bound.progressPriority,'high');assert.equal(bound.executionEndedAt,undefined);assert.equal(bound.status,'running');assert.deepEqual(bound.turnIds,['old','new']);assert.equal(bound.continuation.dispatch.phase,'acknowledged');assert.equal(bound.continuation.dispatch.turnId,'new');assert.equal(continuationUnconfirmed(bound),false);assert.equal(store.state.messages[0],message);assert.equal(message.turnId,'old');assert.equal(message.status,'review');assert.equal(store.updateRegisteredWork('old',{status:'failed'}),null);assert.throws(()=>store.bindWorkContinuation(record.id,'attempt',{turnId:'third'}),conflict);
- const revised=store.registerWork({turnId:'new',title:'The actual revised plan',plan:{steps:steps()}});assert.equal(revised.id,record.id);assert.equal(revised.continuation.dispatch.id,'attempt');
+test('binding uses one real fresh turn and retains task identity, original human receipt, source and complete history', (t) => {
+  const { store } = fixture(t),
+    message = store.add({
+      role: 'user',
+      text: 'Original request',
+      status: 'review',
+      turnId: 'old',
+    }),
+    record = ended(store, { messageId: message.id });
+  store.setProgressPriority(record.id, 'work', 'high');
+  store.claimWorkContinuation(record.id, options());
+  assert.throws(
+    () => store.bindWorkContinuation(record.id, 'attempt', { turnId: 'new' }),
+    conflict,
+  );
+  assert.throws(
+    () =>
+      store.registerWork({
+        workId: record.id,
+        turnId: 'another',
+        title: record.title,
+        plan: { steps: steps() },
+      }),
+    conflict,
+  );
+  assert.throws(
+    () => store.registerWork({ turnId: 'old', title: record.title, plan: { steps: steps() } }),
+    conflict,
+  );
+  assert.throws(
+    () => store.updateRegisteredWork('old', { status: 'continuing', executionEnded: true }),
+    conflict,
+  );
+  store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+  assert.equal(continuationUnconfirmed(store.state.workTasks[0]), true);
+  assert.throws(() => store.setWorkContinuationPhase(record.id, 'attempt', 'submitting'), conflict);
+  assert.throws(() => store.bindWorkContinuation(record.id, 'wrong', { turnId: 'new' }), conflict);
+  assert.throws(
+    () => store.bindWorkContinuation(record.id, 'attempt', { turnId: 'old' }),
+    conflict,
+  );
+  ended(store, { turnId: 'other' });
+  assert.throws(
+    () => store.bindWorkContinuation(record.id, 'attempt', { turnId: 'other' }),
+    conflict,
+  );
+  const bound = store.bindWorkContinuation(record.id, 'attempt', { turnId: 'new' });
+  assert.equal(bound.id, record.id);
+  assert.equal(bound.messageId, message.id);
+  assert.equal(bound.startedAt, 1000);
+  assert.equal(bound.source, 'chat');
+  assert.equal(bound.progressPriority, 'high');
+  assert.equal(bound.executionEndedAt, undefined);
+  assert.equal(bound.status, 'running');
+  assert.deepEqual(bound.turnIds, ['old', 'new']);
+  assert.equal(bound.continuation.dispatch.phase, 'acknowledged');
+  assert.equal(bound.continuation.dispatch.turnId, 'new');
+  assert.equal(continuationUnconfirmed(bound), false);
+  assert.equal(store.state.messages[0], message);
+  assert.equal(message.turnId, 'old');
+  assert.equal(message.status, 'review');
+  assert.equal(store.updateRegisteredWork('old', { status: 'failed' }), null);
+  assert.throws(
+    () => store.bindWorkContinuation(record.id, 'attempt', { turnId: 'third' }),
+    conflict,
+  );
+  const revised = store.registerWork({
+    turnId: 'new',
+    title: 'The actual revised plan',
+    plan: { steps: steps() },
+  });
+  assert.equal(revised.id, record.id);
+  assert.equal(revised.continuation.dispatch.id, 'attempt');
 });
 
-test('pre-submit failures release only their exact claim with durable delay and raw errors are not saved',t=>{
- const {store,dir}=fixture(t),record=ended(store);store.claimWorkContinuation(record.id,options());const settled=store.settleWorkContinuation(record.id,'attempt',{status:'failed',at:106000,error:'private-token'});assert.equal(settled.status,'continuing');assert.equal(settled.executionEndedAt,100000);assert.equal(settled.continuation.dispatch,undefined);assert.equal(settled.continuation.nextAt,136000);assert.equal(settled.continuation.noProgressCount,0);assert.equal(settled.continuation.attempts,1);assert.equal(continuationEligible(settled,{at:135999}),false);assert.equal(continuationEligible(settled,{at:136000}),true);assert.doesNotMatch(fs.readFileSync(store.file,'utf8'),/private-token/);assert.equal(new Store(dir).state.workTasks[0].continuation.nextAt,136000);assert.throws(()=>store.settleWorkContinuation(record.id,'attempt',{status:'failed'}),conflict);
- store.claimWorkContinuation(record.id,options('old','second',136000));const paused=store.settleWorkContinuation(record.id,'second',{status:'paused',at:137000});assert.equal(paused.status,'paused');assert.equal(paused.continuation.nextAt,null);assert.equal(paused.continuation.dispatch,undefined);assert.equal(continuationEligible(paused,{at:999999}),false);
+test('pre-submit failures release only their exact claim with durable delay and raw errors are not saved', (t) => {
+  const { store, dir } = fixture(t),
+    record = ended(store);
+  store.claimWorkContinuation(record.id, options());
+  const settled = store.settleWorkContinuation(record.id, 'attempt', {
+    status: 'failed',
+    at: 106000,
+    error: 'private-token',
+  });
+  assert.equal(settled.status, 'continuing');
+  assert.equal(settled.executionEndedAt, 100000);
+  assert.equal(settled.continuation.dispatch, undefined);
+  assert.equal(settled.continuation.nextAt, 136000);
+  assert.equal(settled.continuation.noProgressCount, 0);
+  assert.equal(settled.continuation.attempts, 1);
+  assert.equal(continuationEligible(settled, { at: 135999 }), false);
+  assert.equal(continuationEligible(settled, { at: 136000 }), true);
+  assert.doesNotMatch(fs.readFileSync(store.file, 'utf8'), /private-token/);
+  assert.equal(new Store(dir).state.workTasks[0].continuation.nextAt, 136000);
+  assert.throws(
+    () => store.settleWorkContinuation(record.id, 'attempt', { status: 'failed' }),
+    conflict,
+  );
+  store.claimWorkContinuation(record.id, options('old', 'second', 136000));
+  const paused = store.settleWorkContinuation(record.id, 'second', {
+    status: 'paused',
+    at: 137000,
+  });
+  assert.equal(paused.status, 'paused');
+  assert.equal(paused.continuation.nextAt, null);
+  assert.equal(paused.continuation.dispatch, undefined);
+  assert.equal(continuationEligible(paused, { at: 999999 }), false);
 });
 
-test('submitting, acknowledged and unconfirmed failures preserve a durable unknown claim and never authorize replay',t=>{
- for(const stage of ['claimed-submitted','submitting','acknowledged','unknown']){
-  const {store,dir}=fixture(t),record=ended(store);store.claimWorkContinuation(record.id,options());if(['submitting','acknowledged'].includes(stage))store.setWorkContinuationPhase(record.id,'attempt','submitting');if(stage==='acknowledged')store.bindWorkContinuation(record.id,'attempt',{turnId:'new'});if(stage==='unknown')store.setWorkContinuationPhase(record.id,'attempt','unknown');
-  const settled=store.settleWorkContinuation(record.id,'attempt',{status:'failed',at:106000,submitted:stage==='claimed-submitted',error:'private error'});assert.equal(settled.status,'unknown');assert.equal(settled.continuation.dispatch.phase,'unknown');assert.equal(settled.continuation.dispatch.id,'attempt');assert.equal(settled.continuation.nextAt,null);assert.equal(continuationUnconfirmed(settled),true);assert.equal(continuationEligible(settled,{at:999999}),false);assert.throws(()=>store.claimWorkContinuation(record.id,options(settled.turnId,'next',999999)),conflict);assert.throws(()=>store.bindWorkContinuation(record.id,'attempt',{turnId:'late-ack'}),conflict);assert.throws(()=>store.updateRegisteredWork(settled.turnId,{status:'completed',executionEnded:true}),conflict);assert.throws(()=>store.registerWork({workId:record.id,turnId:'newer',title:record.title,plan:{steps:steps()}}),conflict);const restored=new Store(dir).state.workTasks[0];assert.equal(restored.status,'unknown');assert.equal(restored.continuation.dispatch.id,'attempt');assert.equal(restored.continuation.dispatch.phase,'unknown');
- }
+test('submitting, acknowledged and unconfirmed failures preserve a durable unknown claim and never authorize replay', (t) => {
+  for (const stage of ['claimed-submitted', 'submitting', 'acknowledged', 'unknown']) {
+    const { store, dir } = fixture(t),
+      record = ended(store);
+    store.claimWorkContinuation(record.id, options());
+    if (['submitting', 'acknowledged'].includes(stage))
+      store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+    if (stage === 'acknowledged')
+      store.bindWorkContinuation(record.id, 'attempt', { turnId: 'new' });
+    if (stage === 'unknown') store.setWorkContinuationPhase(record.id, 'attempt', 'unknown');
+    const settled = store.settleWorkContinuation(record.id, 'attempt', {
+      status: 'failed',
+      at: 106000,
+      submitted: stage === 'claimed-submitted',
+      error: 'private error',
+    });
+    assert.equal(settled.status, 'unknown');
+    assert.equal(settled.continuation.dispatch.phase, 'unknown');
+    assert.equal(settled.continuation.dispatch.id, 'attempt');
+    assert.equal(settled.continuation.nextAt, null);
+    assert.equal(continuationUnconfirmed(settled), true);
+    assert.equal(continuationEligible(settled, { at: 999999 }), false);
+    assert.throws(
+      () => store.claimWorkContinuation(record.id, options(settled.turnId, 'next', 999999)),
+      conflict,
+    );
+    assert.throws(
+      () => store.bindWorkContinuation(record.id, 'attempt', { turnId: 'late-ack' }),
+      conflict,
+    );
+    assert.throws(
+      () =>
+        store.updateRegisteredWork(settled.turnId, { status: 'completed', executionEnded: true }),
+      conflict,
+    );
+    assert.throws(
+      () =>
+        store.registerWork({
+          workId: record.id,
+          turnId: 'newer',
+          title: record.title,
+          plan: { steps: steps() },
+        }),
+      conflict,
+    );
+    const restored = new Store(dir).state.workTasks[0];
+    assert.equal(restored.status, 'unknown');
+    assert.equal(restored.continuation.dispatch.id, 'attempt');
+    assert.equal(restored.continuation.dispatch.phase, 'unknown');
+  }
 });
 
-test('only the acknowledged current terminal update retires dispatch and three unchanged turns pause automatic work',t=>{
- const {store,dir}=fixture(t);let record=ended(store),from='old',at=105000;
- for(let count=1;count<=3;count++){
-  record=acknowledged(store,record.id,{attempt:'attempt-'+count,from,to:'next-'+count,at});assert.throws(()=>store.updateRegisteredWork(record.turnId,{executionEnded:true,at:at+1000}),conflict);record=store.updateRegisteredWork(record.turnId,{status:'continuing',executionEnded:true,at:at+1000});assert.equal(record.continuation.dispatch,undefined);assert.equal(record.continuation.attempts,count);assert.equal(record.continuation.noProgressCount,count);assert.equal(record.executionEndedAt,at+1000);
-  if(count<3){assert.equal(record.status,'continuing');assert.equal(record.continuation.nextAt,at+1000+[30000,60000][count-1]);from=record.turnId;at=record.continuation.nextAt;}else{assert.equal(record.status,'paused');assert.equal(record.pauseReason,'automatic-no-progress');assert.equal(record.continuation.nextAt,null);}
- }
- const restored=new Store(dir).state.workTasks[0];assert.equal(restored.status,'paused');assert.equal(restored.pauseReason,'automatic-no-progress');assert.equal(continuationEligible(restored,{at:999999999}),false);assert.deepEqual([0,1,2,3,4,5,30].map(continuationDelay),[30000,30000,60000,120000,240000,300000,300000]);
+test('only the acknowledged current terminal update retires dispatch and three unchanged turns pause automatic work', (t) => {
+  const { store, dir } = fixture(t);
+  let record = ended(store),
+    from = 'old',
+    at = 105000;
+  for (let count = 1; count <= 3; count++) {
+    record = acknowledged(store, record.id, {
+      attempt: 'attempt-' + count,
+      from,
+      to: 'next-' + count,
+      at,
+    });
+    assert.throws(
+      () => store.updateRegisteredWork(record.turnId, { executionEnded: true, at: at + 1000 }),
+      conflict,
+    );
+    record = store.updateRegisteredWork(record.turnId, {
+      status: 'continuing',
+      executionEnded: true,
+      at: at + 1000,
+    });
+    assert.equal(record.continuation.dispatch, undefined);
+    assert.equal(record.continuation.attempts, count);
+    assert.equal(record.continuation.noProgressCount, count);
+    assert.equal(record.executionEndedAt, at + 1000);
+    if (count < 3) {
+      assert.equal(record.status, 'continuing');
+      assert.equal(record.continuation.nextAt, at + 1000 + [30000, 60000][count - 1]);
+      from = record.turnId;
+      at = record.continuation.nextAt;
+    } else {
+      assert.equal(record.status, 'paused');
+      assert.equal(record.pauseReason, 'automatic-no-progress');
+      assert.equal(record.continuation.nextAt, null);
+    }
+  }
+  const restored = new Store(dir).state.workTasks[0];
+  assert.equal(restored.status, 'paused');
+  assert.equal(restored.pauseReason, 'automatic-no-progress');
+  assert.equal(continuationEligible(restored, { at: 999999999 }), false);
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 30].map(continuationDelay),
+    [30000, 30000, 60000, 120000, 240000, 300000, 300000],
+  );
 });
 
-test('real plan progress resets no-progress count while terminal waiting, pause, cancellation and review disable future dispatch',t=>{
- for(const status of ['waiting_user','paused','cancelled','failed','review','completed']){
-  const {store}=fixture(t),record=ended(store);acknowledged(store,record.id);const final=store.updateRegisteredWork('new',{status,executionEnded:true,at:106000});assert.equal(final.status,status);assert.equal(final.continuation.dispatch,undefined);assert.equal(final.continuation.nextAt,null);assert.equal(continuationEligible(final,{at:999999}),false);
- }
- const {store}=fixture(t),record=ended(store);acknowledged(store,record.id);let final=store.updateRegisteredWork('new',{status:'continuing',executionEnded:true,at:106000});assert.equal(final.continuation.noProgressCount,1);acknowledged(store,record.id,{attempt:'second',from:'new',to:'next',at:136000});const progressed=[...steps(),{step:'Run the final verification',status:'pending'}];progressed[1]={...progressed[1],status:'completed'};final=store.updateRegisteredWork('next',{status:'continuing',plan:{steps:progressed},executionEnded:true,at:137000});assert.equal(final.continuation.noProgressCount,0);assert.equal(final.continuation.attempts,2);assert.equal(final.continuation.nextAt,167000);assert.equal(final.continuation.lastCheckpoint,workContinuationCheckpoint(final.plan));
+test('real plan progress resets no-progress count while terminal waiting, pause, cancellation and review disable future dispatch', (t) => {
+  for (const status of ['waiting_user', 'paused', 'cancelled', 'failed', 'review', 'completed']) {
+    const { store } = fixture(t),
+      record = ended(store);
+    acknowledged(store, record.id);
+    const final = store.updateRegisteredWork('new', { status, executionEnded: true, at: 106000 });
+    assert.equal(final.status, status);
+    assert.equal(final.continuation.dispatch, undefined);
+    assert.equal(final.continuation.nextAt, null);
+    assert.equal(continuationEligible(final, { at: 999999 }), false);
+  }
+  const { store } = fixture(t),
+    record = ended(store);
+  acknowledged(store, record.id);
+  let final = store.updateRegisteredWork('new', {
+    status: 'continuing',
+    executionEnded: true,
+    at: 106000,
+  });
+  assert.equal(final.continuation.noProgressCount, 1);
+  acknowledged(store, record.id, { attempt: 'second', from: 'new', to: 'next', at: 136000 });
+  const progressed = [...steps(), { step: 'Run the final verification', status: 'pending' }];
+  progressed[1] = { ...progressed[1], status: 'completed' };
+  final = store.updateRegisteredWork('next', {
+    status: 'continuing',
+    plan: { steps: progressed },
+    executionEnded: true,
+    at: 137000,
+  });
+  assert.equal(final.continuation.noProgressCount, 0);
+  assert.equal(final.continuation.attempts, 2);
+  assert.equal(final.continuation.nextAt, 167000);
+  assert.equal(final.continuation.lastCheckpoint, workContinuationCheckpoint(final.plan));
 });
 
-test('planless observed work continues with one identity and no invented checklist, and a real plan upgrades it',t=>{
- const {store,dir}=fixture(t),record=ended(store,{nullPlan:true});assert.equal(continuationEligible(record,{at:105000}),true);const bound=acknowledged(store,record.id);assert.equal(bound.plan,null);assert.equal(bound.provisional,true);const actual=store.registerWork({turnId:'new',title:'Actual verification',plan:{steps:steps()}});assert.equal(actual.id,record.id);assert.equal(actual.provisional,undefined);assert.deepEqual(actual.plan.steps,steps());const final=store.updateRegisteredWork('new',{status:'continuing',executionEnded:true,at:106000});assert.equal(final.continuation.noProgressCount,0);assert.equal(new Store(dir).state.workTasks[0].id,record.id);assert.equal(JSON.stringify(store.state).includes('Title validation only'),false);
+test('planless observed work continues with one identity and no invented checklist, and a real plan upgrades it', (t) => {
+  const { store, dir } = fixture(t),
+    record = ended(store, { nullPlan: true });
+  assert.equal(continuationEligible(record, { at: 105000 }), true);
+  const bound = acknowledged(store, record.id);
+  assert.equal(bound.plan, null);
+  assert.equal(bound.provisional, true);
+  const actual = store.registerWork({
+    turnId: 'new',
+    title: 'Actual verification',
+    plan: { steps: steps() },
+  });
+  assert.equal(actual.id, record.id);
+  assert.equal(actual.provisional, undefined);
+  assert.deepEqual(actual.plan.steps, steps());
+  const final = store.updateRegisteredWork('new', {
+    status: 'continuing',
+    executionEnded: true,
+    at: 106000,
+  });
+  assert.equal(final.continuation.noProgressCount, 0);
+  assert.equal(new Store(dir).state.workTasks[0].id, record.id);
+  assert.equal(JSON.stringify(store.state).includes('Title validation only'), false);
 });
 
-test('restart retains every pending claim as held work rather than dropping it into eligible continuing',t=>{
- for(const stage of ['claimed','submitting','acknowledged','unknown']){
-  const {store,dir}=fixture(t),record=ended(store);store.claimWorkContinuation(record.id,options());if(stage==='submitting'||stage==='acknowledged')store.setWorkContinuationPhase(record.id,'attempt','submitting');if(stage==='acknowledged')store.bindWorkContinuation(record.id,'attempt',{turnId:'new'});if(stage==='unknown')store.setWorkContinuationPhase(record.id,'attempt','unknown');
-  const restored=new Store(dir).state.workTasks[0];assert.equal(restored.id,record.id);assert.equal(restored.status,['submitting','unknown'].includes(stage)?'unknown':'paused');assert.equal(restored.continuation.dispatch.phase,stage);assert.equal(restored.continuation.dispatch.id,'attempt');assert.equal(continuationEligible(restored,{at:999999999}),false);assert.ok(safeWorkContinuation(restored.continuation));
- }
+test('restart retains every pending claim as held work rather than dropping it into eligible continuing', (t) => {
+  for (const stage of ['claimed', 'submitting', 'acknowledged', 'unknown']) {
+    const { store, dir } = fixture(t),
+      record = ended(store);
+    store.claimWorkContinuation(record.id, options());
+    if (stage === 'submitting' || stage === 'acknowledged')
+      store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+    if (stage === 'acknowledged')
+      store.bindWorkContinuation(record.id, 'attempt', { turnId: 'new' });
+    if (stage === 'unknown') store.setWorkContinuationPhase(record.id, 'attempt', 'unknown');
+    const restored = new Store(dir).state.workTasks[0];
+    assert.equal(restored.id, record.id);
+    assert.equal(restored.status, ['submitting', 'unknown'].includes(stage) ? 'unknown' : 'paused');
+    assert.equal(restored.continuation.dispatch.phase, stage);
+    assert.equal(restored.continuation.dispatch.id, 'attempt');
+    assert.equal(continuationEligible(restored, { at: 999999999 }), false);
+    assert.ok(safeWorkContinuation(restored.continuation));
+  }
 });
 
-test('malformed restored continuation metadata is sanitized and holds its task visibly unconfirmed',t=>{
- const {store,dir}=fixture(t),template=ended(store);store.claimWorkContinuation(template.id,options());const valid=structuredClone(store.state.workTasks[0].continuation),malformed=[null,{},[],{...valid,nextAt:-1},{...valid,attempts:'1'},{...valid,noProgressCount:2},{...valid,lastCheckpoint:'private bad checkpoint'},{...valid,secret:'private raw secret'},{...valid,dispatch:{...valid.dispatch,phase:'done'}},{...valid,dispatch:{...valid.dispatch,id:''}},{...valid,dispatch:{...valid.dispatch,turnId:'unexpected'}},{...valid,dispatch:{...valid.dispatch,runtimeId:'private\nsecret'}},{...valid,dispatch:{...valid.dispatch,fromTurnId:'foreign'}}];
- store.state.workTasks=malformed.map((continuation,index)=>({...template,id:randomUUID(),turnId:'old-'+index,turnIds:['old-'+index],continuation}));store.save();const restored=new Store(dir).state.workTasks;assert.equal(restored.length,malformed.length);for(const record of restored){assert.equal(record.status,'unknown');assert.equal(record.pauseReason,'continuation-state-invalid');assert.equal(record.continuation.invalid,true);assert.equal(record.continuation.nextAt,null);assert.equal(continuationEligible(record,{at:999999}),false);assert.equal(continuationUnconfirmed(record),true);}assert.doesNotMatch(JSON.stringify(restored),/private raw secret|private bad checkpoint|unexpected/);
+test('malformed restored continuation metadata is sanitized and holds its task visibly unconfirmed', (t) => {
+  const { store, dir } = fixture(t),
+    template = ended(store);
+  store.claimWorkContinuation(template.id, options());
+  const valid = structuredClone(store.state.workTasks[0].continuation),
+    malformed = [
+      null,
+      {},
+      [],
+      { ...valid, nextAt: -1 },
+      { ...valid, attempts: '1' },
+      { ...valid, noProgressCount: 2 },
+      { ...valid, lastCheckpoint: 'private bad checkpoint' },
+      { ...valid, secret: 'private raw secret' },
+      { ...valid, dispatch: { ...valid.dispatch, phase: 'done' } },
+      { ...valid, dispatch: { ...valid.dispatch, id: '' } },
+      { ...valid, dispatch: { ...valid.dispatch, turnId: 'unexpected' } },
+      { ...valid, dispatch: { ...valid.dispatch, runtimeId: 'private\nsecret' } },
+      { ...valid, dispatch: { ...valid.dispatch, fromTurnId: 'foreign' } },
+    ];
+  store.state.workTasks = malformed.map((continuation, index) => ({
+    ...template,
+    id: randomUUID(),
+    turnId: 'old-' + index,
+    turnIds: ['old-' + index],
+    continuation,
+  }));
+  store.save();
+  const restored = new Store(dir).state.workTasks;
+  assert.equal(restored.length, malformed.length);
+  for (const record of restored) {
+    assert.equal(record.status, 'unknown');
+    assert.equal(record.pauseReason, 'continuation-state-invalid');
+    assert.equal(record.continuation.invalid, true);
+    assert.equal(record.continuation.nextAt, null);
+    assert.equal(continuationEligible(record, { at: 999999 }), false);
+    assert.equal(continuationUnconfirmed(record), true);
+  }
+  assert.doesNotMatch(
+    JSON.stringify(restored),
+    /private raw secret|private bad checkpoint|unexpected/,
+  );
 });
 
-test('unknown continuation cannot be cancelled, accepted, cleared or rebound by stale user receipts',t=>{
- const {store}=fixture(t),message=store.add({role:'user',text:'Original task',status:'review',turnId:'old'}),record=ended(store,{messageId:message.id});message.workId=record.id;store.claimWorkContinuation(record.id,options());store.setWorkContinuationPhase(record.id,'attempt','submitting');store.settleWorkContinuation(record.id,'attempt',{status:'unknown'});
- assert.throws(()=>store.cancelWork({workId:record.id,turnId:'old'}),/cannot be confirmed/);assert.throws(()=>store.confirm(message.id),conflict);message.status='completed';assert.equal(store.isProgressCompleted(message,'task'),false);assert.equal(store.isProgressCompleted(store.state.workTasks[0],'work'),false);assert.deepEqual(store.clearCompletedProgress([{id:message.id,kind:'task'},{id:record.id,kind:'work'}]),{ok:true,cleared:0});assert.throws(()=>store.registerWork({workId:record.id,turnId:'human-retry',title:record.title,plan:{steps:steps()}}),conflict);
+test('unknown continuation cannot be cancelled, accepted, cleared or rebound by stale user receipts', (t) => {
+  const { store } = fixture(t),
+    message = store.add({ role: 'user', text: 'Original task', status: 'review', turnId: 'old' }),
+    record = ended(store, { messageId: message.id });
+  message.workId = record.id;
+  store.claimWorkContinuation(record.id, options());
+  store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+  store.settleWorkContinuation(record.id, 'attempt', { status: 'unknown' });
+  assert.throws(
+    () => store.cancelWork({ workId: record.id, turnId: 'old' }),
+    /cannot be confirmed/,
+  );
+  assert.throws(() => store.confirm(message.id), conflict);
+  message.status = 'completed';
+  assert.equal(store.isProgressCompleted(message, 'task'), false);
+  assert.equal(store.isProgressCompleted(store.state.workTasks[0], 'work'), false);
+  assert.deepEqual(
+    store.clearCompletedProgress([
+      { id: message.id, kind: 'task' },
+      { id: record.id, kind: 'work' },
+    ]),
+    { ok: true, cleared: 0 },
+  );
+  assert.throws(
+    () =>
+      store.registerWork({
+        workId: record.id,
+        turnId: 'human-retry',
+        title: record.title,
+        plan: { steps: steps() },
+      }),
+    conflict,
+  );
 });
 
-test('confirmed pre-submit cancellation retires its claim and stale completions cannot resurrect it',t=>{
- const {store,dir}=fixture(t),record=ended(store);store.claimWorkContinuation(record.id,options());assert.deepEqual(store.cancelWork({workId:record.id,turnId:'old'}),{ok:true,cancelled:true});const cancelled=store.state.workTasks[0];assert.equal(cancelled.status,'cancelled');assert.equal(cancelled.continuation.dispatch,undefined);assert.equal(cancelled.continuation.nextAt,null);assert.throws(()=>store.setWorkContinuationPhase(record.id,'attempt','submitting'),conflict);assert.throws(()=>store.bindWorkContinuation(record.id,'attempt',{turnId:'late'}),conflict);assert.throws(()=>store.settleWorkContinuation(record.id,'attempt',{status:'failed'}),conflict);assert.equal(new Store(dir).state.workTasks[0].status,'cancelled');
+test('confirmed pre-submit cancellation retires its claim and stale completions cannot resurrect it', (t) => {
+  const { store, dir } = fixture(t),
+    record = ended(store);
+  store.claimWorkContinuation(record.id, options());
+  assert.deepEqual(store.cancelWork({ workId: record.id, turnId: 'old' }), {
+    ok: true,
+    cancelled: true,
+  });
+  const cancelled = store.state.workTasks[0];
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.continuation.dispatch, undefined);
+  assert.equal(cancelled.continuation.nextAt, null);
+  assert.throws(() => store.setWorkContinuationPhase(record.id, 'attempt', 'submitting'), conflict);
+  assert.throws(
+    () => store.bindWorkContinuation(record.id, 'attempt', { turnId: 'late' }),
+    conflict,
+  );
+  assert.throws(
+    () => store.settleWorkContinuation(record.id, 'attempt', { status: 'failed' }),
+    conflict,
+  );
+  assert.equal(new Store(dir).state.workTasks[0].status, 'cancelled');
 });
 
-test('explicit human continuation resets prior automatic backoff and no-progress limits without changing history',t=>{
- const {store}=fixture(t),record=ended(store);acknowledged(store,record.id);const paused=store.updateRegisteredWork('new',{status:'paused',executionEnded:true,at:106000});assert.equal(paused.continuation.nextAt,null);const human=store.registerWork({workId:record.id,turnId:'human-authorized',title:record.title,plan:{steps:steps()}});assert.equal(human.continuation,undefined);assert.equal(human.id,record.id);assert.deepEqual(human.turnIds,['old','new','human-authorized']);const final=store.updateRegisteredWork(human.turnId,{status:'continuing',executionEnded:true,at:200000});assert.equal(continuationEligible(final,{at:205000}),true);
+test('explicit human continuation resets prior automatic backoff and no-progress limits without changing history', (t) => {
+  const { store } = fixture(t),
+    record = ended(store);
+  acknowledged(store, record.id);
+  const paused = store.updateRegisteredWork('new', {
+    status: 'paused',
+    executionEnded: true,
+    at: 106000,
+  });
+  assert.equal(paused.continuation.nextAt, null);
+  const human = store.registerWork({
+    workId: record.id,
+    turnId: 'human-authorized',
+    title: record.title,
+    plan: { steps: steps() },
+  });
+  assert.equal(human.continuation, undefined);
+  assert.equal(human.id, record.id);
+  assert.deepEqual(human.turnIds, ['old', 'new', 'human-authorized']);
+  const final = store.updateRegisteredWork(human.turnId, {
+    status: 'continuing',
+    executionEnded: true,
+    at: 200000,
+  });
+  assert.equal(continuationEligible(final, { at: 205000 }), true);
 });
 
-test('each claim, transition, bind, settle, terminal update and cancellation rolls back record identity and disk on save failure',t=>{
- for(const stage of ['claim','phase','bind','settle','finish','cancel']){
-  const {store}=fixture(t),record=ended(store);if(stage!=='claim')store.claimWorkContinuation(record.id,options());if(stage==='bind'||stage==='finish')store.setWorkContinuationPhase(record.id,'attempt','submitting');if(stage==='finish')store.bindWorkContinuation(record.id,'attempt',{turnId:'new'});
-  const records=store.state.workTasks,before=structuredClone(records),bytes=fs.readFileSync(store.file),save=store.save;store.save=()=>{throw Error('Storage unavailable');};
-  const mutate=()=>stage==='claim'?store.claimWorkContinuation(record.id,options()):stage==='phase'?store.setWorkContinuationPhase(record.id,'attempt','submitting'):stage==='bind'?store.bindWorkContinuation(record.id,'attempt',{turnId:'new'}):stage==='settle'?store.settleWorkContinuation(record.id,'attempt',{status:'failed',at:106000}):stage==='finish'?store.updateRegisteredWork('new',{status:'continuing',executionEnded:true,at:106000}):store.cancelWork({workId:record.id,turnId:'old'});
-  assert.throws(mutate,/Storage unavailable/);assert.equal(store.state.workTasks,records);assert.deepEqual(store.state.workTasks,before);assert.deepEqual(fs.readFileSync(store.file),bytes);store.save=save;mutate();
- }
+test('each claim, transition, bind, settle, terminal update and cancellation rolls back record identity and disk on save failure', (t) => {
+  for (const stage of ['claim', 'phase', 'bind', 'settle', 'finish', 'cancel']) {
+    const { store } = fixture(t),
+      record = ended(store);
+    if (stage !== 'claim') store.claimWorkContinuation(record.id, options());
+    if (stage === 'bind' || stage === 'finish')
+      store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+    if (stage === 'finish') store.bindWorkContinuation(record.id, 'attempt', { turnId: 'new' });
+    const records = store.state.workTasks,
+      before = structuredClone(records),
+      bytes = fs.readFileSync(store.file),
+      save = store.save;
+    store.save = () => {
+      throw Error('Storage unavailable');
+    };
+    const mutate = () =>
+      stage === 'claim'
+        ? store.claimWorkContinuation(record.id, options())
+        : stage === 'phase'
+          ? store.setWorkContinuationPhase(record.id, 'attempt', 'submitting')
+          : stage === 'bind'
+            ? store.bindWorkContinuation(record.id, 'attempt', { turnId: 'new' })
+            : stage === 'settle'
+              ? store.settleWorkContinuation(record.id, 'attempt', { status: 'failed', at: 106000 })
+              : stage === 'finish'
+                ? store.updateRegisteredWork('new', {
+                    status: 'continuing',
+                    executionEnded: true,
+                    at: 106000,
+                  })
+                : store.cancelWork({ workId: record.id, turnId: 'old' });
+    assert.throws(mutate, /Storage unavailable/);
+    assert.equal(store.state.workTasks, records);
+    assert.deepEqual(store.state.workTasks, before);
+    assert.deepEqual(fs.readFileSync(store.file), bytes);
+    store.save = save;
+    mutate();
+  }
 });
 
-test('global pause atomically pauses only inactive unfinished continuing records including delayed work',t=>{
- const {store,dir}=fixture(t),ordinary=ended(store,{turnId:'ordinary'}),planless=ended(store,{turnId:'planless',nullPlan:true}),claimed=ended(store,{turnId:'claimed'}),delayed=ended(store,{turnId:'delayed'});store.claimWorkContinuation(claimed.id,options('claimed','claimed-attempt'));store.claimWorkContinuation(delayed.id,options('delayed','delayed-attempt'));store.settleWorkContinuation(delayed.id,'delayed-attempt',{status:'failed',at:106000});
- for(const status of ['waiting_user','paused','failed','cancelled','review','completed','unknown']){const record=ended(store,{turnId:status});store.updateRegisteredWork(record.turnId,{status});}
- const snapshots=new Map(store.state.workTasks.map(record=>[record.id,structuredClone(record)])),records=store.state.workTasks,bytes=fs.readFileSync(store.file),save=store.save;store.save=()=>{throw Error('Storage unavailable');};assert.throws(()=>store.pauseContinuingWork({at:107000}),/Storage unavailable/);assert.equal(store.state.workTasks,records);assert.deepEqual(fs.readFileSync(store.file),bytes);store.save=save;
- assert.deepEqual(store.pauseContinuingWork({at:107000}),[ordinary.id,planless.id,delayed.id]);for(const record of store.state.workTasks){if([ordinary.id,planless.id,delayed.id].includes(record.id)){assert.equal(record.status,'paused');assert.equal(record.pauseReason,'user-paused');assert.equal(record.continuation.nextAt,null);assert.equal(continuationEligible(record,{at:999999}),false);}else assert.deepEqual(record,snapshots.get(record.id));}assert.deepEqual(store.pauseContinuingWork({at:108000}),[]);const restored=new Store(dir);for(const id of [ordinary.id,planless.id,delayed.id])assert.equal(restored.state.workTasks.find(record=>record.id===id).status,'paused');
+test('global pause atomically pauses only inactive unfinished continuing records including delayed work', (t) => {
+  const { store, dir } = fixture(t),
+    ordinary = ended(store, { turnId: 'ordinary' }),
+    planless = ended(store, { turnId: 'planless', nullPlan: true }),
+    claimed = ended(store, { turnId: 'claimed' }),
+    delayed = ended(store, { turnId: 'delayed' });
+  store.claimWorkContinuation(claimed.id, options('claimed', 'claimed-attempt'));
+  store.claimWorkContinuation(delayed.id, options('delayed', 'delayed-attempt'));
+  store.settleWorkContinuation(delayed.id, 'delayed-attempt', { status: 'failed', at: 106000 });
+  for (const status of [
+    'waiting_user',
+    'paused',
+    'failed',
+    'cancelled',
+    'review',
+    'completed',
+    'unknown',
+  ]) {
+    const record = ended(store, { turnId: status });
+    store.updateRegisteredWork(record.turnId, { status });
+  }
+  const snapshots = new Map(
+      store.state.workTasks.map((record) => [record.id, structuredClone(record)]),
+    ),
+    records = store.state.workTasks,
+    bytes = fs.readFileSync(store.file),
+    save = store.save;
+  store.save = () => {
+    throw Error('Storage unavailable');
+  };
+  assert.throws(() => store.pauseContinuingWork({ at: 107000 }), /Storage unavailable/);
+  assert.equal(store.state.workTasks, records);
+  assert.deepEqual(fs.readFileSync(store.file), bytes);
+  store.save = save;
+  assert.deepEqual(store.pauseContinuingWork({ at: 107000 }), [
+    ordinary.id,
+    planless.id,
+    delayed.id,
+  ]);
+  for (const record of store.state.workTasks) {
+    if ([ordinary.id, planless.id, delayed.id].includes(record.id)) {
+      assert.equal(record.status, 'paused');
+      assert.equal(record.pauseReason, 'user-paused');
+      assert.equal(record.continuation.nextAt, null);
+      assert.equal(continuationEligible(record, { at: 999999 }), false);
+    } else assert.deepEqual(record, snapshots.get(record.id));
+  }
+  assert.deepEqual(store.pauseContinuingWork({ at: 108000 }), []);
+  const restored = new Store(dir);
+  for (const id of [ordinary.id, planless.id, delayed.id])
+    assert.equal(restored.state.workTasks.find((record) => record.id === id).status, 'paused');
 });
 
-test('an unsaved acknowledged turn may be bound only after its exact terminal proof and remains paused or cancelled',t=>{
- for(const phase of ['submitting','unknown'])for(const status of ['paused','cancelled']){
-  const {store,dir}=fixture(t),record=ended(store,{nullPlan:true});store.claimWorkContinuation(record.id,options());store.setWorkContinuationPhase(record.id,'attempt','submitting');if(phase==='unknown')store.settleWorkContinuation(record.id,'attempt',{status:'failed',submitted:true,at:106000});
-  const finished=store.finishUnboundWorkContinuation(record.id,'attempt',{turnId:'real-acknowledged-turn',status,at:107000});assert.equal(finished.id,record.id);assert.equal(finished.turnId,'real-acknowledged-turn');assert.deepEqual(finished.turnIds,['old','real-acknowledged-turn']);assert.equal(finished.status,status);assert.equal(finished.pauseReason,'continuation-save-failed');assert.equal(finished.executionEndedAt,107000);assert.equal(finished.startedAt,1000);assert.equal(finished.plan,null);assert.equal(finished.continuation.dispatch,undefined);assert.equal(finished.continuation.nextAt,null);assert.equal(finished.continuation.attempts,1);assert.equal(continuationEligible(finished,{at:999999}),false);assert.equal(continuationUnconfirmed(finished),false);assert.equal(finished.cancelledAt,status==='cancelled'?107000:undefined);assert.equal(new Store(dir).state.workTasks[0].status,status);assert.throws(()=>store.finishUnboundWorkContinuation(record.id,'attempt',{turnId:'later'}),conflict);assert.equal(store.state.messages.length,0);
- }
+test('an unsaved acknowledged turn may be bound only after its exact terminal proof and remains paused or cancelled', (t) => {
+  for (const phase of ['submitting', 'unknown'])
+    for (const status of ['paused', 'cancelled']) {
+      const { store, dir } = fixture(t),
+        record = ended(store, { nullPlan: true });
+      store.claimWorkContinuation(record.id, options());
+      store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+      if (phase === 'unknown')
+        store.settleWorkContinuation(record.id, 'attempt', {
+          status: 'failed',
+          submitted: true,
+          at: 106000,
+        });
+      const finished = store.finishUnboundWorkContinuation(record.id, 'attempt', {
+        turnId: 'real-acknowledged-turn',
+        status,
+        at: 107000,
+      });
+      assert.equal(finished.id, record.id);
+      assert.equal(finished.turnId, 'real-acknowledged-turn');
+      assert.deepEqual(finished.turnIds, ['old', 'real-acknowledged-turn']);
+      assert.equal(finished.status, status);
+      assert.equal(finished.pauseReason, 'continuation-save-failed');
+      assert.equal(finished.executionEndedAt, 107000);
+      assert.equal(finished.startedAt, 1000);
+      assert.equal(finished.plan, null);
+      assert.equal(finished.continuation.dispatch, undefined);
+      assert.equal(finished.continuation.nextAt, null);
+      assert.equal(finished.continuation.attempts, 1);
+      assert.equal(continuationEligible(finished, { at: 999999 }), false);
+      assert.equal(continuationUnconfirmed(finished), false);
+      assert.equal(finished.cancelledAt, status === 'cancelled' ? 107000 : undefined);
+      assert.equal(new Store(dir).state.workTasks[0].status, status);
+      assert.throws(
+        () => store.finishUnboundWorkContinuation(record.id, 'attempt', { turnId: 'later' }),
+        conflict,
+      );
+      assert.equal(store.state.messages.length, 0);
+    }
 });
 
-test('unbound terminal recovery rejects stale attempts, aliases, foreign histories and unsupported success states atomically',t=>{
- const {store}=fixture(t),record=ended(store);store.claimWorkContinuation(record.id,options());assert.throws(()=>store.finishUnboundWorkContinuation(record.id,'attempt',{turnId:'known'}),conflict);store.setWorkContinuationPhase(record.id,'attempt','submitting');ended(store,{turnId:'foreign'});const records=store.state.workTasks,before=structuredClone(records),bytes=fs.readFileSync(store.file);
- for(const [id,attempt,args]of [[record.id,'stale',{turnId:'known'}],['missing','attempt',{turnId:'known'}],[record.id,'attempt',{turnId:'old'}],[record.id,'attempt',{turnId:'foreign'}],[record.id,'attempt',{turnId:''}],[record.id,'attempt',{turnId:'known',status:'completed'}],[record.id,'attempt',{turnId:'known',status:'review'}],[record.id,'attempt',{turnId:'known',status:'continuing'}],[record.id,'attempt',{turnId:'known',at:NaN}]])assert.throws(()=>store.finishUnboundWorkContinuation(id,attempt,args),conflict);
- assert.equal(store.state.workTasks,records);assert.deepEqual(records,before);assert.deepEqual(fs.readFileSync(store.file),bytes);
- store.state.workTasks[0]={...records[0],continuation:{...records[0].continuation,dispatch:{...records[0].continuation.dispatch,phase:'unknown',turnId:'known'}}};assert.throws(()=>store.finishUnboundWorkContinuation(record.id,'attempt',{turnId:'different'}),conflict);const finished=store.finishUnboundWorkContinuation(record.id,'attempt',{turnId:'known',at:108000});assert.equal(finished.status,'paused');assert.equal(finished.turnId,'known');assert.equal(finished.continuation.dispatch,undefined);
+test('unbound terminal recovery rejects stale attempts, aliases, foreign histories and unsupported success states atomically', (t) => {
+  const { store } = fixture(t),
+    record = ended(store);
+  store.claimWorkContinuation(record.id, options());
+  assert.throws(
+    () => store.finishUnboundWorkContinuation(record.id, 'attempt', { turnId: 'known' }),
+    conflict,
+  );
+  store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+  ended(store, { turnId: 'foreign' });
+  const records = store.state.workTasks,
+    before = structuredClone(records),
+    bytes = fs.readFileSync(store.file);
+  for (const [id, attempt, args] of [
+    [record.id, 'stale', { turnId: 'known' }],
+    ['missing', 'attempt', { turnId: 'known' }],
+    [record.id, 'attempt', { turnId: 'old' }],
+    [record.id, 'attempt', { turnId: 'foreign' }],
+    [record.id, 'attempt', { turnId: '' }],
+    [record.id, 'attempt', { turnId: 'known', status: 'completed' }],
+    [record.id, 'attempt', { turnId: 'known', status: 'review' }],
+    [record.id, 'attempt', { turnId: 'known', status: 'continuing' }],
+    [record.id, 'attempt', { turnId: 'known', at: NaN }],
+  ])
+    assert.throws(() => store.finishUnboundWorkContinuation(id, attempt, args), conflict);
+  assert.equal(store.state.workTasks, records);
+  assert.deepEqual(records, before);
+  assert.deepEqual(fs.readFileSync(store.file), bytes);
+  store.state.workTasks[0] = {
+    ...records[0],
+    continuation: {
+      ...records[0].continuation,
+      dispatch: { ...records[0].continuation.dispatch, phase: 'unknown', turnId: 'known' },
+    },
+  };
+  assert.throws(
+    () => store.finishUnboundWorkContinuation(record.id, 'attempt', { turnId: 'different' }),
+    conflict,
+  );
+  const finished = store.finishUnboundWorkContinuation(record.id, 'attempt', {
+    turnId: 'known',
+    at: 108000,
+  });
+  assert.equal(finished.status, 'paused');
+  assert.equal(finished.turnId, 'known');
+  assert.equal(finished.continuation.dispatch, undefined);
 });
 
-test('unbound terminal recovery rolls back binding, final status and claim retirement when persistence fails',t=>{
- const {store}=fixture(t),record=ended(store);store.claimWorkContinuation(record.id,options());store.setWorkContinuationPhase(record.id,'attempt','submitting');store.settleWorkContinuation(record.id,'attempt',{status:'failed',submitted:true,at:106000});const records=store.state.workTasks,before=structuredClone(records),bytes=fs.readFileSync(store.file),save=store.save;store.save=()=>{throw Error('Storage unavailable');};assert.throws(()=>store.finishUnboundWorkContinuation(record.id,'attempt',{turnId:'known',at:107000}),/Storage unavailable/);assert.equal(store.state.workTasks,records);assert.deepEqual(records,before);assert.deepEqual(fs.readFileSync(store.file),bytes);store.save=save;const finished=store.finishUnboundWorkContinuation(record.id,'attempt',{turnId:'known',at:108000});assert.equal(finished.status,'paused');assert.deepEqual(finished.turnIds,['old','known']);
+test('unbound terminal recovery rolls back binding, final status and claim retirement when persistence fails', (t) => {
+  const { store } = fixture(t),
+    record = ended(store);
+  store.claimWorkContinuation(record.id, options());
+  store.setWorkContinuationPhase(record.id, 'attempt', 'submitting');
+  store.settleWorkContinuation(record.id, 'attempt', {
+    status: 'failed',
+    submitted: true,
+    at: 106000,
+  });
+  const records = store.state.workTasks,
+    before = structuredClone(records),
+    bytes = fs.readFileSync(store.file),
+    save = store.save;
+  store.save = () => {
+    throw Error('Storage unavailable');
+  };
+  assert.throws(
+    () =>
+      store.finishUnboundWorkContinuation(record.id, 'attempt', { turnId: 'known', at: 107000 }),
+    /Storage unavailable/,
+  );
+  assert.equal(store.state.workTasks, records);
+  assert.deepEqual(records, before);
+  assert.deepEqual(fs.readFileSync(store.file), bytes);
+  store.save = save;
+  const finished = store.finishUnboundWorkContinuation(record.id, 'attempt', {
+    turnId: 'known',
+    at: 108000,
+  });
+  assert.equal(finished.status, 'paused');
+  assert.deepEqual(finished.turnIds, ['old', 'known']);
 });

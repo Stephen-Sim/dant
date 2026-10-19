@@ -6,7 +6,10 @@ const versions = { package: '0.1.0', 'Cargo.toml': '0.1.0', 'tauri.conf.json': '
 
 test('all three release versions agree in the checked-out project', () => {
   assert.match(readVersion(undefined, {}), /^\d+\.\d+\.\d+/);
-  assert.equal(readVersion(undefined, { GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: 'test-build' }), readVersion(undefined, {}));
+  assert.equal(
+    readVersion(undefined, { GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: 'test-build' }),
+    readVersion(undefined, {}),
+  );
 });
 
 test('a mismatched native version prevents packaging', () => {

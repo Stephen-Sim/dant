@@ -22,12 +22,12 @@ flowchart LR
 
 ## Modes and data ownership
 
-| Mode | Responsibility |
-| --- | --- |
-| `--prepare` | UI and setup preparation; no automatic VM connection or model execution. |
-| Default / `--vm-controller` | Hyper-V setup, deployment, Windows notifications, offline cache, and API forwarding. |
-| `--vm-worker` | Ordinary VM user owning Engine, Store, Codex, attachments, memory, and desktop control. |
-| `--deploy-worker` | Deploy or update the Worker without starting a local UI. |
+| Mode                        | Responsibility                                                                          |
+| --------------------------- | --------------------------------------------------------------------------------------- |
+| `--prepare`                 | UI and setup preparation; no automatic VM connection or model execution.                |
+| Default / `--vm-controller` | Hyper-V setup, deployment, Windows notifications, offline cache, and API forwarding.    |
+| `--vm-worker`               | Ordinary VM user owning Engine, Store, Codex, attachments, memory, and desktop control. |
+| `--deploy-worker`           | Deploy or update the Worker without starting a local UI.                                |
 
 The Controller never constructs a task Engine or executes agent work on Windows. The Worker checks for a Linux VM, an ordinary user, and a healthy graphical desktop at startup. Both HTTP services bind only to their own loopback address. The VM API is not exposed on its virtual network adapter; files cross controlled interfaces rather than shared host directories.
 
@@ -130,7 +130,7 @@ The in-app mini call is a horizontal bar with the avatar on the left. Drag its n
 
 Voice startup reads authoritative Codex conversation text and shared durable memory. Native speech is flushed into Codex history before closure, while a call-owned finalized-speech snapshot supplies typed tasks during an ongoing call. API speech is injected without inference and retained in private `state.voiceHistory` because Codex's public turn projection omits raw injected items; this field is excluded from state snapshots and visible chat. Memory writes refresh both models, and completed chat replies reach live API voice. See [shared context](context.md#shared-voice-and-text-continuity) for ordering and no-replay behavior.
 
-`src/identity.mjs` defines the common assistant identity for text, subscription voice and optional API voice. All three paths identify dant as the assistant and preserve the human's separate role; a VM or operating-system account name is not the human's name. The native adapter sends this identity in the actual realtime `prompt` as well as the backing task instructions. Saved chat roles and native transport result markers remain distinct. Provider-specific connection, audio and tool routing stay in their adapters.
+`src/conversation/identity.mjs` defines the common assistant identity for text, subscription voice and optional API voice. All three paths identify dant as the assistant and preserve the human's separate role; a VM or operating-system account name is not the human's name. The native adapter sends this identity in the actual realtime `prompt` as well as the backing task instructions. Saved chat roles and native transport result markers remain distinct. Provider-specific connection, audio and tool routing stay in their adapters.
 
 In-call typed messages are authoritative input to the current voice conversation, with a stable message ID and the complete role-bound quoted message. `Engine.rememberCallInput` first appends reference-only context to the canonical conversation without starting inference. Subscription voice then uses `thread/realtime/appendText`; optional API voice uses an acknowledged user `input_text` item and schedules an audio response through its existing response state. Typing does not independently invoke `turn/start` or `turn/steer`; real execution is delegated by the same voice task handoff. A confirmed call input has delivery status `accepted`, not a fabricated completed work task. Actual backend plans remain separate. Ordinary spoken answers are not automatically published as chat finals, while explicit useful text/file deliveries remain supported. Reactions stay reference-only; unknown context or input delivery is not automatically replayed.
 

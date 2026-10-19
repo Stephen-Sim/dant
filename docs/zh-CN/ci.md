@@ -8,6 +8,8 @@
 
 `Windows build` 在 Windows 2025 上先执行同样的 Node/Python 检查，再使用 Rust 1.99.1 和 `cargo --locked` 构建 Tauri NSIS 安装包。Rust 缓存仅保存依赖和编译中间文件，不缓存用户数据、VM 镜像或打包输出。没有平台签名密钥也可以构建，当前产物未签名。
 
+两个工作流都执行格式、严格 TypeScript 类型及已接入状态域的检查。Windows 打包 job 自己执行这些门禁，标签不能依赖另一个 `CI` 工作流中尚未确认的结果就生成发布草稿。
+
 每次成功构建上传一个保留 14 天的 Actions artifact，包含：
 
 - `dant_<version>_windows_x64_setup.exe`：NSIS 安装包。
@@ -24,11 +26,16 @@
 本地可执行静态检查与版本门禁：
 
 ```powershell
+npm run format:check
+npm run typecheck
+npm run check:states
 npm run test:coverage
+python -m unittest discover -s tests -p test_vm.py -v
 node scripts/ci/version.mjs
 node --test scripts/ci/version.test.mjs
 node scripts/ci/preflight.mjs
 pwsh -File scripts/ci/check-powershell.ps1
+npm run build
 ```
 
 预检要求 Python 已安装上述 pycdlib 版本，Windows 已安装 OpenSSH Client 与 Git Bash。GitHub 托管的 runner 已提供这些基础工具；预检会在环境不符时明确失败。

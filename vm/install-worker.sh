@@ -6,6 +6,18 @@ case "$source_dir" in "$HOME"/dant/releases/source.*) ;; *) echo 'Invalid worker
 update_running_work=false
 case "${2:-}" in '') ;; --update-running-work) update_running_work=true ;; *) echo 'Invalid worker update option' >&2; exit 1;; esac
 test "$(id -u)" -ne 0 || { echo 'Run the worker deployment as its ordinary VM user.' >&2; exit 1; }
+require_typescript_runtime() {
+  # Probe only a fixed expression before loading new application source. An
+  # incompatible existing runtime is never overwritten or used to stop work.
+  if ! timeout 15s "$1" --input-type=module-typescript -e 'const [major, minor] = process.versions.node.split(".").map(Number); const supported: boolean = ((major === 22 && minor >= 18) || major >= 24) && ["strip", "transform"].includes(process.features.typescript); if (!supported) process.exit(1);' >/dev/null 2>&1; then
+    echo 'DANT_UPDATE_FAILED:runtime-incompatible:prepare' >&2
+    echo 'The VM Node runtime cannot run this update. Existing services and runtime were preserved; update the runtime through a verified maintenance procedure before reconnecting.' >&2
+    return 1
+  fi
+}
+if [ -e "$HOME/dant/runtime/node" ] || [ -L "$HOME/dant/runtime/node" ]; then
+  require_typescript_runtime "$HOME/dant/runtime/node/bin/node"
+fi
 # Only validated, non-secret deployment options are transferred from Windows.
 # Never source a host .env file or interpolate arbitrary environment variables.
 public_environment=$(python3 - "$source_dir" <<'PY'
@@ -54,6 +66,7 @@ with tempfile.TemporaryDirectory(dir=root) as temporary:
     extracted.rename(root / 'node')
 PY
 fi
+require_typescript_runtime "$HOME/dant/runtime/node/bin/node"
 export PATH="$HOME/dant/runtime/node/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
 node --version
 cd "$source_dir"

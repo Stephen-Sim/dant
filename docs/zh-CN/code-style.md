@@ -36,7 +36,7 @@ npm run format:check
 
 `format` 格式化 Prettier 支持的源码和文档，然后执行 `cargo fmt`。`format:check` 只检查两者，不修改文件。局部操作可使用 `format:prettier`、`format:prettier:check`、`format:rust`、`format:rust:check`。使用这些本地命令，不依赖默认配置不同的全局格式化工具。
 
-Prettier 处理 JavaScript、JSON、CSS、HTML、Markdown 和 YAML。`.prettierrc.json` 规定两个空格、分号、JavaScript 单引号、尾逗号、100 列目标宽度与 LF，同时保留正文现有换行。`.editorconfig` 规定 UTF-8、末尾换行；Python、Rust、PowerShell 使用四个空格。Python、PowerShell 和 Bash 继续执行现有语法检查和行为测试，不引入未声明的格式化依赖。
+Prettier 处理 JavaScript、TypeScript、JSON、CSS、HTML、Markdown 和 YAML。`.prettierrc.json` 规定两个空格、分号、JavaScript 单引号、尾逗号、100 列目标宽度与 LF，同时保留正文现有换行。`.editorconfig` 规定 UTF-8、末尾换行；Python、Rust、PowerShell 使用四个空格。Python、PowerShell 和 Bash 继续执行现有语法检查和行为测试，不引入未声明的格式化依赖。
 
 `.gitattributes` 让自动识别的文本在所有平台（包括 Windows CI）保留 LF；Git 的二进制识别会保持图片等二进制文件不变。
 
@@ -48,6 +48,8 @@ Prettier 处理 JavaScript、JSON、CSS、HTML、Markdown 和 YAML。`.prettierr
 
 协议限制、合法标识、权限白名单和固定错误码属于代码常量。放在功能旁；多个运行时确实需要相同值时，放入共享契约。不能为了减少常量而将安全约束变成可随意配置的环境项。日志和错误不得包含秘密或未限制长度的进程输出。
 
+本地 JSON 持久化需要处理 Windows 文件锁时，复用共享的原子文件替换模块，重试策略使用命名常量并保持次数上限。下一次尝试前必须重新确认源文件、目标文件和目录身份；文件变化或无法确认时停止重试。这个模块不重试任务执行、网络请求或其他外部操作。
+
 ## 语言与用户内容
 
 统一使用共享语言注册表和本地化层。语言代码、自称、方向与 locale 元数据只有一个来源。界面固定文案翻译保留占位符，日期和数字使用所选 locale。控件必须有可访问名称并支持键盘，包含从右到左的布局。
@@ -56,13 +58,13 @@ Prettier 处理 JavaScript、JSON、CSS、HTML、Markdown 和 YAML。`.prettierr
 
 ## 命名状态与 TypeScript 契约
 
-状态统一引用 `src/contracts/states.mjs` 中冻结的运行时枚举。键名采用 UpperCamelCase，例如 `TaskStatus.Running`、`TaskPriority.Normal`、`PlanStepStatus.InProgress`，序列化值保持已有字符串。不要把持久状态换成数字序号或翻译后的显示文案。任务、提交、续作、连接、升级分别属于不同状态域；任务标记为暂停不等于执行器已经停止，结果未知的提交也不能视为可安全重试的失败。
+状态统一引用 `src/contracts/states.mts` 中冻结的运行时枚举。键名采用 UpperCamelCase，例如 `TaskStatus.Running`、`TaskPriority.Normal`、`PlanStepStatus.InProgress`，序列化值保持已有字符串。不要把持久状态换成数字序号或翻译后的显示文案。任务、提交、续作、连接、升级分别属于不同状态域；任务标记为暂停不等于执行器已经停止，结果未知的提交也不能视为可安全重试的失败。
 
 `ChatTaskStatus` 与 `WorkStatus` 有意区分：聊天任务沿用原来的允许状态；持久任务可在两个执行回合间保持 `continuing`，或在核对结果时保持 `unknown`。旧显示值仍由原兼容边界处理。接受未知输入时使用 `isEnumValue(domain, value)` 校验，明确拒绝或保留未确认结果，不要凭空补出安全状态。
 
-`src/contracts/contracts.ts` 定义严格的共享边界结构。固定版本 TypeScript 编译器开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 和 `noEmit`。编译夹具包含必须始终被拒绝的非法状态。`npm run typecheck` 检查契约与启用检查的 JavaScript 枚举模块，并不代表所有旧 JavaScript 已迁移到 TypeScript。`npm run check:states` 对已接入的 Store、计划、续作、桌面生命周期与 VM 生命周期模块禁止原始状态字面量。各模块明确适用的状态域，避免将无关品牌名或外部协议字段误判为状态；迁移其他域时同步扩展检查名单。
+`src/contracts/contracts.ts` 定义严格的共享边界结构。固定版本 TypeScript 编译器开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 和 `noEmit`。编译夹具包含必须始终被拒绝的非法状态。`npm run typecheck` 检查共享契约及 src、ui 中所有已迁移的 `.mts` 模块，保留严格类型；其余旧 JavaScript 按所属领域继续迁移。`npm run check:states` 对已接入的 Store、计划、续作、桌面生命周期与 VM 生命周期模块禁止原始状态字面量。各模块明确适用的状态域，避免将无关品牌名或外部协议字段误判为状态；迁移其他域时同步扩展检查名单。
 
-运行时代码继续使用 `.mjs`，兼容现有 Node 22 启动器、打包服务与部署路径。不依赖整个声明版本范围都具备原生 TypeScript 类型擦除能力。后续功能可以在明确编译与打包边界后采用 `.ts`，仅改扩展名不算迁移。Vite 只转译 TypeScript，不做类型检查，因此必须保留独立编译器检查。
+运行时 TypeScript 使用可擦除类型的 `.mts`，要求 Node 22.18+ LTS 或 24+。预检和打包会执行有时间上限的真实 TypeScript 探针；VM 安装器在改变现有运行时或服务前检查，不兼容时保留原状并报告 `runtime-incompatible`，维护升级运行时后再重新连接。迁移必须补齐严格类型、引用、打包和行为测试，再移除旧实现；不允许用 `any`、跳过检查或仅改后缀代替迁移。Vite 负责转换，独立类型检查门禁必须保留。
 
 需要提取源码的测试通过 `tests/source-fixtures.mjs` 使用 JavaScript AST 定位声明和事件绑定。CSS 断言视图通过 PostCSS 规范空白，保留带引号选择器、颜色写法和属性值；不要依赖固定空格或单个物理行来提取函数。
 

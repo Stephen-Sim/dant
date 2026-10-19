@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {spawnSync} from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 const prelude = String.raw`
 import importlib.util,io,json,math,os,pathlib,struct,sys,tempfile,types
@@ -55,17 +55,24 @@ class FakeAV:
   return types.SimpleNamespace(resample=lambda frame:([self.flush] if self.flush else []) if frame is None else [frame])
 `;
 
-function python(source, options={}) {
- const result=spawnSync(process.env.PYTHON||'python',['-c',prelude+'\n'+source],{cwd:process.cwd(),encoding:'utf8',shell:false,timeout:20000,...options});
- assert.ifError(result.error);
- return result;
+function python(source, options = {}) {
+  const result = spawnSync(process.env.PYTHON || 'python', ['-c', prelude + '\n' + source], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    shell: false,
+    timeout: 20000,
+    ...options,
+  });
+  assert.ifError(result.error);
+  return result;
 }
 function succeeds(source) {
- const result=python(source);
- assert.equal(result.status,0,result.stderr);
+  const result = python(source);
+  assert.equal(result.status, 0, result.stderr);
 }
 
-test('local ASR reads at most 10 MiB plus one byte and rejects missing or oversized data',()=>succeeds(String.raw`
+test('local ASR reads at most 10 MiB plus one byte and rejects missing or oversized data', () =>
+  succeeds(String.raw`
 class Counted(io.BytesIO):
  def read(self,count):assert count==asr.MAX_BYTES+1;return super().read(count)
 assert asr.read_audio(Counted(b'a'))==b'a'
@@ -74,7 +81,8 @@ failure('invalid_audio',lambda:asr.read_audio(Counted(b'')))
 failure('invalid_audio',lambda:asr.read_audio(Counted(b'a'*(asr.MAX_BYTES+1))))
 `));
 
-test('local ASR decodes all frames and resampler tail to mono16k in memory',()=>succeeds(String.raw`
+test('local ASR decodes all frames and resampler tail to mono16k in memory', () =>
+  succeeds(String.raw`
 av=FakeAV([Frame([0.1,-0.2]),Frame([0.3])],flush=Frame([0.4]))
 audio,duration=asr.decode_audio(b'ogg',av,FakeNP)
 assert len(audio)==4 and abs(duration-4/16000)<1e-12
@@ -82,7 +90,8 @@ assert av.closed and av.options['options']['protocol_whitelist']=='pipe'
 assert abs(audio[-1]-0.4)<0.0001
 `));
 
-test('local ASR rejects playlists, no audio, excessive streams, malformed frames and silence',()=>succeeds(String.raw`
+test('local ASR rejects playlists, no audio, excessive streams, malformed frames and silence', () =>
+  succeeds(String.raw`
 for av,code in [(FakeAV([],format='hls'),'invalid_audio'),(FakeAV([],streams=0),'invalid_audio'),
                 (FakeAV([],streams=9),'invalid_audio'),(FakeAV([Frame([0.2])],error=True),'invalid_audio'),
                 (FakeAV([]),'no_speech'),(FakeAV([Frame([0.,0.])]),'no_speech'),
@@ -92,7 +101,8 @@ for av,code in [(FakeAV([],format='hls'),'invalid_audio'),(FakeAV([],streams=0),
 failure('invalid_audio',lambda:asr.decode_audio(b'',FakeAV([]),FakeNP))
 `));
 
-test('local ASR rejects more than ten minutes without returning a truncated recording',()=>succeeds(String.raw`
+test('local ASR rejects more than ten minutes without returning a truncated recording', () =>
+  succeeds(String.raw`
 av=FakeAV([Frame([0.1]),Frame([],samples=asr.MAX_SECONDS*asr.SAMPLE_RATE)])
 failure('too_long',lambda:asr.decode_audio(b'bytes',av,FakeNP))
 assert av.closed
@@ -100,7 +110,8 @@ av=FakeAV([Frame([0.1])],flush=Frame([],samples=asr.MAX_SECONDS*asr.SAMPLE_RATE)
 failure('too_long',lambda:asr.decode_audio(b'bytes',av,FakeNP))
 `));
 
-test('local ASR recognizes English and Chinese with the local CPU int8 model and no downloads',()=>succeeds(String.raw`
+test('local ASR recognizes English and Chinese with the local CPU int8 model and no downloads', () =>
+  succeeds(String.raw`
 with tempfile.TemporaryDirectory() as temporary:
  directory=model_dir(temporary)
  for language,parts in [('en',['hello','world']),('zh',['你好','世界'])]:
@@ -118,7 +129,8 @@ with tempfile.TemporaryDirectory() as temporary:
   assert result==dict(text=' '.join(parts),language=language,duration=3.25) and called==['model']
 `));
 
-test('local ASR finishes validation and decoding before allocating model memory',()=>succeeds(String.raw`
+test('local ASR finishes validation and decoding before allocating model memory', () =>
+  succeeds(String.raw`
 def never(*args,**kwargs):raise AssertionError('Model must not be loaded')
 with tempfile.TemporaryDirectory() as temporary:
  directory=model_dir(temporary)
@@ -132,7 +144,8 @@ with tempfile.TemporaryDirectory() as temporary:
  failure('unavailable',lambda:asr.local_model(pathlib.Path(temporary)/'missing'))
 `));
 
-test('local ASR rejects empty, oversized or invalid model outputs instead of partial text',()=>succeeds(String.raw`
+test('local ASR rejects empty, oversized or invalid model outputs instead of partial text', () =>
+  succeeds(String.raw`
 with tempfile.TemporaryDirectory() as temporary:
  directory=model_dir(temporary)
  for texts,language,code in [(['  '],'en','no_speech'),(['x'*(asr.MAX_TEXT+1)],'en','failed'),
@@ -146,8 +159,8 @@ with tempfile.TemporaryDirectory() as temporary:
  failure('failed',lambda:asr.transcribe(b'bytes',directory,decoder=lambda data:('audio',1),model_factory=Broken))
 `));
 
-test('ASR CLI emits only JSON and suppresses native stdout, stderr and private exception text',()=>{
- const success=python(String.raw`
+test('ASR CLI emits only JSON and suppresses native stdout, stderr and private exception text', () => {
+  const success = python(String.raw`
 asr.resource_limits=lambda:None
 def recognize(*args):
  os.write(1,b'private native stdout');os.write(2,b'private native stderr')
@@ -156,8 +169,10 @@ asr.transcribe=recognize
 sys.stdin=io.TextIOWrapper(io.BytesIO(b'bytes'));sys.argv=['asr','--model-dir','unused']
 sys.exit(asr.main())
 `);
- assert.equal(success.status,0,success.stderr);assert.deepEqual(JSON.parse(success.stdout),{text:'你好 hello',language:'zh',duration:2});assert.equal(success.stderr,'');
- const failure=python(String.raw`
+  assert.equal(success.status, 0, success.stderr);
+  assert.deepEqual(JSON.parse(success.stdout), { text: '你好 hello', language: 'zh', duration: 2 });
+  assert.equal(success.stderr, '');
+  const failure = python(String.raw`
 asr.resource_limits=lambda:None
 def recognize(*args):
  os.write(1,b'private native stdout');os.write(2,b'private native stderr')
@@ -167,19 +182,29 @@ asr.transcribe=recognize
 sys.stdin=io.TextIOWrapper(io.BytesIO(b'bytes'));sys.argv=['asr','--model-dir','unused']
 sys.exit(asr.main())
 `);
- assert.equal(failure.status,1);assert.equal(failure.stdout,'');assert.deepEqual(JSON.parse(failure.stderr),{error:'failed'});
+  assert.equal(failure.status, 1);
+  assert.equal(failure.stdout, '');
+  assert.deepEqual(JSON.parse(failure.stderr), { error: 'failed' });
 });
 
-test('ASR dependency lock pins every wheel and installer verifies exact model hashes before replacement',()=>{
- const lock=fs.readFileSync('vm/transcription-requirements.txt','utf8'),lines=lock.split(/\r?\n/).filter(line=>line&&!line.startsWith('#'));
- assert.ok(lines.length>=7);for(const line of lines)assert.match(line,/^[\w-]+==[\d.]+ --hash=sha256:[0-9a-f]{64}$/);
- assert.ok(lines.some(line=>line.startsWith('faster-whisper==1.2.1 ')));
- const script=fs.readFileSync('vm/install-transcription.sh','utf8');
- assert.match(script,/--require-hashes/);assert.match(script,/--only-binary=:all:/);assert.match(script,/536b0662742c02347bc0e980a01041f333bce120/);
- assert.match(script,/3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671/);
- assert.ok(script.indexOf('if not model_valid(model)')<script.indexOf('os.replace(root, backup)'));
- assert.match(script,/os\.replace\(backup, root\)/);assert.match(script,/os\.O_NOFOLLOW/);assert.match(script,/root\.exists\(\) or root\.is_symlink\(\)/);
- succeeds(String.raw`
+test('ASR dependency lock pins every wheel and installer verifies exact model hashes before replacement', () => {
+  const lock = fs.readFileSync('vm/transcription-requirements.txt', 'utf8'),
+    lines = lock.split(/\r?\n/).filter((line) => line && !line.startsWith('#'));
+  assert.ok(lines.length >= 7);
+  for (const line of lines) assert.match(line, /^[\w-]+==[\d.]+ --hash=sha256:[0-9a-f]{64}$/);
+  assert.ok(lines.some((line) => line.startsWith('faster-whisper==1.2.1 ')));
+  const script = fs.readFileSync('vm/install-transcription.sh', 'utf8');
+  assert.match(script, /--require-hashes/);
+  assert.match(script, /--only-binary=:all:/);
+  assert.match(script, /536b0662742c02347bc0e980a01041f333bce120/);
+  assert.match(script, /3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671/);
+  assert.ok(
+    script.indexOf('if not model_valid(model)') < script.indexOf('os.replace(root, backup)'),
+  );
+  assert.match(script, /os\.replace\(backup, root\)/);
+  assert.match(script, /os\.O_NOFOLLOW/);
+  assert.match(script, /root\.exists\(\) or root\.is_symlink\(\)/);
+  succeeds(String.raw`
 import ast
 source=pathlib.Path('vm/install-transcription.sh').read_text().split("<<'PY'\n",1)[1].rsplit('\nPY',1)[0]
 ast.parse(source)

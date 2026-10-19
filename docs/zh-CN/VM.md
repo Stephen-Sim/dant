@@ -107,17 +107,17 @@ python .\scripts\patch-image.py .\data\vm\livecd.ubuntu-cpc.azure.vhd
 
 Windows 的 `data/vm-setup-status.json` 保存阶段、最近更新时间、日志路径和错误。安装版中对应所选数据目录。Hyper-V 的 `data/logs/create-vm-*.log` 保存管理员脚本完整 transcript，VMware 日志位于 `data/vmware/logs/`。状态记录包含 provider。Hyper-V 常见阶段：
 
-| 阶段 | 含义 |
-| --- | --- |
-| `extracting-image` | 解压原始 VHD |
-| `configuring-nocloud` | 校验并准备初次启动配置 |
-| `allocating-source-disk` | 清除源 VHD 稀疏标记并分配其空洞 |
-| `converting-disk` / `resizing-disk` | 创建和扩容动态磁盘 |
-| `registering-vm` / `booting-vm` | 注册并启动 Hyper-V VM |
-| `waiting-for-ip` | 等待 Hyper-V 集成服务报告 IPv4 |
-| `guest-installing` | 已保存 SSH 连接，等待 VM 软件安装 |
-| `ready` | 就绪检查已实际通过 |
-| `failed:<阶段>` | 读取 error 字段及指定日志定位失败 |
+| 阶段                                | 含义                              |
+| ----------------------------------- | --------------------------------- |
+| `extracting-image`                  | 解压原始 VHD                      |
+| `configuring-nocloud`               | 校验并准备初次启动配置            |
+| `allocating-source-disk`            | 清除源 VHD 稀疏标记并分配其空洞   |
+| `converting-disk` / `resizing-disk` | 创建和扩容动态磁盘                |
+| `registering-vm` / `booting-vm`     | 注册并启动 Hyper-V VM             |
+| `waiting-for-ip`                    | 等待 Hyper-V 集成服务报告 IPv4    |
+| `guest-installing`                  | 已保存 SSH 连接，等待 VM 软件安装 |
+| `ready`                             | 就绪检查已实际通过                |
+| `failed:<阶段>`                     | 读取 error 字段及指定日志定位失败 |
 
 查看来宾安装状态：
 

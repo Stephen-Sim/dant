@@ -6,11 +6,18 @@ export const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.u
 
 export function validateVersions(versions, tag) {
   const version = versions.package;
-  if (typeof version !== 'string' || version.trim() !== version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  if (
+    typeof version !== 'string' ||
+    version.trim() !== version ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
+  ) {
     throw new Error('package.json must contain a release version such as 0.1.0.');
   }
   for (const [source, value] of Object.entries(versions)) {
-    if (value !== version) throw new Error(`Version mismatch: package.json=${version}, ${source}=${value ?? '(missing)'}.`);
+    if (value !== version)
+      throw new Error(
+        `Version mismatch: package.json=${version}, ${source}=${value ?? '(missing)'}.`,
+      );
   }
   if (tag !== undefined && tag !== `v${version}`) {
     throw new Error(`Release tag must be v${version}; received ${tag}.`);
@@ -19,7 +26,7 @@ export function validateVersions(versions, tag) {
 }
 
 export function readVersion(root = projectRoot, env = process.env) {
-  const json = name => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
+  const json = (name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
   const cargo = fs.readFileSync(path.join(root, 'src-tauri/Cargo.toml'), 'utf8');
   const packageSection = cargo.match(/^\[package\]\s*\r?\n([\s\S]*?)(?=^\[|$(?![\s\S]))/m)?.[1];
   const versions = {
@@ -27,12 +34,16 @@ export function readVersion(root = projectRoot, env = process.env) {
     'tauri.conf.json': json('src-tauri/tauri.conf.json').version,
     'Cargo.toml': packageSection?.match(/^version\s*=\s*"([^"]+)"\s*$/m)?.[1],
   };
-  const releaseTag = env.GITHUB_REF_TYPE === 'tag' && env.GITHUB_REF_NAME?.startsWith('v') ? env.GITHUB_REF_NAME : undefined;
+  const releaseTag =
+    env.GITHUB_REF_TYPE === 'tag' && env.GITHUB_REF_NAME?.startsWith('v')
+      ? env.GITHUB_REF_NAME
+      : undefined;
   return validateVersions(versions, releaseTag);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const version = readVersion();
-  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+  if (process.env.GITHUB_OUTPUT)
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
   console.log(`Version verified: ${version}`);
 }
