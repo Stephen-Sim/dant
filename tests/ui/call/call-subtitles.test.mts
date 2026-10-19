@@ -14,25 +14,12 @@ const caption = (sequence: number, text = 'Caption', extra = {}) => ({
   params: { callId: 'a', provider: 'subscription', sequence, text, final: false, ...extra },
 });
 function fixture() {
-  let id = 0;
-  const timers = new Map<number, () => void>(),
-    changes: ReturnType<typeof createCallSubtitles>['snapshot'][] = [],
+  const changes: ReturnType<typeof createCallSubtitles>['snapshot'][] = [],
     subtitles = createCallSubtitles({
-      schedule: (fn) => {
-        const key = ++id;
-        timers.set(key, () => {
-          timers.delete(key);
-          fn();
-        });
-        return key;
-      },
-      cancel: (key) => {
-        if (typeof key === 'number') timers.delete(key);
-      },
       onChange: (value) => changes.push(value),
     });
   subtitles.sync({ id: 'a', provider: 'subscription' });
-  return { subtitles, timers, changes };
+  return { subtitles, changes };
 }
 
 test('call subtitles reject stale sessions, old revisions and unknown payloads and clear on call replacement/end', () => {
@@ -45,6 +32,8 @@ test('call subtitles reject stale sessions, old revisions and unknown payloads a
     caption(2, 'wrong provider', { provider: 'api' }),
     caption(2, 'x'.repeat(4001)),
     caption(2, 'bad final', { final: 'yes' }),
+    caption(2, 'not assistant speech', { role: 'user' }),
+    caption(2, 'control\0text'),
     { method: 'thread/realtime/transcript/done', params: { role: 'user', text: 'User speech' } },
   ])
     assert.equal(subtitles.receive(event), false);
@@ -60,20 +49,46 @@ test('call subtitles reject stale sessions, old revisions and unknown payloads a
   subtitles.dispose();
 });
 
-test('finished captions clear after reading time while old timers cannot erase another utterance', () => {
-  const { subtitles, timers } = fixture();
+test('the last actual utterance stays readable until a new response or exact call end, without a transcript history', () => {
+  const { subtitles } = fixture();
   subtitles.receive(caption(1, 'Finished', { final: true }));
-  assert.equal(timers.size, 1);
-  const old = [...timers.values()][0];
-  subtitles.receive(caption(2, 'New partial'));
-  assert.equal(timers.size, 0);
-  defined(old)();
-  assert.equal(subtitles.snapshot.text, 'New partial');
-  subtitles.receive(caption(3, 'New final', { final: true }));
-  defined([...timers.values()][0])();
+  assert.equal(subtitles.snapshot.text, 'Finished');
+  subtitles.receiveSnapshot(caption(1, 'Finished', { final: true }).params);
+  assert.equal(subtitles.snapshot.text, 'Finished');
+  subtitles.receive(caption(2, ''));
   assert.equal(subtitles.snapshot.text, '');
+  subtitles.receive(caption(3, 'New final', { final: true }));
+  assert.equal(subtitles.snapshot.text, 'New final');
   subtitles.end();
-  assert.equal(timers.size, 0);
+  assert.equal(subtitles.snapshot.text, '');
+  assert.equal(subtitles.receive(caption(4, 'late text')), false);
+});
+
+test('caption snapshots stay scoped across VM or conversation replacement and reject ended or unknown calls', () => {
+  const { subtitles } = fixture();
+  subtitles.sync({ id: 'a', provider: 'subscription', status: 'connected' }, 'conversation-one');
+  subtitles.receiveSnapshot(caption(1, 'Old scope text').params);
+  assert.equal(subtitles.receiveSnapshot(undefined), false);
+  assert.equal(subtitles.snapshot.text, 'Old scope text');
+  subtitles.sync({ id: 'a', provider: 'subscription', status: 'connected' }, 'conversation-two');
+  assert.equal(subtitles.snapshot.text, '');
+  assert.equal(subtitles.receiveSnapshot(caption(1, 'New scope text').params), true);
+  subtitles.receiveSnapshot(null);
+  assert.equal(subtitles.snapshot.text, '');
+  subtitles.sync(
+    { id: 'a', provider: 'subscription', status: 'future-unknown' },
+    'conversation-two',
+  );
+  assert.equal(subtitles.receiveSnapshot(caption(2, 'Not active speech').params), false);
+  subtitles.sync({ id: 'b', provider: 'api', status: 'connected' }, 'conversation-two');
+  subtitles.receiveSnapshot(caption(1, 'API segment', { callId: 'b', provider: 'api' }).params);
+  subtitles.sync(null, 'conversation-two');
+  assert.equal(
+    subtitles.receiveSnapshot(
+      caption(2, 'Late API segment', { callId: 'b', provider: 'api' }).params,
+    ),
+    false,
+  );
 });
 
 test('subtitle DOM uses plain assistant text with accessible bilingual labels and stays hidden in mini call', () => {
@@ -85,17 +100,20 @@ test('subtitle DOM uses plain assistant text with accessible bilingual labels an
   });
   const node = document.querySelector<HTMLButtonElement>('[data-call-subtitles]');
   assert.equal(defined(node).querySelector<HTMLImageElement>('img'), null);
-  assert.equal(defined(node).textContent, '<img src=x onerror=alert(1)> 中文 & speech');
+  assert.equal(
+    defined(node).querySelector('[data-call-subtitle-text]')?.textContent,
+    '<img src=x onerror=alert(1)> 中文 & speech',
+  );
   assert.equal(defined(node).getAttribute('aria-label'), 'dant 实时字幕');
   assert.equal(defined(node).getAttribute('aria-live'), 'polite');
   assert.equal(defined(node).getAttribute('aria-busy'), 'true');
   subtitles.receive(caption(2, 'Done', { final: true }));
   subtitles.update(document);
-  assert.equal(defined(node).textContent, 'Done');
+  assert.equal(defined(node).querySelector('[data-call-subtitle-text]')?.textContent, 'Done');
   assert.equal(defined(node).getAttribute('aria-busy'), 'false');
   subtitles.end();
   subtitles.update(document);
-  assert.equal(defined(node).textContent, '');
+  assert.equal(defined(node).querySelector('[data-call-subtitle-text]')?.textContent, '');
   assert.equal(defined(node).getAttribute('aria-hidden'), 'true');
   defined(document.querySelector<HTMLElement>('main')).innerHTML = subtitles.render({
     mini: true,
@@ -145,7 +163,10 @@ test('actual full call renderer places captions underneath avatar without replac
   const avatar = document.querySelector<HTMLElement>('.call-avatar'),
     captionNode = document.querySelector<HTMLButtonElement>('[data-call-subtitles]');
   assert.ok(defined(avatar).compareDocumentPosition(defined(captionNode)) & 4);
-  assert.equal(defined(captionNode).textContent, '正在检查这个结果。');
+  assert.equal(
+    defined(captionNode).querySelector('[data-call-subtitle-text]')?.textContent,
+    '正在检查这个结果。',
+  );
   assert.equal(context.pc, peer);
   assert.equal(document.querySelector<HTMLElement>('.bubble'), null);
   context.callMini = true;

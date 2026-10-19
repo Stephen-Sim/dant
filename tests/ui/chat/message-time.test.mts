@@ -17,6 +17,8 @@ import { formatCallDuration } from '../../../ui/call/call-duration.mts';
 import { createChatHistory } from '../../../ui/chat/chat-history.mts';
 import { defaultReactions } from '../../../src/conversation/reactions.mts';
 import { canPreviewFile } from '../../../ui/files/file-preview.mts';
+import { messageHistoryScope, RECENT_MESSAGE_LIMIT } from '../../../ui/chat/message-window.mts';
+import postcss from 'postcss';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8'),
   part = (start: string, end: string) => sourceSection(source, start, end);
@@ -280,4 +282,82 @@ test('missing and invalid times remain blank without fabricating a current or ep
   assert.equal(f.c.formatTime(''), '');
   assert.equal(f.c.formatTime(false), '');
   assert.equal(f.c.formatTime('2026-10-17T12:15:00Z', true), f.c.formatTime(at, true));
+});
+
+test('the actual message renderer builds recent history first while keeping replies to hidden messages intact', () => {
+  const f = fixture();
+  let renders = 0;
+  f.c.md = (text) => {
+    renders++;
+    return text;
+  };
+  f.state.messages = Array.from({ length: 623 }, (_, index) => ({
+    id: 'message-' + index,
+    role: index % 2 ? 'user' : 'assistant',
+    text: 'Message ' + index,
+    status: 'completed',
+    time: at + index * 1_000,
+    ...(index === 622 ? { replyTo: 'message-0' } : {}),
+  }));
+  f.render();
+  assert.equal(f.document.querySelectorAll('.message').length, RECENT_MESSAGE_LIMIT);
+  assert.equal(renders, RECENT_MESSAGE_LIMIT);
+  assert.equal(f.document.querySelector('[data-id="message-0"]'), null);
+  assert.match(
+    defined(f.document.querySelector('[data-id="message-622"] blockquote')).textContent,
+    /Message 0/,
+  );
+  assert.equal(f.state.messages.length, 623);
+  const window = defined(f.c.messageWindow),
+    scope = messageHistoryScope(f.state);
+  window.loadOlder(f.state.messages, scope);
+  f.render();
+  assert.equal(f.document.querySelectorAll('.message').length, RECENT_MESSAGE_LIMIT * 2);
+  window.reveal('message-10', f.state.messages, scope);
+  f.render();
+  assert.ok(f.document.querySelector('[data-id="message-10"]'));
+});
+
+test('paused status, delivery ticks and hover time occupy separate wrapping footer slots', () => {
+  for (const language of ['en', 'zh']) {
+    const f = fixture(language);
+    f.state.messages = [
+      {
+        id: 'paused',
+        role: 'user',
+        text: 'Continue',
+        status: 'paused',
+        executorConfirmedAt: at,
+        time: at,
+      },
+    ];
+    f.render();
+    const footer = defined(f.document.querySelector('.message-meta')),
+      status = defined(footer.querySelector('.task-status')),
+      delivery = defined(footer.querySelector('.delivery-state')),
+      time = defined(footer.querySelector('.message-time'));
+    assert.equal(status.parentNode, footer);
+    assert.equal(status.nextElementSibling, delivery);
+    assert.equal(delivery.nextElementSibling, time);
+    assert.equal(status.textContent, language === 'en' ? 'Paused' : '已暂停');
+    assert.ok(delivery.querySelector('[data-icon="check-check"]'));
+    assert.equal(time.textContent, f.c.formatTime(at));
+  }
+  const rules = new Map<string, Map<string, string>>();
+  postcss
+    .parse(fs.readFileSync(new URL('../../../ui/style.css', import.meta.url), 'utf8'))
+    .walkRules((rule) => {
+      let values = rules.get(rule.selector);
+      if (!values) rules.set(rule.selector, (values = new Map()));
+      rule.walkDecls((declaration) => {
+        values.set(declaration.prop, declaration.value);
+      });
+    });
+  assert.equal(rules.get('.message-meta')?.get('display'), 'flex');
+  assert.equal(rules.get('.message-meta')?.get('flex-wrap'), 'wrap');
+  assert.equal(rules.get('.message-meta')?.get('gap'), '3px 8px');
+  assert.notEqual(rules.get('.message-time')?.get('position'), 'absolute');
+  assert.equal(rules.get('.message-time')?.get('flex'), '0 0 auto');
+  assert.equal(rules.get('.task-status')?.get('overflow-wrap'), 'anywhere');
+  assert.equal(rules.get('.task-status')?.get('max-width'), '100%');
 });

@@ -23,6 +23,12 @@ export interface WorkerBackupSnapshot {
   stream: Readable;
   cleanup(): void;
 }
+export interface AsyncWorkerBackupSnapshot extends Omit<WorkerBackupSnapshot, 'cleanup'> {
+  cleanup(): Promise<void>;
+}
+export interface AsyncWorkerBackupOptions extends Omit<WorkerBackupOptions, 'validateCurrent'> {
+  signal?: AbortSignal;
+}
 export interface WorkerBackupOptions {
   dataDir: string;
   workspaceRoot: string;

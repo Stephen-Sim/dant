@@ -1,5 +1,10 @@
 import type { Store } from './store.mts';
-import type { MemoryNote, MemoryProjectInput, MemoryRetrievalOptions } from './memory-types.ts';
+import type {
+  MemoryNote,
+  MemoryProjectInput,
+  MemoryRetrievalOptions,
+  MemoryManagementMutation,
+} from './memory-types.ts';
 import { includesValue } from '../contracts/json.mts';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -176,7 +181,7 @@ export class MemoryStore {
       this.backupJson('projects', { conversationId, records: pending }),
     );
   }
-  search(query: unknown, options: { limit?: number } = {}) {
+  search(query: unknown, options: { limit?: number; conversationId?: string } = {}) {
     return this.database.search(query, options);
   }
   retrieve(query: unknown, scope: unknown, options: MemoryRetrievalOptions = {}) {
@@ -196,6 +201,27 @@ export class MemoryStore {
   }
   deleteEntry(id: unknown) {
     return this.database.deleteEntry(id);
+  }
+  managementSnapshot() {
+    this.guardDirectory();
+    return this.database.managementSnapshot();
+  }
+  manageRecord(mutation: MemoryManagementMutation) {
+    this.guardDirectory();
+    const text = mutation.text;
+    if (
+      text !== undefined &&
+      (typeof text !== 'string' ||
+        text.includes('\0') ||
+        Buffer.byteLength(text) > MEMORY_MAX_BYTES)
+    )
+      throw Error('Invalid memory text');
+    const result = this.database.manageRecord({
+      ...mutation,
+      ...(text === undefined ? {} : { text: sanitizeMemoryText(text) }),
+    });
+    this.contextCache = null;
+    return result;
   }
   cacheStats() {
     return {

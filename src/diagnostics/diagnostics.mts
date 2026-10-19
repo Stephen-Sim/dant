@@ -137,6 +137,7 @@ const routes = new Set([
   '/api/messages',
   '/api/messages/:id',
   '/api/messages/:id/reaction',
+  '/api/messages/:id/metadata',
   '/api/history',
   '/api/credentials',
   '/api/credentials/:id',
@@ -184,6 +185,26 @@ const numeric = (value: unknown): value is number =>
 const safeError = (code: string) => Object.assign(Error(code), { diagnosticCode: code });
 const sameFile = (left: Stats, right: Stats) => left.dev === right.dev && left.ino === right.ino;
 routes.add('/api/version');
+for (const route of [
+  '/api/skills/:name/export',
+  '/api/skills/import/preview',
+  '/api/skills/import',
+  '/api/skills/import/previews/:id',
+  '/api/controller/settings',
+  '/api/backups',
+  '/api/backups/settings',
+  '/api/backups/run',
+  '/api/backups/import',
+  '/api/backups/export',
+  '/api/backups/info',
+  '/api/backups/:id/preview',
+  '/api/backups/:id/restore',
+  '/api/backups/:id/export',
+  '/api/memory/manage',
+  '/api/memory/manage/:kind/:id',
+  '/api/memory/manage/:kind/:id/confirm',
+])
+  routes.add(route);
 routes.add('/api/updates');
 routes.add('/api/tasks/clear-completed');
 for (const action of ['pause', 'resume', 'cancel', 'priority', 'dismiss', 'context'])

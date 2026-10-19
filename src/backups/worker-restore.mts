@@ -7,6 +7,7 @@ import type { WorkerRestorePhaseValue } from '../contracts/states.mts';
 import { ordinaryDirectory } from '../files/managed-path.mts';
 import { backupError, validateWorkerBackup } from './archive-stream.mts';
 import { prepareRestoredWorkerState } from './worker-state.mts';
+import { renamePrivateStagingDirectorySync } from './staging-directory-rename.mts';
 
 export const WORKER_RESTORE_RECEIPT_FILE = '.dant-restore-receipt.json';
 const JOURNAL_MAX_BYTES = 16 * 1024;
@@ -401,7 +402,10 @@ export async function restoreWorkerBackup(
     };
     // Durable ownership precedes every named staging directory, including copies between devices.
     atomicJson(locations.journal, journal);
-    rename(path.join(decoding, 'data'), locations.dataNew);
+    renamePrivateStagingDirectorySync(path.join(decoding, 'data'), locations.dataNew, {
+      assertOffline: () => options.assertOffline(),
+      renameSync: rename,
+    });
     // Copy to the workspace filesystem before its atomic rename, even when it is a different device.
     fs.cpSync(path.join(decoding, 'workspace'), locations.workspaceNew, {
       recursive: true,

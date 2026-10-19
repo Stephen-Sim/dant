@@ -264,6 +264,7 @@ function fixture({
   c.vmBackups ??= {
     setVisible() {},
     render: () => '',
+    renderImport: () => '',
     bind() {},
     dispose() {},
     load: async () => {},

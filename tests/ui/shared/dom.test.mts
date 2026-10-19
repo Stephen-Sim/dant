@@ -161,6 +161,45 @@ test('all supported keys reorder existing nodes and remove missing or incompatib
   assert.equal(defined(prior).parentNode, null);
 });
 
+test('long keyed message lists retain identity with a bounded number of key reads', () => {
+  const count = 623,
+    f = fixture(
+      Array.from(
+        { length: count },
+        (_, index) => `<article data-id="message-${index}">Message ${index}</article>`,
+      ).join(''),
+    ),
+    original = [...f.parent.children];
+  let reads = 0;
+  for (const node of original) {
+    const read = node.getAttribute.bind(node);
+    node.getAttribute = (name: string) => {
+      reads++;
+      return read(name);
+    };
+  }
+  f.update(
+    Array.from(
+      { length: count },
+      (_, index) =>
+        `<article data-id="message-${count - index - 1}">Message ${count - index - 1}</article>`,
+    ).join(''),
+  );
+  assert.deepEqual([...f.parent.children], [...original].reverse());
+  assert.ok(reads < count * 20, 'key matching must not rescan the full history for each message');
+});
+
+test('duplicate keys retain compatible nodes in their original order and unkeyed siblings remain positional', () => {
+  const f = fixture(
+      '<button data-action="same">One</button><div data-action="same">Other tag</div><button data-action="same">Two</button><i>Unkeyed</i>',
+    ),
+    original = [...f.parent.children];
+  f.update(
+    '<button data-action="same">First</button><button data-action="same">Second</button><div data-action="same">Other</div><i>Unkeyed</i>',
+  );
+  assert.deepEqual([...f.parent.children], [original[0], original[2], original[1], original[3]]);
+});
+
 test('normal text inputs, textareas and checkbox live state follow the requested render', () => {
   const f = fixture(
       '<input id="name" value="old"><textarea id="draft">old</textarea><input id="check" type="checkbox">',

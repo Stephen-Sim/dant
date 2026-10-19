@@ -5,6 +5,16 @@ use std::{
     time::Duration,
 };
 
+// Matches the Controller and Worker JSON parser limit in config/network.mts.
+const API_JSON_BODY_BYTES: usize = 3 * 1024 * 1024;
+
+fn validate_json_body(body: Option<&str>) -> Result<(), &'static str> {
+    if body.is_some_and(|value| value.len() > API_JSON_BODY_BYTES) {
+        return Err("Local API request is too large");
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiResponse {
@@ -32,12 +42,7 @@ pub async fn api_request(
     if !matches!(method.as_str(), "GET" | "POST" | "PATCH" | "DELETE") {
         return Err("Unsupported local API method".into());
     }
-    if body
-        .as_ref()
-        .is_some_and(|value| value.len() > 2 * 1024 * 1024)
-    {
-        return Err("Local API request is too large".into());
-    }
+    validate_json_body(body.as_deref())?;
     let token = token.unwrap_or_default();
     if token.len() > 256 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("Invalid local API session".into());
@@ -124,4 +129,33 @@ pub fn local_json(
 pub fn existing_controller() -> bool {
     local_json("/api/session", None, None)
         .is_some_and(|value| value.get("product").and_then(|v| v.as_str()) == Some("dant"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_json_body, API_JSON_BODY_BYTES};
+
+    #[test]
+    fn json_body_accepts_absence_and_the_exact_byte_limit() {
+        assert_eq!(validate_json_body(None), Ok(()));
+        assert_eq!(validate_json_body(Some("")), Ok(()));
+        let maximum = "x".repeat(API_JSON_BODY_BYTES);
+        assert_eq!(validate_json_body(Some(&maximum)), Ok(()));
+        let unicode_maximum = "é".repeat(API_JSON_BODY_BYTES / 2);
+        assert_eq!(validate_json_body(Some(&unicode_maximum)), Ok(()));
+    }
+
+    #[test]
+    fn json_body_rejects_overflow_by_bytes_including_multibyte_text() {
+        let oversized = "x".repeat(API_JSON_BODY_BYTES + 1);
+        assert_eq!(
+            validate_json_body(Some(&oversized)),
+            Err("Local API request is too large")
+        );
+        let unicode_oversized = "é".repeat(API_JSON_BODY_BYTES / 2 + 1);
+        assert_eq!(
+            validate_json_body(Some(&unicode_oversized)),
+            Err("Local API request is too large")
+        );
+    }
 }

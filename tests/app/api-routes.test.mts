@@ -16,11 +16,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createWorkerApp } from '../../src/app/server.mts';
+import { API_JSON_BODY_BYTES } from '../../src/config/network.mts';
 import { Store } from '../../src/conversation/store.mts';
-import { SKILL_SUPPORT_FILE_LIMIT } from '../../src/skills/skill-limits.mts';
+import { SKILL_SUPPORT_FILE_LIMIT, SKILL_ARCHIVE_BYTES } from '../../src/skills/skill-limits.mts';
 import { VoiceKeyStore } from '../../src/security/secrets.mts';
 import { readAppState } from '../../ui/app/application-state.mts';
 import { workProgress } from '../../ui/work/work-progress.mts';
+import { skillPngFixture } from '../support/skill-png-fixtures.mts';
+import { VoiceFixture } from '../support/protocol-fixtures.mts';
+import { NativeVoiceFixture } from '../support/native-service-fixtures.mts';
 
 const root = path.resolve('.cache/tests');
 fs.mkdirSync(root, { recursive: true });
@@ -505,6 +509,117 @@ test('private task progress failures expose only fixed whitelisted codes without
   } finally {
     engine.active = null;
     engine.tool = originalTool;
+  }
+});
+
+test('call caption preferences persist strictly without changing a current call, media or executor', async (t) => {
+  const { api, store, dir, worker, engine } = await fixture(t, {
+      voiceFactory: () => Object.assign(new VoiceFixture(), { close: async () => {} }),
+      nativeVoiceFactory: () => Object.assign(new NativeVoiceFixture(), { close: async () => {} }),
+    }),
+    call = engineCallFixture({ id: 'caption-call', provider: 'api', status: 'connected' }),
+    active = activeTaskFixture({ turnId: 'caption-existing-turn', messageIds: [] });
+  assert.equal((await (await api('/state')).json()).settings.showCallCaptions, true);
+  engine.call = call;
+  engine.active = active;
+  engine.loaded = true;
+  try {
+    for (const showCallCaptions of [false, true, false]) {
+      assert.equal((await api('/settings', { showCallCaptions }, 'PATCH')).status, 200);
+      assert.equal(store.state.settings.showCallCaptions, showCallCaptions);
+      assert.equal(new Store(dir).state.settings.showCallCaptions, showCallCaptions);
+      assert.equal(engine.call, call);
+      assert.equal(engine.active, active);
+      assert.equal(engine.loaded, true);
+      assert.equal(worker.calls.length, 0);
+      assert.equal(worker.connections, 0);
+    }
+    const saved = fs.readFileSync(store.file, 'utf8'),
+      before = structuredClone(store.state);
+    for (const showCallCaptions of [null, 'false', 0, 1, [], {}]) {
+      const response = await api('/settings', { showCallCaptions, notifications: false }, 'PATCH');
+      assert.equal(response.status, 400);
+      assert.deepEqual(store.state, before);
+      assert.equal(fs.readFileSync(store.file, 'utf8'), saved);
+    }
+  } finally {
+    engine.call = null;
+    engine.active = null;
+  }
+});
+
+test('desktop state polling exposes only current sanitized captions in RAM and settings saves never persist speech', async (t) => {
+  const { api, store, engine, worker, credentials, diagnostics } = await fixture(t, {
+      voiceFactory: () => Object.assign(new VoiceFixture(), { close: async () => {} }),
+      nativeVoiceFactory: () => Object.assign(new NativeVoiceFixture(), { close: async () => {} }),
+    }),
+    secret = 'synthetic-caption-secret',
+    phrase = 'RAM_ONLY_CAPTION',
+    call = engineCallFixture({ id: 'caption-current', provider: 'api', status: 'connected' }),
+    emit = (sequence: number, patch: Record<string, unknown> = {}) =>
+      engine.emit('realtime', {
+        method: 'dant/call/subtitle',
+        params: {
+          callId: call.id,
+          provider: call.provider,
+          sequence,
+          text: phrase + ' ' + secret,
+          final: true,
+          ...patch,
+        },
+      });
+  credentials.upsert({ name: 'Synthetic caption credential', secret });
+  engine.call = call;
+  try {
+    emit(1);
+    const first = await (await api('/state')).json();
+    assert.equal(first.callCaption.callId, call.id);
+    assert.equal(first.callCaption.text, phrase + ' [credential redacted]');
+    assert.equal(first.callCaption.final, true);
+    emit(1, { text: 'Old repeated speech' });
+    emit(2, { callId: 'other-call', text: 'FOREIGN_CAPTION' });
+    assert.equal((await (await api('/state')).json()).callCaption.text, first.callCaption.text);
+    assert.equal((await api('/settings', { showCallCaptions: false }, 'PATCH')).status, 200);
+    assert.equal((await (await api('/state')).json()).callCaption.text, first.callCaption.text);
+    const persisted = fs.readFileSync(store.file, 'utf8');
+    assert.doesNotMatch(persisted, /RAM_ONLY_CAPTION|synthetic-caption-secret|callCaption/);
+    assert.doesNotMatch(JSON.stringify(store.state), /RAM_ONLY_CAPTION|callCaption/);
+    assert.doesNotMatch(
+      JSON.stringify(diagnostics.recent(50)),
+      /RAM_ONLY_CAPTION|synthetic-caption-secret/,
+    );
+    assert.deepEqual(Object.keys(call).sort(), Object.keys(first.call).sort());
+    engine.call = { ...call, id: 'caption-next' };
+    engine.change();
+    emit(100);
+    assert.equal((await (await api('/state')).json()).callCaption, null);
+    engine.call = null;
+    engine.change();
+    emit(101);
+    assert.equal((await (await api('/state')).json()).callCaption, null);
+    assert.equal(worker.calls.length, 0);
+  } finally {
+    engine.call = null;
+  }
+});
+
+test('old Worker settings default call captions on and discard any legacy transient caption payload', (t) => {
+  for (const showCallCaptions of [undefined, false, true, 'false', null]) {
+    const dir = fs.mkdtempSync(path.join(root, 'caption-store-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const store = new Store(dir),
+      raw = observedRecord(JSON.parse(fs.readFileSync(store.file, 'utf8'))),
+      settings = observedRecord(raw.settings);
+    if (showCallCaptions === undefined) delete settings.showCallCaptions;
+    else settings.showCallCaptions = showCallCaptions;
+    raw.callCaption = { text: 'LEGACY_RAM_ONLY_SPEECH' };
+    fs.writeFileSync(store.file, JSON.stringify(raw));
+    const restored = new Store(dir);
+    assert.equal(restored.state.settings.showCallCaptions, showCallCaptions !== false);
+    assert.doesNotMatch(
+      fs.readFileSync(restored.file, 'utf8'),
+      /callCaption|LEGACY_RAM_ONLY_SPEECH/,
+    );
   }
 });
 
@@ -1006,7 +1121,7 @@ test('skill import rejects invalid remote sources, oversized files, unauthentica
   assert.equal(rejected.status, 400);
   assert.equal((await rejected.json()).code, 'invalid_source');
   const form = new FormData();
-  form.set('file', new Blob([new Uint8Array(1024 * 1024 + 1)]), 'oversized.zip');
+  form.set('file', new Blob([new Uint8Array(SKILL_ARCHIVE_BYTES + 1)]), 'oversized.zip');
   const { token } = await fetch(base + '/api/session').then((response) => response.json());
   const tooLarge = await fetch(base + '/api/skills/import/preview', {
     method: 'POST',
@@ -1070,6 +1185,79 @@ test('managed skill ZIP export uses immutable attachments without changing chat 
   assert.equal((await api('/skills/%2e%2e%2foutside/export', {})).status, 400);
   worker.status = 'offline';
   assert.equal((await api('/skills/desktop-check/export', {})).status, 409);
+});
+
+test('legacy skill binary assets survive HTTP edits and export while unsafe files fail with content-free diagnostics', async (t) => {
+  const { api, skills, store, worker, diagnostics } = await fixture(t),
+    original = skills.save({
+      name: 'legacy-images',
+      description: 'A skill with image templates.',
+      instructions: 'Read the helper before acting.',
+      files: { 'scripts/check.py': 'raise RuntimeError("never execute in an export")' },
+      enabled: false,
+    }),
+    directory = path.dirname(original.path),
+    image = skillPngFixture(),
+    opaque = Buffer.from([255, 0, 1, 2, 127, 128]),
+    imagePath = path.join(directory, 'scripts', 'template.png'),
+    messages = structuredClone(store.state.messages);
+  fs.writeFileSync(imagePath, image);
+  fs.mkdirSync(path.join(directory, 'assets'));
+  const opaquePath = path.join(directory, 'assets', 'data.bin');
+  fs.writeFileSync(opaquePath, opaque);
+  assert.equal((await api('/skills/legacy-images')).status, 200);
+  assert.equal(
+    (await api('/skills/legacy-images', { description: 'Updated description.' }, 'PATCH')).status,
+    200,
+  );
+  assert.equal(
+    (
+      await api(
+        '/skills/legacy-images',
+        {
+          files: { 'scripts/check.py': 'print("still never executed")' },
+          preserveBinaryFiles: true,
+        },
+        'PATCH',
+      )
+    ).status,
+    200,
+  );
+  assert.deepEqual(fs.readFileSync(imagePath), image);
+  assert.deepEqual(fs.readFileSync(opaquePath), opaque);
+  const exported = await api('/skills/legacy-images/export', {});
+  assert.equal(exported.status, 200);
+  const attachment: unknown = await exported.json(),
+    attachmentId = observedRecord(attachment).id;
+  assert.equal(typeof attachmentId, 'string');
+  const download = await api('/files/' + String(attachmentId) + '?download=1');
+  assert.equal(download.status, 200);
+  const archive = Buffer.from(await download.arrayBuffer());
+  assert.ok(archive.includes(image));
+  assert.ok(archive.includes(opaque));
+  assert.equal(
+    (await api('/skills/legacy-images', { preserveBinaryFiles: null }, 'PATCH')).status,
+    400,
+  );
+  fs.linkSync(
+    path.join(directory, 'scripts', 'check.py'),
+    path.join(directory, 'scripts', 'private-support.bin'),
+  );
+  const rejected = await api('/skills/legacy-images/export', {});
+  assert.equal(rejected.status, 400);
+  const failure: unknown = await rejected.json();
+  assert.equal(observedRecord(failure).code, 'skill_export_failed');
+  const event = diagnostics.recent(20).findLast((row) => row.event === 'skill.export.failed');
+  assert.equal(event?.code, 'skill_export_failed');
+  assert.doesNotMatch(
+    JSON.stringify({ failure, event }),
+    /private-support|template\.png|never execute/,
+  );
+  assert.deepEqual(store.state.messages, messages);
+  assert.equal(
+    worker.calls.some((call) => ['turn/start', 'thread/start'].includes(call.method)),
+    false,
+  );
 });
 
 test('VM memory, reactions and read APIs validate references and preserve unrelated messages', async (t) => {
@@ -1223,11 +1411,11 @@ test('authenticated text and steering pass complete input beyond 100000 characte
   );
   assert.equal(defined(store.state.messages.at(-1)).text, correction);
   const count = store.state.messages.length;
-  assert.equal((await api('/messages', { text: 'x'.repeat(2 * 1024 * 1024) })).status, 413);
+  assert.equal((await api('/messages', { text: 'x'.repeat(API_JSON_BODY_BYTES + 1) })).status, 413);
   assert.equal(
     (
       await api('/steer', {
-        text: 'x'.repeat(2 * 1024 * 1024),
+        text: 'x'.repeat(API_JSON_BODY_BYTES + 1),
         expectedTurnId: defined(engine.active).turnId,
       })
     ).status,

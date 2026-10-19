@@ -14,7 +14,7 @@ function fixture() {
   const { document } = parseHTML('<html><body></body></html>');
   const calls: string[] = [],
     dialogs: UiModal[] = [],
-    categories: string[] = [];
+    categories: { category: string; selector: string | undefined }[] = [];
   const state = {
     mode: 'vm-controller',
     conversationId: 'fresh',
@@ -41,7 +41,9 @@ function fixture() {
     pc: null,
     managedSettings: { onClose() {}, renderRequests: () => '' },
     chatHistory: { onClose() {} },
-    settingsNavigation: { select: (category: string) => categories.push(category) },
+    settingsNavigation: {
+      select: (category: string, selector?: string) => categories.push({ category, selector }),
+    },
     vmBackups: {
       openImport: async () => {
         calls.push('open-backup-import');
@@ -143,7 +145,7 @@ test('backup and SSH choices use main settings navigation while the existing-com
   const f = fixture();
   await f.c.action('onboarding-import');
   assert.equal(f.c.page, 'settings');
-  assert.deepEqual(f.categories, ['computer']);
+  assert.deepEqual(f.categories, [{ category: 'computer', selector: '.vm-backup-import' }]);
   // The injected import capability is attached by the portable backup module.
   // Navigating here is never a restore or a VM creation request.
   assert.deepEqual(f.calls, ['open-backup-import']);

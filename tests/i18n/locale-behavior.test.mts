@@ -40,6 +40,7 @@ import { renderUsageActivity } from '../../ui/settings/usage-activity.mts';
 import { createSchedules } from '../../ui/schedules/schedules.mts';
 import { reconcile } from '../../ui/shared/dom.mts';
 import { createSettingsNavigation } from '../../ui/settings/settings-navigation.mts';
+import type { createVmBackups } from '../../ui/settings/vm-backups.mts';
 import {
   sourceDeclaration,
   sourceSection,
@@ -135,7 +136,10 @@ function mainFixture() {
       'sync' | 'isVisible' | 'render' | 'bind'
     >,
     memorySettings: { setVisible: noop },
-    vmBackups: { setVisible: noop, render: empty },
+    vmBackups: { setVisible: noop, render: empty, renderImport: empty } satisfies Pick<
+      ReturnType<typeof createVmBackups>,
+      'setVisible' | 'render' | 'renderImport'
+    >,
     workDisclosures: { capture: noop },
     appUpdates: { setVisible: noop, render: empty },
     appearance: { sync: noop },

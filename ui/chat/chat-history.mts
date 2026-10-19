@@ -31,6 +31,9 @@ interface ChatHistoryOptions {
   icon?: (name: string) => string;
   getSpeechState?: (message: HistoryMessage) => unknown;
   onReadAloud?: (id: string) => unknown;
+  renderMetadataActions?: (message: HistoryMessage) => string;
+  renderMetadataMarkers?: (message: HistoryMessage) => string;
+  onOpenMenu?: () => void;
 }
 import { localizeMessages } from '../../src/i18n/i18n.mts';
 export const historyMessages = {
@@ -131,6 +134,9 @@ export function createChatHistory({
   icon = () => '',
   getSpeechState = () => null,
   onReadAloud,
+  renderMetadataActions = () => '',
+  renderMetadataMarkers = () => '',
+  onOpenMenu = () => {},
 }: ChatHistoryOptions) {
   let menuId: string | null = null,
     editDraft: string | null = null,
@@ -171,12 +177,15 @@ export function createChatHistory({
   function renderActions(message: HistoryMessage) {
     const reason = blocked(),
       speech = menuId === message.id ? speechState(message) : null;
-    return `<button type="button" data-message-more="${esc(message.id)}" title="${tr('more')}" aria-label="${tr('more')}" aria-haspopup="menu" aria-expanded="${menuId === message.id}">${icon('more-horizontal')}</button>${menuId === message.id ? `<div class="history-menu" role="menu" data-key="history-menu-${esc(message.id)}">${speech ? `<button type="button" class="text-btn" data-message-speak="${esc(message.id)}" role="menuitem" ${speech.disabled ? 'disabled' : ''}>${icon(speech.active ? 'square' : 'volume-2')}${tr(speech.active ? 'stopReading' : 'readAloud')}</button>` : ''}${reason ? `<p class="muted">${tr(reason)}</p>` : ''}${message.role === 'user' ? button('edit', `data-message-edit="${esc(message.id)}" role="menuitem"`, !!reason) : ''}${button(message.role === 'user' && message.status === 'queued' ? 'withdraw' : 'remove', `data-message-remove="${esc(message.id)}" role="menuitem"`, !!reason)}</div>` : ''}`;
+    return `<button type="button" data-message-more="${esc(message.id)}" title="${tr('more')}" aria-label="${tr('more')}" aria-haspopup="menu" aria-expanded="${menuId === message.id}">${icon('more-horizontal')}</button>${menuId === message.id ? `<div class="history-menu" role="menu" data-key="history-menu-${esc(message.id)}">${renderMetadataActions(message)}${speech ? `<button type="button" class="text-btn" data-message-speak="${esc(message.id)}" role="menuitem" ${speech.disabled ? 'disabled' : ''}>${icon(speech.active ? 'square' : 'volume-2')}${tr(speech.active ? 'stopReading' : 'readAloud')}</button>` : ''}${reason ? `<p class="muted">${tr(reason)}</p>` : ''}${message.role === 'user' ? button('edit', `data-message-edit="${esc(message.id)}" role="menuitem"`, !!reason) : ''}${button(message.role === 'user' && message.status === 'queued' ? 'withdraw' : 'remove', `data-message-remove="${esc(message.id)}" role="menuitem"`, !!reason)}</div>` : ''}`;
   }
   function renderEdited(message: HistoryMessage) {
-    return message.editedAt
-      ? `<small class="edited-label" title="${esc(new Date(message.editedAt).toLocaleString())}">${tr('edited')}</small>`
-      : '';
+    return (
+      renderMetadataMarkers(message) +
+      (message.editedAt
+        ? `<small class="edited-label" title="${esc(new Date(message.editedAt).toLocaleString())}">${tr('edited')}</small>`
+        : '')
+    );
   }
   function renderSettings() {
     const reason = blocked();
@@ -271,8 +280,37 @@ export function createChatHistory({
             })),
       );
     click('[data-message-more]', (node) => {
+      onOpenMenu();
       menuId = menuId === node.dataset.messageMore ? null : node.dataset.messageMore || null;
       render();
+      document
+        .querySelector<HTMLElement>('.history-menu [role="menuitem"]:not(:disabled)')
+        ?.focus();
+    });
+    document.querySelectorAll<HTMLElement>('.history-menu').forEach((menu) => {
+      menu.onkeydown = (event) => {
+        const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')],
+          current = items.indexOf(document.activeElement as HTMLElement);
+        if (event.key === 'Escape' && !event.isComposing) {
+          event.preventDefault();
+          event.stopPropagation();
+          const id = menuId;
+          menuId = null;
+          render();
+          [...document.querySelectorAll<HTMLElement>('[data-message-more]')]
+            .find((node) => node.dataset.messageMore === id)
+            ?.focus();
+        } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+          event.preventDefault();
+          items[
+            event.key === 'Home'
+              ? 0
+              : event.key === 'End'
+                ? items.length - 1
+                : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+          ]?.focus();
+        }
+      };
     });
     click('[data-message-speak]', (node) => {
       const id = node.dataset.messageSpeak;

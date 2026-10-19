@@ -48,7 +48,7 @@ const stateContractRules: readonly ContractRule[] = Object.freeze([
   { file: 'src/work/task-progress.mts', domains: taskDomains },
   { file: 'src/work/work-continuation-state.mts', domains: taskDomains },
   { file: 'src/work/work-continuation.mts', domains: [...taskDomains, ConnectionStatus] },
-  ...['memory-entries', 'memory-sqlite', 'memory-search'].map((name) => ({
+  ...['memory-entries', 'memory-sqlite', 'memory-search', 'memory-management'].map((name) => ({
     file: 'src/conversation/' + name + '.mts',
     domains: [MemoryEntryStatus],
   })),
@@ -60,6 +60,9 @@ const stateContractRules: readonly ContractRule[] = Object.freeze([
   { file: 'src/backups/backup-validation.mts', domains: [BackupMode] },
   { file: 'src/backups/worker-restore.mts', domains: [WorkerRestorePhase] },
   { file: 'ui/settings/vm-backups.mts', domains: [BackupMode, BackupPhase] },
+  { file: 'ui/chat/chat-collections.mts', domains: [ConnectionStatus] },
+  { file: 'ui/settings/memory-settings.mts', domains: [MemoryEntryStatus] },
+  { file: 'ui/settings/memory-management-contracts.mts', domains: [MemoryEntryStatus] },
   {
     file: 'ui/app/recovery-settings.mts',
     domains: [BackupMode, BackupPhase, ConnectionStatus, ServiceUpdateStatus],

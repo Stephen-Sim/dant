@@ -108,6 +108,8 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { reconcile } from './shared/dom.mts';
 import { createChatScroll } from './chat/chat-scroll.mts';
+import { createMarkdownCache, formatMessageTime } from './chat/render-cache.mts';
+import { createMessageWindow, messageHistoryScope } from './chat/message-window.mts';
 import { createTransport } from './platform/transport.mts';
 import { createMessageSubmissions, createCallStops } from './chat/pending.mts';
 import { SpeechHelper } from './platform/speech.mts';
@@ -118,6 +120,10 @@ import {
 } from './settings/appearance.mts';
 import { createCallDuration, formatCallDuration } from './call/call-duration.mts';
 import { createCallSubtitles } from './call/call-subtitles.mts';
+import {
+  callCaptionScope,
+  createCallCaptionPreferences,
+} from './call/call-caption-preferences.mts';
 import { createFloatingCall } from './call/floating-call.mts';
 import { createDownloads } from './files/downloads.mts';
 import { bindAttachmentImages } from './files/attachment-images.mts';
@@ -137,12 +143,14 @@ import {
   updateWorkTimers,
 } from './work/work-progress.mts';
 import { createProgressActions } from './work/progress-actions.mts';
+import { createProgressPanel } from './work/progress-panel.mts';
 import { createNativeCallOverlay } from './platform/native-call-overlay.mts';
 import { createNativeTray } from './platform/native-tray.mts';
 import { createTextEditor } from './platform/text-editor.mts';
 import { defaultReactions } from '../src/conversation/reactions.mts';
 import { createManagedSettings } from './settings/managed-settings.mts';
 import { createChatHistory } from './chat/chat-history.mts';
+import { createChatCollections } from './chat/chat-collections.mts';
 import { searchMessages } from './chat/chat-search.mts';
 import { formatPresence } from './chat/presence.mts';
 import { createReadVisibility } from './chat/read-state.mts';
@@ -156,7 +164,7 @@ import { createFirstRun } from './onboarding/first-run.mts';
 import './onboarding/first-run.css';
 import { createSettingsNavigation } from './settings/settings-navigation.mts';
 import { renderUsageSettings } from './settings/usage-settings.mts';
-import { createUsageActivityController } from './settings/usage-activity.mts';
+import { createUsageActivityController, usageActivityScope } from './settings/usage-activity.mts';
 import { createTaskReplyController } from './work/task-reply.mts';
 import { createTaskDetails } from './work/task-details.mts';
 import packageInfo from '../package.json';
@@ -239,7 +247,6 @@ let chatMode = 'text',
   modalFocus: HTMLElement | null = null,
   emojiFor: string | null = null,
   manualVMExpanded = false,
-  progressExpanded = true,
   screenLoad: (() => Promise<void>) | null = null,
   screenAbort: AbortController | null = null,
   screenEpoch = 0,
@@ -266,6 +273,15 @@ const readVisibility = createReadVisibility({
 });
 const callDuration = createCallDuration({ onTick: () => updateCallDuration() });
 const callSubtitles = createCallSubtitles({ onChange: () => callSubtitles.update(document) });
+const callCaptionPreferences = createCallCaptionPreferences({
+  document,
+  getState: () => state,
+  getLanguage: language,
+  request: api,
+  connected: () => eventConnected,
+  onChange: render,
+  onError: toast,
+});
 const floatingCall = createFloatingCall({ window });
 const workDisclosures = createWorkDisclosures({ getState: () => state, document });
 const chatScroll = createChatScroll({
@@ -280,6 +296,7 @@ const chatScroll = createChatScroll({
       state?.settings?.vm?.keyPath ?? null,
     ]),
 });
+const messageWindow = createMessageWindow();
 const progressActions = createProgressActions({
   getModel: () => workProgress(state, { language: language(), connected: eventConnected }),
   request: taskRequest,
@@ -289,6 +306,21 @@ const progressActions = createProgressActions({
   formatError: errorText,
   document,
   isPending: (id) => pendingActions.has('task:' + id),
+});
+const progressPanel = createProgressPanel({
+  document,
+  renderContent: renderProgress,
+  title: () => t('progress'),
+  closeLabel: () => t('close'),
+  closeIcon: () => ico('x'),
+  onChange: render,
+  onClose: () => progressActions.onClose(),
+  getScope: () =>
+    JSON.stringify([
+      messageHistoryScope(state),
+      state?.settings.vm?.knownHosts ?? null,
+      state?.settings.vm?.provider ?? null,
+    ]),
 });
 const nativeCallOverlay = createNativeCallOverlay({
   desktop: Boolean(window.__TAURI_INTERNALS__),
@@ -304,7 +336,7 @@ const nativeCallOverlay = createNativeCallOverlay({
 });
 const nativeTray = createNativeTray({
   desktop: Boolean(window.__TAURI_INTERNALS__),
-  onProgress: () => openModal({ type: 'progress' }),
+  onProgress: openProgress,
 });
 const appearance = createAppearance({
   save: (values) => api('/settings', { method: 'PATCH', body: values }),
@@ -381,6 +413,31 @@ const scheduledTasks = createSchedules({
   icon: (name) => ico(name),
   timeZone: () => state?.settings?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
 });
+const chatCollections = createChatCollections({
+  document,
+  getState: () => state,
+  getModal: () => modal,
+  connected: () => eventConnected,
+  request: api,
+  render,
+  toast,
+  openModal,
+  closeModal,
+  closeMessageMenu: () => chatHistory.onClose(),
+  revealMessage,
+  navigate: (action) => chatScroll.navigate(action),
+  openFile: (file, download) => {
+    if (download) return downloads.save(file);
+    if (file.type.startsWith('image/')) openModal({ type: 'image', fileId: file.id });
+    else if (canPreviewFile(file)) return filePreview.open(file);
+    else return downloads.save(file);
+  },
+  openLink: (url) =>
+    window.__TAURI_INTERNALS__
+      ? openExternal(url)
+      : window.open(url, '_blank', 'noopener,noreferrer'),
+  icon: (name) => ico(name),
+});
 const chatHistory = createChatHistory({
   getState: () => state,
   request: api,
@@ -408,6 +465,9 @@ const chatHistory = createChatHistory({
         }
       : null,
   onReadAloud: (id) => readAloud(id).catch((error) => toast(errorText(error))),
+  renderMetadataActions: (message) => chatCollections.renderMessageActions(message),
+  renderMetadataMarkers: (message) => chatCollections.renderMarkers(message),
+  onOpenMenu: () => chatCollections.onClose(),
 });
 const updateDraft = createUpdateDraft(),
   nativeUpdates = createNativeUpdates({
@@ -473,7 +533,8 @@ const firstRun = createFirstRun({
     await action('computer-settings');
   },
   onBackupImport: async () => {
-    await action('computer-settings');
+    await action('settings');
+    settingsNavigation.select('computer', '.vm-backup-import');
     await vmBackups.openImport();
   },
 });
@@ -484,7 +545,11 @@ const settingsNavigation = createSettingsNavigation({
   onCategory: loadSettingsCategory,
   onError: (error) => toast(errorText(error)),
 });
-const usageActivity = createUsageActivityController({ document, onChange: render });
+const usageActivity = createUsageActivityController({
+  document,
+  onChange: render,
+  getScope: () => usageActivityScope(state),
+});
 const taskReplies = createTaskReplyController({
   document,
   getModel: () => workProgress(state, { language: language(), connected: eventConnected }),
@@ -1008,8 +1073,8 @@ function toast(text: string) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => box.classList.remove('visible'), 6500);
 }
-function md(text: string): string {
-  return DOMPurify.sanitize(marked.parse(text || '', { breaks: true, async: false }), {
+const markdownCache = createMarkdownCache((text) =>
+  DOMPurify.sanitize(marked.parse(text, { breaks: true, async: false }), {
     ALLOW_DATA_ATTR: false,
     SANITIZE_NAMED_PROPS: true,
     FORBID_TAGS: [
@@ -1025,14 +1090,22 @@ function md(text: string): string {
       'audio',
     ],
     FORBID_ATTR: ['style'],
-  });
+  }),
+);
+function md(text: string): string {
+  return markdownCache.render(text || '');
 }
 function render() {
   chatScroll.capture();
+  progressPanel.capture();
   memorySettings.setVisible(page === 'memory');
   workDisclosures.capture();
   settingsNavigation.sync(page === 'settings');
-  vmBackups.setVisible(page === 'settings' && settingsNavigation.isVisible('computer'));
+  vmBackups.setVisible(
+    page === 'settings' &&
+      (settingsNavigation.isVisible('history') || settingsNavigation.isVisible('computer')),
+    settingsNavigation.isVisible('computer') ? 'import' : 'backups',
+  );
   appUpdates.setVisible(page === 'settings' && settingsNavigation.isVisible('about'));
   modal = managedSettings.syncModal(modal, page);
   modal = filePreview.syncModal(modal);
@@ -1050,7 +1123,7 @@ function render() {
   document.documentElement.lang = languageInfo(language()).locale;
   document.documentElement.dir = languageInfo(language()).direction;
   const template = document.createElement('template');
-  template.innerHTML = `${renderRail()}<main class="${page === 'chat' ? 'chat-main' : 'settings-main'}">${renderHeader(status)}${page === 'chat' ? `<div class="workspace ${showComputer && chatMode === 'text' ? 'computer-visible' : ''}" data-key="workspace"><section class="conversation" data-key="conversation">${renderCall()}${chatMode === 'voice' && !pc && !callStarting ? renderCallReady() : renderChat()}</section>${showComputer && chatMode === 'text' ? renderComputer() : ''}</div>` : ['skills', 'schedules'].includes(page) ? `<div class="full-page skills-full-page" data-key="page-${page}">${page === 'skills' ? managedSettings.renderSkillPage() : renderSchedules()}</div>` : `<div class="full-page" data-key="page-${page}"><div class="settings-stack">${page === 'settings' ? renderSettings() : renderMemory()}</div></div>`}</main><input type="file" id="file-input" hidden multiple>${renderModal()}`;
+  template.innerHTML = `${renderRail()}<main class="${page === 'chat' ? 'chat-main' : 'settings-main'}">${renderHeader(status)}${page === 'chat' ? `<div class="workspace ${showComputer ? 'computer-visible' : ''} ${progressPanel.visible ? 'progress-visible' : ''}" data-key="workspace"><section class="conversation" data-key="conversation">${renderCall()}${chatMode === 'voice' && !pc && !callStarting ? renderCallReady() : renderChat()}</section>${progressPanel.render()}${showComputer ? renderComputer() : ''}</div>` : ['skills', 'schedules'].includes(page) ? `<div class="full-page skills-full-page" data-key="page-${page}">${page === 'skills' ? managedSettings.renderSkillPage() : renderSchedules()}</div>` : `<div class="full-page" data-key="page-${page}"><div class="settings-stack">${page === 'settings' ? renderSettings() : renderMemory()}</div></div>`}</main><input type="file" id="file-input" hidden multiple>${renderModal()}`;
   reconcile(app, template.content);
   bind();
   resizeComposer();
@@ -1098,6 +1171,18 @@ function render() {
   updateRead();
   restartScreen();
 }
+function openProgress() {
+  managedSettings.onClose(modal);
+  chatHistory.onClose();
+  chatCollections.onClose();
+  modal = null;
+  modalFocus = null;
+  emojiFor = null;
+  page = 'chat';
+  chatMode = 'text';
+  if (pc) callMini = true;
+  progressPanel.open();
+}
 function renderRail() {
   const unread = unreadMessages().length;
   return `<nav class="rail" aria-label="dant"><button type="button" class="brand" data-action="chat" title="dant" aria-label="${esc(t('chat') + (unread ? ' · ' + unreadLabel(unread) : ''))}" ${page === 'chat' ? 'aria-current="page"' : ''}>${eyes('small')}<span class="unread-badge" data-unread-count="${unread}" aria-hidden="true" ${unread ? '' : 'hidden'}>${unread > 99 ? '99+' : unread}</span></button><button type="button" class="icon-btn rail-skills ${page === 'skills' ? 'selected' : ''}" data-action="skills" title="${t('skills')}" aria-label="${t('skills')}" ${page === 'skills' ? 'aria-current="page"' : ''}>${ico('puzzle')}</button><button type="button" class="icon-btn rail-schedules ${page === 'schedules' ? 'selected' : ''}" data-action="schedules" title="${t('schedules')}" aria-label="${t('schedules')}" ${page === 'schedules' ? 'aria-current="page"' : ''}>${ico('clock')}</button><div class="rail-bottom">${button('settings', 'settings', t('settings'), 'icon-btn ' + (page === 'settings' ? 'selected' : ''))}</div></nav>`;
@@ -1113,7 +1198,7 @@ function renderHeader(_status: string) {
           : page === 'memory'
             ? t('memoryTitle')
             : t('schedules');
-  return `<header class="app-header">${settingsPage ? `<div class="settings-header">${button('chat', 'arrow-left', t('backChat'), 'text-btn back-button')}<h1>${title}</h1></div>` : `<div class="identity"><strong>dant</strong><span class="presence-status" title="${esc(presence.title)}"><i data-presence-dot class="status-dot ${presence.active ? 'working' : presence.online ? 'online' : 'offline'}"></i><span data-presence-label>${esc(presence.label)}</span><span data-presence-detail ${presence.detail ? '' : 'hidden'}> · ${esc(presence.detail)}</span></span></div>`}<div class="header-actions">${settingsPage ? (pc || currentState().call || callStops.pending ? button('hangup', 'phone', t('hangup'), 'icon-btn hangup-header') : '') : `${button('voice-mode', 'phone', t('voiceMode'), 'icon-btn mode-button ' + (chatMode === 'voice' ? 'selected' : ''))}${button('computer', 'monitor', t('computer'), 'text-btn header-computer ' + (showComputer && chatMode === 'text' ? 'selected' : ''))}${renderWorkEntry(workProgress(state, { language: language(), connected: eventConnected }), ico('clock'))}${button('details', 'more-horizontal', t('details'))}`}</div></header>`;
+  return `<header class="app-header">${settingsPage ? `<div class="settings-header">${button('chat', 'arrow-left', t('backChat'), 'text-btn back-button')}<h1>${title}</h1></div>` : `<div class="identity"><strong>dant</strong><span class="presence-status" title="${esc(presence.title)}"><i data-presence-dot class="status-dot ${presence.active ? 'working' : presence.online ? 'online' : 'offline'}"></i><span data-presence-label>${esc(presence.label)}</span><span data-presence-detail ${presence.detail ? '' : 'hidden'}> · ${esc(presence.detail)}</span></span></div>`}<div class="header-actions">${settingsPage ? (pc || currentState().call || callStops.pending ? button('hangup', 'phone', t('hangup'), 'icon-btn hangup-header') : '') : `${button('voice-mode', 'phone', t('voiceMode'), 'icon-btn mode-button ' + (chatMode === 'voice' ? 'selected' : ''))}${renderWorkEntry(workProgress(state, { language: language(), connected: eventConnected }), ico('clock'))}${button('computer', 'monitor', t('computer'), 'text-btn header-computer ' + (showComputer ? 'selected' : ''))}${button('details', 'more-horizontal', t('details'))}${chatCollections.renderMenu()}`}</div></header>`;
 }
 function currentPresence() {
   return formatPresence(
@@ -1176,10 +1261,11 @@ function renderUnreadControl() {
     ? `<button type="button" class="unread-jump" data-first-unread title="${translate(language(), 'Jump to first unread message', '跳到第一条未读消息')}" aria-label="${esc(unreadLabel(count))}">${ico('arrow-down')}<span>${esc(unreadLabel(count))}</span></button>`
     : '';
 }
-function revealMessage(_id?: string) {
+function revealMessage(id?: string) {
   page = 'chat';
   chatMode = 'text';
   if (speechBlocked()) callMini = true;
+  if (id) messageWindow.reveal(id, currentState().messages, messageHistoryScope(state));
   render();
 }
 function updatePresence() {
@@ -1204,6 +1290,11 @@ function startPresenceTicker() {
   presenceTimer = setInterval(() => {
     updatePresence();
     updateWorkTimers(document);
+    const expiring = document.querySelector<HTMLElement>(
+        '.work-progress-body [data-progress-expires-at]',
+      ),
+      expiresAt = Number(expiring?.dataset.progressExpiresAt);
+    if (Number.isSafeInteger(expiresAt) && expiresAt > 0 && Date.now() >= expiresAt) render();
   }, 30000);
 }
 function recordingSeconds() {
@@ -1232,7 +1323,7 @@ function renderVoiceRecorder() {
   return `<section class="voice-message-recorder" data-key="voice-message-recorder" aria-label="${t('recordAudio')}"><button type="button" class="icon-btn" data-action="cancel-record" title="${t('cancelRecording')}" aria-label="${t('cancelRecording')}" ${busy || unknown ? 'disabled' : ''}>${ico('x')}</button><div class="voice-recording-content"><div class="voice-recording-state"><i class="voice-recording-dot ${paused || ready ? 'paused' : ''}" aria-hidden="true"></i><span>${t(busy ? 'voiceSending' : preparing ? 'recordStarting' : paused ? 'recordPaused' : ready ? 'voicePreview' : 'recording')}</span><time data-record-duration>${recordingTime()}</time></div>${draft?.previewURL && (paused || ready) ? `<audio data-key="voice-preview-${draft.generation}" controls preload="metadata" src="${esc(draft.previewURL)}" aria-label="${t('voicePreview')}"></audio>` : ''}</div>${draft && !ready ? `<button type="button" class="icon-btn voice-record-pause" data-action="pause-record" title="${t(paused ? 'resumeRecording' : 'pauseRecording')}" aria-label="${t(paused ? 'resumeRecording' : 'pauseRecording')}" ${busy || preparing ? 'disabled' : ''}>${ico(paused ? 'play' : 'pause')}</button>` : ''}<button type="button" class="send-btn voice-send-btn" data-action="send-voice" title="${t('sendVoice')}" aria-label="${t('sendVoice')}" ${!draft || busy || sending || uploading || preparing || unknown || !eventConnected || speechBlocked() ? 'disabled' : ''}>${ico('arrow-up')}</button></section>`;
 }
 function renderChat() {
-  return `${currentState().settings?.showWorkSummary === true ? renderWorkSummary(workProgress(state, { language: language(), connected: eventConnected })) : ''}<div id="messages" class="messages"><div class="message-column" data-key="message-column">${currentState().messages.length ? renderMessages() : firstRun.render() || `<div class="welcome">${eyes('hero')}<h1>${t('hello')}</h1><p>${t('intro')}</p>${currentState().worker.status !== ConnectionStatus.Online ? `<button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button><small>${t('setupHint')}</small>` : ''}</div>`}</div></div><div class="composer-wrap" data-key="composer-wrap">${renderUnreadControl()}${managedSettings.renderRequests()}${taskReplies.render()}${replyTo ? `<div class="reply-preview" data-key="reply-preview"><div><small>${t('reply')} ${currentState().messages.find((message) => message.id === replyTo)?.role === 'assistant' ? 'dant' : t('you')}</small><span>${esc((currentState().messages.find((message) => message.id === replyTo)?.text || '').slice(0, 180))}</span></div>${button('cancel-reply', 'x', t('close'))}</div>` : ''}${attachments.length ? `<div class="attachment-chips" data-key="attachments">${attachments.map(renderDraftAttachment).join('')}</div>` : ''}${renderUnconfirmedMessage()}${renderVoiceRecorder()}<form id="message-form" class="composer-box" ${recordDraft || recordStarting ? 'hidden' : ''}><textarea id="composer" rows="1" placeholder="${t('placeholder')}" aria-label="${t('placeholder')}">${esc(composerDraft)}</textarea><div class="composer-tools">${renderAttachmentOptions()}<button type="button" class="icon-btn" data-action="record" title="${t('recordAudio')}" aria-label="${t('recordAudio')}" ${speechBlocked() || dictating || recordStarting || recordDraft ? 'disabled' : ''}>${ico('mic')}</button>${currentState().active || currentState().queue?.length ? button('stop', 'square', t('stop')) : ''}<button class="send-btn" type="submit" title="${t('send')}" aria-label="${t('send')}" ${sending || uploading || recording || recordStarting || recordDraft || !eventConnected ? 'disabled' : ''}>${ico('arrow-up')}</button></div></form>${uploading ? `<small class="composer-status">${t('uploading')}</small>` : dictating ? `<small class="composer-status">${t('dictating')}</small>` : speakingId ? `<small class="composer-status">${t('reading')} <button type="button" class="text-link" data-action="speech-stop">${t('stop')}</button></small>` : ''}</div>`;
+  return `${chatCollections.renderPinnedBar()}${currentState().settings?.showWorkSummary === true ? renderWorkSummary(workProgress(state, { language: language(), connected: eventConnected })) : ''}<div id="messages" class="messages">${messageWindow.control(currentState().messages, messageHistoryScope(state), language())}<div class="message-column" data-key="message-column">${currentState().messages.length ? renderMessages() : firstRun.render() || `<div class="welcome">${eyes('hero')}<h1>${t('hello')}</h1><p>${t('intro')}</p>${currentState().worker.status !== ConnectionStatus.Online ? `<button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button><small>${t('setupHint')}</small>` : ''}</div>`}</div></div><div class="composer-wrap" data-key="composer-wrap">${renderUnreadControl()}${managedSettings.renderRequests()}${taskReplies.render()}${replyTo ? `<div class="reply-preview" data-key="reply-preview"><div><small>${t('reply')} ${currentState().messages.find((message) => message.id === replyTo)?.role === 'assistant' ? 'dant' : t('you')}</small><span>${esc((currentState().messages.find((message) => message.id === replyTo)?.text || '').slice(0, 180))}</span></div>${button('cancel-reply', 'x', t('close'))}</div>` : ''}${attachments.length ? `<div class="attachment-chips" data-key="attachments">${attachments.map(renderDraftAttachment).join('')}</div>` : ''}${renderUnconfirmedMessage()}${renderVoiceRecorder()}<form id="message-form" class="composer-box" ${recordDraft || recordStarting ? 'hidden' : ''}><textarea id="composer" rows="1" placeholder="${t('placeholder')}" aria-label="${t('placeholder')}">${esc(composerDraft)}</textarea><div class="composer-tools">${renderAttachmentOptions()}<button type="button" class="icon-btn" data-action="record" title="${t('recordAudio')}" aria-label="${t('recordAudio')}" ${speechBlocked() || dictating || recordStarting || recordDraft ? 'disabled' : ''}>${ico('mic')}</button>${currentState().active || currentState().queue?.length ? button('stop', 'square', t('stop')) : ''}<button class="send-btn" type="submit" title="${t('send')}" aria-label="${t('send')}" ${sending || uploading || recording || recordStarting || recordDraft || !eventConnected ? 'disabled' : ''}>${ico('arrow-up')}</button></div></form>${uploading ? `<small class="composer-status">${t('uploading')}</small>` : dictating ? `<small class="composer-status">${t('dictating')}</small>` : speakingId ? `<small class="composer-status">${t('reading')} <button type="button" class="text-link" data-action="speech-stop">${t('stop')}</button></small>` : ''}</div>`;
 }
 function renderDraftAttachment(file: Attachment) {
   return `<span class="${String(file.type || '').startsWith('audio/') ? 'draft-audio' : ''}" data-id="${esc(file.id)}">${ico(String(file.type || '').startsWith('audio/') ? 'mic' : 'paperclip')}<span>${esc(file.name)}</span>${String(file.type || '').startsWith('audio/') ? `<audio controls preload="metadata" src="${esc(fileURL(file))}" aria-label="${esc(file.name)}"></audio>` : ''}<button type="button" data-remove="${esc(file.id)}" aria-label="${t('close')}">×</button></span>`;
@@ -1322,12 +1413,7 @@ const fileURL = (file: Attachment) =>
 function formatTime(time: unknown, full = false) {
   const value = messageDate(time);
   if (!value) return '';
-  return new Intl.DateTimeFormat(
-    languageInfo(language()).locale,
-    full
-      ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
-      : { hour: '2-digit', minute: '2-digit' },
-  ).format(value);
+  return formatMessageTime(value, languageInfo(language()).locale, full);
 }
 function renderAttachment(file: Attachment) {
   const url = fileURL(file),
@@ -1357,13 +1443,16 @@ function messageDate(time: unknown): Date | null {
   return Number.isFinite(value.getTime()) ? value : null;
 }
 function renderMessages() {
+  const allMessages = currentState().messages,
+    messages = messageWindow.select(allMessages, messageHistoryScope(state)),
+    messagesById = new Map(allMessages.map((message) => [message.id, message]));
   const timestampFormat = new Intl.DateTimeFormat(languageInfo(language()).locale, {
     dateStyle: 'medium',
     timeStyle: 'medium',
   });
   let last: number | null = null;
-  return currentState()
-    .messages.map((message) => {
+  return messages
+    .map((message) => {
       const date = messageDate(message.time),
         at = date?.getTime() ?? null,
         separator =
@@ -1380,13 +1469,13 @@ function renderMessages() {
         const seconds = Math.max(0, Number(message.seconds) || 0);
         return (
           time +
-          `<div class="call-log" data-id="${esc(message.id)}"><span${timestamp}>${ico('phone')}${formatCallDuration(seconds)}<small>· ${t('callEnded')}</small></span></div>`
+          `<div class="call-log" data-id="${esc(message.id)}"><span${timestamp}>${ico('phone')}${formatCallDuration(seconds)}<small>· ${t('callEnded')}</small>${chatHistory.renderEdited(message)}</span><div class="message-actions" role="toolbar" aria-label="${t('messageActions')}">${chatHistory.renderActions(message)}</div></div>`
         );
       }
       const messageTime = date
         ? `<time class="message-time" datetime="${date.toISOString()}" aria-label="${esc(timestampFormat.format(date))}">${esc(formatTime(message.time))}</time>`
         : '';
-      const replied = currentState().messages.find((item) => item.id === message.replyTo),
+      const replied = message.replyTo ? messagesById.get(message.replyTo) : undefined,
         isUser = message.role === 'user',
         assistantReaction =
           isUser && typeof message.assistantReaction === 'string'
@@ -1447,7 +1536,7 @@ function renderSettings() {
     general: `<section class="settings-section setting-card language-card"><div class="card-label"><h2>${t('language')}</h2><p>${t('languageHint')}</p></div><div class="card-content"><select id="language" data-language class="language-select" aria-label="${t('language')}" dir="ltr" ${pendingActions.has('setting:language') ? 'disabled aria-busy="true"' : ''}>${languages.map((item) => `<option value="${item.code}" lang="${item.locale}" dir="${item.direction}" ${settings.language === item.code ? 'selected' : ''}>${item.label}</option>`).join('')}</select></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('notify')}</h2></div><div class="card-content"><div class="setting-row"><div>${t('notifySub')}</div><input type="checkbox" id="notifications" ${settings.notifications ? 'checked' : ''} aria-label="${t('notify')}"></div></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('progress')}</h2></div><div class="card-content"><div class="setting-row"><label for="showWorkSummary">${t('showWorkSummary')}</label><input type="checkbox" id="showWorkSummary" ${settings.showWorkSummary === true ? 'checked' : ''} ${pendingActions.has('setting:showWorkSummary') ? 'disabled' : ''} aria-label="${t('showWorkSummary')}"></div><p class="card-description">${t('showWorkSummaryHint')}</p></div></section>${textEditor.renderSettings()}`,
     appearance: renderAppearance(),
     voice: renderVoiceSettings(settings),
-    computer: `${renderVMSettings()}${vmBackups.render()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing ? `<p class="card-description">${t('currentPermissions')}</p>${button('computer', 'monitor', t('viewComputer'), 'text-btn')}` : `<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo ? 'permissionsAdminHint' : 'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
+    computer: `${renderVMSettings()}${vmBackups.renderImport()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing ? `<p class="card-description">${t('currentPermissions')}</p>${button('computer', 'monitor', t('viewComputer'), 'text-btn')}` : `<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo ? 'permissionsAdminHint' : 'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
     account: `<section class="settings-section setting-card" data-setting-card="account"><div class="card-label"><h2>${t('accountSubscription')}</h2></div><div class="card-content"><div class="setting-row"><div><strong>${esc(currentState().worker.account?.email || 'ChatGPT')}</strong><small>${esc(currentState().worker.account?.planType || t('offline'))}</small></div><button type="button" class="text-btn ${currentState().worker.account ? '' : 'primary'}" data-action="${currentState().worker.account ? 'logout' : 'login'}">${t(currentState().worker.account ? 'logout' : 'login')}</button></div><p class="card-description">${t('subscriptionTasks')}</p><div id="login-details">${renderLoginDetails()}</div><div class="setting-row model-setting"><span>${t('model')}</span><select id="model" aria-label="${t('model')}"><option value="">${t('default')}</option>${currentState()
       .worker.models.map(
         (model) =>
@@ -1461,7 +1550,7 @@ function renderSettings() {
       ...usageActivity.state,
     }),
     credentials: managedSettings.renderCredentials(),
-    history: `${chatHistory.renderSettings()}<div class="settings-links">${button('memory', 'brain', t('memory'), 'text-btn')}</div>`,
+    history: `${chatHistory.renderSettings()}${vmBackups.render()}<div class="settings-links">${button('memory', 'brain', t('memory'), 'text-btn')}</div>`,
     telegram: renderTelegramSettings(),
     about: appUpdates.render(),
   };
@@ -2254,7 +2343,7 @@ function renderVoiceSettings(settings: AppSettings) {
           `<option value="${esc(voice)}" ${voice === current ? 'selected' : ''}>${esc(voice)}</option>`,
       )
       .join('');
-  return `<section class="settings-section setting-card voice-settings"><div class="card-label"><h2>${t('call')}</h2></div><div class="card-content"><p class="voice-native-info">${t('voiceNativeInfo')}</p><div class="setting-row native-voice-setting"><div>${t('voice')}<small>${esc(subscriptionVoiceUnavailable() ? t('callUnavailable') : voiceError ? t(voiceError) : t('voiceSub'))}</small></div><select id="nativeVoice" aria-label="${t('voice')}" ${subscriptionVoiceUnavailable() || active ? 'disabled' : ''}>${choices(nativeVoice, voiceChoices)}</select></div><div class="voice-reference-links"><a href="https://learn.chatgpt.com/docs/features/voice" target="_blank" rel="noopener noreferrer">${t('voiceNativeDoc')}${ico('external-link')}</a><a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noopener noreferrer">${t('voiceNativePricing')}${ico('external-link')}</a></div><details class="voice-api-options" id="voice-api-options" ${voiceApiExpanded ? 'open' : ''}><summary>${t('voiceApiOptional')}</summary><div class="voice-api-content"><p class="voice-billing" id="voice-billing">${t('voiceBilling')}</p><div class="voice-key-status"><span class="key-state ${configured ? 'configured' : ''}">${configured ? ico('check') : ''}${t(configured ? 'voiceKeyConfigured' : 'voiceKeyMissing')}</span>${configured ? `<small>${t('voiceKeyValidation')}${environment ? ` ${t('voiceKeyEnvironment')}` : ''}</small>` : ''}</div><form id="voice-key-form" autocomplete="off"><label for="voice-api-key">${t('voiceKeyLabel')}<input id="voice-api-key" type="password" name="voiceKey" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="voice-billing" required ${busy || active ? 'disabled' : ''}></label><div class="form-actions">${configured ? `<button type="button" class="text-btn" id="voice-key-remove" ${environment || busy || active ? 'disabled' : ''}>${t('voiceKeyRemove')}</button>` : ''}<button type="submit" class="text-btn primary" ${busy || active ? 'disabled' : ''}>${t(configured ? 'voiceKeyUpdate' : 'voiceKeySave')}</button></div></form><div class="voice-key-links"><a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">${t('voiceKeyGet')}${ico('external-link')}</a><a href="https://platform.openai.com/usage" target="_blank" rel="noopener noreferrer">${t('voiceKeyUsage')}${ico('external-link')}</a></div><div class="setting-row"><div>${t('voiceApiVoice')}<small>${esc(apiVoiceUnavailable() ? t('voiceApiRequired') : t('voiceApiHint'))}</small></div><select id="apiVoice" aria-label="${t('voiceApiVoice')}" ${apiVoiceUnavailable() || active ? 'disabled' : ''}>${choices(apiVoice, apiVoiceChoices)}</select></div><button type="button" class="text-btn" data-action="call-api" ${apiVoiceUnavailable() || active || !eventConnected || currentState().worker.status !== ConnectionStatus.Online ? 'disabled' : ''}>${ico('phone')}${t('voiceApiStart')}</button></div></details></div></section>`;
+  return `<section class="settings-section setting-card voice-settings"><div class="card-label"><h2>${t('call')}</h2></div><div class="card-content">${callCaptionPreferences.renderSetting()}<p class="voice-native-info">${t('voiceNativeInfo')}</p><div class="setting-row native-voice-setting"><div>${t('voice')}<small>${esc(subscriptionVoiceUnavailable() ? t('callUnavailable') : voiceError ? t(voiceError) : t('voiceSub'))}</small></div><select id="nativeVoice" aria-label="${t('voice')}" ${subscriptionVoiceUnavailable() || active ? 'disabled' : ''}>${choices(nativeVoice, voiceChoices)}</select></div><div class="voice-reference-links"><a href="https://learn.chatgpt.com/docs/features/voice" target="_blank" rel="noopener noreferrer">${t('voiceNativeDoc')}${ico('external-link')}</a><a href="https://learn.chatgpt.com/docs/pricing" target="_blank" rel="noopener noreferrer">${t('voiceNativePricing')}${ico('external-link')}</a></div><details class="voice-api-options" id="voice-api-options" ${voiceApiExpanded ? 'open' : ''}><summary>${t('voiceApiOptional')}</summary><div class="voice-api-content"><p class="voice-billing" id="voice-billing">${t('voiceBilling')}</p><div class="voice-key-status"><span class="key-state ${configured ? 'configured' : ''}">${configured ? ico('check') : ''}${t(configured ? 'voiceKeyConfigured' : 'voiceKeyMissing')}</span>${configured ? `<small>${t('voiceKeyValidation')}${environment ? ` ${t('voiceKeyEnvironment')}` : ''}</small>` : ''}</div><form id="voice-key-form" autocomplete="off"><label for="voice-api-key">${t('voiceKeyLabel')}<input id="voice-api-key" type="password" name="voiceKey" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="voice-billing" required ${busy || active ? 'disabled' : ''}></label><div class="form-actions">${configured ? `<button type="button" class="text-btn" id="voice-key-remove" ${environment || busy || active ? 'disabled' : ''}>${t('voiceKeyRemove')}</button>` : ''}<button type="submit" class="text-btn primary" ${busy || active ? 'disabled' : ''}>${t(configured ? 'voiceKeyUpdate' : 'voiceKeySave')}</button></div></form><div class="voice-key-links"><a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">${t('voiceKeyGet')}${ico('external-link')}</a><a href="https://platform.openai.com/usage" target="_blank" rel="noopener noreferrer">${t('voiceKeyUsage')}${ico('external-link')}</a></div><div class="setting-row"><div>${t('voiceApiVoice')}<small>${esc(apiVoiceUnavailable() ? t('voiceApiRequired') : t('voiceApiHint'))}</small></div><select id="apiVoice" aria-label="${t('voiceApiVoice')}" ${apiVoiceUnavailable() || active ? 'disabled' : ''}>${choices(apiVoice, apiVoiceChoices)}</select></div><button type="button" class="text-btn" data-action="call-api" ${apiVoiceUnavailable() || active || !eventConnected || currentState().worker.status !== ConnectionStatus.Online ? 'disabled' : ''}>${ico('phone')}${t('voiceApiStart')}</button></div></details></div></section>`;
 }
 function renderProvisionCard() {
   const current = currentState().provisioning || { status: 'idle' },
@@ -2328,7 +2417,7 @@ function renderCall() {
   if (!pc && !callStarting && !currentState().call && !callStops.pending) return '';
   const recovering = !pc && !callStarting,
     provider = currentState().call?.provider || callProvider;
-  return `<div data-key="call-view" class="call-view ${callMini ? 'mini' : ''}"><div class="call-top"><span>${callMini ? 'dant' : t('voiceMode')}</span>${button('call-size', callMini ? 'maximize-2' : 'minimize-2', t(callMini ? 'expandCall' : 'minimizeToChat'), 'icon-btn call-size-toggle')}</div>${eyes('call-avatar')}${provider === 'api' ? `<small class="call-provider">${t('voiceApiActive')}</small>` : ''}<p>${t(recovering ? (callStops.pending ? 'callPendingStop' : 'callRecover') : callConnected && pc?.connectionState === 'connected' && callChannel?.readyState === 'open' ? 'talking' : 'calling')}</p>${callDuration.snapshot.confirmed ? `<span class="call-duration" data-call-duration aria-label="${t('callDuration')}">${formatCallDuration(callDuration.snapshot.seconds)}</span>` : ''}${callSubtitles.render({ mini: callMini, language: language() })}<div class="call-controls">${stream ? button('mute', callMuted ? 'mic-off' : 'mic', t(callMuted ? 'unmute' : 'mute'), 'icon-btn ' + (callMuted ? 'muted-mic' : '')) : ''}${button('hangup', 'phone', t('hangup'), 'icon-btn hangup')}</div></div>`;
+  return `<div data-key="call-view" class="call-view ${callMini ? 'mini' : ''}"><div class="call-top"><span>${callMini ? 'dant' : t('voiceMode')}</span>${button('call-size', callMini ? 'maximize-2' : 'minimize-2', t(callMini ? 'expandCall' : 'minimizeToChat'), 'icon-btn call-size-toggle')}</div>${eyes('call-avatar')}${provider === 'api' ? `<small class="call-provider">${t('voiceApiActive')}</small>` : ''}<p>${t(recovering ? (callStops.pending ? 'callPendingStop' : 'callRecover') : callConnected && pc?.connectionState === 'connected' && callChannel?.readyState === 'open' ? 'talking' : 'calling')}</p>${callDuration.snapshot.confirmed ? `<span class="call-duration" data-call-duration aria-label="${t('callDuration')}">${formatCallDuration(callDuration.snapshot.seconds)}</span>` : ''}${callSubtitles.render({ mini: callMini, language: language(), enabled: callCaptionPreferences.enabled })}<div class="call-controls">${callCaptionPreferences.renderToggle({ mini: callMini })}${stream ? button('mute', callMuted ? 'mic-off' : 'mic', t(callMuted ? 'unmute' : 'mute'), 'icon-btn ' + (callMuted ? 'muted-mic' : '')) : ''}${button('hangup', 'phone', t('hangup'), 'icon-btn hangup')}</div></div>`;
 }
 function publishCallOverlay() {
   const currentCall = state?.call,
@@ -2508,7 +2597,7 @@ function renderProgress() {
     )
       ? `<button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${esc(message.id)}" data-progress-kind="task" data-progress-status="${esc(status)}" title="${t('dismissTask')}" aria-label="${t('dismissTask')}" ${pending ? 'disabled' : ''}>${ico('x')}</button>`
       : '';
-    return `<div class="progress-item" data-key="progress-${esc(message.id)}"><span class="progress-state ${status}">${status === TaskStatus.Completed ? ico('check') : ico('clock')}</span><div><p>${esc(message.text || message.attachments?.map((file) => file.name).join(', ') || '')}</p><small>${t(status)} · ${formatTime(message.time, true)}</small>${renderWorkPriority({ message, status }, model.labels, { pending })}${taskActions(message, status)}</div>${dismiss}</div>`;
+    return `<div class="progress-item" data-key="progress-${esc(message.id)}"><span class="progress-state ${status}">${status === TaskStatus.Completed ? ico('check') : ico('clock')}</span><div><p>${esc(message.text || message.attachments?.map((file) => file.name).join(', ') || '')}</p><small>${t(status)} · ${formatTime(message.time, true)}</small>${renderWorkPriority({ message, status }, model.labels, { pending })}${taskActions(message, status)}${progressActions.renderConfirmation({ id: message.id, kind: 'task' })}</div>${dismiss}</div>`;
   };
   const historyItem = (entry: ProgressItem) =>
     entry.registered
@@ -2522,10 +2611,14 @@ function renderProgress() {
               ? taskActions(entry.message, entry.status)
               : '',
           planOpen: Boolean(entry.id && workDisclosures.isOpen(entry.id)),
+          confirmation: progressActions.renderConfirmation(
+            entry.cancelTarget || { id: entry.id, kind: 'work' },
+          ),
         })
       : entry.voice
         ? renderVoiceWorkHistory(entry, model.labels, {
             pending: busy || pendingActions.has('task:' + entry.id),
+            confirmation: progressActions.renderConfirmation({ id: entry.id, kind: 'completion' }),
           })
         : item(entry.message, entry.status);
   const ongoingHtml = ongoing.length
@@ -2534,14 +2627,15 @@ function renderProgress() {
   const completedHtml = model.completedCount
     ? `<div class="progress-section-heading"><h4>${esc(model.labels.completedTasks)} <small>(${model.completedCount})</small></h4><button type="button" class="text-btn" data-progress-clear-completed aria-label="${esc(model.labels.completedTasks + ': ' + model.labels.clearCompleted)}" ${busy ? 'disabled' : ''}>${esc(model.labels.clearCompleted)}</button></div>${completed.slice(0, 12).map(historyItem).join('')}`
     : '';
-  return `${progressActions.renderConfirmation()}${active ? renderActiveWork(model, { pending: busy, planOpen: Boolean(active.id && workDisclosures.isOpen(active.id)) }) : ongoing.length ? '' : `<p class="muted">${model.reliable ? t('noActiveTask') : esc(model.labels.offline)}</p>`}${ongoingHtml}${queue.length ? `<h4>${t('queuedTasks')}</h4>${queue.map((entry) => item(entry.message, 'queued')).join('')}` : ''}${recent.length ? `<h4>${t('taskHistory')}</h4>${recent.map(historyItem).join('')}` : ''}${completedHtml}${!active && !ongoing.length && !queue.length && !recent.length && !model.completedCount ? `<p class="muted">${t('progressEmpty')}</p>` : ''}`;
+  return `<div data-key="progress-window"${model.nextExpiryAt ? ` data-progress-expires-at="${model.nextExpiryAt}"` : ''}>${active ? renderActiveWork(model, { pending: busy, planOpen: Boolean(active.id && workDisclosures.isOpen(active.id)), confirmation: progressActions.renderConfirmation(active.cancelTarget || { id: active.id, kind: active.registered ? 'work' : 'task' }) }) : ongoing.length ? '' : `<p class="muted">${model.reliable ? t('noActiveTask') : esc(model.labels.offline)}</p>`}${ongoingHtml}${queue.length ? `<h4>${t('queuedTasks')}</h4>${queue.map((entry) => item(entry.message, 'queued')).join('')}` : ''}${recent.length ? `<h4>${t('taskHistory')}</h4>${recent.map(historyItem).join('')}` : ''}${completedHtml}${!active && !ongoing.length && !queue.length && !recent.length && !model.completedCount ? `<p class="muted">${t('progressEmpty')}</p>` : ''}</div>`;
 }
 function renderModal() {
   if (!modal) return '';
-  const managed = managedSettings.renderModal(modal) ?? chatHistory.renderModal(modal);
+  const managed =
+    managedSettings.renderModal(modal) ??
+    chatHistory.renderModal(modal) ??
+    chatCollections.renderModal(modal);
   if (managed !== null) return managed;
-  if (modal.type === 'progress')
-    return `<div class="modal-backdrop" data-key="modal-backdrop"><section class="dialog progress-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1"><div class="dialog-header"><h2 id="dialog-title">${t('progress')}</h2>${button('close-modal', 'x', t('close'))}</div><div class="dialog-body work-progress-body">${renderProgress()}</div></section></div>`;
   if (modal.type === 'task-detail') return taskDetails.renderModal(modal);
   if (modal.type === 'file') return filePreview.renderModal(modal);
   if (modal.type === 'image') {
@@ -2553,9 +2647,13 @@ function renderModal() {
   }
   const setup = modal.type === 'setup',
     files = conversationFiles();
-  return `<div class="modal-backdrop" data-key="modal-backdrop"><section class="dialog ${setup ? 'setup-dialog' : 'details-dialog'}" role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1"><div class="dialog-header"><h2 id="dialog-title">${t(setup ? 'setupDetails' : 'details')}</h2>${button('close-modal', 'x', t('close'))}</div><div class="dialog-body">${setup ? renderProvisionCard() : `<div class="details-actions"><button type="button" class="text-btn" data-chat-search title="${esc(chatSearchLabel())}" aria-label="${esc(chatSearchLabel())}">${ico('search')}<span>${esc(chatSearchLabel())}</span></button></div><p class="details-caption">dant · ${currentState().messages.length ? formatTime(currentState().messages.at(-1)?.time, true) : t('ready')}</p><h3>${t('files')}</h3><div class="details-files">${files.length ? files.map((file) => `<div class="details-file" data-id="${esc(file.id)}"><div>${ico(String(file.type).startsWith('audio/') ? 'volume-2' : 'file-text')}<div>${String(file.type).startsWith('image/') ? `<button type="button" class="file-name" data-preview="${esc(file.id)}">${esc(file.name)}</button>` : canPreviewFile(file) ? `<button type="button" class="file-name" data-file-preview="${esc(file.id)}">${esc(file.name)}</button>` : `<button type="button" class="file-name" data-download="${esc(file.id)}">${esc(file.name)}</button>`}<small>${t(file.role === 'assistant' ? 'fileDelivered' : 'fileShared')} · ${Math.max(1, Math.round((file.size || 0) / 1024))} KB</small></div></div><button type="button" class="icon-btn" data-download="${esc(file.id)}" aria-label="${t('download')}">${ico('download')}</button></div>`).join('') : `<p class="muted">${t('filesEmpty')}</p>`}</div><details class="work-progress" id="work-progress" ${progressExpanded ? 'open' : ''}><summary>${t('progress')}</summary><div>${renderProgress()}</div></details>`}</div></section></div>`;
+  return `<div class="modal-backdrop" data-key="modal-backdrop"><section class="dialog ${setup ? 'setup-dialog' : 'details-dialog'}" role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1"><div class="dialog-header"><h2 id="dialog-title">${t(setup ? 'setupDetails' : 'details')}</h2>${button('close-modal', 'x', t('close'))}</div><div class="dialog-body">${setup ? renderProvisionCard() : `<div class="details-actions"><button type="button" class="text-btn" data-chat-search title="${esc(chatSearchLabel())}" aria-label="${esc(chatSearchLabel())}">${ico('search')}<span>${esc(chatSearchLabel())}</span></button>${button('progress', 'clock', t('progress'), 'text-btn')}</div><p class="details-caption">dant · ${currentState().messages.length ? formatTime(currentState().messages.at(-1)?.time, true) : t('ready')}</p><h3>${t('files')}</h3><div class="details-files">${files.length ? files.map((file) => `<div class="details-file" data-id="${esc(file.id)}"><div>${ico(String(file.type).startsWith('audio/') ? 'volume-2' : 'file-text')}<div>${String(file.type).startsWith('image/') ? `<button type="button" class="file-name" data-preview="${esc(file.id)}">${esc(file.name)}</button>` : canPreviewFile(file) ? `<button type="button" class="file-name" data-file-preview="${esc(file.id)}">${esc(file.name)}</button>` : `<button type="button" class="file-name" data-download="${esc(file.id)}">${esc(file.name)}</button>`}<small>${t(file.role === 'assistant' ? 'fileDelivered' : 'fileShared')} · ${Math.max(1, Math.round((file.size || 0) / 1024))} KB</small></div></div><button type="button" class="icon-btn" data-download="${esc(file.id)}" aria-label="${t('download')}">${ico('download')}</button></div>`).join('') : `<p class="muted">${t('filesEmpty')}</p>`}</div>`}</div></section></div>`;
 }
 function openModal(value: UiModal) {
+  if (value.type === 'progress') {
+    openProgress();
+    return;
+  }
   if (modal?.type === 'credential' && (value.type !== 'credential' || value.key !== modal.key))
     managedSettings.onClose(modal);
   if (modal && ['image', 'file'].includes(value.type)) {
@@ -2571,6 +2669,7 @@ function openModal(value: UiModal) {
 function closeModal() {
   managedSettings.onClose(modal);
   chatHistory.onClose();
+  chatCollections.onClose();
   progressActions.onClose();
   if (modal?.parent) {
     modal = modal.parent;
@@ -2641,6 +2740,9 @@ function vmInput(input: Record<string, unknown>) {
   return inputChain;
 }
 function bind() {
+  messageWindow.bind(document.querySelector<HTMLElement>('#messages'), () => {
+    if (messageWindow.loadOlder(currentState().messages, messageHistoryScope(state))) render();
+  });
   workDisclosures.bind();
   document
     .querySelectorAll<HTMLButtonElement>('[data-action]')
@@ -2782,8 +2884,6 @@ function bind() {
   );
   const manualOptions = document.querySelector<HTMLDetailsElement>('#manual-vm-options');
   if (manualOptions) manualOptions.ontoggle = () => (manualVMExpanded = manualOptions.open);
-  const progressOptions = document.querySelector<HTMLDetailsElement>('#work-progress');
-  if (progressOptions) progressOptions.ontoggle = () => (progressExpanded = progressOptions.open);
   const backdrop = document.querySelector<HTMLElement>('.modal-backdrop');
   if (backdrop)
     backdrop.onclick = (event) => {
@@ -2795,8 +2895,7 @@ function bind() {
         const message = currentState().messages.find((item) => item.id === el.dataset.retry);
         if (!message || message.status === TaskStatus.Cancelled) return;
         if (unknownTask(message)) {
-          progressExpanded = true;
-          openModal({ type: 'details' });
+          openProgress();
           return;
         }
         resumeTask(message.id, false).catch((error) => toast(errorText(error)));
@@ -2821,6 +2920,7 @@ function bind() {
           )),
     );
   progressActions.bind();
+  progressPanel.bind();
   taskReplies.bind();
   if (
     modal?.type === 'task-detail' ||
@@ -2891,12 +2991,14 @@ function bind() {
     };
   bindProvision();
   bindVoiceKey();
+  callCaptionPreferences.bind();
   bindTelegram();
   bindAppearance();
   bindVMSettings();
   managedSettings.bind();
   if (document.querySelector<HTMLElement>('.vm-backups')) vmBackups.bind();
   chatHistory.bind();
+  chatCollections.bind();
   if (modal) chatHistory.bindModal(modal);
   if (document.querySelector<HTMLElement>('.app-about-settings')) appUpdates.bind();
   if (document.querySelector<HTMLElement>('.memory-page')) memorySettings.bind();
@@ -2911,7 +3013,12 @@ function bind() {
   const handle = document.querySelector<HTMLElement>('.resize-handle');
   if (handle) {
     const setWidth = (width: number) => {
-      const bounded = Math.max(320, Math.min(Math.max(320, innerWidth - 52 - 320), width));
+      const progressWidth =
+        document.querySelector<HTMLElement>('[data-progress-panel]')?.offsetWidth || 0;
+      const bounded = Math.max(
+        320,
+        Math.min(Math.max(320, innerWidth - 52 - 320 - progressWidth), width),
+      );
       const panel = document.querySelector<HTMLElement>('.computer-panel');
       if (panel) panel.style.width = bounded + 'px';
       localStorage.setItem('computerWidth', String(bounded));
@@ -2998,8 +3105,7 @@ function resumeTask(id: string, confirmUnknown: boolean) {
     return Promise.resolve();
   }
   if (unknownTask(message) && !confirmUnknown) {
-    progressExpanded = true;
-    openModal({ type: 'details' });
+    openProgress();
     return Promise.resolve();
   }
   return taskRequest(id, '/tasks/resume', {
@@ -3282,6 +3388,7 @@ async function action(a: string) {
     const next = a === 'computer-settings' ? 'settings' : a;
     managedSettings.onClose(modal);
     chatHistory.onClose();
+    chatCollections.onClose();
     if (next !== 'settings') {
       const secret = document.querySelector<HTMLInputElement>('#telegram-token');
       if (secret) secret.value = '';
@@ -3312,11 +3419,11 @@ async function action(a: string) {
     return;
   }
   if (a === 'details') {
-    openModal({ type: 'details' });
+    chatCollections.toggleMenu();
     return;
   }
   if (a === 'progress') {
-    openModal({ type: 'progress' });
+    openProgress();
     return;
   }
   if (a === 'use-existing') {
@@ -3369,9 +3476,12 @@ async function action(a: string) {
     return;
   }
   if (a === 'computer') {
-    showComputer = page === 'chat' && chatMode === 'text' ? !showComputer : true;
-    chatMode = 'text';
-    if (pc) callMini = true;
+    const fromChat = page === 'chat';
+    showComputer = fromChat ? !showComputer : true;
+    if (!fromChat) {
+      chatMode = 'text';
+      if (pc) callMini = true;
+    }
     page = 'chat';
     modal = null;
     localStorage.setItem('computer', String(showComputer));
@@ -3534,8 +3644,7 @@ async function checkUnconfirmedMessage() {
       taskReplies.acknowledged(uncertain.workReply);
     toast(t('sendFound'));
   } else toast(t('sendStillUnknown'));
-  progressExpanded = true;
-  openModal({ type: 'details' });
+  openProgress();
 }
 async function send(confirmResend = false) {
   if (updateInstalling) return;
@@ -3899,7 +4008,7 @@ async function startCall(provider: 'subscription' | 'api' = 'subscription') {
       return;
     }
     callId = result.callId || currentState().call?.callId || currentState().call?.id || null;
-    callSubtitles.sync({ id: callId, provider });
+    callSubtitles.sync({ id: callId, provider }, callCaptionScope(state));
     const answer = result.sdp || result.transport?.sdp;
     if (answer && !peer.remoteDescription)
       await peer.setRemoteDescription({ type: 'answer', sdp: answer });
@@ -4426,7 +4535,8 @@ async function handleEvent(event: TransportEvent) {
     void firstRun.observe();
     await restoreUpdateDraft();
     callDuration.sync(currentState().call, currentState().messages);
-    callSubtitles.sync(currentState().call);
+    callSubtitles.sync(currentState().call, callCaptionScope(state));
+    callSubtitles.receiveSnapshot(currentState().callCaption);
     const telegram = currentState().telegram || currentState().worker.telegram;
     if (telegram) {
       telegramStatus = telegram;
@@ -4595,6 +4705,8 @@ window.addEventListener('resize', () => {
 window.addEventListener('beforeunload', () => {
   unloading = true;
   chatScroll.dispose();
+  messageWindow.dispose();
+  chatCollections.dispose();
   memorySettings.dispose();
   vmBackups.dispose();
   firstRun.dispose();
@@ -4688,6 +4800,7 @@ export type MainFunctions = {
   toast: typeof toast;
   md: typeof md;
   render: typeof render;
+  openProgress: typeof openProgress;
   renderRail: typeof renderRail;
   renderHeader: typeof renderHeader;
   currentPresence: typeof currentPresence;
@@ -4827,15 +4940,19 @@ export type MainBindings = {
   appUpdates: typeof appUpdates;
   document: Document;
   progressActions: typeof progressActions;
+  progressPanel: typeof progressPanel;
   workDisclosures: typeof workDisclosures;
   chatHistory: typeof chatHistory;
+  chatCollections: typeof chatCollections;
   updateInstalling: typeof updateInstalling;
   callDuration: typeof callDuration;
   callSubtitles: typeof callSubtitles;
+  callCaptionPreferences: typeof callCaptionPreferences;
   chatScroll: Pick<typeof chatScroll, 'capture' | 'restore' | 'dispose' | 'navigate'>;
   appearance: typeof appearance;
   memorySettings: Pick<typeof memorySettings, 'setVisible' | 'render' | 'bind' | 'dispose'>;
   vmBackups: typeof vmBackups;
+  messageWindow: typeof messageWindow;
   firstRun: typeof firstRun;
   recoverySettings: typeof recoverySettings;
   settingsNavigation: typeof settingsNavigation;

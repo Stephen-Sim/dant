@@ -232,3 +232,25 @@ test('offline exports and stale conversation or VM responses never start a downl
     );
   }
 });
+
+test('fixed export rejection codes describe file, size and credential problems without leaking upstream details', async () => {
+  for (const language of ['en', 'zh'])
+    for (const [code, message] of [
+      ['unsupported_file', language === 'en' ? /could not be encoded/ : /未能编码/],
+      ['size_limit', language === 'en' ? /supported limits/ : /超过支持范围/],
+      ['credentials', language === 'en' ? /contains a saved credential/ : /包含已保存的凭据/],
+    ] as const) {
+      const f = fixture({
+        language,
+        request: () => {
+          throw Object.assign(Error('private file content'), { code });
+        },
+      });
+      await f.click();
+      const status = defined(f.document.querySelector<HTMLElement>('[role="status"]')).textContent;
+      assert.match(status, message);
+      assert.doesNotMatch(status, /private file content/);
+      assert.equal(f.downloads.length, 0);
+      assert.equal(f.toasts.length, 0);
+    }
+});

@@ -6,6 +6,7 @@ import {
   requestError,
   attachmentSnapshot,
 } from '../shared/contracts.mts';
+import type { SkillAssetMetadata } from '../../src/skills/skill-types.ts';
 import type {
   Attachment,
   ApiOptions,
@@ -33,6 +34,7 @@ interface SkillDraft {
   files: string;
   enabled: boolean;
   editing: boolean;
+  assets: SkillAssetMetadata[];
   path?: string;
 }
 interface ImportPreview {
@@ -91,7 +93,14 @@ const dataId = (value: string | undefined): string => {
   if (!value) throw Error('Missing record identifier');
   return value;
 };
-const IMPORT_FILE_LIMIT_BYTES = 1_048_576;
+const isSkillAssetMetadata = (value: unknown): value is SkillAssetMetadata =>
+  isRecord(value) &&
+  typeof value.path === 'string' &&
+  value.path.length <= SKILL_RELATIVE_PATH_CHARACTERS &&
+  value.mediaType === 'application/octet-stream' &&
+  isSafeInteger(value.size) &&
+  value.size >= 0 &&
+  value.size <= SKILL_FILE_BYTES;
 const isCredentialItem = (value: unknown): value is CredentialItem =>
   isRecord(value) &&
   typeof value.id === 'string' &&
@@ -127,7 +136,16 @@ export function skillsSnapshot(value: unknown): SkillLibrary {
   return { items: value.items, error: Boolean(value.error) };
 }
 import { localizeMessages } from '../../src/i18n/i18n.mts';
-import { SKILL_SUPPORT_FILE_LIMIT } from '../../src/skills/skill-limits.mts';
+import {
+  SKILL_SUPPORT_FILE_LIMIT,
+  SKILL_RELATIVE_PATH_CHARACTERS,
+  SKILL_FILE_BYTES,
+  SKILL_TOTAL_BYTES,
+  SKILL_ARCHIVE_BYTES,
+} from '../../src/skills/skill-limits.mts';
+const skillFileKiB = SKILL_FILE_BYTES / 1024,
+  skillTotalMiB = SKILL_TOTAL_BYTES / (1024 * 1024),
+  skillArchiveMiB = SKILL_ARCHIVE_BYTES / (1024 * 1024);
 
 const baseCopy = {
   zh: {
@@ -169,7 +187,9 @@ const baseCopy = {
     skillDescription: '说明',
     skillInstructions: '使用说明（SKILL.md）',
     skillFiles: '支持文件（JSON）',
-    skillFilesHint: `支持 scripts/、references/、assets/ 及根目录 README.md、LICENSE、NOTICE 文本文件。最多 ${SKILL_SUPPORT_FILE_LIMIT} 个文件，每个 64 KiB，总计 256 KiB。`,
+    skillFilesHint: `支持 scripts/、references/、assets/ 及根目录 README.md、LICENSE、NOTICE 文件。支持所有文件格式；最多 ${SKILL_SUPPORT_FILE_LIMIT} 个文件，每个 ${skillFileKiB} KiB，总计 ${skillTotalMiB} MiB。`,
+    skillAssets: '二进制支持文件',
+    skillAssetsHint: '这些文件会原样保留并包含在 ZIP 中；此编辑器只编辑文本文件。',
     skillEnabled: '启用此技能',
     skillSave: '保存技能',
     skillSaved: '技能已保存；未执行支持脚本。',
@@ -227,7 +247,10 @@ const baseCopy = {
     skillDescription: 'Description',
     skillInstructions: 'Instructions (SKILL.md)',
     skillFiles: 'Supporting text files (JSON)',
-    skillFilesHint: `Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE text files. Up to ${SKILL_SUPPORT_FILE_LIMIT} files, 64 KiB each, 256 KiB total.`,
+    skillFilesHint: `Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. All file formats are supported; up to ${SKILL_SUPPORT_FILE_LIMIT} files, ${skillFileKiB} KiB each, ${skillTotalMiB} MiB total.`,
+    skillAssets: 'Binary supporting files',
+    skillAssetsHint:
+      'These files are preserved byte for byte and included in the ZIP. This editor changes text files only.',
     skillEnabled: 'Enable this skill',
     skillSave: 'Save skill',
     skillSaved: 'Skill saved. Supporting scripts have not been executed.',
@@ -264,7 +287,7 @@ export const managedMessages = {
       skillImportSource: 'Skill source',
       skillImportURL: 'GitHub skill URL',
       skillImportFile: 'SKILL.md or ZIP file',
-      skillImportFileHint: 'Choose SKILL.md or a ZIP containing one skill, up to 1 MiB.',
+      skillImportFileHint: `Choose SKILL.md or a ZIP containing one skill, up to ${skillArchiveMiB} MiB.`,
       skillImportPreview: 'Preview skill',
       skillImportPreviewing: 'Loading preview…',
       skillImportSaving: 'Importing…',
@@ -292,9 +315,13 @@ export const managedMessages = {
       skillExportStarted: 'ZIP saved',
       skillExportFailed:
         'The skill ZIP could not be downloaded. Check the connection and try again.',
+      skillExportUnsupported:
+        'The skill files could not be encoded for export. Existing files were preserved.',
+      skillExportCredentials:
+        'This skill contains a saved credential. Remove the credential from the skill before exporting; existing files were preserved.',
     },
     {
-      skillReadLimit: `This skill exceeds the supported limits (${SKILL_SUPPORT_FILE_LIMIT} supporting files, 64 KiB each, 256 KiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.`,
+      skillReadLimit: `This skill exceeds the supported limits (${SKILL_SUPPORT_FILE_LIMIT} supporting files, ${skillFileKiB} KiB each, ${skillTotalMiB} MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.`,
     },
   ),
   zh: Object.assign(
@@ -314,7 +341,7 @@ export const managedMessages = {
       skillImportSource: '技能来源',
       skillImportURL: 'GitHub 技能链接',
       skillImportFile: 'SKILL.md 或 ZIP 文件',
-      skillImportFileHint: '选择 SKILL.md 或包含一个技能的 ZIP，最大 1 MiB。',
+      skillImportFileHint: `选择 SKILL.md 或包含一个技能的 ZIP，最大 ${skillArchiveMiB} MiB。`,
       skillImportPreview: '预览技能',
       skillImportPreviewing: '正在读取预览…',
       skillImportSaving: '正在导入…',
@@ -337,9 +364,11 @@ export const managedMessages = {
       skillExport: '下载 ZIP',
       skillExportStarted: 'ZIP 已保存',
       skillExportFailed: '技能 ZIP 未能下载。请检查连接后重试。',
+      skillExportUnsupported: '技能文件未能编码导出，现有文件已保留。',
+      skillExportCredentials: '技能包含已保存的凭据。请先移除技能中的凭据再导出；现有文件已保留。',
     },
     {
-      skillReadLimit: `技能超过支持范围（最多 ${SKILL_SUPPORT_FILE_LIMIT} 个支持文件、每个 64 KiB、总计 256 KiB）。请在工作电脑中减少文件数量或大小，再重试；现有文件未被更改。`,
+      skillReadLimit: `技能超过支持范围（最多 ${SKILL_SUPPORT_FILE_LIMIT} 个支持文件、每个 ${skillFileKiB} KiB、总计 ${skillTotalMiB} MiB）。请在工作电脑中减少文件数量或大小，再重试；现有文件未被更改。`,
     },
   ),
 };
@@ -363,12 +392,12 @@ export function parseSkillFiles(text: string, instructions = ''): Record<string,
         .some((part) => !part || part === '.' || part === '..' || part.includes(':')) ||
       typeof value !== 'string' ||
       value.includes('\0') ||
-      bytes(value) > 65536
+      bytes(value) > SKILL_FILE_BYTES
     )
       throw Error('skillFilesInvalid');
     total += bytes(value);
   }
-  if (total > 262144) throw Error('skillFilesInvalid');
+  if (total > SKILL_TOTAL_BYTES) throw Error('skillFilesInvalid');
   return files as Record<string, string>;
 }
 
@@ -649,11 +678,14 @@ export function createManagedSettings({
       );
     }
     if (current?.type === 'skill' && skillDraft) {
-      const draft = skillDraft;
+      const draft = skillDraft,
+        assetSummary = draft.assets.length
+          ? `<section class="skill-asset-files"><strong>${tr('skillAssets')}</strong><p class="muted">${tr('skillAssetsHint')}</p><ul>${draft.assets.map((asset) => `<li><code>${escape(asset.path)}</code> · ${asset.size} B</li>`).join('')}</ul></section>`
+          : '';
       return shell(
         tr(draft.editing ? 'skillEdit' : 'skillAdd'),
         'skill-' + current.key,
-        `<form id="skill-form"><p class="card-description">${tr('skillsHint')}</p><label>${tr('skillName')}<input name="name" value="${escape(draft.name)}" pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64" required ${draft.editing ? 'readonly' : ''}></label><label>${tr('skillDescription')}<textarea name="description" rows="2" required>${escape(draft.description)}</textarea></label><label>${tr('skillInstructions')}<textarea name="instructions" rows="10" required>${escape(draft.instructions)}</textarea></label><details class="skill-files"><summary>${tr('skillFiles')}</summary><p class="muted">${tr('skillFilesHint')}</p><textarea name="files" rows="6" spellcheck="false" aria-label="${tr('skillFiles')}">${escape(draft.files)}</textarea></details><label class="managed-toggle"><input name="enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>${tr('skillEnabled')}</label>${draft.path ? `<p class="muted managed-path">${tr('managedPath')}: ${escape(draft.path)}</p>` : ''}${skillError ? `<p class="error" role="status">${tr(skillError)}</p>` : ''}<div class="form-actions">${control('cancel', 'data-action="close-modal"', busy)}<button type="submit" class="text-btn primary" ${!online() || busy ? 'disabled' : ''}>${tr(busy ? 'pending' : 'skillSave')}</button></div></form>`,
+        `<form id="skill-form"><p class="card-description">${tr('skillsHint')}</p><label>${tr('skillName')}<input name="name" value="${escape(draft.name)}" pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64" required ${draft.editing ? 'readonly' : ''}></label><label>${tr('skillDescription')}<textarea name="description" rows="2" required>${escape(draft.description)}</textarea></label><label>${tr('skillInstructions')}<textarea name="instructions" rows="10" required>${escape(draft.instructions)}</textarea></label><details class="skill-files"><summary>${tr('skillFiles')}</summary><p class="muted">${tr('skillFilesHint')}</p><textarea name="files" rows="6" spellcheck="false" aria-label="${tr('skillFiles')}">${escape(draft.files)}</textarea></details>${assetSummary}<label class="managed-toggle"><input name="enabled" type="checkbox" ${draft.enabled ? 'checked' : ''}>${tr('skillEnabled')}</label>${draft.path ? `<p class="muted managed-path">${tr('managedPath')}: ${escape(draft.path)}</p>` : ''}${skillError ? `<p class="error" role="status">${tr(skillError)}</p>` : ''}<div class="form-actions">${control('cancel', 'data-action="close-modal"', busy)}<button type="submit" class="text-btn primary" ${!online() || busy ? 'disabled' : ''}>${tr(busy ? 'pending' : 'skillSave')}</button></div></form>`,
       );
     }
     return null;
@@ -770,7 +802,7 @@ export function createManagedSettings({
         render();
         return;
       }
-      if (draft.file.size > IMPORT_FILE_LIMIT_BYTES) {
+      if (draft.file.size > SKILL_ARCHIVE_BYTES) {
         draft.error = 'skillImportLimit';
         render();
         return;
@@ -935,6 +967,7 @@ export function createManagedSettings({
       description: draft.description,
       instructions: draft.instructions,
       files,
+      ...(draft.editing && draft.assets.length ? { preserveBinaryFiles: true } : {}),
       enabled: draft.enabled,
       ...(draft.editing ? {} : { name: draft.name }),
     };
@@ -964,7 +997,11 @@ export function createManagedSettings({
         typeof item.name !== 'string' ||
         typeof item.description !== 'string' ||
         typeof item.instructions !== 'string' ||
-        typeof item.enabled !== 'boolean'
+        typeof item.enabled !== 'boolean' ||
+        (item.assets !== undefined &&
+          (!Array.isArray(item.assets) ||
+            item.assets.length > SKILL_SUPPORT_FILE_LIMIT ||
+            !item.assets.every(isSkillAssetMetadata)))
       )
         throw Error('Invalid skill metadata');
       if (!owns(operation)) return;
@@ -975,6 +1012,7 @@ export function createManagedSettings({
         enabled: item.enabled,
         ...(typeof item.path === 'string' ? { path: item.path } : {}),
         editing: true,
+        assets: item.assets ?? [],
         files: JSON.stringify(item.files || {}, null, 2),
       };
       skillError = '';
@@ -1015,8 +1053,20 @@ export function createManagedSettings({
         if (original !== scope()) return;
         const result = await download(attachmentSnapshot(file));
         if (original === scope() && result?.saved) toast(tr('skillExportStarted'));
-      } catch {
-        if (original === scope()) fail('skill', 'skillExportFailed');
+      } catch (error) {
+        if (original === scope()) {
+          const code = requestError(error).code;
+          fail(
+            'skill',
+            code === 'size_limit'
+              ? 'skillReadLimit'
+              : code === 'unsupported_file'
+                ? 'skillExportUnsupported'
+                : code === 'credentials'
+                  ? 'skillExportCredentials'
+                  : 'skillExportFailed',
+          );
+        }
       } finally {
         busy = false;
         render();
@@ -1082,6 +1132,7 @@ export function createManagedSettings({
           files: '{}',
           enabled: true,
           editing: false,
+          assets: [],
         };
         openModal({ type: 'skill', key: 'new' });
       }
@@ -1177,7 +1228,7 @@ export function createManagedSettings({
           draft.file = file.files?.[0] || null;
           draft.preview = null;
           draft.unknown = false;
-          draft.error = (draft.file?.size ?? 0) > IMPORT_FILE_LIMIT_BYTES ? 'skillImportLimit' : '';
+          draft.error = (draft.file?.size ?? 0) > SKILL_ARCHIVE_BYTES ? 'skillImportLimit' : '';
           draft.detailsOpen = false;
           render();
         };

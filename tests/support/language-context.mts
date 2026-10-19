@@ -25,6 +25,9 @@ import {
   languageForWorker,
 } from '../../src/i18n/languages.mts';
 import { translate, localizeMessages } from '../../src/i18n/i18n.mts';
+import { formatMessageTime } from '../../ui/chat/render-cache.mts';
+import { messageHistoryScope } from '../../ui/chat/message-window.mts';
+import { callCaptionScope } from '../../ui/call/call-caption-preferences.mts';
 // VM fixtures run selected UI functions without loading browser assets.
 export const languageContext = {
   TaskStatus,
@@ -53,6 +56,9 @@ export const languageContext = {
   languageForWorker,
   translate,
   localizeMessages,
+  formatMessageTime,
+  messageHistoryScope,
+  callCaptionScope,
   loadLanguage: async () => {},
 };
 

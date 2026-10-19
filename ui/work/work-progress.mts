@@ -15,6 +15,7 @@ import type {
 } from '../../src/contracts/contracts.ts';
 import type { WorkReplyTarget } from '../shared/contracts.mts';
 import { progressSnapshot } from './progress-snapshot.mts';
+import { progressWindow } from './progress-window.mts';
 import type {
   ProgressMessage as ChatMessage,
   ProgressRecord as UiWorkRecord,
@@ -723,6 +724,7 @@ export function workProgress(
     const accepted = isCompleted(completion, 'completion');
     history.push({
       id: completion.id || completion.turnId,
+      turnId: completion.turnId,
       voice: true,
       progressCompleted: accepted,
       progressPriority: priority(completion.progressPriority),
@@ -736,11 +738,13 @@ export function workProgress(
     });
   }
   history.sort(compareProgress);
+  const window = progressWindow(history, state, now),
+    visibleHistory = window.items;
   const isOngoing = (item: ProgressItem) =>
       item.registered &&
       includesStatus([TaskStatus.Continuing, TaskStatus.WaitingUser], item.knownStatus || ''),
-    ongoing = history.filter(isOngoing),
-    recent = history.filter((item) => !isOngoing(item));
+    ongoing = visibleHistory.filter(isOngoing),
+    recent = visibleHistory.filter((item) => !isOngoing(item));
   const reviewCount = recent.filter(
     (item) => item.status === TaskStatus.Review && (!item.voice || item.unread),
   ).length;
@@ -764,6 +768,7 @@ export function workProgress(
     completed,
     completedCount: completed.length,
     items: history,
+    nextExpiryAt: window.nextExpiryAt,
     reviewCount,
     reliable,
     now,
@@ -873,12 +878,18 @@ function renderWorkDetails(
 }
 export function renderActiveWork(
   model: ReturnType<typeof workProgress>,
-  { pending = false, planOpen = false } = {},
+  { pending = false, planOpen = false, confirmation = '' } = {},
 ) {
   const { active, labels, now } = model;
   if (!active) return '';
   if (active.registered)
-    return renderWorkTaskHistory(active, labels, { pending, planOpen, active: true, now });
+    return renderWorkTaskHistory(active, labels, {
+      pending,
+      planOpen,
+      active: true,
+      now,
+      confirmation,
+    });
   const state = active.status,
     label =
       state === TaskStatus.Running && active.background
@@ -891,15 +902,15 @@ export function renderActiveWork(
         minute: '2-digit',
       }).format(active.updatedAt)
     : '';
-  return `<section class="current-work ${escape(state)}" data-key="current-work"><div class="current-work-status"><i class="work-status-dot" aria-hidden="true"></i><strong>${escape(label)}</strong><small>${escape(labels[active.source === 'voice' ? 'voice' : 'chat'])}</small>${renderWorkCancel(active, labels, { pending, compact: true })}</div><h3>${escape(active.title)}</h3><p class="work-step">${escape(active.step ? labels[active.step] : labels.working)}</p>${renderPlan(active.plan, labels)}<div class="work-time">${duration ? `<span>${escape(labels.elapsed)} · <time data-work-started="${active.startedAt}">${duration}</time></span>` : ''}${updated ? `<span>${escape(labels.updated)} · ${escape(updated)}</span>` : ''}</div><p class="work-continuation">${escape(active.stale ? labels.stale : labels.continues)}</p><div class="task-actions">${renderWorkDetails(active, labels, { pending })}${renderWorkPause(active, labels, { pending, active: true })}${renderWorkCancel(active, labels, { pending })}</div></section>`;
+  return `<section class="current-work ${escape(state)}" data-key="current-work"><div class="current-work-status"><i class="work-status-dot" aria-hidden="true"></i><strong>${escape(label)}</strong><small>${escape(labels[active.source === 'voice' ? 'voice' : 'chat'])}</small>${renderWorkCancel(active, labels, { pending, compact: true })}</div><h3>${escape(active.title)}</h3><p class="work-step">${escape(active.step ? labels[active.step] : labels.working)}</p>${renderPlan(active.plan, labels)}<div class="work-time">${duration ? `<span>${escape(labels.elapsed)} · <time data-work-started="${active.startedAt}">${duration}</time></span>` : ''}${updated ? `<span>${escape(labels.updated)} · ${escape(updated)}</span>` : ''}</div><p class="work-continuation">${escape(active.stale ? labels.stale : labels.continues)}</p><div class="task-actions">${renderWorkDetails(active, labels, { pending })}${renderWorkPause(active, labels, { pending, active: true })}${renderWorkCancel(active, labels, { pending })}</div>${confirmation}</section>`;
 }
 export function renderVoiceWorkHistory(
   item: ProgressRenderItem,
   labels: ProgressLabels,
-  { pending = false } = {},
+  { pending = false, confirmation = '' } = {},
 ) {
   const dismiss = labels.dismiss;
-  return `<div class="progress-item voice-work" data-key="voice-work-${escape(item.id)}"><span class="progress-state ${escape(item.status)}" aria-hidden="true">◷</span><div><p>${escape(item.title)}</p><small>${escape('' + (labels[item.status as keyof ProgressLabels] || labels.unknown))}${item.unread ? ' · ' + escape(labels.unread) : ''}</small><div class="task-actions">${renderWorkPriority({ ...item, voice: true }, labels, { pending })}${renderWorkDetails(item, labels, { pending })}</div></div><button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${escape(item.id)}" data-progress-kind="completion" data-progress-status="${escape(item.knownStatus || item.status)}" title="${escape(dismiss)}" aria-label="${escape(dismiss)}" ${pending ? 'disabled' : ''}><span aria-hidden="true">×</span></button></div>`;
+  return `<div class="progress-item voice-work" data-key="voice-work-${escape(item.id)}"><span class="progress-state ${escape(item.status)}" aria-hidden="true">◷</span><div><p>${escape(item.title)}</p><small>${escape('' + (labels[item.status as keyof ProgressLabels] || labels.unknown))}${item.unread ? ' · ' + escape(labels.unread) : ''}</small><div class="task-actions">${renderWorkPriority({ ...item, voice: true }, labels, { pending })}${renderWorkDetails(item, labels, { pending })}</div>${confirmation}</div><button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${escape(item.id)}" data-progress-kind="completion" data-progress-status="${escape(item.knownStatus || item.status)}" title="${escape(dismiss)}" aria-label="${escape(dismiss)}" ${pending ? 'disabled' : ''}><span aria-hidden="true">×</span></button></div>`;
 }
 export function renderWorkPriority(
   item: {
@@ -930,7 +941,14 @@ export function renderWorkPriority(
 export function renderWorkTaskHistory(
   item: ProgressRenderItem,
   labels: ProgressLabels,
-  { pending = false, actions = '', planOpen = false, active = false, now = Date.now() } = {},
+  {
+    pending = false,
+    actions = '',
+    planOpen = false,
+    active = false,
+    now = Date.now(),
+    confirmation = '',
+  } = {},
 ) {
   const at = item.time
     ? new Intl.DateTimeFormat(labels === copy.zh ? 'zh-CN' : 'en', {
@@ -973,5 +991,5 @@ export function renderWorkTaskHistory(
   const timing = active
     ? `<div class="work-time">${duration ? `<span>${escape(labels.elapsed)} · <time data-work-started="${item.startedAt}">${duration}</time></span>` : ''}${updated ? `<span>${escape(labels.updated)} · ${escape(updated)}</span>` : ''}</div>`
     : '';
-  return `<div class="progress-item registered-work${ongoing || active ? ' ongoing-work' : ''}${active ? ' current-work ' + escape(item.status) : ''}" data-key="${active ? 'current-work' : 'registered-work-' + escape(item.id)}"><span class="progress-state ${escape(item.status)}" aria-hidden="true">${item.status === PlanStepStatus.Completed ? '✓' : item.status === TaskStatus.Cancelled ? '−' : '◷'}</span><div><p>${escape(item.title)}</p><small>${escape(label)}${active ? ` · <span class="work-step">${escape(item.step ? labels[item.step] : labels.working)}</span>` : at ? ' · ' + escape(at) : ''}${item.unread ? ' · ' + escape(labels.unread) : ''}</small>${!active && continuationHint ? `<p class="work-continuation">${escape(continuationHint)}</p>` : ''}${renderPlan(item.plan, labels, { history: true, workId: item.id, expanded: planOpen, cancelled: item.status === TaskStatus.Cancelled, paused })}${timing}${active && continuationHint ? `<p class="work-continuation">${escape(continuationHint)}</p>` : ''}<div class="task-actions">${renderWorkReply(item, labels, { pending })}${renderWorkPriority({ ...item, registered: true }, labels, { pending })}${view}${active || ongoing ? renderWorkPause(item, labels, { pending, active }) : paused ? renderWorkResume(item, labels, { pending }) : ''}</div>${legacyActions}</div>${active || ongoing ? renderWorkCancel(item, labels, { pending, compact: true }) : item.canDismiss ? `<button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${escape(item.id)}" data-progress-kind="work" data-progress-status="${escape(item.knownStatus || item.status)}" title="${escape(labels.dismiss)}" aria-label="${escape(labels.dismiss)}" ${pending ? 'disabled' : ''}><span aria-hidden="true">×</span></button>` : ''}</div>`;
+  return `<div class="progress-item registered-work${ongoing || active ? ' ongoing-work' : ''}${active ? ' current-work ' + escape(item.status) : ''}" data-key="${active ? 'current-work' : 'registered-work-' + escape(item.id)}"><span class="progress-state ${escape(item.status)}" aria-hidden="true">${item.status === PlanStepStatus.Completed ? '✓' : item.status === TaskStatus.Cancelled ? '−' : '◷'}</span><div><p>${escape(item.title)}</p><small>${escape(label)}${active ? ` · <span class="work-step">${escape(item.step ? labels[item.step] : labels.working)}</span>` : at ? ' · ' + escape(at) : ''}${item.unread ? ' · ' + escape(labels.unread) : ''}</small>${!active && continuationHint ? `<p class="work-continuation">${escape(continuationHint)}</p>` : ''}${renderPlan(item.plan, labels, { history: true, workId: item.id, expanded: planOpen, cancelled: item.status === TaskStatus.Cancelled, paused })}${timing}${active && continuationHint ? `<p class="work-continuation">${escape(continuationHint)}</p>` : ''}<div class="task-actions">${renderWorkReply(item, labels, { pending })}${renderWorkPriority({ ...item, registered: true }, labels, { pending })}${view}${active || ongoing ? renderWorkPause(item, labels, { pending, active }) : paused ? renderWorkResume(item, labels, { pending }) : ''}</div>${legacyActions}${confirmation}</div>${active || ongoing ? renderWorkCancel(item, labels, { pending, compact: true }) : item.canDismiss ? `<button type="button" class="icon-btn progress-dismiss" data-task-dismiss="${escape(item.id)}" data-progress-kind="work" data-progress-status="${escape(item.knownStatus || item.status)}" title="${escape(labels.dismiss)}" aria-label="${escape(labels.dismiss)}" ${pending ? 'disabled' : ''}><span aria-hidden="true">×</span></button>` : ''}</div>`;
 }

@@ -385,6 +385,30 @@ function fixture(language = 'en') {
   };
 }
 
+test('history outside the rendered message window remains unread and is never acknowledged by the visible message tracker', async () => {
+  const f = fixture();
+  f.c.state.messages.unshift(
+    ...Array.from({ length: 600 }, (_, index): ReadMessage => ({
+      id: 'hidden-' + index,
+      role: 'assistant',
+      status: 'completed',
+      read: false,
+    })),
+  );
+  f.c.updateRead();
+  f.advance(500);
+  await Promise.resolve();
+  assert.equal(f.c.unreadMessages().length, 601);
+  assert.deepEqual(
+    f.requests.map(({ route }) => route),
+    ['/read'],
+  );
+  const body = f.requests[0]?.body;
+  assert.ok(isRecord(body));
+  assert.deepEqual(body.ids, ['a']);
+  f.c.stopReadTracking();
+});
+
 test('durable unread UI counts only completed unseen assistant messages, in both languages', () => {
   for (const language of ['en', 'zh']) {
     const f = fixture(language);

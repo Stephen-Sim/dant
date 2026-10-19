@@ -17,12 +17,22 @@ const compatible = (a: Node, b: Node): boolean =>
 
 export function reconcile(parent: Node, next: Node): void {
   const old = [...parent.childNodes];
+  const keyed = new Map<string, Map<string, Node[]>>();
+  for (const node of old) {
+    const nodeKey = key(node);
+    if (!nodeKey) continue;
+    let names = keyed.get(nodeKey);
+    if (!names) keyed.set(nodeKey, (names = new Map()));
+    let nodes = names.get(node.nodeName);
+    if (!nodes) names.set(node.nodeName, (nodes = []));
+    nodes.push(node);
+  }
   const used = new Set<Node>();
   let cursor = parent.firstChild;
   for (const desired of [...next.childNodes]) {
     const desiredKey = key(desired);
     let node: Node | null | undefined = desiredKey
-      ? old.find((item) => !used.has(item) && compatible(item, desired))
+      ? keyed.get(desiredKey)?.get(desired.nodeName)?.shift()
       : cursor && !used.has(cursor) && compatible(cursor, desired)
         ? cursor
         : null;

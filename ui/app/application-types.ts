@@ -10,6 +10,7 @@ import type {
   UsageSnapshot,
 } from '../shared/contracts.mts';
 import type { MessageSubmission } from '../chat/pending.mts';
+import type { CallCaption } from '../../src/contracts/call-caption.mts';
 
 export interface AppSettings extends UiSettings, Partial<Appearance> {
   vm: VmSettings;
@@ -19,6 +20,7 @@ export interface AppSettings extends UiSettings, Partial<Appearance> {
   apiVoice?: string;
   notifications?: boolean;
   showWorkSummary?: boolean;
+  showCallCaptions?: boolean;
 }
 export interface TelegramSync {
   forwardMode: 'unread' | 'all';
@@ -95,6 +97,7 @@ export interface AppState extends UiState {
   computer?: { status: string; sessionId?: string | null; acquiring?: boolean };
   telegram?: Partial<TelegramStatus>;
   usage?: UsageSnapshot;
+  callCaption?: CallCaption | null;
 }
 export interface VmProfile extends VmSettings {
   id: string;

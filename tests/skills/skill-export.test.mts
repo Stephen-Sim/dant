@@ -11,6 +11,8 @@ import { SkillImporter } from '../../src/skills/skill-import.mts';
 import {
   SKILL_SUPPORT_FILE_LIMIT,
   SKILL_TREE_ENTRY_LIMIT,
+  SKILL_FILE_BYTES,
+  SKILL_TOTAL_BYTES,
 } from '../../src/skills/skill-limits.mts';
 
 const base = path.resolve('.cache/tests');
@@ -150,23 +152,23 @@ test('a managed skill exports and imports repeatedly without synthetic source fo
   assert.deepEqual({ ...copy.files }, sample.files);
 });
 
-test('maximum managed instruction and aggregate byte budgets roundtrip without increasing the limits', async (t) => {
+test('maximum managed instruction and aggregate byte budgets roundtrip at their named limits', async (t) => {
   const { skills, importer } = fixture(t),
     input = {
       name: 'maximum-skill',
       description: 'A boundary fixture.',
       instructions: 'i'.repeat(49152),
       files: {
-        'assets/one.txt': 'a'.repeat(65536),
-        'assets/two.txt': 'b'.repeat(65536),
-        'assets/three.txt': 'c'.repeat(65536),
-        'assets/four.txt': 'd'.repeat(16384),
+        'assets/one.txt': 'a'.repeat(SKILL_FILE_BYTES),
+        'assets/two.txt': 'b'.repeat(SKILL_FILE_BYTES),
+        'assets/three.txt': 'c'.repeat(SKILL_FILE_BYTES),
+        'assets/four.txt': 'd'.repeat(SKILL_TOTAL_BYTES - 49152 - 3 * SKILL_FILE_BYTES),
       },
     };
   assert.equal(
     Buffer.byteLength(input.instructions) +
       Object.values(input.files).reduce((sum, text) => sum + Buffer.byteLength(text), 0),
-    262144,
+    SKILL_TOTAL_BYTES,
   );
   skills.save(input);
   const exported = exportSkillZip(skills, input.name),
@@ -275,11 +277,14 @@ test('export revalidates aggregate limits, metadata, paths and secrets even afte
     assert.throws(() => exportSkillZip(skills, sample.name));
   };
   alter(() => fs.appendFileSync(saved.path, 'x'.repeat(49152)));
-  alter(() => fs.writeFileSync(path.join(directory, 'scripts/check.py'), 'x'.repeat(65537)));
+  alter(() =>
+    fs.writeFileSync(path.join(directory, 'scripts/check.py'), 'x'.repeat(SKILL_FILE_BYTES + 1)),
+  );
   alter(() => {
     const meta = JSON.parse(fs.readFileSync(marker, 'utf8'));
     meta.files = ['references/one', 'references/two', 'references/three', 'references/four'];
-    for (const name of meta.files) fs.writeFileSync(path.join(directory, name), 'x'.repeat(65536));
+    for (const name of meta.files)
+      fs.writeFileSync(path.join(directory, name), 'x'.repeat(SKILL_FILE_BYTES));
     fs.writeFileSync(marker, JSON.stringify(meta));
   });
   alter(() => {
@@ -305,8 +310,6 @@ test('export revalidates aggregate limits, metadata, paths and secrets even afte
     fs.writeFileSync(marker, JSON.stringify(meta));
   });
   alter(() => fs.appendFileSync(saved.path, 'vault-fixture-value'));
-  alter(() => fs.writeFileSync(path.join(directory, 'scripts/check.py'), '\0binary'));
-  alter(() => fs.writeFileSync(path.join(directory, 'assets/schema.json'), 'RIFFbinary'));
 });
 
 test('editing and export discover shell-added helpers and license docs using actual current files without changing the marker', async (t) => {
@@ -451,7 +454,7 @@ test('npm installed binaries and nested dependencies are excluded while authored
   assert.deepEqual(restored.files, input.files);
 });
 
-test('unlisted unsafe content, invalid UTF-8, links and explicit walk limits fail rather than produce incomplete ZIPs', (t) => {
+test('unsafe links, invalid instruction UTF-8 and explicit walk limits fail rather than produce incomplete ZIPs', (t) => {
   const { skills, directory: fixtureDirectory } = fixture(t);
   let saved = skills.save(sample),
     directory = path.dirname(saved.path);
@@ -462,9 +465,8 @@ test('unlisted unsafe content, invalid UTF-8, links and explicit walk limits fai
     assert.throws(() => exportSkillZip(skills, sample.name));
   };
   alter(() =>
-    fs.writeFileSync(path.join(directory, 'assets/unlisted.bin'), Buffer.from([255, 254, 253])),
+    fs.writeFileSync(path.join(directory, 'assets/unlisted.txt'), 'x'.repeat(SKILL_FILE_BYTES + 1)),
   );
-  alter(() => fs.writeFileSync(path.join(directory, 'assets/unlisted.txt'), 'x'.repeat(65537)));
   alter(() => {
     for (let index = 0; index < SKILL_SUPPORT_FILE_LIMIT; index++)
       fs.writeFileSync(

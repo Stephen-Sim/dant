@@ -179,7 +179,7 @@ test('events, IDs, route templates, value types and lengths reject accidental ra
   assert.doesNotMatch(JSON.stringify(logger.status()), /private proxy error/);
 });
 
-test('task action route templates survive HTTP observation, persistence and recent reads without sensitive route values', (t) => {
+test('feature action route templates survive HTTP observation, persistence and recent reads without sensitive route values', (t) => {
   const { logger } = setup(t),
     middleware = observeHttp(logger, { now: () => 0 }),
     expected = [];
@@ -220,6 +220,24 @@ test('task action route templates survive HTTP observation, persistence and rece
   );
   linkRes.emit('finish');
   expected.push('/api/messages/:id/output-link/resolve');
+  for (const [url, template] of [
+    ['/api/skills/private-name/export', '/api/skills/:name/export'],
+    ['/api/backups/private-backup/restore', '/api/backups/:id/restore'],
+    ['/api/backups/private-backup/export', '/api/backups/:id/export'],
+    ['/api/backups/export', '/api/backups/export'],
+    ['/api/memory/manage', '/api/memory/manage'],
+    ['/api/memory/manage/semantic/private-record', '/api/memory/manage/:kind/:id'],
+    ['/api/memory/manage/semantic/private-record/confirm', '/api/memory/manage/:kind/:id/confirm'],
+  ]) {
+    const featureResponse = Object.assign(new EventEmitter(), { statusCode: 400 });
+    middleware(
+      { method: 'POST', originalUrl: url + '?query=private-value', body: { text: 'private-text' } },
+      featureResponse,
+      () => {},
+    );
+    featureResponse.emit('finish');
+    expected.push(defined(template));
+  }
   assert.deepEqual(
     logger.recent(100).map((row) => row.route),
     expected,

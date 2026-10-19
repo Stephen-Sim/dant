@@ -4,13 +4,7 @@ import { isRecord, LocalRequestError, requestError } from '../shared/contracts.m
 import type { ApiOptions, Timer } from '../shared/contracts.mts';
 const EVENT_RECONNECT_DELAY_MS = 2_000;
 const STATE_POLL_DELAY_MS = 700;
-const INDEPENDENT_READ_ROUTES = Object.freeze([
-  '/api/session',
-  '/api/controller/settings',
-  '/api/version',
-  '/api/updates',
-  '/api/updates?channel=beta',
-]);
+const REQUEST_SCOPE_CHANGED_CODE = 'request_scope_changed';
 export interface TransportEvent {
   type: string;
   data: unknown;
@@ -54,6 +48,7 @@ export function createTransport({
 }: TransportOptions = {}) {
   let token = '',
     ipc: Promise<unknown> = Promise.resolve(),
+    mutationRevision = 0,
     generation = 0;
   let source: SourceApi | null = null,
     socket: SocketApi | null = null,
@@ -88,7 +83,7 @@ export function createTransport({
   };
   function json(
     route: string,
-    { method = 'GET', body, headers = {}, keepalive = false }: ApiOptions = {},
+    { method = 'GET', body, headers = {}, keepalive = false, beforeSend }: ApiOptions = {},
   ): Promise<unknown> {
     if (
       !route.startsWith('/api/') ||
@@ -98,9 +93,28 @@ export function createTransport({
     )
       return Promise.reject(new Error('Invalid local API route'));
     const encoded = body === undefined || body === null ? null : JSON.stringify(body);
+    let guardedRevision = mutationRevision;
+    const checkBeforeSend = () => {
+      if (!beforeSend) return;
+      let valid = false;
+      try {
+        valid = (!desktop || guardedRevision === mutationRevision) && beforeSend() === true;
+      } catch {
+        // A failed precondition cannot authorize crossing the native boundary.
+      }
+      if (!valid) {
+        const error = new LocalRequestError(
+          'The request was not sent because its target changed. Open it again.',
+        );
+        error.status = 409;
+        error.code = REQUEST_SCOPE_CHANGED_CODE;
+        throw error;
+      }
+    };
     const requestOnce = async () => {
       if (desktop) {
         const invoke = invokeRequest || (await import('@tauri-apps/api/core')).invoke;
+        checkBeforeSend();
         const response = await invoke('api_request', { route, method, body: encoded, token });
         if (
           !isRecord(response) ||
@@ -110,6 +124,7 @@ export function createTransport({
           throw Error('Invalid response from native local service');
         return parse(response.status, response.body);
       }
+      checkBeforeSend();
       const response = await fetchRequest(base + route, {
         method,
         headers: {
@@ -132,16 +147,28 @@ export function createTransport({
         throw error;
       }
     };
-    // Local recovery reads must remain reachable while a VM connection is pending.
-    // Public-release reads can wait on GitHub. Neither belongs in the native
-    // mutation queue; both still use the same authenticated native bridge.
+    // Reads never hold up controls or wait behind long connection/backup work.
+    // Mutations retain their original order and are never retried. Every lane
+    // still crosses the same authenticated, fixed-endpoint native bridge.
     if (
       !desktop ||
-      (method === 'GET' && INDEPENDENT_READ_ROUTES.includes(route)) ||
+      method === 'GET' ||
       (method === 'POST' && route === '/api/skills/import/preview')
     )
       return perform();
-    const request = ipc.then(perform, perform);
+    mutationRevision++;
+    // A guarded write must not silently follow a connection-changing write
+    // before the renderer has observed its new state. Only opted-in requests
+    // fail closed when another mutation enters or leaves this ordered lane.
+    guardedRevision++;
+    const mutate = async () => {
+      try {
+        return await perform();
+      } finally {
+        mutationRevision++;
+      }
+    };
+    const request = ipc.then(mutate, mutate);
     ipc = request.catch(() => {});
     return request;
   }
@@ -270,16 +297,29 @@ export function createTransport({
       };
     };
     if (desktop) {
+      let lastState: string | undefined;
       const poll = async () => {
         while (current()) {
           try {
+            const revision = mutationRevision;
             const data = await json('/api/state');
             if (!current()) break;
+            // A snapshot started before a submitted/completed mutation cannot
+            // replace its newer state. Poll again; never replay the mutation.
+            if (revision !== mutationRevision) {
+              lastState = undefined;
+              continue;
+            }
             onConnection(true);
-            await onEvent({ type: 'state', data });
+            const serialized = JSON.stringify(data);
+            if (serialized !== lastState) {
+              await onEvent({ type: 'state', data });
+              lastState = serialized;
+            }
           } catch (cause) {
             const error = requestError(cause);
             if (!current()) break;
+            lastState = undefined;
             onConnection(false, error);
             if (error.status === 401) await refreshToken().catch(() => {});
           }

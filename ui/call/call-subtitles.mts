@@ -1,12 +1,13 @@
-import type { ScheduleTimer, CancelTimer } from '../shared/contracts.mts';
-import { translate } from '../../src/i18n/i18n.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
-import { isRecord, isSafeInteger } from '../shared/contracts.mts';
-import type { Timer } from '../shared/contracts.mts';
-const label = (language: unknown) => translate(language, 'dant live captions', 'dant 实时字幕');
-const SUBTITLE_FINAL_DELAY_MS = 8_000;
+import { isRecord } from '../shared/contracts.mts';
+import { callCaptionCopy } from './call-caption-copy.mts';
+import {
+  CALL_CAPTION_EVENT_METHOD,
+  isCallCaptionId,
+  readCallCaption,
+} from '../../src/contracts/call-caption.mts';
 const ENDED_CALL_LIMIT = 64;
-const SUBTITLE_TEXT_LIMIT = 4_000;
+const LIVE_CALL_STATES = new Set(['connecting', 'negotiating', 'connected']);
 interface SubtitleSnapshot {
   callId: string | null;
   provider: string | null;
@@ -16,34 +17,19 @@ interface SubtitleSnapshot {
 }
 interface SubtitleOptions {
   onChange?: (value: SubtitleSnapshot) => void;
-  schedule?: ScheduleTimer;
-  cancel?: CancelTimer;
-  finalDelay?: number;
 }
 
 /** Ephemeral display only: no messages, storage, transport writes or history. */
-export function createCallSubtitles({
-  onChange = () => {},
-  schedule = setTimeout,
-  cancel = clearTimeout,
-  finalDelay = SUBTITLE_FINAL_DELAY_MS,
-}: SubtitleOptions = {}) {
+export function createCallSubtitles({ onChange = () => {} }: SubtitleOptions = {}) {
   let callId: string | null = null,
     provider: string | null = null,
     text = '',
     final = false,
     sequence = 0,
-    timer: Timer | null = null;
+    scope: unknown = Symbol('initial-caption-scope');
   const ended = new Set<string>();
   const snapshot = () => ({ callId, provider, text, final, sequence });
-  function clearTimer() {
-    if (timer !== null) {
-      cancel(timer);
-      timer = null;
-    }
-  }
   function clear() {
-    clearTimer();
     if (!text && !final) return;
     text = '';
     final = false;
@@ -62,16 +48,19 @@ export function createCallSubtitles({
     provider = null;
     sequence = 0;
   }
-  function sync(value: unknown) {
+  function sync(value: unknown, currentScope?: unknown) {
+    if (scope !== currentScope) {
+      end();
+      ended.clear();
+      scope = currentScope;
+    }
     const call = isRecord(value) ? value : {};
     const next = call?.id || call?.callId;
     if (
-      typeof next !== 'string' ||
-      !next ||
+      !isCallCaptionId(next) ||
       ended.has(next) ||
       (call.provider !== 'subscription' && call.provider !== 'api') ||
-      call.status === 'stopping' ||
-      call.status === 'stop-unconfirmed'
+      (typeof call.status === 'string' && !LIVE_CALL_STATES.has(call.status))
     ) {
       end();
       return;
@@ -82,52 +71,55 @@ export function createCallSubtitles({
     provider = call.provider;
   }
   function receive(event: unknown) {
-    if (!isRecord(event) || event.method !== 'dant/call/subtitle') return false;
-    const value = event.params;
+    if (!isRecord(event) || event.method !== CALL_CAPTION_EVENT_METHOD) return false;
+    const raw = event.params,
+      value = readCallCaption(raw);
     if (
-      !isRecord(value) ||
+      !value ||
       !callId ||
       value?.callId !== callId ||
       value.provider !== provider ||
-      !isSafeInteger(value.sequence) ||
       value.sequence <= sequence ||
-      typeof value.text !== 'string' ||
-      value.text.length > SUBTITLE_TEXT_LIMIT ||
-      typeof value.final !== 'boolean'
+      (isRecord(raw) && raw.role !== undefined && raw.role !== 'assistant')
     )
       return false;
-    clearTimer();
     sequence = value.sequence;
     text = value.text;
     final = value.final;
     onChange(snapshot());
-    if (final && text) {
-      const current = callId,
-        revision = sequence;
-      timer = schedule(() => {
-        if (current !== callId || revision !== sequence) return;
-        timer = null;
-        clear();
-      }, finalDelay);
-      if (typeof timer === 'object') timer.unref?.();
-    }
     return true;
   }
-  function render({ mini = false, language = 'en' } = {}) {
-    return `<div class="call-subtitles" data-call-subtitles role="status" aria-live="polite" aria-atomic="true" aria-label="${label(language)}" aria-hidden="${!text || mini}" aria-busy="${Boolean(text && !final)}"${mini ? ' hidden' : ''}><span data-call-subtitle-text>${escape(text)}</span></div>`;
+  function receiveSnapshot(value: unknown) {
+    if (value === undefined) return false; // Compatible with old work services.
+    if (value === null) {
+      clear();
+      return true;
+    }
+    return receive({ method: CALL_CAPTION_EVENT_METHOD, params: value });
+  }
+  function render({ mini = false, language = 'en', enabled = true } = {}) {
+    const words = callCaptionCopy(language),
+      hidden = mini || !callId;
+    return `<div class="call-subtitles" data-call-subtitles data-caption-enabled="${enabled}" role="status" aria-live="polite" aria-atomic="true" aria-label="${escape(words.label)}" aria-hidden="${hidden}" aria-busy="${Boolean(enabled && text && !final)}"${hidden ? ' hidden' : ''}><small data-call-subtitle-placeholder ${!enabled || text ? 'hidden' : ''}>${escape(words.waiting)}</small><small data-call-subtitle-disabled ${enabled ? 'hidden' : ''}>${escape(words.disabled)}</small><small data-call-subtitle-speaker ${!enabled || !text ? 'hidden' : ''}>dant</small><span data-call-subtitle-text>${enabled ? escape(text) : ''}</span></div>`;
   }
   function update(document: Document) {
     for (const node of document.querySelectorAll<HTMLElement>('[data-call-subtitles]')) {
       const value = node.querySelector('[data-call-subtitle-text]');
-      if (value) value.textContent = text;
-      node.setAttribute('aria-hidden', String(!text || node.hidden));
-      node.setAttribute('aria-busy', String(Boolean(text && !final)));
-      if (text) node.scrollTop = node.scrollHeight;
+      const enabled = node.dataset.captionEnabled !== 'false',
+        placeholder = node.querySelector<HTMLElement>('[data-call-subtitle-placeholder]'),
+        speaker = node.querySelector<HTMLElement>('[data-call-subtitle-speaker]');
+      if (value) value.textContent = enabled ? text : '';
+      if (placeholder) placeholder.hidden = !enabled || !callId || Boolean(text);
+      if (speaker) speaker.hidden = !enabled || !text;
+      node.setAttribute('aria-hidden', String(!callId || node.hidden));
+      node.setAttribute('aria-busy', String(Boolean(enabled && text && !final)));
+      if (enabled && text) node.scrollTop = node.scrollHeight;
     }
   }
   return {
     sync,
     receive,
+    receiveSnapshot,
     clear,
     end,
     render,

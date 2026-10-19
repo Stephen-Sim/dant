@@ -161,6 +161,59 @@ test('the private VM credential and skill tool bridge cannot be proxied through 
   assert.equal(bridge.requests.length, 0);
 });
 
+test('a late failed state read cannot restore an obsolete connection error after fresh online state', async (t) => {
+  for (const newerGeneration of [false, true]) {
+    const bridge = new FakeBridge(),
+      pending = deferred<VmObservation | undefined>(),
+      entered = deferred<void>();
+    bridge.status = ConnectionStatus.Online;
+    bridge.generation = 1;
+    bridge.cached = { worker: { status: ConnectionStatus.Online }, settings: { language: 'zh' } };
+    bridge.refresh = async () => {
+      entered.resolve();
+      return pending.promise;
+    };
+    const { base, headers } = await listen(t, temporary(t), bridge);
+    bridge.emit('state', bridge.cached);
+    const request = fetch(base + '/api/state', { headers });
+    await entered.promise;
+    if (newerGeneration) bridge.generation++;
+    bridge.error = null;
+    bridge.cached = {
+      worker: { status: ConnectionStatus.Online, error: null },
+      settings: { language: 'zh' },
+    };
+    if (!newerGeneration) bridge.emit('state', bridge.cached);
+    pending.reject(Error('The VM request failed. Cached conversation remains available.'));
+    const response = await request,
+      state = observedRecord(await response.json());
+    assert.equal(response.status, 200);
+    assert.equal(observedRecord(state.controller).status, ConnectionStatus.Online);
+    assert.equal(observedRecord(state.controller).error, null);
+    assert.equal(observedRecord(state.worker).error, null);
+    assert.equal(bridge.error, null);
+  }
+});
+
+test('a current failed state read still reports its error while preserving cached work', async (t) => {
+  const bridge = new FakeBridge();
+  bridge.status = ConnectionStatus.Online;
+  bridge.cached = { worker: { status: ConnectionStatus.Online }, settings: { language: 'zh' } };
+  bridge.refresh = async () => {
+    throw Error('The VM request failed. Cached conversation remains available.');
+  };
+  const { base, headers } = await listen(t, temporary(t), bridge);
+  bridge.emit('state', bridge.cached);
+  const response = await fetch(base + '/api/state', { headers }),
+    state = observedRecord(await response.json());
+  assert.equal(response.status, 200);
+  assert.equal(
+    observedRecord(state.controller).error,
+    'The VM request failed. Cached conversation remains available.',
+  );
+  assert.equal(observedRecord(state.worker).status, ConnectionStatus.Online);
+});
+
 test('task replies and recurring schedule fields require a fresh explicit worker capability before forwarding', async (t) => {
   const dir = temporary(t),
     bridge = new FakeBridge();
@@ -750,6 +803,139 @@ test('host appearance defaults and changes persist offline without proxying to t
   assert.equal(reloaded.snapshot().settings.theme, 'dark');
   assert.equal(reloaded.snapshot().settings.font, 'sans');
   assert.equal(reloaded.snapshot().settings.fontSize, 14);
+});
+
+test('call caption preferences are host-local, strict and persistent without proxying or altering a current call', async (t) => {
+  const dir = temporary(t),
+    { app, bridge, base, headers } = await listen(t, dir),
+    call = { id: 'current-caption-call', provider: 'subscription', status: 'connected' },
+    patch = (body: unknown) =>
+      fetch(base + '/api/settings', { method: 'PATCH', headers, body: JSON.stringify(body) });
+  assert.equal(app.snapshot().settings.showCallCaptions, true);
+  bridge.status = ConnectionStatus.Online;
+  bridge.cached = {
+    messages: [],
+    conversationId: 'caption-conversation',
+    settings: { showCallCaptions: false },
+    worker: { status: ConnectionStatus.Online },
+    call,
+    queue: [],
+  };
+  bridge.emit('state', bridge.cached);
+  assert.equal(app.snapshot().settings.showCallCaptions, true);
+  for (const showCallCaptions of [false, true, false]) {
+    assert.equal((await patch({ showCallCaptions })).status, 200);
+    assert.equal(app.snapshot().settings.showCallCaptions, showCallCaptions);
+    assert.deepEqual(app.snapshot().call, call);
+    assert.equal(bridge.cached.call, call);
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(dir, 'controller.json'), 'utf8')).showCallCaptions,
+      showCallCaptions,
+    );
+  }
+  const saved = fs.readFileSync(path.join(dir, 'controller.json'), 'utf8');
+  for (const showCallCaptions of [null, 'false', 0, 1, [], {}]) {
+    assert.equal((await patch({ showCallCaptions, notifications: true })).status, 400);
+    assert.equal(fs.readFileSync(path.join(dir, 'controller.json'), 'utf8'), saved);
+  }
+  assert.equal(bridge.requests.length, 0);
+  await app.close();
+  const reloaded = await listen(t, dir);
+  assert.equal(reloaded.app.snapshot().settings.showCallCaptions, false);
+});
+
+test('polled Controller captions follow live call ownership and never enter disk cache or diagnostics', async (t) => {
+  const dir = temporary(t),
+    legacy = {
+      messages: [],
+      worker: { status: ConnectionStatus.Online },
+      callCaption: { text: 'LEGACY_CAPTION_PRIVATE' },
+      call: { id: 'old-call', provider: 'subscription' },
+    };
+  fs.writeFileSync(path.join(dir, 'state-cache.json'), JSON.stringify(legacy));
+  const { app, bridge, base, headers } = await listen(t, dir),
+    call = { id: 'live-caption-call', provider: 'subscription', status: 'connected' },
+    caption = {
+      callId: call.id,
+      provider: call.provider,
+      sequence: 1,
+      text: 'LIVE_CAPTION_PRIVATE',
+      final: true,
+    },
+    state = {
+      conversationId: 'live-conversation',
+      messages: [],
+      worker: { status: ConnectionStatus.Online },
+      call,
+      queue: [],
+      callCaption: caption,
+    };
+  assert.equal(app.snapshot().callCaption, null);
+  assert.doesNotMatch(JSON.stringify(app.snapshot()), /LEGACY_CAPTION_PRIVATE/);
+  bridge.status = ConnectionStatus.Online;
+  bridge.generation = 1;
+  bridge.cached = state;
+  bridge.emit('state', state);
+  const response = await fetch(base + '/api/state', { headers }),
+    first = await response.json();
+  assert.equal(first.callCaption.text, caption.text);
+  first.callCaption.text = 'External mutation';
+  assert.equal(app.snapshot().callCaption?.text, caption.text);
+  assert.equal(
+    state.callCaption,
+    caption,
+    'a received state is not mutated to strip its live caption',
+  );
+  bridge.emit('event', {
+    type: 'realtime',
+    data: {
+      method: 'dant/call/subtitle',
+      params: { ...caption, sequence: 2, text: 'NEWER_CAPTION_PRIVATE' },
+    },
+  });
+  bridge.emit('state', state);
+  assert.equal(
+    app.snapshot().callCaption?.text,
+    'NEWER_CAPTION_PRIVATE',
+    'an older polled snapshot cannot replace a newer event',
+  );
+  bridge.status = ConnectionStatus.Offline;
+  bridge.emit('change');
+  assert.equal(app.snapshot().callCaption, null);
+  bridge.status = ConnectionStatus.Online;
+  bridge.emit('state', state);
+  assert.equal(
+    app.snapshot().callCaption,
+    null,
+    'repeated cached speech stays cleared after disconnection',
+  );
+  bridge.emit('event', {
+    type: 'realtime',
+    data: {
+      method: 'dant/call/subtitle',
+      params: { ...caption, sequence: 3, text: 'FRESH_CAPTION_PRIVATE' },
+    },
+  });
+  assert.equal(app.snapshot().callCaption?.text, 'FRESH_CAPTION_PRIVATE');
+  bridge.cached = { ...state, call: null, callCaption: caption };
+  bridge.emit('state', bridge.cached);
+  assert.equal(app.snapshot().callCaption, null);
+  bridge.emit('event', {
+    type: 'realtime',
+    data: { method: 'dant/call/subtitle', params: { ...caption, sequence: 99 } },
+  });
+  assert.equal(app.snapshot().callCaption, null);
+  await app.close();
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(dir, 'state-cache.json'), 'utf8'),
+    /callCaption|CAPTION_PRIVATE/,
+  );
+  const diagnostics = fs
+    .readdirSync(path.join(dir, 'logs'))
+    .filter((name) => name.endsWith('.jsonl'))
+    .map((name) => fs.readFileSync(path.join(dir, 'logs', name), 'utf8'))
+    .join('');
+  assert.doesNotMatch(diagnostics, /CAPTION_PRIVATE/);
 });
 
 test('inline work summaries default hidden and persist offline independently of cached VM settings', async (t) => {

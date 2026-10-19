@@ -1,5 +1,6 @@
 import type { ApiOptions } from '../../ui/shared/contracts.mts';
 import type { MainFunctions, MainBindings } from '../../ui/main.mts';
+import { createMessageWindow } from '../../ui/chat/message-window.mts';
 
 const missing = (..._args: unknown[]): never => {
   throw Error('Entrypoint fixture function was not installed');
@@ -43,6 +44,7 @@ const entrypointSlots: UiMainFunctions = {
   toast: missing,
   md: missing,
   render: missing,
+  openProgress: missing,
   renderRail: missing,
   renderHeader: missing,
   currentPresence: missing,
@@ -176,6 +178,32 @@ export function uiEntrypointFixture<T extends object>(
   context: T,
 ): Omit<T, keyof UiMainFunctions> & UiMainFunctions & Omit<Partial<MainBindings>, keyof T> {
   const bindings: Partial<MainBindings> = {
+    chatCollections: {
+      renderMenu: () => '',
+      toggleMenu() {},
+      renderMessageActions: () => '',
+      renderMarkers: () => '',
+      renderPinnedBar: () => '',
+      renderModal: () => null,
+      bind() {},
+      onClose() {},
+      dispose() {},
+    },
+    callCaptionPreferences: {
+      enabled: true,
+      renderSetting: () => '',
+      renderToggle: () => '',
+      bind() {},
+    },
+    progressPanel: {
+      visible: false,
+      capture() {},
+      open() {},
+      close() {},
+      bind() {},
+      render: () => '',
+    },
+    messageWindow: createMessageWindow(),
     firstRun: {
       render: () => '',
       observe: async () => {},

@@ -1,6 +1,10 @@
 import type { WorkMessage } from '../work/engine-types.ts';
 import type { Store } from './store.mts';
 import type { ChatMessage, ChatCompletion } from './types.ts';
+import { isRecord } from '../contracts/json.mts';
+const HISTORY_MESSAGE_ID_LIMIT = 128;
+const BOOKMARK_FIELDS = ['pinned', 'starred'] as const;
+const MESSAGE_METADATA_KEYS = new Set(['conversationId', ...BOOKMARK_FIELDS]);
 interface HistoryEngine {
   call: unknown;
   active: { messageId?: string | null; messageIds?: string[] } | null;
@@ -47,7 +51,8 @@ export class ConversationHistory {
     );
   }
   message(id: unknown) {
-    if (typeof id !== 'string' || !id || id.length > 128) throw fail('Invalid message ID', 400);
+    if (typeof id !== 'string' || !id || id.length > HISTORY_MESSAGE_ID_LIMIT)
+      throw fail('Invalid message ID', 400);
     const message = this.store.state.messages.find((item) => item.id === id);
     if (!message) throw fail('Message not found', 404);
     return message;
@@ -89,6 +94,55 @@ export class ConversationHistory {
   }
   changed() {
     this.engine.change?.();
+  }
+  setMetadata(id: unknown, input: unknown) {
+    if (
+      !isRecord(input) ||
+      Object.keys(input).some((key) => !MESSAGE_METADATA_KEYS.has(key)) ||
+      typeof input.conversationId !== 'string' ||
+      !input.conversationId ||
+      input.conversationId.length > HISTORY_MESSAGE_ID_LIMIT
+    )
+      throw fail('Invalid message metadata', 400);
+    if (input.conversationId !== this.store.state.conversationId)
+      throw fail('The conversation changed before the message could be updated', 409);
+    const patch: Partial<Pick<ChatMessage, (typeof BOOKMARK_FIELDS)[number]>> = {};
+    for (const key of BOOKMARK_FIELDS)
+      if (Object.hasOwn(input, key)) {
+        const value = input[key];
+        if (typeof value !== 'boolean') throw fail('Invalid message metadata', 400);
+        patch[key] = value;
+      }
+    if (!Object.keys(patch).length) throw fail('Message metadata is empty', 400);
+    const message = this.message(id);
+    if (message.role !== 'user' && message.role !== 'assistant')
+      throw fail('Only visible chat messages support bookmarks', 400);
+    if (this.store.state.messages.filter((item) => item.id === id).length !== 1)
+      throw fail('The message identity is ambiguous', 409);
+    const previous = { pinned: message.pinned, starred: message.starred };
+    // Active and queued execution can hold this object. Keep its identity and
+    // every execution/read field intact; bookmarks do not signal agent work.
+    if (BOOKMARK_FIELDS.some((key) => patch[key] !== undefined && previous[key] !== patch[key])) {
+      Object.assign(message, patch);
+      try {
+        this.store.save();
+      } catch (error) {
+        for (const key of BOOKMARK_FIELDS) {
+          const value = previous[key];
+          if (value !== undefined) message[key] = value;
+          else delete message[key];
+        }
+        throw error;
+      }
+    }
+    return {
+      conversationId: input.conversationId,
+      message: {
+        id: message.id,
+        pinned: message.pinned === true,
+        starred: message.starred === true,
+      },
+    };
   }
   edit(id: string, { text, resubmit = false }: { text?: unknown; resubmit?: unknown } = {}) {
     this.idleGuard();

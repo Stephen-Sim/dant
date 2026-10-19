@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SkillLibrary } from '../../src/skills/skill-library.mts';
-import { SKILL_SUPPORT_FILE_LIMIT } from '../../src/skills/skill-limits.mts';
+import { SKILL_SUPPORT_FILE_LIMIT, SKILL_FILE_BYTES } from '../../src/skills/skill-limits.mts';
 const base = path.resolve('.cache/tests');
 fs.mkdirSync(base, { recursive: true });
 const sample = {
@@ -148,7 +148,7 @@ test('reads, metadata-only edits and toggles retain actual nested source and dep
   assert.equal(fs.existsSync(path.join(directory, 'scripts/package/src/helper.mjs')), false);
 });
 
-test('unsafe or unsupported unlisted content fails metadata edits and toggles without deleting current files', (t) => {
+test('unlisted binary content survives metadata edits and toggles without changing its bytes', (t) => {
   const { skills } = setup(t),
     saved = skills.save(sample),
     directory = path.dirname(saved.path),
@@ -156,20 +156,20 @@ test('unsafe or unsupported unlisted content fails metadata edits and toggles wi
   fs.mkdirSync(path.dirname(unlisted));
   const bytes = Buffer.from([0, 255, 127]);
   fs.writeFileSync(unlisted, bytes);
-  const before = fs.readFileSync(saved.path),
-    marker = fs.readFileSync(path.join(directory, '.dant-managed.json'));
-  assert.throws(() => skills.get(sample.name));
-  assert.throws(() => skills.setEnabled(sample.name, false));
-  assert.throws(() =>
-    skills.save({
-      name: sample.name,
-      description: 'New description',
-      instructions: 'Updated instructions',
-    }),
+  assert.equal(skills.get(sample.name).assets?.length, 1);
+  const disabled = skills.setEnabled(sample.name, false);
+  assert.deepEqual(
+    fs.readFileSync(path.join(path.dirname(disabled.path), 'assets/unlisted.bin')),
+    bytes,
   );
+  skills.setEnabled(sample.name, true);
+  const edited = skills.save({
+    name: sample.name,
+    description: 'New description',
+    instructions: 'Updated instructions',
+  });
   assert.deepEqual(fs.readFileSync(unlisted), bytes);
-  assert.deepEqual(fs.readFileSync(saved.path), before);
-  assert.deepEqual(fs.readFileSync(path.join(directory, '.dant-managed.json')), marker);
+  assert.equal(edited.instructions, 'Updated instructions');
   assert.equal(fs.existsSync(path.join(skills.disabledRoot, sample.name)), false);
 });
 
@@ -266,7 +266,7 @@ test('skill validation rejects path escape, excessive content and secret embeddi
     { ...sample, files: { '/absolute': 'x' } },
     { ...sample, files: { 'scripts/C:/escape': 'x' } },
     { ...sample, files: { 'scripts/helper.py': 42 } },
-    { ...sample, files: { 'scripts/helper.py': 'x'.repeat(65537) } },
+    { ...sample, files: { 'scripts/helper.py': 'x'.repeat(SKILL_FILE_BYTES + 1) } },
     { ...sample, instructions: 'test-vault-secret' },
   ];
   for (const input of invalid) assert.throws(() => skills.save(input));
@@ -283,7 +283,7 @@ test('skill validation rejects path escape, excessive content and secret embeddi
     (error) => errorCode(error) === 'size_limit',
   );
   const large = Object.fromEntries(
-    Array.from({ length: 5 }, (_, n) => ['assets/' + n + '.txt', 'x'.repeat(65536)]),
+    Array.from({ length: 5 }, (_, n) => ['assets/' + n + '.txt', 'x'.repeat(SKILL_FILE_BYTES)]),
   );
   assert.throws(() => skills.save({ ...sample, files: large }));
 });
@@ -400,7 +400,10 @@ test('skill reads reject replaced instructions and helper links', (t) => {
   fs.writeFileSync(item.path, 'missing frontmatter');
   assert.throws(() => skills.get(sample.name), /frontmatter/);
   skills.save(sample);
-  fs.writeFileSync(path.join(path.dirname(item.path), 'scripts/inspect.py'), 'x'.repeat(65537));
+  fs.writeFileSync(
+    path.join(path.dirname(item.path), 'scripts/inspect.py'),
+    'x'.repeat(SKILL_FILE_BYTES + 1),
+  );
   assert.throws(() => skills.get(sample.name), /Invalid managed/);
 });
 

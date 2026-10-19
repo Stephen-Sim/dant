@@ -1,6 +1,8 @@
 import protocol from './protocol.json' with { type: 'json' };
 
 export const MAX_PORT = 65_535;
+// Includes JSON escaping and metadata around bounded skill file contents.
+export const API_JSON_BODY_BYTES = 3 * 1024 * 1024;
 
 // Environment and transport values are untrusted until their field validators
 // have accepted them. This also accepts process.env without widening to any.

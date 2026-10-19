@@ -153,6 +153,7 @@ function fixture(language = 'en', theme = 'light') {
   c.vmBackups ??= {
     setVisible() {},
     render: () => '',
+    renderImport: () => '',
     bind() {},
     dispose() {},
     load: async () => {},

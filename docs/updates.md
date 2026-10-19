@@ -18,13 +18,13 @@ A failed or rate-limited request shows a retry message rather than claiming the 
 
 ## Work computer service updates
 
-### Startup compatibility in 0.4.7-beta.9
+### Startup compatibility in 0.4.7-beta.10
 
-Beta 9 fixes a desktop state-validation regression that could show **Invalid application state** even while the local Controller and VM service were reachable. The UI now accepts supported empty values and older Worker metadata without inventing task ownership or execution confirmation. The fix is in the desktop executable's embedded frontend, so updating only the VM cannot repair an already installed Beta 8 frontend. If that screen prevents opening Settings, install the newer desktop package from the release page.
+Beta 10 fixes a desktop state-validation regression that could show **Invalid application state** even while the local Controller and VM service were reachable. The UI now accepts supported empty values and older Worker metadata, including the null call ID of an ordinary active chat task, without inventing task ownership or execution confirmation. The fix is in the desktop executable's embedded frontend, so updating only the VM cannot repair an older embedded frontend. If that screen prevents opening Settings, install the newer desktop package from the release page.
 
 Older Beta 7 installations could retain an unconfirmed update receipt after a pre-install busy-work guard. Automatic checks preserve that receipt rather than retrying an uncertain deployment. An explicit **Reconnect** uses the protected pause, saved-task and final-idle checks before a new update intent; successful live source/version confirmation resolves it. Do not remove update receipts to bypass those checks.
 
-Beta 9 also adds configurable [local VM data backups](backups.md). The backup UI requires the matching Worker capability; upgrade the connected service before using it. Existing backups are retained while the service is unavailable.
+Beta 10 also adds configurable [local VM data backups](backups.md). The backup UI requires the matching Worker capability; upgrade the connected service before using it. Existing backups are retained while the service is unavailable.
 
 If chat state cannot be loaded, the recovery page reads local connection settings independently. It shows the Controller version, permits editing the SSH connection or selecting a discovered profile, and checks published updates without VM access. Saving settings does not silently reconnect or deploy. When the previous VM cannot provide its required pre-change backup, an explicit one-time skip permits changing the connection without disabling future backups. A restore with an unknown outcome remains protected and cannot be bypassed by that checkbox.
 

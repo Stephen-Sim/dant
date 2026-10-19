@@ -6,6 +6,7 @@ export interface VmObservation {
   queue?: unknown;
   active?: unknown;
   call?: unknown;
+  callCaption?: unknown;
   takeover?: unknown;
   acquiring?: unknown;
   worker?: {

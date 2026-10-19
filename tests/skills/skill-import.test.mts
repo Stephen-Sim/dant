@@ -51,6 +51,8 @@ import { SkillImporter } from '../../src/skills/skill-import.mts';
 import {
   SKILL_SUPPORT_FILE_LIMIT,
   SKILL_TREE_ENTRY_LIMIT,
+  SKILL_FILE_BYTES,
+  SKILL_ARCHIVE_BYTES,
 } from '../../src/skills/skill-limits.mts';
 
 const base = path.resolve('.cache/tests');
@@ -403,10 +405,6 @@ test('ZIP unsafe paths, duplicate names, multiple skills, encryption, links, and
         { name: 'scripts/helper', data: 'a file' },
         { name: 'scripts/helper/nested.py', data: 'conflicting directory' },
       ],
-      [
-        { name: 'SKILL.md', data: source },
-        { name: 'assets/image.png', data: Buffer.from([0, 1, 2]) },
-      ],
     ];
   for (const items of cases)
     await assert.rejects(importer.preview({ name: 'unsafe.zip', data: zip(items) }), (error) =>
@@ -421,12 +419,12 @@ test('ZIP unsafe paths, duplicate names, multiple skills, encryption, links, and
 test('ZIP integrity, file count, compressed size and inflated-size lies are bounded before saving', async (t) => {
   const { importer, skills } = fixture(t),
     cases = [
-      { name: 'too-big.zip', data: Buffer.alloc(1024 * 1024 + 1) },
+      { name: 'too-big.zip', data: Buffer.alloc(SKILL_ARCHIVE_BYTES + 1) },
       {
         name: 'huge.zip',
         data: zip([
           { name: 'SKILL.md', data: source },
-          { name: 'assets/huge.txt', data: 'a'.repeat(65537) },
+          { name: 'assets/huge.txt', data: 'a'.repeat(SKILL_FILE_BYTES + 1) },
         ]),
       },
       {
@@ -470,7 +468,7 @@ test('ZIP integrity, file count, compressed size and inflated-size lies are boun
     { name: 'SKILL.md', data: source },
     ...Array.from({ length: 5 }, (_, i) => ({
       name: 'references/' + i + '.txt',
-      data: 'a'.repeat(60000),
+      data: 'a'.repeat(SKILL_FILE_BYTES),
     })),
   ];
   await assert.rejects(
@@ -609,7 +607,7 @@ test('remote truncation, unsupported entries, excessive data, changed blob hashe
     {
       treeChange: (tree) => ({
         ...tree,
-        tree: tree.tree.map((item) => ({ ...item, size: 65537 })),
+        tree: tree.tree.map((item) => ({ ...item, size: SKILL_FILE_BYTES + 1 })),
       }),
     },
     { blobChange: (blob) => ({ ...blob, content: Buffer.from('changed').toString('base64') }) },

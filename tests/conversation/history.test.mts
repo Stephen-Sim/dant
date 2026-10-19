@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { Store } from '../../src/conversation/store.mts';
 import { Engine } from '../../src/work/engine.mts';
 import { ConversationHistory } from '../../src/conversation/history.mts';
+import { restoreChatMessage } from '../../src/conversation/store-restore.mts';
 import { Scheduler } from '../../src/schedules/scheduler.mts';
 import { isRecord } from '../../src/contracts/json.mts';
 import type { RpcParams, RpcResult } from '../../src/runtime/protocol.ts';
@@ -54,6 +55,143 @@ const identity = ({ store, engine }: Pick<ReturnType<typeof setup>, 'store' | 'e
 });
 const errorStatus = (status: number) => (error: unknown) =>
   isRecord(error) && error.status === status;
+
+test('message bookmarks persist without changing active message references, reads, or execution', (t) => {
+  const context = setup(t),
+    { store, history, engine, worker, dir } = context;
+  const message = store.add({
+    role: 'user',
+    text: 'Running task',
+    status: 'running',
+    turnId: 'same-turn',
+    read: false,
+  });
+  const before = structuredClone(message),
+    beforeIdentity = identity(context);
+  history.engine.active = { messageId: message.id };
+  history.engine.call = { id: 'current-call' };
+  engine.queue = [message];
+  let changes = 0;
+  engine.on('change', () => changes++);
+  assert.deepEqual(
+    history.setMetadata(message.id, {
+      conversationId: store.state.conversationId,
+      pinned: true,
+      starred: true,
+    }),
+    {
+      conversationId: store.state.conversationId,
+      message: { id: message.id, pinned: true, starred: true },
+    },
+  );
+  assert.equal(store.state.messages[0], message);
+  assert.equal(engine.queue[0], message);
+  const { pinned, starred, ...unchanged } = message;
+  assert.equal(pinned, true);
+  assert.equal(starred, true);
+  assert.deepEqual(unchanged, before);
+  assert.deepEqual(identity(context), beforeIdentity);
+  assert.equal(worker.calls.length, 0);
+  assert.equal(changes, 0);
+  const reloaded = new Store(dir);
+  assert.equal(reloaded.state.messages[0]?.id, message.id);
+  assert.equal(reloaded.state.messages[0]?.pinned, true);
+  assert.equal(reloaded.state.messages[0]?.starred, true);
+  assert.equal(reloaded.state.messages[0]?.read, false);
+  history.setMetadata(message.id, { conversationId: store.state.conversationId, pinned: false });
+  assert.equal(message.pinned, false);
+  assert.equal(message.starred, true);
+  history.setMetadata(message.id, { conversationId: store.state.conversationId, starred: false });
+  assert.equal(message.starred, false);
+});
+
+test('bookmark validation rejects stale conversations, missing messages and malformed flags without side effects', (t) => {
+  const { store, history } = setup(t),
+    message = store.add({ role: 'assistant', text: 'Retained answer' });
+  const conversationId = store.state.conversationId,
+    before = structuredClone(store.state);
+  for (const input of [
+    null,
+    [],
+    {},
+    { conversationId },
+    { conversationId, starred: 1 },
+    { conversationId, pinned: null },
+    { conversationId, starred: true, extra: true },
+    { conversationId: 4, starred: true },
+  ])
+    assert.throws(() => history.setMetadata(message.id, input), errorStatus(400));
+  assert.throws(
+    () => history.setMetadata(message.id, { conversationId: 'other-conversation', starred: true }),
+    errorStatus(409),
+  );
+  assert.throws(
+    () => history.setMetadata('missing', { conversationId, starred: true }),
+    errorStatus(404),
+  );
+  assert.deepEqual(store.state, before);
+  store.state.messages.push({ ...message });
+  assert.throws(
+    () => history.setMetadata(message.id, { conversationId, starred: true }),
+    errorStatus(409),
+  );
+  store.state.messages.pop();
+  history.remove(message.id);
+  assert.throws(
+    () => history.setMetadata(message.id, { conversationId, pinned: true }),
+    errorStatus(404),
+  );
+  const system = store.add({ role: 'system', text: 'Internal context' });
+  assert.throws(
+    () => history.setMetadata(system.id, { conversationId, starred: true }),
+    errorStatus(400),
+  );
+});
+
+test('failed bookmark persistence restores flags and the original active object exactly', (t) => {
+  const { store, history, engine } = setup(t),
+    message = store.add({ role: 'user', text: 'Keep object identity' });
+  engine.queue = [message];
+  const before = structuredClone(store.state),
+    persisted = fs.readFileSync(store.file);
+  store.save = () => {
+    throw Error('Injected bookmark write failure');
+  };
+  assert.throws(
+    () =>
+      history.setMetadata(message.id, {
+        conversationId: store.state.conversationId,
+        starred: true,
+        pinned: true,
+      }),
+    /Injected bookmark write failure/,
+  );
+  assert.deepEqual(store.state, before);
+  assert.equal(store.state.messages[0], message);
+  assert.equal(engine.queue[0], message);
+  assert.deepEqual(fs.readFileSync(store.file), persisted);
+  assert.equal(Object.hasOwn(message, 'starred'), false);
+  assert.equal(Object.hasOwn(message, 'pinned'), false);
+});
+
+test('bookmark restoration preserves legacy omissions and accepts only boolean disk fields', () => {
+  const base = {
+    id: 'legacy',
+    role: 'assistant',
+    time: 10,
+    text: 'Unchanged',
+    read: false,
+    reactions: [],
+  };
+  const old = defined(restoreChatMessage(base));
+  assert.equal(Object.hasOwn(old, 'starred'), false);
+  assert.equal(Object.hasOwn(old, 'pinned'), false);
+  assert.equal(defined(restoreChatMessage({ ...base, pinned: true, starred: false })).pinned, true);
+  const invalid = defined(restoreChatMessage({ ...base, starred: 'true', pinned: 1 }));
+  assert.equal(Object.hasOwn(invalid, 'starred'), false);
+  assert.equal(Object.hasOwn(invalid, 'pinned'), false);
+  assert.equal(invalid.time, 10);
+});
 
 test('pending message delivery keeps history immutable after its original task ends', (t) => {
   const context = setup(t),

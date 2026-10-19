@@ -497,7 +497,7 @@ test('native editor opens only safe cached text with a fixed Notepad or picked e
   assert.match(source, /window\.label\(\) == "main"/);
   assert.match(source, /127\.0\.0\.1:4317\/api\/files\/\{file_id\}/);
   assert.match(source, /no_proxy\(\)\s*\.redirect\(reqwest::redirect::Policy::none\(\)\)/);
-  assert.match(source, /Command::new\(executable\)/);
+  assert.match(source, /Command::new\(crate::runtime_path\(executable\.to_path_buf\(\)\)\)/);
   assert.match(source, /command\s*\.arg\(target\)/);
   assert.match(source, /editor_command\(&executable, &target\)\s*\.spawn\(\)/);
   assert.doesNotMatch(source, /cmd\s*\/c|powershell|opener\(\)|open_path|shell_execute/i);

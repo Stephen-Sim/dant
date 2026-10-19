@@ -1,5 +1,6 @@
 import { escapeHtml as escape } from '../shared/html.mts';
 import { localizeMessages, translate } from '../../src/i18n/i18n.mts';
+import { callCaptionCopy } from '../call/call-caption-copy.mts';
 const categories = [
   ['general', 'General', '通用'],
   ['appearance', 'Appearance', '外观'],
@@ -95,6 +96,14 @@ const entries: readonly (readonly [string, SettingsCategory, string, string, str
   ['motion', 'appearance', 'Reduce motion', '减少动态效果', 'animation 动画', '#appearance-motion'],
   ['call-voice', 'voice', 'Call voice', '通话声音', 'subscription ChatGPT 订阅', '#nativeVoice'],
   [
+    'call-captions',
+    'voice',
+    'Live captions',
+    '实时字幕',
+    'captions subtitles transcript voice call 转写 字幕 通话',
+    '#showCallCaptions',
+  ],
+  [
     'voice-key',
     'voice',
     'Optional voice API key',
@@ -159,6 +168,22 @@ const entries: readonly (readonly [string, SettingsCategory, string, string, str
     '清空聊天记录',
     'delete remove data 删除 对话 数据',
     '.conversation-settings',
+  ],
+  [
+    'backups',
+    'history',
+    'Work computer backups',
+    '工作电脑备份',
+    'backup restore export portable memory skills schedules data 备份 恢复 导出 便携 记忆 技能 定时 数据',
+    '.vm-backups',
+  ],
+  [
+    'backup-import',
+    'computer',
+    'Import backup file',
+    '导入备份文件',
+    'import dant portable backup file 导入 dant 便携 备份 文件',
+    '.vm-backup-import',
   ],
   ['memory', 'history', 'Memory', '记忆', 'reference 笔记', '[data-action="memory"]'],
   [
@@ -241,18 +266,19 @@ export function createSettingsNavigation({
   const language = () => getLanguage(),
     label = (item: readonly [string, string, string] | undefined) =>
       item ? translate(language(), item[1], item[2]) : '',
-    tr = () => localizeMessages(words, language());
+    tr = () => localizeMessages(words, language()),
+    entryLabel = (entry: (typeof entries)[number]) =>
+      entry[0] === 'call-captions'
+        ? callCaptionCopy(language()).title
+        : translate(language(), entry[2], entry[3]);
   const matches = () => {
     const terms = normalized(query).split(/\s+/).filter(Boolean);
     return entries.filter((entry) => {
       const group = categories.find((item) => item[0] === entry[1]),
         search = normalized(
-          [
-            ...entry.slice(2, 5),
-            ...(group?.slice(1) ?? []),
-            label(group),
-            translate(language(), entry[2], entry[3]),
-          ].join(' '),
+          [...entry.slice(2, 5), ...(group?.slice(1) ?? []), label(group), entryLabel(entry)].join(
+            ' ',
+          ),
         );
       return terms.every((term) => search.includes(term));
     });
@@ -293,7 +319,7 @@ export function createSettingsNavigation({
     const text = tr(),
       searching = Boolean(query.trim()),
       results = searching ? matches() : [];
-    return `<div class="settings-layout" data-key="settings-layout"><aside class="settings-sidebar"><div class="settings-search-box"><label for="settings-search">${text.search}</label><div><input type="search" id="settings-search" placeholder="${text.search}" value="${escape(query)}" autocomplete="off">${query ? `<button type="button" data-settings-clear aria-label="${text.clear}" title="${text.clear}">×</button>` : ''}</div></div><nav class="settings-category-nav" aria-label="${text.menu}">${categories.map((item) => `<button type="button" data-settings-category="${item[0]}" ${!searching && item[0] === category ? 'aria-current="page"' : ''}>${label(item)}</button>`).join('')}</nav></aside><div class="settings-category-content"><section class="settings-search-results" ${searching ? '' : 'hidden'} aria-labelledby="settings-results-title"><h2 id="settings-results-title">${text.results}</h2><p class="settings-result-count" role="status" aria-live="polite">${searching ? results.length : ''}</p><div>${results.map((entry) => `<button type="button" class="settings-search-result" data-settings-result="${entry[0]}"><small>${label(categories.find((item) => item[0] === entry[1]))}</small><strong>${translate(language(), entry[2], entry[3])}</strong></button>`).join('')}${searching && !results.length ? `<p class="settings-search-empty">${text.none}</p>` : ''}</div></section><div class="settings-category-panels">${categories.map((item) => `<div class="settings-category-panel" id="settings-${item[0]}" data-settings-panel="${item[0]}" data-key="settings-panel-${item[0]}" ${!searching && category === item[0] ? '' : 'hidden'}>${sections[item[0]] || ''}</div>`).join('')}</div></div></div>`;
+    return `<div class="settings-layout" data-key="settings-layout"><aside class="settings-sidebar"><div class="settings-search-box"><label for="settings-search">${text.search}</label><div><input type="search" id="settings-search" placeholder="${text.search}" value="${escape(query)}" autocomplete="off">${query ? `<button type="button" data-settings-clear aria-label="${text.clear}" title="${text.clear}">×</button>` : ''}</div></div><nav class="settings-category-nav" aria-label="${text.menu}">${categories.map((item) => `<button type="button" data-settings-category="${item[0]}" ${!searching && item[0] === category ? 'aria-current="page"' : ''}>${label(item)}</button>`).join('')}</nav></aside><div class="settings-category-content"><section class="settings-search-results" ${searching ? '' : 'hidden'} aria-labelledby="settings-results-title"><h2 id="settings-results-title">${text.results}</h2><div aria-live="polite" aria-relevant="additions text">${results.map((entry) => `<button type="button" class="settings-search-result" data-settings-result="${entry[0]}"><small>${label(categories.find((item) => item[0] === entry[1]))}</small><strong>${entryLabel(entry)}</strong></button>`).join('')}${searching && !results.length ? `<p class="settings-search-empty">${text.none}</p>` : ''}</div></section><div class="settings-category-panels">${categories.map((item) => `<div class="settings-category-panel" id="settings-${item[0]}" data-settings-panel="${item[0]}" data-key="settings-panel-${item[0]}" ${!searching && category === item[0] ? '' : 'hidden'}>${sections[item[0]] || ''}</div>`).join('')}</div></div></div>`;
   }
   function focusTarget() {
     if (!pendingFocus || !visible) return;

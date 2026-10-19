@@ -1,4 +1,10 @@
-import type { ApiOptions, UiModal, UiActiveTask, UiState } from '../../../ui/shared/contracts.mts';
+import type {
+  ApiOptions,
+  UiModal,
+  UiActiveTask,
+  UiState,
+  UsageSnapshot,
+} from '../../../ui/shared/contracts.mts';
 import { errorMessage } from '../../../src/contracts/json.mts';
 import { htmlTag } from '../../support/fixture-assertions.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
@@ -29,8 +35,12 @@ import { createUpdates } from '../../../ui/settings/updates.mts';
 import { createSettingsNavigation } from '../../../ui/settings/settings-navigation.mts';
 import { createSchedules } from '../../../ui/schedules/schedules.mts';
 import { createWorkDisclosures } from '../../../ui/work/work-disclosures.mts';
+import { createProgressPanel } from '../../../ui/work/progress-panel.mts';
 import { renderUsageSettings } from '../../../ui/settings/usage-settings.mts';
-import { createUsageActivityController } from '../../../ui/settings/usage-activity.mts';
+import {
+  createUsageActivityController,
+  usageActivityScope,
+} from '../../../ui/settings/usage-activity.mts';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8');
 const part = (start: string, end: string) => sourceSection(source, start, end);
@@ -39,7 +49,7 @@ const settle = async () => {
   await new Promise((resolve) => setImmediate(resolve));
 };
 const optionalSettings: { showWorkSummary?: boolean } = {};
-const optionalState: Pick<UiState, 'schedules'> = {};
+const optionalState: Pick<UiState, 'schedules'> & { usage?: UsageSnapshot } = {};
 function fixture({ language = 'en', online = true, live = false } = {}) {
   const { document, Event } = parseHTML(
       '<!doctype html><html><body><div id="app"></div></body></html>',
@@ -186,11 +196,23 @@ function fixture({ language = 'en', online = true, live = false } = {}) {
   };
   c.renderWorkSummary = renderWorkSummary;
   c.renderUsageSettings = renderUsageSettings;
-  c.usageActivity = createUsageActivityController({ document, onChange: () => c.render() });
+  c.usageActivity = createUsageActivityController({
+    document,
+    onChange: () => c.render(),
+    getScope: () => usageActivityScope(c.state),
+  });
   c.appearance = createAppearance({ document, storage: null, matchMedia: () => null });
   c.floatingCall = { sync() {} };
   c.nativeCallOverlay = { update() {} };
   c.progressActions = { bind() {}, renderConfirmation: () => '', onClose() {}, busy: false };
+  c.progressPanel = createProgressPanel({
+    document,
+    renderContent: () => '<p>Task progress</p>',
+    title: () => 'Work progress',
+    closeLabel: () => 'Close',
+    closeIcon: () => '',
+    onChange: () => c.render(),
+  });
   c.callSubtitles = createCallSubtitles();
   c.workDisclosures = createWorkDisclosures({ getState: () => c.state, document });
   c.scheduledTasks = createSchedules({
@@ -271,6 +293,7 @@ function fixture({ language = 'en', online = true, live = false } = {}) {
   c.vmBackups ??= {
     setVisible() {},
     render: () => '',
+    renderImport: () => '',
     bind() {},
     dispose() {},
     load: async () => {},
@@ -351,6 +374,58 @@ test('the sidebar skill entry opens its own bilingual page and loads only skills
     );
     defined(f.c.callDuration).dispose();
   }
+});
+
+test('the real settings renderer separates Chat & data backups and Work computer imports while sharing visibility safely', async () => {
+  const f = fixture(),
+    visible: { value: boolean; surface: string | undefined }[] = [],
+    backups = defined(f.c.vmBackups);
+  backups.render = () => '<section class="settings-section vm-backups">Backup controls</section>';
+  backups.renderImport = () =>
+    '<section class="settings-section vm-backups vm-backup-import" data-setting-card="backup-import">Import controls</section>';
+  backups.setVisible = (value, surface) => visible.push({ value: Boolean(value), surface });
+  await f.click('.rail [data-action="settings"]');
+  assert.ok(f.document.querySelector('[data-settings-panel="history"] .vm-backups'));
+  assert.ok(f.document.querySelector('[data-settings-panel="computer"] .vm-backup-import'));
+  assert.equal(f.document.querySelector('[data-settings-panel="history"] .vm-backup-import'), null);
+  assert.equal(visible.at(-1)?.value, false);
+  await f.click('[data-settings-category="history"]');
+  assert.deepEqual(visible.at(-1), { value: true, surface: 'backups' });
+  await f.click('[data-settings-category="computer"]');
+  assert.deepEqual(visible.at(-1), { value: true, surface: 'import' });
+  await f.click('[data-settings-category="usage"]');
+  assert.equal(visible.at(-1)?.value, false);
+  defined(f.c.callDuration).dispose();
+});
+
+test('the real Usage page keeps a just-opened disclosure through state renders before toggle dispatch and resets only its own scope', async () => {
+  const f = fixture();
+  await f.click('.rail [data-action="settings"]');
+  await f.click('[data-settings-category="usage"]');
+  const details = () =>
+    defined(f.document.querySelector<HTMLDetailsElement>('[data-usage-details]'));
+  assert.equal(details().hasAttribute('open'), false);
+  details().setAttribute('open', '');
+  // A real details toggle is asynchronous; a state snapshot may render first.
+  f.c.state.usage = {
+    recordedSince: null,
+    subscription: { available: true, totals: { totalTokens: 1 } },
+  };
+  f.c.render();
+  assert.equal(details().hasAttribute('open'), true);
+  f.c.state.usage.subscription = { available: true, totals: { totalTokens: 2 } };
+  f.c.render();
+  assert.equal(details().hasAttribute('open'), true);
+  f.c.state.conversationId = 'other-conversation';
+  f.c.render();
+  assert.equal(details().hasAttribute('open'), false);
+  details().setAttribute('open', '');
+  f.c.render();
+  assert.equal(details().hasAttribute('open'), true);
+  f.c.state.usage = { ...f.c.state.usage, recordedSince: 1000 };
+  f.c.render();
+  assert.equal(details().hasAttribute('open'), false);
+  defined(f.c.callDuration).dispose();
 });
 
 test('opening skills and returning to chat preserves draft, live media and elapsed call time', async () => {
@@ -695,11 +770,13 @@ test('work summary preference saves on and off, survives snapshots, and opens th
       'Keep this unsent draft',
     );
     await f.click('.work-summary');
-    assert.equal(defined(f.c.modal).type, 'progress');
-    f.c.closeModal();
+    assert.ok(f.document.querySelector('[data-progress-panel]'));
+    assert.equal(f.c.modal, null);
+    defined(f.c.progressPanel).close();
     await f.click('.header-work');
-    assert.equal(defined(f.c.modal).type, 'progress');
-    f.c.closeModal();
+    assert.ok(f.document.querySelector('[data-progress-panel]'));
+    assert.equal(f.c.modal, null);
+    defined(f.c.progressPanel).close();
     await f.click('.rail [data-action="settings"]');
     toggle = f.document.querySelector<HTMLInputElement>('#showWorkSummary');
     defined(toggle).checked = false;

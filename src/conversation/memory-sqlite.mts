@@ -32,6 +32,8 @@ import type {
   MemoryEntryStatus,
   MemorySnapshot,
   MemoryRetrievalOptions,
+  MemoryManagementMutation,
+  MemoryManagementSnapshot,
 } from './memory-types.ts';
 import type { ProjectContext } from './types.ts';
 
@@ -365,7 +367,7 @@ export class MemoryDatabase {
         save.run(conversationId, record.id, JSON.stringify(record.context));
     });
   }
-  search(query: unknown, options: { limit?: number } = {}) {
+  search(query: unknown, options: { limit?: number; conversationId?: string } = {}) {
     return this.transaction(true, (db) => searchMemory(db, query, options), false);
   }
   retrieve(query: unknown, scope: unknown, options: MemoryRetrievalOptions = {}) {
@@ -385,5 +387,48 @@ export class MemoryDatabase {
   }
   deleteEntry(id: unknown) {
     return this.transaction(true, (db) => deleteMemoryEntry(db, id));
+  }
+  managementSnapshot(): MemoryManagementSnapshot {
+    return this.transaction(false, (db) => ({
+      revision: this.epoch(db),
+      notes: db
+        .prepare('SELECT name, text FROM notes')
+        .all()
+        .map((note) => {
+          if (!MEMORY_FILES.some((name) => name === note.name) || !validText(note.text))
+            throw Error('Invalid memory database note');
+          const name = MEMORY_FILES.find((name) => name === note.name);
+          if (!name) throw Error('Unknown memory note');
+          return { name, text: note.text };
+        }),
+      entries: listMemoryEntries(db),
+    }));
+  }
+  manageRecord(mutation: MemoryManagementMutation) {
+    return this.transaction(true, (db) => {
+      if (this.epoch(db) !== mutation.revision)
+        throw Object.assign(Error('Memory changed. Refresh before editing.'), {
+          status: 409,
+          code: 'memory_conflict',
+        });
+      if (mutation.kind === 'note') {
+        if (
+          !['identity.md', 'working-memory.md'].includes(mutation.id) ||
+          mutation.action === 'confirm'
+        )
+          throw Error('Unknown editable memory document');
+        const text = mutation.action === 'delete' ? '' : mutation.text;
+        if (!validText(text)) throw Error('Invalid memory text');
+        if (db.prepare('UPDATE notes SET text=? WHERE name=?').run(text, mutation.id).changes !== 1)
+          throw Error('Memory document not found');
+      } else {
+        const existing = listMemoryEntries(db).find((entry) => entry.id === mutation.id);
+        if (!existing || existing.kind !== mutation.kind) throw Error('Memory entry not found');
+        if (mutation.action === 'delete') deleteMemoryEntry(db, mutation.id);
+        else if (mutation.action === 'confirm') confirmMemoryEntry(db, mutation.id);
+        else updateMemoryEntry(db, mutation.id, { text: mutation.text });
+      }
+      return { revision: this.epoch(db) };
+    });
   }
 }

@@ -128,7 +128,7 @@ export function restoreChatMessage(value: unknown): ChatMessage | null {
     'acceptedAt',
   ] as const)
     if (typeof value[key] === 'number' || value[key] === null) result[key] = value[key];
-  for (const key of ['unknownOutcome', 'voice', 'scheduled'] as const)
+  for (const key of ['unknownOutcome', 'voice', 'scheduled', 'starred', 'pinned'] as const)
     if (typeof value[key] === 'boolean') result[key] = value[key];
   if (Array.isArray(value.attachments))
     result.attachments = value.attachments
@@ -218,6 +218,7 @@ function settings(value: unknown): ConversationSettings {
     model: typeof raw.model === 'string' ? raw.model : '',
     notifications: raw.notifications !== false,
     showWorkSummary: raw.showWorkSummary === true,
+    showCallCaptions: raw.showCallCaptions !== false,
     vm: {
       host: typeof vm.host === 'string' ? vm.host : '',
       user: typeof vm.user === 'string' ? vm.user : 'dant',

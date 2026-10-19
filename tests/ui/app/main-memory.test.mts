@@ -10,11 +10,12 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { createMemorySettings } from '../../../ui/settings/memory-settings.mts';
+import { managedMemoryFixture } from '../../support/memory-management-fixtures.mts';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8');
 const section = (start: string, end: string) => sourceSection(source, start, end);
 
-test('main memory navigation uses the shared read-only module and keeps schedules only in its first-class navigation', async () => {
+test('main memory navigation uses SQLite management and keeps schedules only in its first-class navigation', async () => {
   const { document } = parseHTML('<html><body><main></main></body></html>'),
     requests: string[] = [],
     state = {
@@ -42,26 +43,18 @@ test('main memory navigation uses the shared read-only module and keeps schedule
     onChange: render,
     request: async (route) => {
       requests.push(route);
-      return {
-        conversationId: state.conversationId,
-        readOnly: true,
-        identity: { text: 'Actual personality' },
-        memory: { text: 'Actual saved notes' },
-      };
+      return managedMemoryFixture(state.conversationId, 'Actual saved notes');
     },
   });
   context.memorySettings = memorySettings;
   memorySettings.setVisible(true);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(document.body.textContent, /Actual personality/);
+  assert.match(document.body.textContent, /Actual shared personality/);
   assert.match(document.body.textContent, /Actual saved notes/);
-  assert.equal(
-    document.querySelector<HTMLTextAreaElement>('textarea,input,[contenteditable]'),
-    null,
-  );
-  document.querySelector<HTMLButtonElement>('[data-memory-refresh]')?.click();
+  assert.equal(document.querySelector<HTMLTextAreaElement>('textarea,[contenteditable]'), null);
+  document.querySelector<HTMLButtonElement>('[data-memory-action="refresh"]')?.click();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(requests, ['/memory/view', '/memory/view']);
+  assert.deepEqual(requests, ['/memory/manage?q=&offset=0', '/memory/manage?q=&offset=0']);
   const settings = section('function renderSettings(){', 'function renderMemory(){');
   assert.doesNotMatch(settings, /button\('schedules'/);
   assert.match(

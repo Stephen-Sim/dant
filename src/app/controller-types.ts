@@ -21,6 +21,7 @@ export interface ControllerConfig extends Appearance {
   language: LanguageCode;
   notifications: boolean;
   showWorkSummary: boolean;
+  showCallCaptions: boolean;
   serviceUpdatesPaused: boolean;
 }
 export interface PreferenceSync {

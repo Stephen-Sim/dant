@@ -34,6 +34,8 @@ const DATA_EXCLUDES = new Set([
   '.env',
 ]);
 const SQLITE_SIDECARS = ['-wal', '-shm', '-journal'] as const;
+const FIREFOX_PROFILE_MARKERS = ['prefs.js', 'times.json', 'compatibility.ini', 'places.sqlite'];
+const FIREFOX_PID_LOCK_TARGET = /^[A-Za-z0-9._-]{1,253}:\+[1-9][0-9]{0,9}$/;
 const sameIdentity = (left: fs.BigIntStats, right: fs.BigIntStats) =>
   left.ino === right.ino && left.dev === right.dev;
 const sameVersion = (left: fs.BigIntStats, right: fs.BigIntStats) =>
@@ -72,6 +74,20 @@ function sqliteFile(file: string) {
     );
   } finally {
     fs.closeSync(fd);
+  }
+}
+function firefoxPidLock(directory: string, source: string) {
+  try {
+    const target = fs.readlinkSync(source);
+    if (FIREFOX_PID_LOCK_TARGET.exec(target)?.[0] !== target) return null;
+    const markers = FIREFOX_PROFILE_MARKERS.map((name) => {
+      const file = path.join(directory, name);
+      return { file, stat: ordinaryFile(file) };
+    });
+    if (!sqliteFile(path.join(directory, 'places.sqlite'))) return null;
+    return { target, markers };
+  } catch {
+    return null;
   }
 }
 function copyStable(file: string, target: string) {
@@ -119,8 +135,10 @@ function hashFile(file: string) {
     fs.closeSync(fd);
   }
 }
-/** Synchronous staging prevents this Worker's admission callbacks interleaving with capture.
- * External writers are detected at both file and SQLite connection boundaries; this is not a distributed transaction. */
+/** Synchronous staging primitive. API callers own admission guards and revalidate
+ * execution identity after background staging before accepting the snapshot.
+ * Data databases use SQLite snapshots; external workspace databases remain complete opaque
+ * file groups. All observed files/directories are checked before accepting the capture. */
 export function createWorkerBackup(options: WorkerBackupOptions): WorkerBackupSnapshot {
   const dataDir = ordinaryDirectory(path.resolve(options.dataDir)),
     workspaceRoot = ordinaryDirectory(path.resolve(options.workspaceRoot), { create: true });
@@ -137,7 +155,7 @@ export function createWorkerBackup(options: WorkerBackupOptions): WorkerBackupSn
     staging = fs.mkdtempSync(path.join(temporaryRoot, 'dant-worker-backup-')),
     identity = fs.lstatSync(staging, { bigint: true }),
     entries: ArchiveEntry[] = [],
-    observed: { file: string; stat: fs.BigIntStats | undefined }[] = [],
+    observed: { file: string; stat: fs.BigIntStats | undefined; linkTarget?: string }[] = [],
     databases: { db: DatabaseSync; version: unknown }[] = [];
   fs.chmodSync(staging, 0o700);
   let files = 0,
@@ -171,6 +189,7 @@ export function createWorkerBackup(options: WorkerBackupOptions): WorkerBackupSn
       if (!archivePath(relative)) throw backupError('invalid_backup');
       const suffix = SQLITE_SIDECARS.find((value) => source.endsWith(value));
       if (
+        domain === 'data' &&
         suffix &&
         fs.existsSync(source.slice(0, -suffix.length)) &&
         sqliteFile(source.slice(0, -suffix.length))
@@ -178,6 +197,15 @@ export function createWorkerBackup(options: WorkerBackupOptions): WorkerBackupSn
         continue;
       const stat = fs.lstatSync(source, { bigint: true }),
         target = path.join(staging, domain, ...relative.split('/'));
+      if (domain === 'workspace' && name === 'lock' && stat.isSymbolicLink()) {
+        const lock = firefoxPidLock(directory, source);
+        if (lock) {
+          // Firefox regenerates this host/PID ownership marker. It is not durable
+          // profile data, and must never be followed or restored on another VM.
+          observed.push({ file: source, stat, linkTarget: lock.target }, ...lock.markers);
+          continue;
+        }
+      }
       if (entries.length >= BACKUP_MAX_FILES || stat.isSymbolicLink())
         throw backupError('invalid_backup');
       if (stat.isDirectory()) {
@@ -189,7 +217,10 @@ export function createWorkerBackup(options: WorkerBackupOptions): WorkerBackupSn
       ordinaryFile(source);
       observed.push({ file: source, stat });
       let sha256;
-      if (sqliteFile(source)) {
+      // A workspace may contain databases owned and exclusively locked by another
+      // application. Preserve their main files and every sidecar as ordinary bytes;
+      // opening them through this Worker's SQLite must not be required for backup.
+      if (domain === 'data' && sqliteFile(source)) {
         if (databases.length >= SQLITE_CONNECTION_LIMIT) throw backupError('invalid_backup');
         for (const sidecar of SQLITE_SIDECARS) {
           const file = source + sidecar,
@@ -205,7 +236,9 @@ export function createWorkerBackup(options: WorkerBackupOptions): WorkerBackupSn
           readOnly: true,
           enableDoubleQuotedStringLiterals: false,
         });
-        databases.push({ db, version: db.prepare('PRAGMA data_version').get()?.data_version });
+        const database: { db: DatabaseSync; version: unknown } = { db, version: undefined };
+        databases.push(database);
+        database.version = db.prepare('PRAGMA data_version').get()?.data_version;
         if (db.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok')
           throw backupError('invalid_backup');
         db.prepare('VACUUM INTO ?').run(target);
@@ -235,9 +268,12 @@ export function createWorkerBackup(options: WorkerBackupOptions): WorkerBackupSn
       capture(source, domain);
     }
     options.validateCurrent?.();
-    for (const { file, stat } of observed) {
+    for (const { file, stat, linkTarget } of observed) {
       const current = fs.lstatSync(file, { throwIfNoEntry: false, bigint: true });
-      if (stat ? !current || !sameVersion(stat, current) : current)
+      if (
+        (stat ? !current || !sameVersion(stat, current) : current) ||
+        (linkTarget !== undefined && fs.readlinkSync(file) !== linkTarget)
+      )
         throw backupError('source_changed');
     }
     for (const { db, version } of databases)

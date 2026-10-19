@@ -6,8 +6,10 @@ import {
   buildUsageActivity,
   createUsageActivityController,
   renderUsageActivity,
+  usageActivityScope,
 } from '../../../ui/settings/usage-activity.mts';
 import { renderUsageSettings } from '../../../ui/settings/usage-settings.mts';
+import { reconcile } from '../../../ui/shared/dom.mts';
 
 const now = Date.parse('2026-10-18T16:15:00Z'); // Already Oct 19 in the persisted history zone.
 const counts = (input: number, output = 0) => ({
@@ -290,4 +292,77 @@ test('unknown providers and modes fall back safely and localized labels escape u
       language === 'zh' ? /不代表用量为 0/ : /unknown, not zero/,
     );
   }
+});
+
+test('usage disclosure survives queued toggle and partial reconciliation, while foreign details and replaced nodes stay separate', () => {
+  const { document, Event } = dom(
+      '<details data-unrelated open><summary>Other disclosure</summary></details><main></main>',
+    ),
+    app = defined(document.querySelector('main')),
+    state = {
+      conversationId: 'one',
+      settings: { vm: { host: 'one', user: 'dant', port: 22 } },
+      usage,
+    };
+  let controller: ReturnType<typeof createUsageActivityController>;
+  const render = () => {
+    const template = document.createElement('template');
+    template.innerHTML = renderUsageSettings({ usage: state.usage, now, ...controller.state });
+    reconcile(app, template.content);
+    controller.bind();
+  };
+  controller = createUsageActivityController({
+    document,
+    getScope: () => usageActivityScope(state),
+    onChange: render,
+  });
+  const details = () => defined(document.querySelector<HTMLDetailsElement>('[data-usage-details]'));
+  render();
+  assert.equal(details().hasAttribute('open'), false);
+  details().setAttribute('open', '');
+  state.usage = {
+    ...state.usage,
+    subscription: { ...state.usage.subscription, totals: counts(999) },
+  };
+  render();
+  assert.equal(
+    details().hasAttribute('open'),
+    true,
+    'fresh state cannot beat the queued native toggle',
+  );
+  const old = details(),
+    replacement = old.cloneNode(true) as HTMLDetailsElement;
+  old.replaceWith(replacement);
+  controller.bind();
+  replacement.removeAttribute('open');
+  replacement.dispatchEvent(new Event('toggle'));
+  old.setAttribute('open', '');
+  old.dispatchEvent(new Event('toggle'));
+  assert.equal(
+    controller.state.detailsOpen,
+    false,
+    'a detached prior disclosure cannot overwrite its replacement',
+  );
+  replacement.setAttribute('open', '');
+  render();
+  assert.equal(details().hasAttribute('open'), true);
+  state.conversationId = 'two';
+  render();
+  assert.equal(details().hasAttribute('open'), false);
+  details().setAttribute('open', '');
+  render();
+  state.settings.vm.host = 'other-vm';
+  render();
+  assert.equal(details().hasAttribute('open'), false);
+  details().setAttribute('open', '');
+  render();
+  state.usage = { ...state.usage, recordedSince: now + 1 };
+  render();
+  assert.equal(
+    details().hasAttribute('open'),
+    false,
+    'a new usage recording starts with details closed',
+  );
+  assert.equal(document.querySelector('[data-unrelated]')?.hasAttribute('open'), true);
+  assert.equal(usageActivityScope(null), usageActivityScope({}));
 });

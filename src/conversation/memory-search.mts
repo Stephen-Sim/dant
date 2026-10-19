@@ -105,7 +105,7 @@ function synchronizeSearchIndex(db: DatabaseSync) {
 export function searchMemory(
   db: DatabaseSync,
   query: unknown,
-  { limit = 10 }: { limit?: number } = {},
+  { limit = 10, conversationId }: { limit?: number; conversationId?: string } = {},
 ): MemorySearchResult[] {
   if (
     typeof query !== 'string' ||
@@ -115,6 +115,14 @@ export function searchMemory(
     throw Error('Memory search query must be bounded text');
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MEMORY_SEARCH_RESULT_LIMIT)
     throw Error('Invalid memory search result limit');
+  if (
+    conversationId !== undefined &&
+    (typeof conversationId !== 'string' ||
+      !conversationId ||
+      conversationId.length > MEMORY_RETRIEVAL_ID_MAX_CHARS ||
+      /[\x00-\x20\x7f]/.test(conversationId))
+  )
+    throw Error('Invalid memory search scope');
   const terms = [...new Set(searchTokens(safeQuery(query)).flatMap(cjkPairs))].slice(
     0,
     MEMORY_SEARCH_TERM_LIMIT,
@@ -123,11 +131,17 @@ export function searchMemory(
   synchronizeSearchIndex(db);
   // FTS operators are never accepted from input; every normalized term is a literal.
   const expression = terms.map((term) => '"' + term.replaceAll('"', '""') + '"').join(' AND ');
-  const values = db
-    .prepare(
-      'SELECT document_key, kind, text, updated_at, conversation_id, work_id, bm25(memory_search) AS rank FROM memory_search WHERE memory_search MATCH ? ORDER BY bm25(memory_search), CAST(updated_at AS INTEGER) DESC, document_key LIMIT ?',
-    )
-    .all(expression, limit);
+  const statement = db.prepare(
+    'SELECT document_key, kind, text, updated_at, conversation_id, work_id, bm25(memory_search) AS rank FROM memory_search WHERE memory_search MATCH ?' +
+      (conversationId === undefined
+        ? ''
+        : ' AND (conversation_id IS NULL OR conversation_id = ?)') +
+      ' ORDER BY bm25(memory_search), CAST(updated_at AS INTEGER) DESC, document_key LIMIT ?',
+  );
+  const values =
+    conversationId === undefined
+      ? statement.all(expression, limit)
+      : statement.all(expression, conversationId, limit);
   return values.map((value) => {
     if (
       typeof value.document_key !== 'string' ||

@@ -1,6 +1,6 @@
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord, requestError } from '../shared/contracts.mts';
-import type { LocalRequestError } from '../shared/contracts.mts';
+import type { LocalRequestError, WorkReplyTarget } from '../shared/contracts.mts';
 import { TaskPriority } from '../../src/contracts/states.mts';
 import type { ProgressKind, CancelTarget } from './work-progress.mts';
 interface ActionItem {
@@ -8,7 +8,10 @@ interface ActionItem {
   work?: boolean;
   registered?: boolean;
   voice?: boolean;
-  message?: { id: string; progressCompleted?: boolean } | undefined;
+  turnId?: string | null | undefined;
+  message?: { id: string; turnId?: string | null; progressCompleted?: boolean } | undefined;
+  detailsTarget?: WorkReplyTarget | null;
+  replyTarget?: WorkReplyTarget | null;
   status?: unknown;
   knownStatus?: unknown;
   title?: string;
@@ -29,9 +32,13 @@ interface ProgressModel {
   completedCount?: number;
   reliable?: boolean;
 }
+interface DismissOwner {
+  turnId: string | null | undefined;
+  conversationId: string | undefined;
+}
 type Confirmation =
   | (CancelTarget & { mode: 'cancel'; title: string })
-  | { id: string; kind: ProgressKind; title: string; mode?: 'dismiss' };
+  | { id: string; kind: ProgressKind; title: string; mode: 'dismiss'; owner: DismissOwner };
 type MutationResult =
   { ok: true; value: Record<string, unknown> } | { ok: false; error: LocalRequestError };
 interface ProgressActionsOptions {
@@ -129,6 +136,31 @@ const identity = (item: ActionItem) =>
     : item.voice
       ? { id: item.id, kind: 'completion' }
       : { id: item.message?.id, kind: 'task' };
+const dismissOwner = (item: ActionItem): DismissOwner => {
+  const target = [item.detailsTarget, item.replyTarget].find(
+    (value) => value && value.workId === item.id,
+  );
+  return {
+    turnId:
+      item.turnId !== undefined
+        ? item.turnId
+        : item.message?.turnId !== undefined
+          ? item.message.turnId
+          : item.cancelTarget?.turnId !== undefined
+            ? item.cancelTarget.turnId
+            : target?.turnId,
+    conversationId: target?.conversationId,
+  };
+};
+const sameDismissOwner = (item: ActionItem | undefined, owner: DismissOwner) => {
+  if (!item) return false;
+  const current = dismissOwner(item);
+  return current.turnId === owner.turnId && current.conversationId === owner.conversationId;
+};
+const expectedDismissOwner = (owner: DismissOwner) => ({
+  ...(owner.turnId !== undefined ? { expectedTurnId: owner.turnId } : {}),
+  ...(owner.conversationId !== undefined ? { expectedConversationId: owner.conversationId } : {}),
+});
 const missingServiceRoute = (cause: unknown) => {
   const error = requestError(cause);
   return error.status === 404 && error.message === 'Request failed (404)' && !error.unknownOutcome;
@@ -204,16 +236,26 @@ export function createProgressActions({
     }
     return true;
   };
-  function prompt(item: ActionItem | undefined, id: string, kind: unknown) {
+  function prompt(item: ActionItem, id: string, kind: unknown) {
     if (kind !== 'task' && kind !== 'work' && kind !== 'completion') return;
-    confirmation = { id, kind, title: item?.title || '' };
+    confirmation = {
+      id,
+      kind,
+      title: item.title || '',
+      mode: 'dismiss',
+      owner: dismissOwner(item),
+    };
     render();
-    document.querySelector<HTMLElement>('[data-progress-dismiss-cancel]')?.focus();
+    document
+      .querySelector<HTMLElement>('[data-progress-dismiss-cancel]')
+      ?.focus({ preventScroll: true });
   }
   function promptCancellation(item: ActionItem, target: CancelTarget) {
     confirmation = { ...target, mode: 'cancel', title: item.title || '' };
     render();
-    document.querySelector<HTMLElement>('[data-progress-task-cancel-back]')?.focus();
+    document
+      .querySelector<HTMLElement>('[data-progress-task-cancel-back]')
+      ?.focus({ preventScroll: true });
   }
   async function cancelTask(target: unknown) {
     if (!validTarget(target) || !ready(target.id)) return;
@@ -323,7 +365,10 @@ export function createProgressActions({
       return;
     }
     const currentEpoch = epoch;
-    const result = await mutate(id, '/tasks/' + encodeURIComponent(id) + '/dismiss', { kind });
+    const result = await mutate(id, '/tasks/' + encodeURIComponent(id) + '/dismiss', {
+      kind,
+      ...expectedDismissOwner(dismissOwner(item)),
+    });
     if (!result.ok) {
       if (result.error.code === 'confirmation_required' && currentEpoch === epoch) {
         const current = find(id, kind) || item;
@@ -335,22 +380,26 @@ export function createProgressActions({
   }
   async function confirmDismiss() {
     const selected = confirmation;
-    if (!selected || !ready(selected.id)) return;
+    if (selected?.mode !== 'dismiss' || !ready(selected.id)) return;
     const item = find(selected.id, selected.kind);
-    if (!item) {
+    if (!sameDismissOwner(item, selected.owner)) {
       confirmation = null;
       render();
       toast(labels().changed);
       return;
     }
-    if (item.canCancel && item.cancelTarget) {
+    if (item?.canCancel && item.cancelTarget) {
       promptCancellation(item, item.cancelTarget);
       return;
     }
     const result = await mutate(
       selected.id,
       '/tasks/' + encodeURIComponent(selected.id) + '/dismiss',
-      { kind: selected.kind, confirmUnfinished: true },
+      {
+        kind: selected.kind,
+        confirmUnfinished: true,
+        ...expectedDismissOwner(selected.owner),
+      },
     );
     if (result.ok) {
       if (confirmation === selected) confirmation = null;
@@ -373,7 +422,7 @@ export function createProgressActions({
             (previous.mode === 'cancel' ? node.dataset.taskCancel : node.dataset.taskDismiss) ===
               previous.id && node.dataset.progressKind === previous.kind,
         )
-        ?.focus();
+        ?.focus({ preventScroll: true });
   }
   async function clearCompleted() {
     if (!ready('clear-completed') || !getModel().completedCount) return;
@@ -395,15 +444,17 @@ export function createProgressActions({
     });
     if (!result.ok) toast(formatError(result.error) || labels().failed);
   }
-  function renderConfirmation() {
+  function renderConfirmation(target?: { id?: string | undefined; kind: ProgressKind }) {
     if (!confirmation) return '';
+    if (target && (target.id !== confirmation.id || target.kind !== confirmation.kind)) return '';
     if (confirmation.mode === 'cancel') {
       const text = labels(),
         changed = !findCancellation(confirmation)?.canCancel;
       return `<section class="progress-confirmation" data-key="progress-cancel-confirmation" role="alertdialog" aria-modal="false" aria-labelledby="progress-cancel-title"><strong id="progress-cancel-title">${text.cancelTitle}</strong><p>${changed ? text.changed : text.cancelHint}</p>${confirmation.title ? `<blockquote>${escape(confirmation.title)}</blockquote>` : ''}<div class="task-actions"><button type="button" class="text-btn" data-progress-task-cancel-back ${busy ? 'disabled' : ''}>${text.keepWorking}</button><button type="button" class="text-btn danger" data-progress-task-cancel-confirm ${busy || changed ? 'disabled' : ''}>${text.confirmCancel}</button></div></section>`;
     }
-    const text = labels();
-    return `<section class="progress-confirmation" data-key="progress-dismiss-confirmation" role="alertdialog" aria-modal="false" aria-labelledby="progress-dismiss-title"><strong id="progress-dismiss-title">${text.title}</strong><p>${text.hint}</p>${confirmation.title ? `<blockquote>${escape(confirmation.title)}</blockquote>` : ''}<div class="task-actions"><button type="button" class="text-btn" data-progress-dismiss-cancel ${busy ? 'disabled' : ''}>${text.cancel}</button><button type="button" class="text-btn danger" data-progress-dismiss-confirm ${busy ? 'disabled' : ''}>${text.remove}</button></div></section>`;
+    const text = labels(),
+      changed = !sameDismissOwner(find(confirmation.id, confirmation.kind), confirmation.owner);
+    return `<section class="progress-confirmation" data-key="progress-dismiss-confirmation" role="alertdialog" aria-modal="false" aria-labelledby="progress-dismiss-title"><strong id="progress-dismiss-title">${text.title}</strong><p>${changed ? text.changed : text.hint}</p>${confirmation.title ? `<blockquote>${escape(confirmation.title)}</blockquote>` : ''}<div class="task-actions"><button type="button" class="text-btn" data-progress-dismiss-cancel ${busy ? 'disabled' : ''}>${text.cancel}</button><button type="button" class="text-btn danger" data-progress-dismiss-confirm ${busy || changed ? 'disabled' : ''}>${text.remove}</button></div></section>`;
   }
   function bind() {
     document.querySelectorAll<HTMLButtonElement>('[data-task-pause]').forEach(

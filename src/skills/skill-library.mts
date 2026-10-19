@@ -7,7 +7,20 @@ import {
   SKILL_RELATIVE_PATH_CHARACTERS,
   SKILL_NAME_PATTERN,
 } from './skill-limits.mts';
-import type { LocatedSkill, SkillSnapshot, SkillSummary } from './skill-types.ts';
+import type {
+  LocatedSkill,
+  SkillBinaryFile,
+  SkillSnapshot,
+  SkillSummary,
+  SkillView,
+} from './skill-types.ts';
+import {
+  skillFileFromBytes,
+  skillFileFromValue,
+  skillInstructionText,
+  skillFileFailure,
+  SkillExportFailure,
+} from './skill-files.mts';
 import { isRecord } from '../contracts/json.mts';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,26 +50,21 @@ function instructionBody(source: string) {
     throw Error('Invalid managed skill frontmatter.');
   return source.slice(boundary + 5).trim();
 }
-function snapshotText(library: SkillLibrary, directory: string, relative: string) {
+function snapshotBytes(library: SkillLibrary, directory: string, relative: string) {
   const file = library.inside(path.join(directory, relative));
   library.ordinary(path.dirname(file));
   const before = fs.lstatSync(file);
-  if (
-    !before.isFile() ||
-    before.isSymbolicLink() ||
-    before.nlink > 1 ||
-    before.size > SKILL_FILE_BYTES
-  )
-    throw exportFailure();
+  if (before.size > SKILL_FILE_BYTES) throw skillFileFailure(SkillExportFailure.Limit);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink > 1) throw exportFailure();
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
   try {
     const opened = fs.fstatSync(descriptor);
+    if (opened.size > SKILL_FILE_BYTES) throw skillFileFailure(SkillExportFailure.Limit);
     if (
       !opened.isFile() ||
       opened.nlink > 1 ||
       opened.dev !== before.dev ||
-      opened.ino !== before.ino ||
-      opened.size > SKILL_FILE_BYTES
+      opened.ino !== before.ino
     )
       throw exportFailure();
     const buffer = Buffer.alloc(SKILL_FILE_BYTES + 1);
@@ -70,8 +78,8 @@ function snapshotText(library: SkillLibrary, directory: string, relative: string
     const after = fs.fstatSync(descriptor),
       current = fs.lstatSync(file);
     library.ordinary(path.dirname(file));
+    if (length > SKILL_FILE_BYTES) throw skillFileFailure(SkillExportFailure.Limit);
     if (
-      length > SKILL_FILE_BYTES ||
       length !== opened.size ||
       after.size !== opened.size ||
       after.mtimeMs !== opened.mtimeMs ||
@@ -82,14 +90,7 @@ function snapshotText(library: SkillLibrary, directory: string, relative: string
       current.ino !== opened.ino
     )
       throw exportFailure();
-    let value;
-    try {
-      value = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
-    } catch {
-      throw exportFailure();
-    }
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value)) throw exportFailure();
-    return value;
+    return buffer.subarray(0, length);
   } finally {
     fs.closeSync(descriptor);
   }
@@ -179,19 +180,29 @@ export class SkillLibrary {
     }
     return items.sort((a, b) => a.name.localeCompare(b.name));
   }
-  get(name: unknown) {
-    const snapshot = this.exportSnapshot(name);
-    return { ...snapshot, files: { ...snapshot.files } };
+  get(name: unknown): SkillView {
+    const { binaryFiles, ...snapshot } = this.exportSnapshot(name),
+      assets = Object.entries(binaryFiles ?? {}).map(([relative, value]) => ({
+        path: relative,
+        mediaType: value.mediaType,
+        size: Buffer.from(value.data, 'base64').length,
+      }));
+    return { ...snapshot, files: { ...snapshot.files }, ...(assets.length ? { assets } : {}) };
   }
   exportSnapshot(name: unknown): SkillSnapshot {
     const found = this.locate(name);
     if (!found) throw Error('Skill not found.');
     const { directory, enabled, meta } = found,
       files: Record<string, string> = Object.create(null),
-      instructions = instructionBody(snapshotText(this, directory, 'SKILL.md'));
+      binaryFiles: Record<string, SkillBinaryFile> = Object.create(null),
+      instructions = instructionBody(
+        skillInstructionText(snapshotBytes(this, directory, 'SKILL.md')),
+      );
     let entries = 0,
+      supportCount = 0,
       total = Buffer.byteLength(instructions);
-    if (!instructions || total > SKILL_INSTRUCTION_BYTES) throw exportFailure();
+    if (!instructions) throw exportFailure();
+    if (total > SKILL_INSTRUCTION_BYTES) throw skillFileFailure(SkillExportFailure.Limit);
     const walk = (folder: string, prefix = '', depth = 0) => {
       this.ordinary(folder);
       if (depth > SKILL_MAX_DEPTH) throw exportFailure();
@@ -214,11 +225,14 @@ export class SkillLibrary {
           walk(full, relative + '/', depth + 1);
         } else {
           this.fileName(relative);
-          if (Object.keys(files).length >= SKILL_SUPPORT_FILE_LIMIT) throw countFailure();
-          const value = snapshotText(this, directory, relative);
-          total += Buffer.byteLength(value);
-          if (total > SKILL_TOTAL_BYTES) throw exportFailure();
-          files[relative] = value;
+          if (++supportCount > SKILL_SUPPORT_FILE_LIMIT) throw countFailure();
+          const value = skillFileFromBytes(relative, snapshotBytes(this, directory, relative));
+          total += value.data.length;
+          if (total > SKILL_TOTAL_BYTES) throw skillFileFailure(SkillExportFailure.Limit);
+          if (value.secretTexts.some((value) => this.containsSecret(value)))
+            throw skillFileFailure(SkillExportFailure.Credentials);
+          if (typeof value.value === 'string') files[relative] = value.value;
+          else binaryFiles[relative] = value.value;
         }
       }
     };
@@ -228,6 +242,7 @@ export class SkillLibrary {
       description: meta.description,
       instructions,
       files,
+      ...(Object.keys(binaryFiles).length ? { binaryFiles } : {}),
       enabled,
       path: path.join(directory, 'SKILL.md'),
       updatedAt: meta.updatedAt,
@@ -256,32 +271,56 @@ export class SkillLibrary {
       !input.description.trim() ||
       !text(input.instructions, SKILL_INSTRUCTION_BYTES) ||
       !input.instructions.trim() ||
-      (input.enabled !== undefined && typeof input.enabled !== 'boolean')
+      (input.enabled !== undefined && typeof input.enabled !== 'boolean') ||
+      (input.preserveBinaryFiles !== undefined && typeof input.preserveBinaryFiles !== 'boolean')
     )
       throw Error('Invalid skill name, description, or instructions.');
     const existing = this.locate(input.name);
     if (existing && !overwrite)
       throw Object.assign(Error('A skill with this name already exists.'), { code: 'EEXIST' });
-    // Omitted files edit metadata/instructions; an explicit file map replaces supporting files.
-    const files =
-      input.files === undefined ? (existing ? this.get(input.name).files : {}) : input.files;
-    if (!isRecord(files)) throw Error('Invalid supporting skill files.');
-    if (Object.keys(files).length > SKILL_SUPPORT_FILE_LIMIT) throw countFailure();
+    if (input.preserveBinaryFiles && (!existing || input.binaryFiles !== undefined))
+      throw Error('Invalid supporting skill preservation request.');
+    // Omitted files preserve all content. Editors explicitly retain read-only binary assets.
+    // A complete replacement without that flag keeps the legacy replacement contract.
+    const snapshot =
+      existing && (input.files === undefined || input.preserveBinaryFiles)
+        ? this.exportSnapshot(input.name)
+        : null;
+    const files = input.files === undefined ? (snapshot?.files ?? {}) : input.files,
+      binaryFiles =
+        input.binaryFiles === undefined ? (snapshot?.binaryFiles ?? {}) : input.binaryFiles;
+    if (!isRecord(files) || !isRecord(binaryFiles)) throw Error('Invalid supporting skill files.');
+    const entries = [...Object.entries(files), ...Object.entries(binaryFiles)];
+    if (entries.length > SKILL_SUPPORT_FILE_LIMIT) throw countFailure();
+    const output = new Map<string, Buffer>(),
+      paths = new Set(['skill.md']),
+      secrets: string[] = [];
     let bytes = Buffer.byteLength(input.instructions);
-    for (const [relative, value] of Object.entries(files)) {
+    for (const [relative, value] of entries) {
       this.fileName(relative);
-      if (!text(value, SKILL_FILE_BYTES)) throw Error('Invalid supporting skill file.');
-      bytes += Buffer.byteLength(value);
+      if (
+        (Object.hasOwn(files, relative) && typeof value !== 'string') ||
+        (Object.hasOwn(binaryFiles, relative) && typeof value === 'string') ||
+        paths.has(relative.toLowerCase())
+      )
+        throw Error('Invalid supporting skill file.');
+      paths.add(relative.toLowerCase());
+      const file = skillFileFromValue(relative, value);
+      bytes += file.data.length;
+      if (bytes > SKILL_TOTAL_BYTES) throw skillFileFailure(SkillExportFailure.Limit);
+      secrets.push(...file.secretTexts);
+      output.set(relative, file.data);
     }
-    if (bytes > SKILL_TOTAL_BYTES) throw Error('The skill exceeds its size limit.');
+    for (const relative of paths) {
+      const parts = relative.split('/');
+      for (let count = 1; count < parts.length; count++)
+        if (paths.has(parts.slice(0, count).join('/')))
+          throw Error('Conflicting supporting skill paths.');
+    }
     if (
-      [
-        input.name,
-        input.description,
-        input.instructions,
-        ...Object.keys(files),
-        ...Object.values(files).map(String),
-      ].some((value) => this.containsSecret(value))
+      [input.name, input.description, input.instructions, ...output.keys(), ...secrets].some(
+        (value) => this.containsSecret(value),
+      )
     )
       throw Error('Keep credentials in the credential vault, not in skills.');
     const enabled = input.enabled ?? existing?.enabled ?? true,
@@ -306,10 +345,10 @@ export class SkillLibrary {
           '\n',
         { mode: 0o600 },
       );
-      for (const [relative, value] of Object.entries(files)) {
+      for (const [relative, value] of output) {
         const file = this.inside(path.join(temporary, relative));
         fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(file, String(value), { mode: 0o600, flag: 'wx' });
+        fs.writeFileSync(file, value, { mode: 0o600, flag: 'wx' });
       }
       fs.writeFileSync(
         path.join(temporary, marker),
@@ -317,7 +356,7 @@ export class SkillLibrary {
           owner: 'dant',
           name: input.name,
           description: input.description.trim(),
-          files: Object.keys(files),
+          files: [...output.keys()],
           updatedAt: Date.now(),
         }),
         { mode: 0o600 },

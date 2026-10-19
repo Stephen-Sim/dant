@@ -636,7 +636,10 @@ fn resolve_preference(
     }
 }
 fn editor_command(executable: &Path, target: &Path) -> Command {
-    let mut command = Command::new(executable);
+    // External editors do not uniformly accept the Windows verbatim namespace
+    // returned by native path APIs. Keep each path as one native argument.
+    let target = crate::runtime_path(target.to_path_buf());
+    let mut command = Command::new(crate::runtime_path(executable.to_path_buf()));
     if executable
         .file_name()
         .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("devenv.exe"))
@@ -951,10 +954,7 @@ pub async fn open_attachment_in_editor(
     tauri::async_runtime::spawn_blocking(move || {
         let preference = read_preference(&preferences_path(&app)?)?;
         let executable = resolve_preference(&preference, &detected_editors())?;
-        let root = app
-            .path()
-            .app_cache_dir()
-            .map_err(|_| FAILED)?
+        let root = crate::runtime_path(app.path().app_cache_dir().map_err(|_| FAILED)?)
             .join("text-editor");
         expire_cache(&root);
         let target = cache_copy(&root, &file_id, &file_name, &bytes)?;
@@ -1122,6 +1122,71 @@ mod tests {
                 assert_eq!(args, vec![target.as_os_str()]);
             }
         }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn cached_unicode_text_is_closed_and_launches_with_normal_windows_paths() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("编辑器 cache with spaces");
+        let bytes = "中文原文\r\nAn exact downloaded UTF-8 attachment\n".as_bytes();
+        let target = cache_copy(
+            &root,
+            "10b72b2a-346f-48c0-a243-1cb22871d91d",
+            "项目 notes & results.txt",
+            bytes,
+        )
+        .unwrap();
+        let executable =
+            installed_fixture(&directory.path().join("editor app").join("notepad.exe"));
+        let canonical_target = target.canonicalize().unwrap();
+        let canonical_executable = executable.canonicalize().unwrap();
+        assert!(canonical_target.to_string_lossy().starts_with(r"\\?\"));
+        let command = editor_command(&canonical_executable, &canonical_target);
+        assert_eq!(command.get_program(), executable.as_os_str());
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, vec![target.as_os_str()]);
+        assert_eq!(fs::read(Path::new(args[0])).unwrap(), bytes);
+        // An exclusive reader proves the cache writer has flushed and closed
+        // before the external process receives the persistent file path.
+        let mut reader = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&target)
+            .unwrap();
+        let mut observed = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut observed).unwrap();
+        assert_eq!(observed, bytes);
+        drop(reader);
+        assert_eq!(
+            cache_copy(
+                &root,
+                "10b72b2a-346f-48c0-a243-1cb22871d91d",
+                "项目 notes & results.txt",
+                bytes
+            )
+            .unwrap(),
+            target
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn editor_launch_preserves_unc_paths_as_one_literal_argument() {
+        let executable = Path::new(r"\\?\UNC\server\share\editor app\devenv.exe");
+        let target = Path::new(r"\\?\UNC\server\share\中文 & notes\result.txt");
+        let command = editor_command(executable, target);
+        assert_eq!(
+            command.get_program(),
+            std::ffi::OsStr::new(r"\\server\share\editor app\devenv.exe")
+        );
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![
+                std::ffi::OsStr::new("/Edit"),
+                std::ffi::OsStr::new(r"\\server\share\中文 & notes\result.txt")
+            ]
+        );
     }
     #[test]
     fn only_plain_utf8_text_uses_a_text_editor_without_file_associations() {

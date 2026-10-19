@@ -17,6 +17,25 @@ export interface SkillSummary {
 export interface SkillSnapshot extends SkillSummary {
   instructions: string;
   files: Record<string, string>;
+  binaryFiles?: Record<string, SkillBinaryFile>;
+}
+
+export interface SkillBinaryFile {
+  encoding: 'base64';
+  mediaType: 'application/octet-stream';
+  data: string;
+}
+
+export interface SkillAssetMetadata {
+  path: string;
+  mediaType: 'application/octet-stream';
+  size: number;
+}
+
+export interface SkillView extends SkillSummary {
+  instructions: string;
+  files: Record<string, string>;
+  assets?: SkillAssetMetadata[];
 }
 
 export interface SkillSaveInput {
@@ -25,6 +44,8 @@ export interface SkillSaveInput {
   instructions?: unknown;
   enabled?: unknown;
   files?: unknown;
+  binaryFiles?: unknown;
+  preserveBinaryFiles?: unknown;
 }
 
 export interface LocatedSkill {

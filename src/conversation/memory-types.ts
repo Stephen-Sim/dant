@@ -67,3 +67,11 @@ export interface MemorySnapshot {
   notes: MemoryNote[];
   entries: MemoryEntry[];
 }
+export type MemoryManagementSnapshot = MemorySnapshot;
+export interface MemoryManagementMutation {
+  revision: string;
+  kind: 'note' | MemoryEntryKind;
+  id: string;
+  action: 'update' | 'delete' | 'confirm';
+  text?: string;
+}

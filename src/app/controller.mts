@@ -31,7 +31,7 @@ import {
   ComputerControlStatus,
   ProvisioningStatus,
 } from '../contracts/states.mts';
-import { allowedLocalOrigin, NATIVE_PROTOCOL } from '../config/network.mts';
+import { allowedLocalOrigin, NATIVE_PROTOCOL, API_JSON_BODY_BYTES } from '../config/network.mts';
 import { VmLifecycle } from '../computer/vm-lifecycle.mts';
 import { installPortableBackupRoutes } from '../backups/portable-routes.mts';
 import { DesktopLifecycle } from './desktop-lifecycle.mts';
@@ -68,6 +68,7 @@ import { ControllerBackups } from '../backups/controller-backups.mts';
 import { VmBackupTransport } from '../backups/vm-backup-transport.mts';
 import { backupError } from '../backups/backup-validation.mts';
 import { BackupPhase } from '../contracts/states.mts';
+import { createCallCaptionState } from '../voice/call-caption-state.mts';
 import {
   UpdateInstallLease,
   installLeaseRoutes,
@@ -92,6 +93,7 @@ const emptyState = (): VmObservation => ({
     model: '',
     notifications: true,
     showWorkSummary: false,
+    showCallCaptions: true,
     vm: { host: '', user: 'dant', port: 22, keyPath: '', knownHosts: '' },
   },
   worker: {
@@ -106,6 +108,10 @@ const emptyState = (): VmObservation => ({
   call: null,
   schedules: [],
 });
+const withoutCallCaption = (state: VmObservation): VmObservation => {
+  const { callCaption: _caption, ...cached } = state;
+  return cached;
+};
 
 // No Store, Engine, LocalWorker, user command, or authoritative conversation file
 // is constructed by this process. The JSON here is explicitly an offline cache.
@@ -138,6 +144,7 @@ export function createControllerApp({
     language: 'zh',
     notifications: false,
     showWorkSummary: false,
+    showCallCaptions: true,
     serviceUpdatesPaused: false,
     ...appearanceDefaults,
   };
@@ -150,11 +157,13 @@ export function createControllerApp({
     language: normalizeLanguage(config.language),
     notifications: config.notifications === true,
     showWorkSummary: config.showWorkSummary === true,
+    showCallCaptions: config.showCallCaptions !== false,
     serviceUpdatesPaused: config.serviceUpdatesPaused === true,
   };
-  let cached = emptyState();
+  let cached = emptyState(),
+    observationRevision = 0;
   try {
-    cached = parse(cacheFile);
+    cached = withoutCallCaption(parse(cacheFile));
   } catch {}
   const profiles = profileFactory({ dataDir, projectRoot, ...profileOptions });
   let profileError: string | null = null;
@@ -166,6 +175,7 @@ export function createControllerApp({
   const bridge = bridgeFactory({ dataDir, projectRoot }),
     provisioning = provisioningFactory({ projectRoot, dataDir }),
     lifecycle = lifecycleFactory({ dataDir, projectRoot });
+  const callCaptions = createCallCaptionState();
   let desktop: DesktopLifecycle;
   let backups: ControllerBackupService | undefined;
   let manualServiceUpdate: Promise<void> | null = null;
@@ -200,7 +210,7 @@ export function createControllerApp({
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: API_JSON_BODY_BYTES }));
   app.get('/api/session', (_req, res) => res.json({ token, product: 'dant', mode: 'controller' }));
   app.use('/api', (req, res, next) =>
     req.headers['x-dant-token'] === token || req.query.token === token
@@ -482,12 +492,14 @@ export function createControllerApp({
   function snapshot() {
     const state = structuredClone(cached),
       key = voiceKeys.status();
+    syncCallCaptions();
     const settings = {
       ...observedObject(emptyState().settings),
       ...observedObject(state.settings),
       language: config.language,
       notifications: config.notifications,
       showWorkSummary: config.showWorkSummary,
+      showCallCaptions: config.showCallCaptions,
       ...readAppearance(config),
       vm: { ...observedObject(observedObject(emptyState().settings).vm), ...binding() },
     };
@@ -532,7 +544,17 @@ export function createControllerApp({
       worker,
       provisioning: provisioning.snapshot(),
       controller,
+      callCaption: callCaptions.snapshot,
     };
+  }
+  function syncCallCaptions() {
+    callCaptions.sync(cached.call, {
+      scope: JSON.stringify([cached.conversationId ?? null, bridge.generation ?? null, binding()]),
+      connected:
+        !closing &&
+        bridge.status === ConnectionStatus.Online &&
+        cached.worker?.status === ConnectionStatus.Online,
+    });
   }
   function broadcast(type: string, data: unknown) {
     if (closing) return;
@@ -544,7 +566,7 @@ export function createControllerApp({
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
     const temporary = cacheFile + '.tmp';
-    fs.writeFileSync(temporary, JSON.stringify(cached));
+    fs.writeFileSync(temporary, JSON.stringify(withoutCallCaption(cached)));
     fs.renameSync(temporary, cacheFile);
     lastSaved = Date.now();
   }
@@ -553,7 +575,10 @@ export function createControllerApp({
   diagnostics.log('bridge.status', { status: bridgeStatus });
   diagnostics.log('worker.status', { status: cachedWorkerStatus, cached: true });
   bridge.on('state', (state: VmObservation) => {
-    cached = state;
+    observationRevision++;
+    cached = withoutCallCaption(state);
+    syncCallCaptions();
+    callCaptions.observe(state.callCaption);
     const status = diagnosticWorkerStatus(state.worker?.status);
     if (status !== cachedWorkerStatus) {
       cachedWorkerStatus = status;
@@ -587,7 +612,13 @@ export function createControllerApp({
     backups?.changed();
   });
   bridge.on('event', (event: unknown) => {
-    if (isRecord(event) && typeof event.type === 'string') broadcast(event.type, event.data);
+    if (isRecord(event) && typeof event.type === 'string') {
+      if (event.type === 'realtime') {
+        syncCallCaptions();
+        callCaptions.receive(event.data);
+      }
+      broadcast(event.type, event.data);
+    }
   });
   diagnostics.log('service.started', { version });
   let provisioningStatus = provisioning.snapshot().status;
@@ -635,12 +666,23 @@ export function createControllerApp({
     });
   });
   app.get('/api/state', async (_req, res) => {
-    if (bridge.status === ConnectionStatus.Online)
+    if (bridge.status === ConnectionStatus.Online) {
+      const revision = observationRevision,
+        scope = JSON.stringify([bridge.generation ?? null, binding()]);
       try {
         await bridge.refresh();
       } catch (error) {
-        bridge.error = errorMessage(error);
+        // A newer connection or successful state observation owns its status.
+        // An older failed read must not restore a stale error over that state.
+        if (
+          !closing &&
+          bridge.status === ConnectionStatus.Online &&
+          revision === observationRevision &&
+          scope === JSON.stringify([bridge.generation ?? null, binding()])
+        )
+          bridge.error = errorMessage(error);
       }
+    }
     res.json(snapshot());
   });
   app.get('/api/diagnostics', async (_req, res) => {
@@ -952,13 +994,15 @@ export function createControllerApp({
         { status: 409 },
       );
     const appearance = validateAppearancePatch(body);
-    for (const key of ['language', 'notifications', 'showWorkSummary'])
+    for (const key of ['language', 'notifications', 'showWorkSummary', 'showCallCaptions'])
       if (body[key] !== undefined) {
         if (key === 'language' && !isLanguage(body[key])) throw Error('Invalid language');
         if (key === 'notifications' && typeof body[key] !== 'boolean')
           throw Error('Invalid notification preference');
         if (key === 'showWorkSummary' && typeof body[key] !== 'boolean')
           throw Error('Invalid work summary preference');
+        if (key === 'showCallCaptions' && typeof body[key] !== 'boolean')
+          throw Object.assign(Error('Invalid call caption preference'), { status: 400 });
       }
     if (body.vm) {
       const vmPatch = jsonBody(body.vm);
@@ -993,13 +1037,15 @@ export function createControllerApp({
     }
     Object.assign(config, appearance);
     for (const key of appearanceKeys) delete body[key];
-    for (const key of ['language', 'notifications', 'showWorkSummary'])
+    for (const key of ['language', 'notifications', 'showWorkSummary', 'showCallCaptions'])
       if (body[key] !== undefined) {
         if (key === 'language' && isLanguage(body[key])) config.language = body[key];
         else if (key === 'notifications' && typeof body[key] === 'boolean')
           config.notifications = body[key];
         else if (key === 'showWorkSummary' && typeof body[key] === 'boolean')
           config.showWorkSummary = body[key];
+        else if (key === 'showCallCaptions' && typeof body[key] === 'boolean')
+          config.showCallCaptions = body[key];
         if (key !== 'language' || bridge.status !== ConnectionStatus.Online) delete body[key];
       }
     fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
@@ -1156,6 +1202,7 @@ export function createControllerApp({
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
+      callCaptions.end();
       localBackups.close();
       desktop.close();
       automaticConnection.close();

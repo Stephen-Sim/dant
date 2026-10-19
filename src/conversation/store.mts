@@ -13,6 +13,7 @@ import type {
   ChatCompletion,
   ProgressMetadata,
   ProgressKind,
+  ProgressDismissOptions,
   RegisterWorkOptions,
 } from './types.ts';
 import type {
@@ -72,6 +73,10 @@ const visibleAttachmentIds = (ids: unknown): string[] =>
   ].slice(0, MAX_MESSAGE_ATTACHMENTS);
 const progressError = (status: number, message: string) =>
   Object.assign(Error(message), { status });
+const MAX_PROGRESS_ID_LENGTH = 128;
+const MAX_PROGRESS_TURN_ID_LENGTH = 256;
+const validProgressIdentity = (value: unknown, limit: number) =>
+  typeof value === 'string' && value.length > 0 && value.length <= limit;
 const workError = (code: string, message: string) => Object.assign(Error(message), { code });
 const dismissibleStates = new Set<ProgressMetadata['status']>([
   TaskStatus.Continuing,
@@ -140,6 +145,7 @@ export class Store {
       ...this.state.settings,
       language: normalizeLanguage(this.state.settings?.language),
       showWorkSummary: this.state.settings?.showWorkSummary === true,
+      showCallCaptions: this.state.settings?.showCallCaptions !== false,
     };
     if (!uuidPattern.test(this.state.conversationId || ''))
       this.state.conversationId = randomUUID();
@@ -1206,7 +1212,7 @@ export class Store {
     if (
       typeof id !== 'string' ||
       !id ||
-      id.length > 128 ||
+      id.length > MAX_PROGRESS_ID_LENGTH ||
       !includesValue(['task', 'completion', 'work'], kind)
     )
       throw progressError(400, 'Invalid work progress request.');
@@ -1513,9 +1519,26 @@ export class Store {
   dismissProgress(
     id: unknown,
     kind: unknown,
-    { confirmUnfinished = false }: { confirmUnfinished?: unknown } = {},
+    {
+      confirmUnfinished = false,
+      expectedTurnId,
+      expectedConversationId,
+    }: ProgressDismissOptions = {},
   ) {
+    if (
+      (expectedTurnId !== undefined &&
+        expectedTurnId !== null &&
+        !validProgressIdentity(expectedTurnId, MAX_PROGRESS_TURN_ID_LENGTH)) ||
+      (expectedConversationId !== undefined &&
+        !validProgressIdentity(expectedConversationId, MAX_PROGRESS_ID_LENGTH))
+    )
+      throw progressError(400, 'Invalid work progress identity.');
     const entry = this.progressEntry(id, kind);
+    if (
+      (expectedTurnId !== undefined && entry.turnId !== expectedTurnId) ||
+      (expectedConversationId !== undefined && this.state.conversationId !== expectedConversationId)
+    )
+      throw progressError(409, 'The work progress identity changed.');
     if (!this.isProgressCompleted(entry, kind) && confirmUnfinished !== true)
       throw Object.assign(progressError(409, 'Confirm before hiding unfinished work.'), {
         confirmationRequired: true,

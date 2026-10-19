@@ -26,6 +26,10 @@ import {
 import type { AppState } from '../../../ui/app/application-types.ts';
 import { workProgress } from '../../../ui/work/work-progress.mts';
 import { renderUsageSettings } from '../../../ui/settings/usage-settings.mts';
+import { Engine } from '../../../src/work/engine.mts';
+import { activeTaskFixture } from '../../support/service-fixtures.mts';
+import { startTaskProgress } from '../../../src/work/task-progress.mts';
+import { progressSnapshot } from '../../../ui/work/progress-snapshot.mts';
 
 const snapshot = (): AppState => ({
   mode: 'vm-controller',
@@ -37,6 +41,33 @@ const snapshot = (): AppState => ({
   active: null,
   queue: [],
   call: null,
+});
+
+test('optional call captions and the saved display switch validate strictly while legacy snapshots remain readable', () => {
+  const value = snapshot();
+  assert.equal(readAppState(value).callCaption, undefined);
+  value.settings.showCallCaptions = false;
+  value.call = { id: 'call-one', provider: 'subscription', status: 'connected' };
+  value.callCaption = {
+    callId: 'call-one',
+    provider: 'subscription',
+    sequence: 1,
+    text: 'Received speech 原文',
+    final: true,
+  };
+  assert.equal(readAppState(value).callCaption?.text, 'Received speech 原文');
+  assert.equal(readAppState(value).settings.showCallCaptions, false);
+  for (const invalid of [
+    { ...value.callCaption, provider: 'unknown' },
+    { ...value.callCaption, sequence: 0 },
+    { ...value.callCaption, text: 'x'.repeat(4001) },
+    { ...value.callCaption, text: 'private\0control' },
+  ])
+    assert.throws(() => readAppState({ ...value, callCaption: invalid }));
+  assert.throws(() =>
+    readAppState({ ...value, settings: { ...value.settings, showCallCaptions: 'false' } }),
+  );
+  assert.equal(readAppState({ ...value, callCaption: null }).callCaption, null);
 });
 
 test('application state validates the actual offline controller and partial legacy active projection without inventing work fields', () => {
@@ -52,6 +83,91 @@ test('application state validates the actual offline controller and partial lega
     status: TaskStatus.Running,
   });
   assert.equal(readAppState(value).messages[0]?.text, 'Keep 原始内容');
+});
+
+test('actual Engine progress with no call remains active through both UI boundaries without losing paused work', () => {
+  const task = activeTaskFixture({
+    messageId: 'human-active',
+    turnId: 'turn-active',
+    startAcknowledged: true,
+  });
+  startTaskProgress(task, { at: 100 });
+  const owner = {
+      active: task,
+      task: () => ({ time: 100 }),
+      pendingUserRequests: new Map(),
+      takeover: false,
+      acquiring: false,
+      redact: (text: string) => text,
+    },
+    publicActive: unknown = Reflect.get(Engine.prototype, 'progress', owner),
+    value = snapshot();
+  value.worker.status = ConnectionStatus.Online;
+  value.controller = { status: ConnectionStatus.Online, cached: false };
+  value.messages = [
+    { id: 'human-active', role: 'user', text: 'Active request', status: TaskStatus.Running },
+    { id: 'human-paused', role: 'user', text: 'Paused request', status: TaskStatus.Paused },
+  ];
+  const decoded = readAppState({ ...value, active: publicActive }),
+    projection = progressSnapshot(decoded),
+    model = workProgress(projection);
+  assert.equal(decoded.active?.callId, null);
+  assert.equal(decoded.active?.plan, undefined, 'the real backend omits an absent plan');
+  assert.equal(decoded.active?.turnId, 'turn-active');
+  assert.equal(model.active?.turnId, 'turn-active');
+  assert.equal(model.active?.status, TaskStatus.Running);
+  assert.equal(model.active?.canPause, true);
+  assert.equal(model.active?.cancelTarget?.callId, null);
+  assert.equal(
+    model.recent.find((item) => item.message?.id === 'human-paused')?.status,
+    TaskStatus.Paused,
+  );
+  task.callId = 'call-active';
+  const withCall = readAppState({
+    ...value,
+    active: Reflect.get(Engine.prototype, 'progress', owner),
+  });
+  assert.equal(withCall.active?.callId, 'call-active');
+  assert.equal(workProgress(withCall).active?.cancelTarget?.callId, 'call-active');
+});
+
+test('nullable active call identity never admits malformed identifiers, plans or unknown enum values', () => {
+  const base = snapshot(),
+    active = { messageId: 'human-active', turnId: 'turn-active', callId: null };
+  for (const callId of [false, 0, {}, []]) {
+    const value = { ...base, active: { ...active, callId } };
+    assert.throws(() => readAppState(value), /Invalid application state/);
+    assert.throws(() => progressSnapshot(value), /Invalid work progress snapshot/);
+  }
+  for (const plan of [
+    null,
+    false,
+    [],
+    { total: '1' },
+    {
+      total: 1,
+      completed: 0,
+      currentStep: 'Invalid step',
+      steps: [{ step: 'Invalid step', status: 'unexpected' }],
+    },
+  ]) {
+    const value = { ...base, active: { ...active, plan } };
+    assert.throws(() => readAppState(value), /Invalid application state/);
+    assert.throws(() => progressSnapshot(value), /Invalid work progress snapshot/);
+  }
+  const summary = { total: 1, completed: 0, currentStep: 'Unchanged summary' };
+  assert.deepEqual(
+    readAppState({ ...base, active: { ...active, plan: summary } }).active?.plan,
+    summary,
+  );
+  assert.throws(
+    () => readAppState({ ...base, active: { ...active, status: 'unexpected' } }),
+    /Invalid application state/,
+  );
+  assert.throws(
+    () => readAppState({ ...base, active: { ...active, step: 'unexpected' } }),
+    /Invalid application state/,
+  );
 });
 
 test('cached service status remains an observation and storage failures do not discard usable history', () => {

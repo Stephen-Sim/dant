@@ -138,6 +138,7 @@ interface BackupOptions {
   transfer?: BackupTransfer;
 }
 type TransferForm = { kind: 'import' } | { kind: 'export'; id: string };
+type BackupSurface = 'backups' | 'import';
 const stateScope = (state: UiState | null): string =>
   JSON.stringify([
     state?.conversationId ?? null,
@@ -172,6 +173,7 @@ export function createVmBackups({
   transfer = createBackupTransfer({ desktop, getToken }),
 }: BackupOptions) {
   let visible = false,
+    surface: BackupSurface = 'backups',
     disposed = false,
     generation = 0,
     identity = stateScope(getState()),
@@ -188,6 +190,7 @@ export function createVmBackups({
     fresh = false,
     refreshNeeded = true,
     transferForm: TransferForm | null = null,
+    exportSelection: string | null = null,
     transferNotice: keyof typeof backupMessages.en | null = null;
   const copy = () => localizeMessages(backupMessages, getLanguage());
   const changed = () => {
@@ -218,6 +221,7 @@ export function createVmBackups({
       stopTimer();
       refreshNeeded = true;
       if (scope !== identity) {
+        exportSelection = null;
         data = null;
         draft = null;
         error = null;
@@ -550,13 +554,41 @@ export function createVmBackups({
   }
   async function openImport() {
     if (disposed || pending) return;
-    setVisible(true);
+    setVisible(true, 'import');
     clearTransferFields();
     transferForm = { kind: 'import' };
     transferNotice = null;
     changed();
-    if (!data && connected() && !pending) await load();
+    if (connected() && !pending) await load();
     document.querySelector<HTMLInputElement>('[name="backupPassphrase"]')?.focus();
+  }
+  function openExport(id: string | undefined) {
+    synchronize();
+    if (
+      disposed ||
+      !visible ||
+      pending ||
+      !connected() ||
+      !id ||
+      !data?.backups.some((item) => item.id === id)
+    )
+      return;
+    clearTransferFields();
+    exportSelection = id;
+    transferForm = { kind: 'export', id };
+    transferNotice = null;
+    changed();
+    document.querySelector<HTMLInputElement>('[name="backupPassphrase"]')?.focus();
+  }
+  function renderTransfer(kind: TransferForm['kind']) {
+    if (transferForm?.kind !== kind) return '';
+    const tr = copy();
+    return `<form data-backup-transfer data-key="backup-portable-form-${kind}" class="manual-vm-details"><h3>${kind === 'import' ? tr.importFile : tr.exportFile}</h3><p class="muted">${tr.passwordHint}</p><label>${tr.passphrase}<input type="password" name="backupPassphrase" autocomplete="off" required ${pending ? 'disabled' : ''}></label>${kind === 'export' ? `<label>${tr.confirmPassphrase}<input type="password" name="backupPassphraseConfirm" autocomplete="off" required ${pending ? 'disabled' : ''}></label>` : !desktop ? `<label>${tr.portableFile}<input type="file" name="backupTransferFile" accept=".dant" required ${pending ? 'disabled' : ''}></label>` : ''}<div class="inline-actions"><button type="submit" class="text-btn" ${pending || !connected() ? 'disabled' : ''}>${pending ? tr.transferring : kind === 'export' ? tr.exportFile : desktop ? tr.chooseImport : tr.importFile}</button><button type="button" class="text-btn" data-backup-transfer-cancel ${pending ? 'disabled' : ''}>${tr.cancel}</button></div></form>`;
+  }
+  function renderImport() {
+    synchronize();
+    const tr = copy();
+    return `<section class="settings-section setting-card vm-backups vm-backup-import" data-setting-card="backup-import"><div class="card-label"><h2>${tr.importFile}</h2><p>${tr.portableDescription}</p></div><div class="card-content">${!desktop ? `<p class="muted">${tr.webTransferLimit}</p>` : ''}<button type="button" class="text-btn" data-backup-import ${pending || !connected() ? 'disabled' : ''}>${tr.importFile}</button>${transferForm?.kind === 'import' && transferNotice ? `<p role="status">${tr[transferNotice]}</p>` : ''}${renderTransfer('import')}</div></section>`;
   }
   function render() {
     synchronize();
@@ -612,10 +644,10 @@ export function createVmBackups({
       'tasks-remain-paused': tr.paused,
       'sign-in-required': tr.signIn,
     };
-    const portableForm = transferForm
-      ? `<form data-backup-transfer data-key="backup-portable-form" class="manual-vm-details"><h3>${transferForm.kind === 'import' ? tr.importFile : tr.exportFile}</h3><p class="muted">${tr.passwordHint}</p><label>${tr.passphrase}<input type="password" name="backupPassphrase" autocomplete="off" required ${pending ? 'disabled' : ''}></label>${transferForm.kind === 'export' ? `<label>${tr.confirmPassphrase}<input type="password" name="backupPassphraseConfirm" autocomplete="off" required ${pending ? 'disabled' : ''}></label>` : !desktop ? `<label>${tr.portableFile}<input type="file" name="backupTransferFile" accept=".dant" required ${pending ? 'disabled' : ''}></label>` : ''}<div class="inline-actions"><button type="submit" class="text-btn" ${pending || !connected() ? 'disabled' : ''}>${pending ? tr.transferring : transferForm.kind === 'export' ? tr.exportFile : desktop ? tr.chooseImport : tr.importFile}</button><button type="button" class="text-btn" data-backup-transfer-cancel ${pending ? 'disabled' : ''}>${tr.cancel}</button></div></form>`
-      : '';
-    const portableControls = `<div class="manual-vm-details" data-key="backup-portable-controls"><p class="muted">${tr.portableDescription}</p>${!desktop ? `<small class="muted">${tr.webTransferLimit}</small>` : ''}<div class="inline-actions"><button type="button" class="text-btn" data-backup-import ${pending || !connected() ? 'disabled' : ''}>${tr.importFile}</button></div>${transferNotice ? `<p role="status">${tr[transferNotice]}</p>` : ''}${portableForm}</div>`;
+    const selectedExport =
+        data?.backups.find((item) => item.id === exportSelection) ?? data?.backups[0],
+      exportDisabled = Boolean(pending || !connected() || !selectedExport),
+      portableControls = `<div class="manual-vm-details backup-export-controls" data-key="backup-portable-controls"><p class="muted">${tr.portableDescription}</p>${!desktop ? `<small class="muted">${tr.webTransferLimit}</small>` : ''}<label for="backup-export-selection">${tr.backups}</label><div class="backup-export-row"><select id="backup-export-selection" data-backup-export-select ${exportDisabled ? 'disabled' : ''}>${data?.backups.length ? data.backups.map((item) => `<option value="${escape(item.id)}" ${item.id === selectedExport?.id ? 'selected' : ''}>${date(item.createdAt)} · ${tr.version} ${escape(item.appVersion)}</option>`).join('') : `<option value="">${tr.empty}</option>`}</select><button type="button" class="text-btn" data-backup-export-selected ${exportDisabled ? 'disabled' : ''}>${tr.exportFile}</button></div>${!selectedExport ? `<p class="muted" data-backup-export-hint>${tr.exportNeedsBackup}</p>` : ''}${transferForm?.kind === 'export' && transferNotice ? `<p role="status">${tr[transferNotice]}</p>` : ''}${renderTransfer('export')}</div>`;
     const restorePreview = consent
       ? `<section class="setting-card" data-backup-preview tabindex="-1" aria-label="${tr.previewTitle}"><h3>${tr.previewTitle}</h3>${details(consent.backup)}<p>${tr.replaces}</p>${consent.warnings
           .filter((code) => code !== 'replaces-current-data')
@@ -633,16 +665,16 @@ export function createVmBackups({
         void openImport();
       };
     document.querySelectorAll<HTMLButtonElement>('[data-backup-export]').forEach((button) => {
-      button.onclick = () => {
-        const id = button.dataset.backupExport;
-        if (pending || !id || !data?.backups.some((item) => item.id === id)) return;
-        clearTransferFields();
-        transferForm = { kind: 'export', id };
-        transferNotice = null;
-        changed();
-        document.querySelector<HTMLInputElement>('[name="backupPassphrase"]')?.focus();
-      };
+      button.onclick = () => openExport(button.dataset.backupExport);
     });
+    const exportSelect = document.querySelector<HTMLSelectElement>('[data-backup-export-select]');
+    if (exportSelect)
+      exportSelect.onchange = () => {
+        if (!pending && data?.backups.some((item) => item.id === exportSelect.value))
+          exportSelection = exportSelect.value;
+      };
+    const exportButton = document.querySelector<HTMLButtonElement>('[data-backup-export-selected]');
+    if (exportButton) exportButton.onclick = () => openExport(exportSelect?.value);
     const transferElement = document.querySelector<HTMLFormElement>('[data-backup-transfer]');
     if (transferElement)
       transferElement.onsubmit = (event) => {
@@ -696,8 +728,19 @@ export function createVmBackups({
         changed();
       };
   }
-  function setVisible(value: unknown) {
+  function setVisible(value: unknown, nextSurface: BackupSurface = 'backups') {
     synchronize();
+    if (visible && value && surface !== nextSurface) {
+      clearTransferFields();
+      transferForm = null;
+      transferNotice = null;
+      generation++;
+      pending = null;
+      consent = null;
+      stopTimer();
+      refreshNeeded = true;
+    }
+    surface = nextSurface;
     const entered = !visible && Boolean(value);
     visible = Boolean(value);
     if (!visible) {
@@ -732,5 +775,5 @@ export function createVmBackups({
     data = null;
     stopTimer();
   }
-  return { setVisible, load, render, bind, dispose, openImport };
+  return { setVisible, load, render, renderImport, bind, dispose, openImport };
 }

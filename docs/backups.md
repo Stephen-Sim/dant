@@ -2,7 +2,9 @@
 
 English · [Chinese](zh-CN/backups.md)
 
-Use **Settings → Work computer → Work computer backups** to keep local copies of a VM's persistent dant data. Restoration always requires a preview and an explicit **Replace data and restore** action. This guide describes the current source; published packages may contain an earlier implementation.
+Use **Settings → Chat & data → Work computer backups** to keep local copies of a VM's persistent dant data. Restoration always requires a preview and an explicit **Replace data and restore** action. This guide describes the current source; published packages may contain an earlier implementation.
+
+Backup settings, saved copies and portable export live in **Chat & data**. The separate **Import backup file** card stays in **Work computer** so an existing companion can be imported during computer setup. Export chooses an existing saved copy and works while its VM is offline; create a backup first if the list is empty.
 
 ## Configure backups
 
@@ -29,7 +31,11 @@ Each local archive uses a fresh **AES-256-GCM** key. Windows **DPAPI** protects 
 
 The two archive domains are the Worker's persistent **data** and **workspaces** trees, normally `~/dant/data/` and `~/dant/workspaces/`. They include conversation/task records, memory and schedule databases, retained project context, attachments, managed skills and workspace files. Project `.git` directories are included, preserving local commits and unpublished branches. Exclusions cover the Worker's top-level runtime, deploy, diagnostics, logs, cache, tmp, updates, backups and `.env` entries, plus `node_modules`, `.cache`, `.ssh`, `.codex` and `.openai` subtrees. Ordinary project configuration files in workspaces, including project `.env` files, remain part of the encrypted data. This is a dant data backup, not an operating-system or VM-disk image.
 
-Capture stages ordinary files with bounded reads and identity/version checks. SQLite files use **`VACUUM INTO`** snapshots and integrity checks rather than copying live journal/WAL sidecars as independent data. Changed files, directories or observed SQLite connections abort the capture. Each SQLite snapshot is consistent, but the combined JSON/files/multiple-database archive is **not a whole-system ACID transaction** and does not freeze unrelated external processes. Temporary capture and restore staging is private and cleaned; only completed encrypted archives become retained copies.
+Capture stages ordinary files with bounded reads and identity/version checks. SQLite databases in the Worker's **data** tree, including memory and schedules, use **`VACUUM INTO`** snapshots and integrity checks rather than copying live journal/WAL sidecars as independent data. A locked or invalid data database prevents capture.
+
+Databases in **workspaces** belong to projects or other applications and may hold exclusive locks. They are preserved as ordinary bytes together with every existing `-wal`, `-shm` and `-journal` file; dant does not open, repair or silently omit them. Every included file and directory is checked again before accepting the whole capture, so a changed, added or removed file aborts it. These external database copies are **not SQLite transaction snapshots** and do not guarantee database-level consistency. Each data-tree SQLite snapshot is consistent, but the combined JSON/files/multiple-database archive is **not a whole-system ACID transaction** and does not freeze unrelated external processes. Temporary capture and restore staging is private and cleaned; only completed encrypted archives become retained copies.
+
+Firefox's transient host/PID `lock` symlink is excluded only inside a validated ordinary profile; Firefox recreates it on the destination VM. Its identity and target remain checked during capture. Other symbolic links, hard links and special files are rejected rather than followed or silently omitted.
 
 ## Restore deliberately
 

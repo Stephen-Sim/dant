@@ -1,11 +1,11 @@
 import {
   SKILL_DESCRIPTION_BYTES,
   SKILL_INSTRUCTION_BYTES,
-  SKILL_FILE_BYTES,
   SKILL_TOTAL_BYTES,
   SKILL_NAME_PATTERN,
 } from './skill-limits.mts';
 import { isRecord } from '../contracts/json.mts';
+import { skillFileFromValue, skillFileFailure, SkillExportFailure } from './skill-files.mts';
 export interface SkillExportSource {
   exportSnapshot(name: string): unknown;
   fileName(relative: string): void;
@@ -14,7 +14,7 @@ export interface SkillExportSource {
 import { crc32 } from 'node:zlib';
 import { SKILL_SUPPORT_FILE_LIMIT } from './skill-limits.mts';
 
-// Stored ZIP entries keep these small text skills portable without another
+// Stored ZIP entries preserve bounded files in every format without another
 // compressor dependency or executing any of the exported helpers.
 export function exportSkillZip(skills: SkillExportSource, name: unknown) {
   if (typeof name !== 'string' || !SKILL_NAME_PATTERN.test(name))
@@ -23,6 +23,7 @@ export function exportSkillZip(skills: SkillExportSource, name: unknown) {
   if (!isRecord(value)) throw Error('Invalid managed skill for export.');
   const skill = value,
     support = skill.files ?? {},
+    binary = skill.binaryFiles ?? {},
     validText = (value: unknown): value is string =>
       typeof value === 'string' && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value);
   if (
@@ -32,28 +33,34 @@ export function exportSkillZip(skills: SkillExportSource, name: unknown) {
     Buffer.byteLength(skill.description) > SKILL_DESCRIPTION_BYTES ||
     !validText(skill.instructions) ||
     !skill.instructions.trim() ||
-    !isRecord(support)
+    !isRecord(support) ||
+    !isRecord(binary)
   )
     throw Error('Invalid managed skill for export.');
-  if (Object.keys(support).length > SKILL_SUPPORT_FILE_LIMIT)
+  const supportEntries = [...Object.entries(support), ...Object.entries(binary)];
+  if (supportEntries.length > SKILL_SUPPORT_FILE_LIMIT)
     throw Object.assign(Error('The skill exceeds its export file count.'), { code: 'size_limit' });
   if (Buffer.byteLength(skill.instructions) > SKILL_INSTRUCTION_BYTES)
-    throw Error('The skill exceeds its export limit.');
+    throw skillFileFailure(SkillExportFailure.Limit);
   let managedBytes = Buffer.byteLength(skill.instructions);
   const paths = new Set(['skill.md']);
-  for (const [relative, text] of Object.entries(support)) {
+  const output = new Map<string, Buffer>(),
+    secretTexts: string[] = [];
+  for (const [relative, value] of supportEntries) {
     skills.fileName(relative);
     if (
       /[\x00-\x1f\x7f]/.test(relative) ||
       paths.has(relative.toLowerCase()) ||
-      !validText(text) ||
-      /^(?:%PDF-|PK\x03\x04|RIFF|OggS|GIF8[79]a)/.test(text)
+      (Object.hasOwn(support, relative) && typeof value !== 'string') ||
+      (Object.hasOwn(binary, relative) && typeof value === 'string')
     )
       throw Error('Invalid managed skill for export.');
     paths.add(relative.toLowerCase());
-    managedBytes += Buffer.byteLength(text);
-    if (Buffer.byteLength(text) > SKILL_FILE_BYTES || managedBytes > SKILL_TOTAL_BYTES)
-      throw Error('The skill exceeds its export limit.');
+    const file = skillFileFromValue(relative, value);
+    output.set(relative, file.data);
+    secretTexts.push(...file.secretTexts);
+    managedBytes += file.data.length;
+    if (managedBytes > SKILL_TOTAL_BYTES) throw skillFileFailure(SkillExportFailure.Limit);
   }
   for (const relative of paths) {
     const parts = relative.split('/');
@@ -62,40 +69,31 @@ export function exportSkillZip(skills: SkillExportSource, name: unknown) {
         throw Error('Invalid managed skill for export.');
   }
   if (
-    [
-      name,
-      skill.description,
-      skill.instructions,
-      ...Object.keys(support),
-      ...Object.values(support).map((value) => {
-        if (typeof value !== 'string') throw Error('Invalid managed skill for export.');
-        return value;
-      }),
-    ].some((value) => skills.containsSecret?.(value))
+    [name, skill.description, skill.instructions, ...output.keys(), ...secretTexts].some((value) =>
+      skills.containsSecret?.(value),
+    )
   )
-    throw Error('Keep credentials out of exported skills.');
-  const files: Record<string, string> = {
-    'SKILL.md':
-      '---\nname: ' +
-      JSON.stringify(skill.name) +
-      '\ndescription: ' +
-      JSON.stringify(skill.description) +
-      '\n---\n\n' +
-      skill.instructions +
-      '\n',
-    ...Object.fromEntries(
-      Object.entries(support).map(([name, value]) => {
-        if (typeof value !== 'string') throw Error('Invalid managed skill for export.');
-        return [name, value];
-      }),
-    ),
-  };
+    throw skillFileFailure(SkillExportFailure.Credentials);
+  const files = new Map<string, Buffer>([
+    [
+      'SKILL.md',
+      Buffer.from(
+        '---\nname: ' +
+          JSON.stringify(skill.name) +
+          '\ndescription: ' +
+          JSON.stringify(skill.description) +
+          '\n---\n\n' +
+          skill.instructions +
+          '\n',
+      ),
+    ],
+    ...output,
+  ]);
   let offset = 0;
   const local: Buffer[] = [],
     central: Buffer[] = [];
-  for (const [relative, text] of Object.entries(files)) {
-    const data = Buffer.from(text),
-      file = Buffer.from(skill.name + '/' + relative),
+  for (const [relative, data] of files) {
+    const file = Buffer.from(skill.name + '/' + relative),
       checksum = crc32(data);
     const header = Buffer.alloc(30);
     header.writeUInt32LE(0x04034b50, 0);
@@ -124,7 +122,7 @@ export function exportSkillZip(skills: SkillExportSource, name: unknown) {
   }
   const directory = Buffer.concat(central),
     end = Buffer.alloc(22),
-    count = Object.keys(files).length;
+    count = files.size;
   end.writeUInt32LE(0x06054b50, 0);
   end.writeUInt16LE(count, 8);
   end.writeUInt16LE(count, 10);

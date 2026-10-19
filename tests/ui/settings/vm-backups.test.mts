@@ -17,6 +17,7 @@ import { defined } from '../../support/fixture-assertions.mts';
 import { reconcile } from '../../../ui/shared/dom.mts';
 import type { BackupTransfer } from '../../../ui/platform/backup-transfer.mts';
 import fs from 'node:fs';
+import { compactCss } from '../../support/source-fixtures.mts';
 
 const BACKUP_ID = '00000000-0000-4000-8000-000000000001';
 const NOW = Date.UTC(2026, 9, 20, 1);
@@ -142,7 +143,7 @@ function fixture({
   };
   function render() {
     const template = document.createElement('template');
-    template.innerHTML = ui.render();
+    template.innerHTML = ui.render() + ui.renderImport();
     reconcile(app, template.content);
     ui.bind();
   }
@@ -231,6 +232,48 @@ function fixture({
   };
 }
 
+test('backup fields keep separate spaced rows, associated labels and bounded controls that stack on narrow screens', async () => {
+  const f = fixture();
+  await settle();
+  const form = defined(f.document.querySelector<HTMLElement>('[data-backup-settings]')),
+    mode = defined(form.querySelector<HTMLSelectElement>('#backup-mode')),
+    interval = defined(form.querySelector<HTMLInputElement>('#backup-interval'));
+  assert.notEqual(mode.parentElement, interval.parentElement);
+  assert.equal(
+    defined(form.querySelector('label[for="backup-mode"]')).parentElement,
+    mode.parentElement,
+  );
+  assert.equal(
+    defined(form.querySelector('label[for="backup-interval"]')).parentElement,
+    interval.parentElement,
+  );
+  assert.equal(mode.name, 'mode');
+  assert.equal(interval.name, 'intervalMinutes');
+  assert.equal(form.querySelectorAll('input[type="checkbox"]').length, 2);
+  const css = compactCss(
+    fs.readFileSync(new URL('../../../ui/style.css', import.meta.url), 'utf8'),
+  );
+  assert.match(css, /\.vm-backups \[data-backup-settings\]\{[^}]*display:grid;[^}]*gap:12px;/);
+  assert.match(css, /\.vm-backups \[data-backup-settings\]>div\.setting-row\{[^}]*flex-wrap:wrap/);
+  assert.match(
+    css,
+    /\.vm-backups \[data-backup-settings\]>\.setting-row>select,[^{]+\{[^}]*width:190px;[^}]*max-width:100%/,
+  );
+  assert.match(
+    css,
+    /@media\(max-width:600px\)\{\.vm-backups \[data-backup-settings\]>div\.setting-row\{[^}]*flex-direction:column;[^}]*align-items:stretch;[^}]*gap:8px/,
+  );
+  assert.match(
+    css,
+    /\.vm-backups \[data-backup-settings\]>\.setting-row>select,[^{]+\{width:100%;flex:auto/,
+  );
+  assert.deepEqual(
+    f.calls.map((call) => call.route),
+    ['/backups'],
+  );
+  f.ui.dispose();
+});
+
 test('opening backup settings reads metadata without initiating any automatic backup or restore', async () => {
   const f = fixture();
   await settle();
@@ -259,6 +302,110 @@ test('an isolated invalid backup shows the fixed catalog warning while valid sna
   assert.match(f.document.body.textContent, /Backup information could not be loaded/);
   assert.ok(f.document.querySelector('[data-backup-id]'));
   assert.equal(f.button('[data-backup-prepare]').disabled, false);
+});
+
+test('import is a separate work-computer card and export stays visible with an explanation before any backup exists', async () => {
+  const f = fixture();
+  f.backend.backups = [];
+  f.backend.lastBackupAt = null;
+  await settle();
+  const { document } = parseHTML(f.ui.render()),
+    imported = parseHTML(f.ui.renderImport()).document;
+  assert.ok(document.querySelector('[data-backup-settings]'));
+  assert.equal(document.querySelector('[data-backup-import]'), null);
+  assert.ok(imported.querySelector('.vm-backup-import[data-setting-card="backup-import"]'));
+  assert.ok(imported.querySelector('[data-backup-import]'));
+  assert.equal(imported.querySelector('[data-backup-settings]'), null);
+  assert.equal(imported.querySelector('[data-backup-export-selected]'), null);
+  assert.equal(f.button('[data-backup-export-selected]').disabled, true);
+  assert.equal(
+    defined(f.document.querySelector<HTMLSelectElement>('[data-backup-export-select]')).disabled,
+    true,
+  );
+  assert.equal(
+    defined(f.document.querySelector('[data-backup-export-hint]')).textContent,
+    backupMessages.en.exportNeedsBackup,
+  );
+  f.button('[data-backup-export-selected]').click();
+  assert.equal(f.document.querySelector('[data-backup-transfer]'), null);
+  assert.ok(f.calls.every((call) => call.route === '/backups'));
+  f.ui.dispose();
+});
+
+test('the fixed export entry selects a retained local backup and exports only after explicit password confirmation', async () => {
+  const exports: string[] = [],
+    secondId = '00000000-0000-4000-8000-000000000002',
+    f = fixture({
+      desktop: true,
+      online: false,
+      transfer: {
+        importBackup: async () => null,
+        exportBackup: async (id) => {
+          exports.push(id);
+          return true;
+        },
+      },
+    });
+  f.backend.backups.push({
+    ...metadata(),
+    id: secondId,
+    createdAt: NOW,
+    appVersion: '0.4.7-beta.9',
+  });
+  await settle();
+  assert.equal(f.button('[data-backup-export-selected]').disabled, false);
+  const select = defined(
+    f.document.querySelector<HTMLSelectElement>('[data-backup-export-select]'),
+  );
+  for (const option of select.querySelectorAll<HTMLOptionElement>('option'))
+    option.toggleAttribute('selected', option.value === secondId);
+  select.dispatchEvent(new f.Event('change', { bubbles: true }));
+  f.render();
+  assert.equal(
+    defined(f.document.querySelector<HTMLSelectElement>('[data-backup-export-select]')).value,
+    secondId,
+  );
+  f.button('[data-backup-export-selected]').click();
+  assert.deepEqual(exports, []);
+  assert.ok(f.document.querySelector('[data-setting-card="backups"] [data-backup-transfer]'));
+  assert.equal(f.document.querySelector('.vm-backup-import [data-backup-transfer]'), null);
+  f.input('backupPassphrase').value = 'isolated export passphrase';
+  f.input('backupPassphraseConfirm').value = 'isolated export passphrase';
+  defined(f.document.querySelector<HTMLFormElement>('[data-backup-transfer]')).dispatchEvent(
+    new f.Event('submit', { cancelable: true }),
+  );
+  await settle();
+  assert.deepEqual(exports, [secondId]);
+  assert.equal(f.toasts.at(-1), backupMessages.en.exported);
+  assert.ok(f.calls.every((call) => call.route === '/backups'));
+  f.ui.dispose();
+});
+
+test('switching backup settings surfaces clears passwords and discards their transfer form without taking an action', async () => {
+  const f = fixture({ desktop: true });
+  await settle();
+  await f.ui.openImport();
+  const importPassword = f.input('backupPassphrase');
+  importPassword.value = 'isolated import passphrase';
+  assert.ok(f.document.querySelector('.vm-backup-import [data-backup-transfer]'));
+  assert.equal(
+    f.document.querySelector('[data-setting-card="backups"] [data-backup-transfer]'),
+    null,
+  );
+  f.ui.setVisible(true, 'backups');
+  f.render();
+  assert.equal(importPassword.value, '');
+  assert.equal(f.document.querySelector('[data-backup-transfer]'), null);
+  await settle();
+  f.button('[data-backup-export]').click();
+  const exportPassword = f.input('backupPassphrase');
+  exportPassword.value = 'isolated export passphrase';
+  f.ui.setVisible(true, 'import');
+  f.render();
+  assert.equal(exportPassword.value, '');
+  assert.equal(f.document.querySelector('[data-backup-transfer]'), null);
+  assert.ok(f.calls.every((call) => call.route === '/backups'));
+  f.ui.dispose();
 });
 
 test('portable import is available before a work computer is online and never restores or starts work', async () => {

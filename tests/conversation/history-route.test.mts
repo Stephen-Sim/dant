@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createWorkerApp } from '../../src/app/server.mts';
+import { API_JSON_BODY_BYTES } from '../../src/config/network.mts';
 import { AttachmentStore } from '../../src/files/attachments.mts';
 import {
   WorkerServiceFixture,
@@ -79,6 +80,71 @@ async function setup(t: NodeTestContext) {
   return { instance, worker, request, enqueued };
 }
 
+test('authenticated bookmark HTTP updates persist without reading messages or starting work and reject stale or deleted targets', async (t) => {
+  const h = await setup(t),
+    { store, engine } = h.instance;
+  const message = store.add({ role: 'assistant', text: 'Bookmark target', read: false });
+  const conversationId = store.state.conversationId,
+    route = '/messages/' + message.id + '/metadata';
+  store.state.threadId = 'retained-thread';
+  engine.loaded = true;
+  const response = await h.request(route, {
+    method: 'PATCH',
+    body: { conversationId, pinned: true, starred: true },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    conversationId,
+    message: { id: message.id, pinned: true, starred: true },
+  });
+  assert.equal(store.state.messages[0], message);
+  assert.equal(message.read, false);
+  assert.equal(message.status, undefined);
+  assert.equal(engine.loaded, true);
+  assert.equal(store.state.threadId, 'retained-thread');
+  assert.equal(h.worker.calls.length, 0);
+  assert.equal(h.enqueued.length, 0);
+  const saved = fs.readFileSync(store.file);
+  for (const body of [
+    { conversationId },
+    { conversationId, pinned: 'yes' },
+    { conversationId, starred: null },
+    { conversationId, starred: true, read: true },
+  ])
+    assert.equal((await h.request(route, { method: 'PATCH', body })).status, 400);
+  assert.equal(
+    (
+      await h.request(route, {
+        method: 'PATCH',
+        body: { conversationId: 'another-chat', starred: false },
+      })
+    ).status,
+    409,
+  );
+  const unauthenticated = await fetch(
+    'http://127.0.0.1:' + listeningPort(h.instance.server) + '/api' + route,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversationId, starred: false }),
+    },
+  );
+  assert.equal(unauthenticated.status, 401);
+  assert.deepEqual(fs.readFileSync(store.file), saved);
+  assert.equal(
+    (await h.request(route, { method: 'PATCH', body: { conversationId, pinned: false } })).status,
+    200,
+  );
+  assert.equal(message.pinned, false);
+  assert.equal(message.starred, true);
+  assert.equal((await h.request('/messages/' + message.id, { method: 'DELETE' })).status, 200);
+  assert.equal(
+    (await h.request(route, { method: 'PATCH', body: { conversationId, pinned: true } })).status,
+    404,
+  );
+  assert.equal(h.worker.calls.length, 0);
+});
+
 test('history HTTP editing preserves identity and model context and resubmits only on explicit request', async (t) => {
   const h = await setup(t),
     { store, engine } = h.instance,
@@ -148,7 +214,7 @@ test('authenticated long history edits preserve the complete text and explicit r
   assert.equal(defined(h.enqueued[0]).text, text + ' resent');
   const tooLarge = await h.request('/messages/' + message.id, {
     method: 'PATCH',
-    body: { text: 'x'.repeat(2 * 1024 * 1024), resubmit: true },
+    body: { text: 'x'.repeat(API_JSON_BODY_BYTES + 1), resubmit: true },
   });
   assert.equal(tooLarge.status, 413);
   assert.equal(h.enqueued.length, 1);

@@ -39,6 +39,7 @@ import {
 import { createSettingsNavigation } from '../../../ui/settings/settings-navigation.mts';
 import { renderUsageSettings } from '../../../ui/settings/usage-settings.mts';
 import { createUsageActivityController } from '../../../ui/settings/usage-activity.mts';
+import { createCallCaptionPreferences } from '../../../ui/call/call-caption-preferences.mts';
 import { reconcile } from '../../../ui/shared/dom.mts';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8'),
@@ -83,7 +84,14 @@ function fixture() {
     messages: [],
   };
   const context = uiEntrypointFixture({
-    vmBackups: { setVisible() {}, render: () => '', bind() {}, dispose() {}, load: async () => {} },
+    vmBackups: {
+      setVisible() {},
+      render: () => '',
+      renderImport: () => '',
+      bind() {},
+      dispose() {},
+      load: async () => {},
+    },
     textEditor: { renderSettings: () => '', bind() {}, load: async () => {}, dispose() {} },
     settingsCategory: 'general' as SettingsCategory,
     settingsNavigation: createSettingsNavigation({
@@ -167,6 +175,10 @@ function fixture() {
     telegramPairTimer: null as Timer | null,
     pendingActions: new Set(),
     voiceLoadedFor: '',
+    voiceError: '',
+    voiceApiExpanded: false,
+    voiceChoices: [],
+    apiVoiceChoices: [],
     localStorage: {
       getItem: (key: string) => stored.get(key) || null,
       setItem: (key: string, value: string) => stored.set(key, value),
@@ -217,6 +229,7 @@ function fixture() {
         section('function currentState(', 'const subscriptionVoiceUnavailable='),
         section('const subscriptionVoiceUnavailable=', 'const iconCache='),
         section('const accentChoices=', 'function renderVoiceSettings(settings){'),
+        section('function renderVoiceSettings(settings){', 'function renderProvisionCard(){'),
         section('function renderProvisionCard(){', 'function renderMemory(){'),
         section('function bindProvision(){', 'function bindComputerInput(){'),
         section('function formVM(form){', 'let inputChain='),
@@ -235,6 +248,29 @@ function manualForm(
   f.elements.set('#vm-form', form);
   return form;
 }
+
+test('the actual Voice settings renderer includes the persisted caption preference without disabling it during a call', () => {
+  const f = fixture(),
+    document = parseHTML('<main></main>').document;
+  f.c.callCaptionPreferences = createCallCaptionPreferences({
+    document,
+    getState: () => f.c.state,
+    getLanguage: () => f.c.state.settings.language,
+    request: f.c.api,
+  });
+  f.c.callStarting = true;
+  const enabled = parseHTML(f.c.renderVoiceSettings(f.c.state.settings)).document.querySelector(
+    '[data-call-caption-setting]',
+  );
+  assert.ok(enabled);
+  assert.equal(enabled.hasAttribute('checked'), true);
+  assert.equal(enabled.hasAttribute('disabled'), false);
+  f.c.state.settings.showCallCaptions = false;
+  const disabled = parseHTML(f.c.renderVoiceSettings(f.c.state.settings)).document.querySelector(
+    '[data-call-caption-setting]',
+  );
+  assert.equal(disabled?.hasAttribute('checked'), false);
+});
 
 test('rendered appearance controls apply and PATCH each selected preference through their actual handlers', async () => {
   const f = fixture(),

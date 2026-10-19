@@ -70,6 +70,8 @@ export interface ChatMessage {
   clientMessageId?: string;
   attachments?: Attachment[];
   editedAt?: number;
+  starred?: boolean;
+  pinned?: boolean;
   read?: boolean;
   readAt?: number | null;
   visibleAt?: number | null;
@@ -150,7 +152,7 @@ export interface CallState {
 export interface UiActiveTask extends Partial<TaskProgressSnapshot> {
   visible?: boolean;
   messageIds?: string[];
-  callId?: string;
+  callId?: string | null;
   progressPriority?: TaskPriorityValue;
   canSteer?: boolean;
 }
@@ -254,6 +256,8 @@ export interface ApiOptions {
   headers?: Record<string, string>;
   keepalive?: boolean;
   signal?: AbortSignal;
+  /** JSON transport precondition; runs locally immediately before sending, never across IPC. */
+  beforeSend?: () => boolean;
 }
 export type ApiRequest = (route: string, options?: ApiOptions) => Promise<unknown>;
 export type Timer = ReturnType<typeof setTimeout> | number;

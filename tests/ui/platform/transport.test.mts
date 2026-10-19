@@ -19,7 +19,7 @@ async function until(predicate: () => unknown) {
   }
 }
 
-test('desktop JSON requests use the native bridge serially and recover after a failed request', async () => {
+test('desktop mutations use the native bridge serially and recover after a failed request', async () => {
   const requests: NativeApiRequest[] = [];
   let active = 0,
     maximum = 0;
@@ -40,13 +40,13 @@ test('desktop JSON requests use the native bridge serially and recover after a f
   transport.setToken('test-session');
   const results = await Promise.allSettled([
     transport.json('/api/settings', { method: 'PATCH', body: { language: 'en' } }),
-    transport.json('/api/fail'),
-    transport.json('/api/state'),
+    transport.json('/api/fail', { method: 'POST' }),
+    transport.json('/api/messages', { method: 'POST' }),
   ]);
   assert.equal(maximum, 1);
   assert.deepEqual(
     requests.map((item) => item.route),
-    ['/api/settings', '/api/fail', '/api/state'],
+    ['/api/settings', '/api/fail', '/api/messages'],
   );
   assert.equal(defined(requests[0]).body, '{"language":"en"}');
   assert.equal(defined(requests[0]).token, 'test-session');
@@ -57,6 +57,71 @@ test('desktop JSON requests use the native bridge serially and recover after a f
   assert.equal(requestError(rejected.reason).status, 409);
   assert.equal(requestError(rejected.reason).code, 'name_exists');
   assert.equal(results[2].status, 'fulfilled');
+  transport.close();
+});
+
+test('guarded queued writes fail closed after another mutation without weakening ordinary write order', async () => {
+  let finishConnection: ((value: ReturnType<typeof response>) => void) | undefined;
+  const starts: NativeApiRequest[] = [],
+    transport = createTransport({
+      desktop: true,
+      invokeRequest: async (_command, request) => {
+        starts.push(request);
+        if (request.route === '/api/connect')
+          return new Promise((resolve) => {
+            finishConnection = resolve;
+          });
+        return response({ ok: true });
+      },
+    });
+  transport.setToken('isolated-test-session');
+  const connecting = transport.json('/api/connect', { method: 'POST' });
+  await until(() => finishConnection);
+  const guarded = transport.json('/api/messages/same-id/metadata', {
+      method: 'PATCH',
+      body: { conversationId: 'same-chat', starred: true },
+      beforeSend: () => true,
+    }),
+    rejected = assert.rejects(guarded, (cause) => {
+      const error = requestError(cause);
+      assert.equal(error.status, 409);
+      assert.equal(error.code, 'request_scope_changed');
+      assert.equal(error.unknownOutcome, false);
+      return true;
+    }),
+    ordinary = transport.json('/api/settings', { method: 'PATCH', body: { language: 'en' } });
+  defined(finishConnection)(response({ ok: true }));
+  await Promise.all([connecting, rejected, ordinary]);
+  assert.deepEqual(
+    starts.map((request) => request.route),
+    ['/api/connect', '/api/settings'],
+  );
+  const saved = transport.json('/api/messages/current/metadata', {
+    method: 'PATCH',
+    body: { conversationId: 'current', pinned: true },
+    beforeSend: () => true,
+  });
+  await saved;
+  assert.equal(starts.at(-1)?.route, '/api/messages/current/metadata');
+  assert.equal(Object.hasOwn(defined(starts.at(-1)), 'beforeSend'), false);
+  for (const beforeSend of [
+    () => false,
+    () => {
+      throw Error('private scope data');
+    },
+  ]) {
+    await assert.rejects(
+      transport.json('/api/messages/current/metadata', { method: 'PATCH', beforeSend }),
+      (cause) => {
+        const error = requestError(cause);
+        assert.equal(error.status, 409);
+        assert.equal(error.unknownOutcome, false);
+        assert.doesNotMatch(error.message, /private scope data/);
+        return true;
+      },
+    );
+  }
+  assert.equal(starts.length, 3);
   transport.close();
 });
 
@@ -116,7 +181,7 @@ test('a slow update check does not delay call shutdown or state polling over nat
     await until(() => starts.includes('/api/state'));
     assert.deepEqual(await stopping, { ok: true });
     assert.deepEqual(await reading, { ok: true });
-    assert.deepEqual(starts, ['/api/updates', '/api/call/stop', '/api/state']);
+    assert.deepEqual(new Set(starts), new Set(['/api/updates', '/api/call/stop', '/api/state']));
   } finally {
     finishUpdate?.(response({ latestVersion: '0.4.5' }));
     await checking;
@@ -124,7 +189,7 @@ test('a slow update check does not delay call shutdown or state polling over nat
   }
 });
 
-test('only exact stable/beta update reads and version reads bypass pending native mutations', async () => {
+test('native GET reads stay independent while every mutation retains its submission order', async () => {
   let finishMutation: ((value: ReturnType<typeof response>) => void) | undefined;
   const starts: string[] = [];
   const transport = createTransport({
@@ -144,22 +209,26 @@ test('only exact stable/beta update reads and version reads bypass pending nativ
     checking = transport.json('/api/updates'),
     beta = transport.json('/api/updates?channel=beta');
   const mutation = transport.json('/api/updates', { method: 'POST' }),
-    other = transport.json('/api/updates/other'),
-    invalid = transport.json('/api/updates?channel=other');
+    other = transport.json('/api/backups'),
+    state = transport.json('/api/state');
   try {
     await until(() => starts.includes('/api/version') && starts.includes('/api/updates'));
     assert.deepEqual(await version, { ok: true });
     assert.deepEqual(await checking, { ok: true });
     assert.deepEqual(await beta, { ok: true });
+    assert.deepEqual(await other, { ok: true });
+    assert.deepEqual(await state, { ok: true });
     assert.deepEqual(starts, [
       '/api/settings',
       '/api/version',
       '/api/updates',
       '/api/updates?channel=beta',
+      '/api/backups',
+      '/api/state',
     ]);
   } finally {
     defined(finishMutation)(response({ ok: true }));
-    await Promise.all([saving, mutation, other, invalid]);
+    await Promise.all([saving, mutation]);
     transport.close();
   }
   assert.deepEqual(starts, [
@@ -167,9 +236,9 @@ test('only exact stable/beta update reads and version reads bypass pending nativ
     '/api/version',
     '/api/updates',
     '/api/updates?channel=beta',
+    '/api/backups',
+    '/api/state',
     '/api/updates',
-    '/api/updates/other',
-    '/api/updates?channel=other',
   ]);
 });
 
@@ -201,13 +270,12 @@ test('local recovery reads reach the authenticated native bridge while Reconnect
   const queued = [
     transport.json('/api/controller/settings', { method: 'PATCH', body: { language: 'en' } }),
     transport.json('/api/session', { method: 'POST' }),
-    transport.json('/api/controller/settings?unsafe=1'),
-    transport.json('/api/controller/settings/other'),
-    transport.json('/api/state'),
   ];
+  const reading = transport.json('/api/state');
   try {
     assert.deepEqual(await session, { token: 'refreshed-session' });
     assert.deepEqual(await settings, { ok: true });
+    assert.deepEqual(await reading, { ok: true });
     assert.deepEqual(
       requests.map(({ route, method, token, body }) => ({ route, method, token, body })),
       [
@@ -219,6 +287,7 @@ test('local recovery reads reach the authenticated native bridge while Reconnect
         },
         { route: '/api/session', method: 'GET', token: 'current-session', body: null },
         { route: '/api/controller/settings', method: 'GET', token: 'current-session', body: null },
+        { route: '/api/state', method: 'GET', token: 'current-session', body: null },
       ],
     );
     // Token refresh remains the caller's validated action. Queued mutations use
@@ -230,13 +299,10 @@ test('local recovery reads reach the authenticated native bridge while Reconnect
     transport.close();
   }
   assert.deepEqual(
-    requests.slice(3).map(({ route, method, token }) => ({ route, method, token })),
+    requests.slice(4).map(({ route, method, token }) => ({ route, method, token })),
     [
       { route: '/api/controller/settings', method: 'PATCH', token: 'refreshed-session' },
       { route: '/api/session', method: 'POST', token: 'refreshed-session' },
-      { route: '/api/controller/settings?unsafe=1', method: 'GET', token: 'refreshed-session' },
-      { route: '/api/controller/settings/other', method: 'GET', token: 'refreshed-session' },
-      { route: '/api/state', method: 'GET', token: 'refreshed-session' },
     ],
   );
 });
@@ -258,6 +324,112 @@ test('independent recovery reads retain native authentication and reject an unco
   );
   await assert.rejects(transport.json('/api/session'), /Invalid JSON/);
   transport.close();
+});
+
+test('an unresolved native state read cannot hold up call or task controls', async () => {
+  let finishRead: ((value: ReturnType<typeof response>) => void) | undefined,
+    finishStop: ((value: ReturnType<typeof response>) => void) | undefined;
+  const starts: NativeApiRequest[] = [];
+  const transport = createTransport({
+    desktop: true,
+    invokeRequest: async (_command, request) => {
+      starts.push(request);
+      if (request.route === '/api/state') return new Promise((resolve) => (finishRead = resolve));
+      if (request.route === '/api/call/stop')
+        return new Promise((resolve) => (finishStop = resolve));
+      return response({ ok: true });
+    },
+  });
+  transport.setToken('current-session');
+  const reading = transport.json('/api/state');
+  const stopping = transport.json('/api/call/stop', { method: 'POST', body: { callId: 'call' } });
+  const pausing = transport.json('/api/tasks/task/pause', { method: 'POST' });
+  try {
+    await until(() => finishRead && finishStop);
+    assert.deepEqual(
+      starts.map(({ route }) => route),
+      ['/api/state', '/api/call/stop'],
+    );
+    defined(finishStop)(response({ ok: true }));
+    await stopping;
+    assert.deepEqual(await pausing, { ok: true });
+    assert.equal(starts.at(-1)?.route, '/api/tasks/task/pause');
+    assert.ok(starts.every(({ token }) => token === 'current-session'));
+  } finally {
+    finishRead?.(response({ state: 'current' }));
+    finishStop?.(response({ ok: true }));
+    await Promise.all([reading, stopping, pausing]);
+    transport.close();
+  }
+});
+
+test('unchanged native snapshots do not re-render but every state change and reconnection is delivered', async () => {
+  let poll = 0;
+  const events: TransportEvent[] = [],
+    connections: boolean[] = [];
+  const transport = createTransport({
+    desktop: true,
+    pollDelay: 5,
+    invokeRequest: async () => {
+      poll++;
+      if (poll === 4) throw Error('Disconnected');
+      return response({ conversationId: 'same', read: poll >= 3 });
+    },
+  });
+  transport.startEvents({
+    onEvent: (event) => events.push(event),
+    onConnection: (connected) => connections.push(connected),
+  });
+  try {
+    await until(() => poll >= 6);
+    assert.deepEqual(
+      events.map(({ data }) => data),
+      [
+        { conversationId: 'same', read: false },
+        { conversationId: 'same', read: true },
+        { conversationId: 'same', read: true },
+      ],
+    );
+    assert.ok(connections.includes(false));
+  } finally {
+    transport.close();
+  }
+});
+
+test('poll snapshots captured across a native mutation cannot overwrite its newer result', async () => {
+  let finishOld: ((value: ReturnType<typeof response>) => void) | undefined,
+    finishMutation: ((value: ReturnType<typeof response>) => void) | undefined,
+    reads = 0;
+  const events: TransportEvent[] = [];
+  const transport = createTransport({
+    desktop: true,
+    pollDelay: 5,
+    invokeRequest: async (_command, request) => {
+      if (request.method === 'POST') return new Promise((resolve) => (finishMutation = resolve));
+      reads++;
+      if (reads === 1) return new Promise((resolve) => (finishOld = resolve));
+      return response({ conversationId: 'new', task: 'paused' });
+    },
+  });
+  transport.startEvents({ onEvent: (event) => events.push(event) });
+  await until(() => finishOld);
+  const mutation = transport.json('/api/tasks/task/pause', { method: 'POST' });
+  try {
+    await until(() => finishMutation);
+    defined(finishMutation)(response({ task: 'paused' }));
+    await mutation;
+    defined(finishOld)(response({ conversationId: 'old', task: 'running' }));
+    await until(() => events.length);
+    assert.deepEqual(
+      events.map(({ data }) => data),
+      [{ conversationId: 'new', task: 'paused' }],
+    );
+  } finally {
+    finishOld?.(response({ conversationId: 'old' }));
+    finishMutation?.(response({ task: 'paused' }));
+    transport.close();
+    await mutation;
+  }
 });
 
 test('desktop state polling waits until the prior request completes and never opens browser streams', async () => {

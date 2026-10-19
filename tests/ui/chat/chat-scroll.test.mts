@@ -145,6 +145,23 @@ function fixture({ observer = true } = {}) {
       reconcile(defined(viewport), next);
       geometry();
     },
+    prepend(ids: string[], rowHeight: number) {
+      scroll.capture();
+      const addedHeight = ids.length * rowHeight,
+        column = defined(document.querySelector<HTMLElement>('.message-column'));
+      positions = [
+        ...ids.map((_, index) => index * rowHeight),
+        ...positions.map((value) => value + addedHeight),
+      ];
+      total += addedHeight;
+      for (const id of [...ids].reverse()) {
+        const node = document.createElement('article');
+        node.dataset.id = id;
+        column.prepend(node);
+      }
+      geometry();
+      scroll.restore();
+    },
   };
 }
 
@@ -163,6 +180,19 @@ test('opening and closing Computer retains actual bottom through immediate and l
   f.resize({ width: 400, total: 1800, positions: [0, 300, 850, 1150, 1500] });
   f.scroll.restore();
   assert.equal(f.top, 1300);
+  f.scroll.dispose();
+});
+
+test('prepending an older message batch retains the visible message and pixel offset', () => {
+  const f = fixture();
+  f.userScroll(80);
+  const before = f.offset('a');
+  f.prepend(
+    Array.from({ length: 80 }, (_, index) => 'older-' + index),
+    100,
+  );
+  assert.equal(f.offset('a'), before);
+  assert.equal(f.top, 8_080);
   f.scroll.dispose();
 });
 

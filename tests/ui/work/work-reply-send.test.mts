@@ -66,7 +66,7 @@ function fixture() {
     render() {},
     toast: (value: string) => toasts.push(value),
     t: (key: string) => key,
-    progressExpanded: false,
+    openProgress() {},
     openModal() {},
     messageSubmissions: createMessageSubmissions({
       newId: () => '11111111-1111-4111-8111-111111111111',

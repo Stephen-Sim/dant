@@ -828,6 +828,122 @@ test('dismiss API returns safe errors for invalid, missing, owned and persistenc
   assert.equal(task.status, 'paused');
 });
 
+test('dismiss API rejects stale turn and conversation ownership before hiding a newer saved result', async (t) => {
+  const { instance, worker, post } = await apiSetup(t),
+    { store, engine } = instance,
+    previous = registered(store, 'previous-turn', 'review'),
+    captured = {
+      kind: 'work',
+      confirmUnfinished: true,
+      expectedTurnId: previous.turnId,
+      expectedConversationId: store.state.conversationId,
+    };
+  store.registerWork({
+    workId: previous.id,
+    turnId: 'new-turn',
+    title: 'New result waiting for review',
+    source: 'voice',
+    plan: { steps: [{ step: 'Verified a newer result', status: 'completed' }] },
+  });
+  store.updateRegisteredWork('new-turn', { status: 'review', executionEnded: true });
+  const current = defined(store.state.workTasks.find((item) => item.id === previous.id)),
+    before = structuredClone(store.state);
+  for (const body of [
+    captured,
+    { ...captured, expectedTurnId: current.turnId, expectedConversationId: 'other-conversation' },
+  ]) {
+    const response = await post(current.id, body);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: 'Work progress could not be dismissed. Only inactive task history can be hidden.',
+    });
+    assert.deepEqual(store.state, before);
+  }
+  engine.active = activeTaskFixture({ turnId: current.turnId, workRecord: current });
+  assert.equal(
+    (await post(current.id, { ...captured, expectedTurnId: current.turnId })).status,
+    409,
+  );
+  assert.deepEqual(store.state, before);
+  engine.active = null;
+  assert.equal(
+    (await post(current.id, { ...captured, expectedTurnId: current.turnId })).status,
+    200,
+  );
+  assert.ok(defined(current.progressDismissedAt) > 0);
+  assert.deepEqual(withoutDismissal(store.state), withoutDismissal(before));
+  assert.equal(worker.calls.length, 0);
+  assert.equal(engine.queue.length, 0);
+});
+
+test('dismiss API validates optional identities, preserves null ownership and accepts legacy clients', async (t) => {
+  const { instance, post } = await apiSetup(t),
+    { store } = instance,
+    task = store.add({ role: 'user', text: 'Legacy result', status: 'paused', turnId: null }),
+    before = structuredClone(store.state);
+  for (const invalid of [false, 0, '', {}, [], 'x'.repeat(257)]) {
+    assert.equal(
+      (
+        await post(task.id, {
+          kind: 'task',
+          confirmUnfinished: true,
+          expectedTurnId: invalid,
+        })
+      ).status,
+      400,
+    );
+    assert.deepEqual(store.state, before);
+  }
+  for (const invalid of [null, false, 0, '', {}, [], 'x'.repeat(129)]) {
+    assert.equal(
+      (
+        await post(task.id, {
+          kind: 'task',
+          confirmUnfinished: true,
+          expectedConversationId: invalid,
+        })
+      ).status,
+      400,
+    );
+    assert.deepEqual(store.state, before);
+  }
+  assert.equal(
+    (
+      await post(task.id, {
+        kind: 'task',
+        confirmUnfinished: true,
+        expectedTurnId: 'not-the-null-turn',
+      })
+    ).status,
+    409,
+  );
+  assert.deepEqual(store.state, before);
+  assert.equal(
+    (
+      await post(task.id, {
+        kind: 'task',
+        confirmUnfinished: true,
+        expectedTurnId: null,
+      })
+    ).status,
+    200,
+  );
+  const omitted = store.add({ role: 'user', text: 'No recorded turn', status: 'paused' });
+  assert.equal(
+    (
+      await post(omitted.id, {
+        kind: 'task',
+        confirmUnfinished: true,
+        expectedTurnId: null,
+      })
+    ).status,
+    409,
+  );
+  assert.equal(omitted.progressDismissedAt, undefined);
+  assert.equal((await post(omitted.id, { kind: 'task', confirmUnfinished: true })).status, 200);
+  assert.ok(defined(omitted.progressDismissedAt) > 0);
+});
+
 test('progress metadata APIs authenticate, validate priorities and require fresh unfinished confirmation', async (t) => {
   const { instance, request, post, worker } = await apiSetup(t),
     { store, engine } = instance,

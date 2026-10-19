@@ -1,4 +1,5 @@
 import { isLanguage } from '../../src/i18n/languages.mts';
+import { readCallCaption } from '../../src/contracts/call-caption.mts';
 import {
   ChatTaskStatus,
   ComputerControlStatus,
@@ -85,7 +86,7 @@ const plan = objectOf<TaskPlan>({
   steps: arrayOf(planStep),
 });
 const planOrSummary = (value: unknown): value is TaskPlan | TaskPlanSummary =>
-  plan(value) || planSummary(value);
+  isRecord(value) && (Object.hasOwn(value, 'steps') ? plan(value) : planSummary(value));
 const continuation = objectOf<WorkContinuation>({
   nextAt: nullable(number),
   attempts: number,
@@ -135,6 +136,8 @@ const message = objectOf<ChatMessage>({
   clientMessageId: optional(string),
   attachments: optional(arrayOf(attachment)),
   editedAt: optional(number),
+  pinned: optional(boolean),
+  starred: optional(boolean),
   read: optional(boolean),
   readAt: optional(nullable(number)),
   visibleAt: optional(nullable(number)),
@@ -227,7 +230,7 @@ const active = objectOf<UiActiveTask>({
   title: optional(string),
   visible: optional(boolean),
   messageIds: optional(strings),
-  callId: optional(string),
+  callId: optional(nullable(string)),
   progressPriority: optional(priority),
   canSteer: optional(boolean),
 });
@@ -260,6 +263,7 @@ const settings = objectOf<AppSettings>({
   apiVoice: optional(string),
   notifications: optional(boolean),
   showWorkSummary: optional(boolean),
+  showCallCaptions: optional(boolean),
   theme: optional(theme),
   themePreset: optional(
     (value): value is NonNullable<AppSettings['themePreset']> =>
@@ -448,6 +452,9 @@ const appState = objectOf<AppState>({
   queue: optional(strings),
   active: optional(nullable(active)),
   call: optional(nullable(call)),
+  callCaption: optional(
+    (value): value is AppState['callCaption'] => value === null || readCallCaption(value) !== null,
+  ),
   work: optional(arrayOf(workRecord)),
   workTasks: optional(arrayOf(workRecord)),
   completions: optional(arrayOf(completion)),

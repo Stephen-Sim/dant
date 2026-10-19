@@ -62,7 +62,7 @@ function fixture() {
     pendingActions: new Set(),
     steerExpectedTurn: null,
     steerDraft: '',
-    progressExpanded: false,
+    openProgress() {},
     t: (value: string) => value,
     esc: (value: unknown) => String(value ?? ''),
     ico: () => '',

@@ -92,6 +92,8 @@ export interface ChatMessage extends ProgressMetadata {
   executorConfirmedAt?: number | null;
   acceptedAt?: number | null;
   editedAt?: number;
+  starred?: boolean;
+  pinned?: boolean;
   parentTaskId?: string | null | undefined;
   pauseReason?: string | null;
   error?: string | null | undefined;
@@ -168,6 +170,7 @@ export interface ConversationSettings {
   model: string;
   notifications: boolean;
   showWorkSummary: boolean;
+  showCallCaptions: boolean;
   vm: VmSettings;
   timeZone?: string;
 }
@@ -222,6 +225,11 @@ export type MessagePatch = {
   [Key in keyof Omit<ChatMessage, 'id' | 'role' | 'time'>]?: ChatMessage[Key] | undefined;
 };
 export type ProgressKind = 'task' | 'work' | 'completion';
+export interface ProgressDismissOptions {
+  confirmUnfinished?: unknown;
+  expectedTurnId?: unknown;
+  expectedConversationId?: unknown;
+}
 export type RegisterWorkOptions = {
   workId?: string | undefined;
   turnId: string;

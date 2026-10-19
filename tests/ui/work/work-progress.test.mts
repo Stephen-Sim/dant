@@ -1935,6 +1935,7 @@ test('chat keeps messages and the composer free of an inline work card by defaul
     context = uiEntrypointFixture({
       state: data,
       renderMessages: () => '<article class="message">Saved chat</article>',
+      language: () => 'en',
       renderUnreadControl: () => '',
       managedSettings: { renderRequests: () => '' },
       replyTo: null,
@@ -2130,11 +2131,8 @@ test('chat summary is strictly opt-in and switching it on and off preserves rend
 test('main renders first-class task access and voice result navigation without changing read state itself', () => {
   const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8');
   assert.match(source, /renderWorkEntry\(workProgress\(state/);
-  assert.match(
-    source,
-    /if\s*\(a\s*===\s*'progress'\)\s*\{\s*openModal\(\{\s*type:\s*'progress'\s*\}\)/,
-  );
-  assert.match(source, /modal.type\s*===\s*'progress'/);
+  assert.match(source, /if\s*\(a\s*===\s*'progress'\)\s*\{\s*openProgress\(\)/);
+  assert.match(source, /if\s*\(value.type\s*===\s*'progress'\)\s*\{\s*openProgress\(\)/);
   const binding = sourceSelectorBinding(source, '[data-progress-message]');
   const { document, Event } = parseHTML(
     '<button data-progress-message="result"></button><div class="message" data-id="result"></div>',

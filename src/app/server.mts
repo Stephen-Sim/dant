@@ -34,6 +34,7 @@ import { createControllerApp } from './controller.mts';
 import { Engine } from '../work/engine.mts';
 import { Provisioning } from '../computer/provisioning.mts';
 import { Voice, VOICES } from '../voice/voice.mts';
+import { createCallCaptionState } from '../voice/call-caption-state.mts';
 import { createSecretStore, validateApiKey } from '../security/secrets.mts';
 import {
   AttachmentStore,
@@ -44,6 +45,7 @@ import { AudioTranscriber } from '../voice/audio-transcription.mts';
 import { DeliverableCollector } from '../files/deliverables.mts';
 import { installOutputLinkRecoveryRoute } from '../files/output-link-recovery.mts';
 import { MemoryStore } from '../conversation/memory.mts';
+import { installMemoryManagementRoutes } from '../conversation/memory-management.mts';
 import { installMemoryViewRoutes } from '../conversation/memory-view.mts';
 import { ComputerSession } from '../computer/computer-session.mts';
 import { NativeRealtimeVoice, DEFAULT_NATIVE_VOICE } from '../voice/realtime.mts';
@@ -54,6 +56,8 @@ import { CredentialVault, CredentialRequests } from '../security/credentials.mts
 import { SkillLibrary } from '../skills/skill-library.mts';
 import { SkillImporter } from '../skills/skill-import.mts';
 import { exportSkillZip } from '../skills/skill-export.mts';
+import { SKILL_ARCHIVE_BYTES } from '../skills/skill-limits.mts';
+import { skillExportFailureReason, SkillExportFailure } from '../skills/skill-files.mts';
 import { ConversationHistory } from '../conversation/history.mts';
 import { Diagnostics } from '../diagnostics/diagnostics.mts';
 import {
@@ -75,8 +79,15 @@ import {
 } from '../work/work-reply.mts';
 import { taskContextSnapshots } from '../work/task-project-context.mts';
 import { loadProjectEnv } from '../config/env.mts';
-import { applicationEndpoint, allowedLocalOrigin, NATIVE_PROTOCOL } from '../config/network.mts';
-import { createWorkerBackup } from '../backups/worker-archive.mts';
+import {
+  applicationEndpoint,
+  allowedLocalOrigin,
+  NATIVE_PROTOCOL,
+  API_JSON_BODY_BYTES,
+} from '../config/network.mts';
+import { createWorkerBackupAsync } from '../backups/async-worker-backup.mts';
+import type { AsyncWorkerBackupSnapshot } from '../backups/archive-types.ts';
+import { workerBackupFailure } from '../backups/backup-diagnostics.mts';
 import { backupError } from '../backups/archive-stream.mts';
 import { loadedWorkerRestoreInfo } from '../backups/worker-restore.mts';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -115,6 +126,7 @@ export function createWorkerApp({
   diagnosticsFactory = (options) => new Diagnostics(options),
   updatesFactory = (options) => new UpdateService(options),
   audioTranscriberFactory = (options) => new AudioTranscriber(options),
+  backupSnapshotFactory = createWorkerBackupAsync,
 }: WorkerAppOptions = {}) {
   const version = serviceVersion(root),
     diagnostics = diagnosticsFactory({ dataDir, role: 'vm-worker', version }),
@@ -382,7 +394,7 @@ export function createWorkerApp({
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: API_JSON_BODY_BYTES }));
   function credentialScope() {
     if (closing || worker.status !== ConnectionStatus.Online || engine.takeover || engine.acquiring)
       return null;
@@ -529,7 +541,16 @@ export function createWorkerApp({
   app.all('/api/diagnostics', (_req, res) =>
     res.status(405).json({ error: 'Diagnostics are read-only.' }),
   );
+  const callCaptions = createCallCaptionState({
+    redact: (text) => credentials.redact(text, { partial: true }),
+  });
+  const syncCallCaptions = () =>
+    callCaptions.sync(engine.call, {
+      scope: store.state.conversationId,
+      connected: !closing && worker.status === ConnectionStatus.Online,
+    });
   const snapshot = () => {
+    syncCallCaptions();
     const key = voiceKeys.status(),
       native = nativeVoice.state;
     return {
@@ -583,11 +604,24 @@ export function createWorkerApp({
       takeover: computer.state.status === ComputerControlStatus.Human,
       computer: computer.snapshot(),
       call: engine.call,
+      callCaption: callCaptions.snapshot,
       schedules: store.state.schedules,
       provisioning: provisioning.snapshot(),
     };
   };
-  app.get('/api/backups/export', (_req, res) => {
+  let backupExport:
+    { controller: AbortController; done: Promise<void>; finish(): void } | undefined;
+  app.get('/api/backups/export', async (req, res) => {
+    let stage: 'admission' | 'state_save' | 'snapshot' | 'stream' = 'admission',
+      archive: AsyncWorkerBackupSnapshot | undefined,
+      job: typeof backupExport,
+      changed = false;
+    const invalidate = () => {
+        changed = true;
+      },
+      abort = () => {
+        if (!res.writableFinished) job?.controller.abort();
+      };
     const validateCurrent = () => {
       if (
         closing ||
@@ -609,35 +643,71 @@ export function createWorkerApp({
     };
     try {
       validateCurrent();
+      if (backupExport) throw backupError('backup_busy');
+      let finish = () => {};
+      const done = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      job = { controller: new AbortController(), done, finish };
+      backupExport = job;
+      engine.on('change', invalidate);
+      req.once('aborted', abort);
+      res.once('close', abort);
+      stage = 'state_save';
       store.save();
-      const archive = createWorkerBackup({
+      stage = 'snapshot';
+      archive = await backupSnapshotFactory({
         dataDir,
         workspaceRoot: engine.workspaceRoot,
         appVersion: version,
         sourceId: createHash('sha256').update(engine.runtimeId).digest('hex'),
-        validateCurrent,
+        signal: job.controller.signal,
       });
+      validateCurrent();
+      if (changed || job.controller.signal.aborted || archive.stream.destroyed)
+        throw backupError('source_changed');
+      engine.removeListener('change', invalidate);
       res.status(200).setHeader('Content-Type', 'application/x-dant-backup');
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader(
         'X-Dant-Backup-Metadata',
         Buffer.from(JSON.stringify(archive.metadata)).toString('base64'),
       );
-      pipeline(archive.stream, res, () => {
-        try {
-          archive.cleanup();
-        } catch {
-          diagnostics.log('backup.cleanup.failed', { code: 'cleanup_failed' });
-        }
+      stage = 'stream';
+      const captured = archive;
+      await new Promise<void>((resolve, reject) => {
+        pipeline(captured.stream, res, (error) => (error ? reject(error) : resolve()));
       });
     } catch (error) {
-      const busy = isRecord(error) && includesValue(['backup_busy', 'source_changed'], error.code);
-      res.status(busy ? 409 : 400).json({
-        error: busy
-          ? 'The work computer is busy or changed during backup.'
-          : 'The work computer backup could not be created.',
-        code: busy ? 'backup_busy' : 'backup_failed',
+      const failure = workerBackupFailure(error);
+      diagnostics.log('backup.export.failed', {
+        stage,
+        reason: failure.reason,
+        code: failure.code,
       });
+      if (!res.headersSent && !res.destroyed)
+        res.status(failure.status).json({
+          error:
+            failure.status === 409
+              ? 'The work computer is busy or changed during backup.'
+              : 'The work computer backup could not be created.',
+          code: failure.code,
+        });
+      else if (!res.destroyed) res.destroy();
+    } finally {
+      engine.removeListener('change', invalidate);
+      req.removeListener('aborted', abort);
+      res.removeListener('close', abort);
+      try {
+        await archive?.cleanup();
+      } catch {
+        diagnostics.log('backup.cleanup.failed', { code: 'cleanup_failed' });
+      } finally {
+        if (job) {
+          if (backupExport === job) backupExport = undefined;
+          job.finish();
+        }
+      }
     }
   });
   app.get('/api/backups/info', (_req, res) => res.json(loadedBackupInfo));
@@ -669,14 +739,20 @@ export function createWorkerApp({
     lastProvisionStatus = provisioning.snapshot().status;
   engine.on('change', () => {
     if (closing) return;
+    syncCallCaptions();
     clearTimeout(broadcastTimer);
     broadcastTimer = setTimeout(() => broadcast('state', snapshot()), 60);
   });
   engine.on('notice', (message) => broadcast('notice', { message }));
-  engine.on('realtime', (e) => broadcast('realtime', e));
+  engine.on('realtime', (event) => {
+    syncCallCaptions();
+    callCaptions.receive(event);
+    broadcast('realtime', event);
+  });
   let workerStatus = diagnosticWorkerStatus(worker.status);
   diagnostics.log('worker.status', { status: workerStatus });
   worker.on('status', () => {
+    syncCallCaptions();
     const status = diagnosticWorkerStatus(worker.status);
     if (status !== workerStatus) {
       workerStatus = status;
@@ -743,6 +819,17 @@ export function createWorkerApp({
       return history.edit(req.params.id, { text: body.text, resubmit: body.resubmit === true });
     }),
   );
+  app.patch('/api/messages/:id/metadata', (req, res) => {
+    try {
+      const result = history.setMetadata(req.params.id, req.body);
+      broadcast('state', snapshot());
+      res.json(result);
+    } catch (error) {
+      res.status(errorStatus(error, [400, 404, 409])).json({
+        error: 'The message could not be updated. Refresh the current chat before trying again.',
+      });
+    }
+  });
   app.delete('/api/messages/:id', (req, res) =>
     historyAction(res, 'message removal', () => history.remove(req.params.id)),
   );
@@ -817,7 +904,7 @@ export function createWorkerApp({
   };
   const importUpload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 1024 * 1024, files: 1, fields: 0 },
+    limits: { fileSize: SKILL_ARCHIVE_BYTES, files: 1, fields: 0 },
   });
   const importError = (res: Response, error: unknown) => {
     const code = errorCode(error),
@@ -900,10 +987,21 @@ export function createWorkerApp({
     try {
       const archive = exportSkillZip(skills, req.params.name);
       res.json(attachmentStore.put({ ...archive, type: 'application/zip' }));
-    } catch {
-      res
-        .status(400)
-        .json({ error: 'The skill could not be exported. Existing skills were preserved.' });
+    } catch (error) {
+      const reason = skillExportFailureReason(error),
+        code =
+          reason === SkillExportFailure.Limit
+            ? 'size_limit'
+            : reason === SkillExportFailure.Credentials
+              ? 'credentials'
+              : reason === SkillExportFailure.Encoding
+                ? 'unsupported_file'
+                : 'skill_export_failed';
+      diagnostics.log('skill.export.failed', { reason, code });
+      res.status(400).json({
+        error: 'The skill could not be exported. Existing skills were preserved.',
+        code,
+      });
     }
   });
   app.post('/api/skills', (req, res) =>
@@ -915,17 +1013,25 @@ export function createWorkerApp({
       () => {
         const body = req.body;
         if (
-          !body ||
-          typeof body !== 'object' ||
-          Array.isArray(body) ||
+          !isRecord(body) ||
           Object.keys(body).some(
-            (key) => !['description', 'instructions', 'files', 'enabled'].includes(key),
+            (key) =>
+              !['description', 'instructions', 'files', 'enabled', 'preserveBinaryFiles'].includes(
+                key,
+              ),
           )
         )
           throw Error('Invalid skill patch');
         if (Object.keys(body).length === 1 && Object.hasOwn(body, 'enabled'))
           return skills.setEnabled(req.params.name, body.enabled);
-        return skills.save({ ...skills.get(req.params.name), ...body, name: req.params.name });
+        return skills.save({
+          ...skills.get(req.params.name),
+          ...body,
+          name: req.params.name,
+          preserveBinaryFiles: Object.hasOwn(body, 'preserveBinaryFiles')
+            ? body.preserveBinaryFiles
+            : true,
+        });
       },
       { reload: true },
     ),
@@ -1065,6 +1171,8 @@ export function createWorkerApp({
       s = store.state.settings;
     if (b.showWorkSummary !== undefined && typeof b.showWorkSummary !== 'boolean')
       throw Error('Invalid work summary preference');
+    if (b.showCallCaptions !== undefined && typeof b.showCallCaptions !== 'boolean')
+      throw Object.assign(Error('Invalid call caption preference'), { status: 400 });
     const timeZone = b.timeZone === undefined ? undefined : scheduleTimeZone(b.timeZone);
     if (
       (engine.active ||
@@ -1088,6 +1196,7 @@ export function createWorkerApp({
     }
     if (typeof b.notifications === 'boolean') s.notifications = b.notifications;
     if (b.showWorkSummary !== undefined) s.showWorkSummary = b.showWorkSummary;
+    if (b.showCallCaptions !== undefined) s.showCallCaptions = b.showCallCaptions;
     const selected = b.nativeVoice ?? b.voice;
     if (typeof selected === 'string' && /^[a-z]+$/.test(selected))
       s.nativeVoice = s.voice = selected;
@@ -1164,6 +1273,18 @@ export function createWorkerApp({
   });
   installTaskContextRoutes(app, engine);
   installMemoryViewRoutes(app, engine);
+  installMemoryManagementRoutes(app, {
+    memory,
+    conversationId: () => store.state.conversationId,
+    redact: (text) => engine.redact(text),
+    containsSecret: (text) => Boolean(engine.credentials?.containsSecret?.(text)),
+    changed: () => {
+      store.state.memory = memory.read('working-memory.md');
+      store.save();
+      engine.loaded = false;
+      engine.change();
+    },
+  });
   app.get('/api/memory', (_req, res) => res.json({ files: memory.snapshot() }));
   app.patch('/api/memory/:name', async (req, res) =>
     res.json(await engine.saveMemory(req.params.name, req.body.text)),
@@ -1305,6 +1426,8 @@ export function createWorkerApp({
       res.json(
         engine.dismissProgress(req.params.id, req.body?.kind, {
           confirmUnfinished: req.body?.confirmUnfinished,
+          expectedTurnId: req.body?.expectedTurnId,
+          expectedConversationId: req.body?.expectedConversationId,
         }),
       );
     } catch (error) {
@@ -1506,6 +1629,9 @@ export function createWorkerApp({
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
+      callCaptions.end();
+      const pendingBackup = backupExport;
+      pendingBackup?.controller.abort();
       engine.continuationStopped = true;
       workContinuation.close();
       updates.close();
@@ -1521,6 +1647,7 @@ export function createWorkerApp({
       scheduler.close();
       clearTimeout(broadcastTimer);
       closePromise = Promise.allSettled([
+        pendingBackup?.done,
         voice.close(),
         nativeVoice.close(),
         telegram.close(),

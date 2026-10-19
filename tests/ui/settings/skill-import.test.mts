@@ -6,7 +6,10 @@ import assert from 'node:assert/strict';
 import { parseHTML } from 'linkedom';
 import { reconcile } from '../../../ui/shared/dom.mts';
 import { createManagedSettings, parseSkillFiles } from '../../../ui/settings/managed-settings.mts';
-import { SKILL_SUPPORT_FILE_LIMIT } from '../../../src/skills/skill-limits.mts';
+import {
+  SKILL_SUPPORT_FILE_LIMIT,
+  SKILL_ARCHIVE_BYTES,
+} from '../../../src/skills/skill-limits.mts';
 
 const settle = async () => {
   await new Promise((resolve) => setImmediate(resolve));
@@ -294,7 +297,7 @@ test('missing and oversized sources fail locally; offline import cannot start', 
   await f.click('[data-skill-import-source="file"]');
   await f.click('[data-skill-import-preview]');
   assert.equal(f.calls.length, 0);
-  await f.file(new File([new Uint8Array(1048577)], 'huge.zip'));
+  await f.file(new File([new Uint8Array(SKILL_ARCHIVE_BYTES + 1)], 'huge.zip'));
   await f.click('[data-skill-import-preview]');
   assert.match(
     defined(f.document.querySelector<HTMLElement>('[role="status"]')).textContent,

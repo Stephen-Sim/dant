@@ -10,6 +10,7 @@ import type {
   MessagePatch,
   ProgressKind,
   ProgressMetadata,
+  ProgressDismissOptions,
   SpokenReference,
   CallInputReference,
 } from '../conversation/types.ts';
@@ -1571,7 +1572,7 @@ export class Engine extends EventEmitter {
       (session.unknown || session.submitting || this.nativeVoice?.active);
     return owned || queued || unresolvedVoice;
   }
-  dismissProgress(id: unknown, kind: unknown, options: { confirmUnfinished?: unknown } = {}) {
+  dismissProgress(id: unknown, kind: unknown, options: ProgressDismissOptions = {}) {
     const entry = this.store.progressEntry(id, kind);
     if (this.progressOwned(entry, kind))
       throw Object.assign(

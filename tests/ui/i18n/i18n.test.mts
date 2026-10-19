@@ -48,7 +48,14 @@ function fixture(selected = 'zh') {
   const { document } = parseHTML('<html><body></body></html>');
   document.documentElement.dataset.theme = 'light';
   const context = uiEntrypointFixture({
-    vmBackups: { setVisible() {}, render: () => '', bind() {}, dispose() {}, load: async () => {} },
+    vmBackups: {
+      setVisible() {},
+      render: () => '',
+      renderImport: () => '',
+      bind() {},
+      dispose() {},
+      load: async () => {},
+    },
     progressActions: { bind() {}, renderConfirmation: () => '', onClose() {}, busy: false },
     workDisclosures: { capture() {}, bind() {}, isOpen: () => false },
     bindAttachmentImages,
@@ -288,13 +295,24 @@ test('settings language persists and updates pages, status, accessibility and re
   assert.match(computer, /The desktop could not refresh/);
   assert.match(c.renderSettings(), /Settings|Language|Call voice/);
   assert.match(c.renderVoiceSettings(c.state.settings), /Voice options are unavailable/);
-  assert.match(c.renderMemory(), /shared identity and durable notes/);
+  const englishMemory = c.renderMemory();
+  assert.match(
+    englishMemory,
+    /Manage the memory saved in SQLite\. Review candidates before explicitly confirming facts\./,
+  );
+  assert.match(englishMemory, /Connect the work computer to manage memory\./);
+  assert.match(englishMemory, /Search memories/);
+  assert.doesNotMatch(englishMemory, /请连接工作电脑|搜索记忆/);
   assert.match(c.renderSchedules(), /No scheduled tasks/);
   await c.changeLanguage('zh');
   assert.equal(storage.get('dant.language'), 'zh');
   assert.match(c.renderComputer(), /调整电脑区域宽度|桌面暂时无法刷新/);
   assert.match(c.renderVoiceSettings(c.state.settings), /暂时无法获取声音选项/);
-  assert.match(c.renderMemory(), /共享身份与持久记忆/);
+  const chineseMemory = c.renderMemory();
+  assert.match(chineseMemory, /管理 SQLite 中保存的记忆。请先审核候选记忆，再明确确认事实。/);
+  assert.match(chineseMemory, /请连接工作电脑以管理记忆。/);
+  assert.match(chineseMemory, /搜索记忆/);
+  assert.doesNotMatch(chineseMemory, /Connect the work computer|Search memories/);
   assert.match(c.renderSchedules(), /暂无定时任务/);
   Reflect.set(c, 'state', null);
   c.fallbackLanguage = 'en';

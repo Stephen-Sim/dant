@@ -4,6 +4,16 @@ English · [Chinese](zh-CN/verification.md)
 
 Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.7-beta.10 candidate source verification
+
+This candidate moves backup capture into a bounded background worker, preserves opaque workspace database bundles and arbitrary-format skill files, and adds SQLite memory management, windowed chat rendering, message pins/stars, docked Work progress and configurable assistant call captions. Read-only operational inspection reproduced an ordinary active task's valid `callId: null` being rejected by both UI decoders; the compatible fix preserves the exact task and turn. Late connection errors cannot overwrite a newer successful connection.
+
+The complete Node 22 run passed **2,482 of 2,484 tests**, with zero failures and **two Linux-only kernel-lock probes skipped on Windows**. Coverage is **97.90% lines, 90.62% branches and 93.67% functions**, with all module and threshold gates passing. Strict Node/UI/test types, formatting, **26 adopted state modules**, **78 Python VM-helper tests**, **58 native Windows tests**, **11 CI-helper tests**, prerequisite/syntax/version checks and the frontend production build passed. All ten architecture diagrams parsed under both Mermaid 10.9.5 and 11.12.0, for **20 successful parser checks**.
+
+Full-suite failures exposed an outdated backup-import fixture and a Windows `EPERM` while moving validated private restore staging, before live data replacement. The fixture now implements the typed public interface. Only that private directory move uses bounded Windows retries, rechecking source/ancestor identities, absent destination and offline state; changed or possibly applied moves cannot retry. Live root replacement and rollback retain their existing protocol. No required module, test or threshold was removed.
+
+Native editor regressions verify flushed, closed, byte-identical cache files and ordinary Windows/UNC launch arguments, including Unicode and spaces. They do not establish that the reported Notepad dialog has been reproduced or resolved on the real desktop; computer-use access to dant was rejected during this source checkpoint. These isolated checks did not use the microphone, execute a skill or deploy this candidate. Tag CI, packaged assets, actual installation, live VM source/version, complete authenticated backup and real skill ZIP acceptance remain separate publication gates.
+
 ## 0.4.7-beta.9 candidate source verification
 
 This candidate fixes valid nullable startup metadata, provides independent recovery settings and first-use backup/VM guidance, and introduces HostPlatform/VMProvider boundaries. Owned VM recovery validates disk identity, uses bounded operation intents and refreshes a unique confirmed Hyper-V IPv4 address. Explicit legacy updates support a safely stopped executor; deployment requires both services and confirms the live version.
@@ -13,6 +23,8 @@ Configurable local backups cover persistent data, workspaces and local Git histo
 The complete local run passed **2,319 of 2,321 Node tests**, with zero failures and **two Linux-only kernel-lock probes skipped on Windows**. Coverage is **97.73% lines, 90.19% branches and 93.34% functions**. Strict Node/UI/test types, **22 adopted state modules**, formatting, **78 Python VM-helper tests**, **54 native Windows tests**, prerequisite/syntax/version checks and the frontend build passed. Linux-specific probes remain required in tag CI; no threshold or required module was removed.
 
 Separately, an authorized operational check recovered the exact owned saved VM, refreshed its changed guest address and connected to the existing **Beta 8** service. Thirteen tasks remained paused, with no active work, call or queue. This source checkpoint precedes candidate packaging and local Beta 9 installation; tag CI, assets and installed desktop/Worker versions must be accepted separately before publication.
+
+The later Beta 9 installation gate confirmed the native desktop, Controller and running Worker version, source fingerprint and retained paused task identities. It then rejected publication because a real workspace contained locked external SQLite databases and transient Firefox process-lock links that the snapshot capture could not handle. Beta 9 remained an unpublished candidate; these operational findings are separate from the passing isolated tests.
 
 ## 0.4.7-beta.8 candidate source verification
 

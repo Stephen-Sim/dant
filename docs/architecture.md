@@ -57,6 +57,10 @@ flowchart TB
 
 The UI renders state and submits actions. The Controller **never constructs an Engine or executes agent work on Windows**. The Worker requires an ordinary user in a Linux VM with a healthy graphical desktop. Disconnecting the UI does not turn the Controller into an executor.
 
+Message Pin and Star actions update validated flags on the original saved message through a conversation-bound metadata route. They preserve active execution references and do not mark messages read, steer the model or authorize work. The chat menu provides search, starred messages and media/documents/HTTP links; navigation reveals the exact original message through the history window. Pinned summaries appear only when a message is pinned.
+
+Chat initially renders the latest 80 messages and prepends older batches on demand. Reading history pins its first visible boundary while new messages arrive; conversation or VM changes reset the window. Reply, search and task-result navigation reveal their exact retained message before focusing it. Only rendered messages can become read. This limits DOM and Markdown work; the current state transport still transfers the complete conversation. Unchanged state skips a render, sanitized Markdown has a bounded cache, and timestamps follow the current system time zone. Background GET requests run independently while mutations retain their ordering and stale-result fences.
+
 | Component             | Source                                                                          | Responsibility                                                                     |
 | --------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | Native host           | `src-tauri/src/`                                                                | Window/tray, native IPC, notifications, secure host integration, installer handoff |
@@ -110,6 +114,10 @@ sequenceDiagram
 `Engine.pump()` selects queued work, thread setup restores the matching conversation's Codex thread, `handle()` routes scoped events/tools, and `complete()` records the outcome and deliverables. Bounded early events cannot establish ownership before a valid `turn/start` acknowledgment. Submission and work states are separate domains in [`states.mts`](../src/contracts/states.mts).
 
 A durable `workId` survives turns. `task_plan` records actual steps; `task_list` and `task_cancel` use saved identities. Task replies carry `workId`, expected turn and conversation through ordinary chat. Live replies steer only their matching owner; ended work reopens through the same admission path with retained project context.
+
+Work progress opens between chat and Computer as an independently scrollable panel. Header buttons follow that same order; responsive layout keeps panels in the document flow. Removing or cancelling a task confirms inside its own card, without moving focus to the top of the task list.
+
+Work progress hides confirmed completed entries three days after their actual acceptance timestamp. A turn ending, an old request date or a completed checklist cannot supply that timestamp; legacy entries without a valid acceptance time remain visible. Review, waiting, paused, failed and uncertain work stays available. This changes presentation only: chat, task identity, project memory and reopening references remain stored. The existing presence ticker refreshes a visible progress panel when its next entry expires.
 
 ```mermaid
 stateDiagram-v2
@@ -193,6 +201,8 @@ The database has schema versioning, foreign-key enforcement, a bounded busy time
 
 Migration validates and backs up legacy Markdown/project JSON before import. Project IDs and available source timestamps survive; missing timestamps are not invented. SQLite then becomes authoritative. Editing a `.md` snapshot does not silently overwrite it: import/export is explicit. Task JSON may retain historical project snapshots, but task replies read current context through the bound SQLite adapter. Failed migration preserves its source and stops the failed operation.
 
+The Memory settings page manages authoritative SQLite documents and structured facts/experiences through authenticated `/api/memory/manage` routes. Logical document IDs are labeled as documents, not presented as filesystem provenance. Keyword search scopes project and entry results before the FTS limit; shared documents remain global. Lists are paged, source/task identities are retained, and shared assistant personality is displayed separately as read-only text. Edits, clears, deletion and explicit candidate confirmation compare the captured database revision inside the write transaction. Editing a structured fact returns it to candidate review; conflicting confirmed facts are never silently replaced. Redacted records cannot be edited over their hidden original. A lost or unconfirmed mutation is not retried: the UI requires a fresh authoritative read before another action. Legacy read-only `/api/memory/view` remains available.
+
 ### Consolidation and retrieval
 
 ```mermaid
@@ -216,7 +226,7 @@ flowchart TB
 
 Agent base memory context contains the safe identity/working notes only. The at-most-32-confirmed-entry `context()` view remains for compatibility/read-only use, rather than blanket injection into every agent prompt. [`agent-memory.mts`](../src/conversation/agent-memory.mts) adds up to six bounded, redacted references with provenance to the **current already-admitted input**. Normal turns, steering, automatic continuation, recognized audio and native/API typed call input read fresh memory immediately before their existing wire send; API voice task handoffs use the same Engine input path. No match leaves the original input unchanged. Revision checks make edits, deletion and conflict changes visible without retaining a recalled-result cache.
 
-Recall neither mutates the human message nor adds a separate inference request, execution turn or persistent reference-injection operation. It cannot authorize actions or resume other work. Old Codex history is not erased; the reference marks its current-input scope and supersedes earlier excerpts for that input. Idle heartbeat checks do not retrieve memory. Candidate CRUD remains programmatic and Memory & personality remains read-only; automatic extraction/consolidation and a full editor are not implemented. The compatible `memory_write` tool still edits reference notes directly.
+Recall neither mutates the human message nor adds a separate inference request, execution turn or persistent reference-injection operation. It cannot authorize actions or resume other work. Old Codex history is not erased; the reference marks its current-input scope and supersedes earlier excerpts for that input. Idle heartbeat checks do not retrieve memory. Memory & personality exposes the validated document and entry management described above; automatic extraction/consolidation is not implemented. The compatible `memory_write` tool still edits reference notes directly.
 
 Codex owns the model thread, context window, compaction and provider token accounting. dant does not convert all chat into semantic memories or rebuild the thread from shortened UI history. See [context](context.md).
 
@@ -249,15 +259,19 @@ Closing the main window hides dant to the tray when tray initialization succeede
 
 Calls separate media and task identities: normal hangup can leave accepted work running; uncertain shutdown does not prove work stopped. The floating call window forwards scoped controls without another microphone/executor. Telegram shares the Store and Engine, with stable input IDs, pairing and durable outbound receipts. Neither creates another runtime. See [voice](VOICE-KEY.md), [shared context](context.md) and [Telegram](TELEGRAM.md).
 
+Live captions display only the current call's received, redacted **assistant** speech text; they do not promise a complete two-sided transcript. The Worker and Controller retain a bounded `callCaption` snapshot in RAM so native desktop state polling can receive the existing subtitle stream. Call/provider/sequence and conversation/connection checks reject stale text; ending or disconnecting clears it. The last received segment remains readable until the next response clears or replaces it. Captions never enter chat, Store, Controller disk cache, diagnostics or backups. The saved `showCallCaptions` preference defaults to on and can be changed in Voice settings or with the call's caption button, without changing media or starting work. An expanded call covers only the conversation pane; Work progress and Computer remain independently visible.
+
 ## Local backups and recovery
 
 [`ControllerBackups`](../src/backups/controller-backups.mts) owns local backup settings, periodic/connection triggers and explicit restore consent. It obtains idle persistent-data/workspace snapshots through the authenticated Worker transport, then retains encrypted `.dantbak` archives under the Controller data directory. AES-256-GCM keys are protected through the HostPlatform secret provider; Windows implements DPAPI, while a host without a provider refuses plaintext storage. Copies are retained per source binding, defaulting to ten per work computer.
+
+Worker export performs file copying, SQLite snapshots, hashing and archive encoding in a dedicated Node worker thread. A transferred readable stream applies backpressure without blocking state requests. Only one export may stage or stream at a time. The API checks idle execution before capture and rechecks both current execution and any intervening Engine change before sending a successful response. New work may proceed; it invalidates an unfinished capture. Disconnect, timeout and service shutdown close the reader, terminate the producer, then remove only the identity-checked private staging container asynchronously.
 
 Portable `.dant` files are a separate, versioned transfer format. [`PortableBackup`](../src/backups/portable-backup.mts) derives a key from a user-supplied passphrase with fixed scrypt parameters and protects the archive and metadata with AES-256-GCM. A pure streaming validator checks paths, frames, file hashes and counts while removing known authentication stores. Import authenticates and validates the complete encrypted staging file before re-encrypting it into the destination's local vault. No plaintext archive is staged. The original local backup remains unchanged.
 
 The first-run UI asks about a backup before offering VM creation. Import is local and works without a connected VM; restoration remains a separate target-bound preview and confirmation. Tauri owns file pickers and bounded streaming file transfer through the authenticated loopback Controller API. The browser uses the same format with a smaller transfer limit. This permits copying a companion between supported frontends, computers and VMs. It does not coordinate two live copies. A future Google Drive adapter can store the same portable format; no Drive integration is implemented here.
 
-The Worker captures SQLite databases with `VACUUM INTO` and checks observed files, directory identities and database versions for change. This provides consistent individual SQLite snapshots and rejects changed captures; it does not create a whole-system transaction across databases and workspace files. Runtime/deployment state, caches, SSH material and model authentication are excluded.
+The Worker captures SQLite databases in its data tree with `VACUUM INTO` and integrity checks. Workspace databases, including exclusively locked browser databases, remain opaque ordinary files together with all existing WAL, SHM and journal sidecars. Observed files, directory identities and data-database versions are checked for change before accepting capture. The narrow validated Firefox host/PID lock symlink is omitted without following it; other links are rejected. Data-tree SQLite snapshots are individually consistent; opaque external databases have no transaction-snapshot guarantee, and the combined archive is not a whole-system transaction. Runtime/deployment state, caches, SSH material and model authentication are excluded.
 
 Restoration requires a bounded metadata/warning preview and a single-use confirmation tied to the current target. The Controller pauses work, stops the Worker and uses guarded SSH to run the offline restore CLI. Private staging and a two-root journal support rollback/recovery; data/workspace replacement is not one atomic operation across filesystems. Tasks and schedules stay paused/disabled, uncertain submissions retain their fences, Telegram is disabled and model sign-in may be required. Completion requires the exact startup-loaded receipt. Unknown outcomes are reconciled, never resent. See [backup configuration and recovery](backups.md).
 
@@ -295,7 +309,7 @@ The architecture reference informs boundaries; it does not mean its proposed fea
 
 - SQLite owns memory and schedules in separate databases; messages, durable task state, events and approvals have not moved into a unified SQL schema.
 - Continuation guards, stop controls, timeouts and bounded evidence extensions exist; unified per-task tool-step, elapsed-time and token budgets remain to be designed.
-- Scoped automatic retrieval and candidate storage exist; a full memory editor, embeddings and automatic consolidation remain future work.
+- Scoped automatic retrieval, candidate storage and validated memory editing exist; embeddings and automatic consolidation remain future work.
 - Windows Controller / Ubuntu Worker lifecycle exists; a cross-platform independent user service with named pipes/Unix sockets is not implemented.
 - TypeScript contracts and runtime validators exist; React, Zustand, Tailwind, Zod and a pnpm monorepo are not current dependencies.
 

@@ -36,14 +36,14 @@ function fixture({ language = 'en' } = {}) {
       general:
         '<section class="settings-section"><button data-language="zh">中文</button><input type="checkbox" id="notifications"><input type="checkbox" id="showWorkSummary"></section><section class="settings-section text-editor-settings"><button data-editor-choose>Choose editor</button></section>',
       appearance: `<section class="settings-section"><button data-theme="light">Light</button><details id="appearance-font-picker" ${fontOpen ? 'open' : ''}><summary>System font</summary><input id="font-local-search" value="Arial"></details><details id="appearance-advanced"><summary>Advanced</summary><input id="appearance-size" type="number" value="13"></details></section>`,
-      voice: `<section class="settings-section"><select id="nativeVoice" ${voiceDisabled ? 'disabled' : ''}><option>Ember</option></select><details><summary>API</summary><input type="password" id="voice-api-key"></details></section>`,
-      computer: `<section class="settings-section vm-settings"><input id="vm-host-draft" value="${host}"></section>`,
+      voice: `<section class="settings-section"><input type="checkbox" id="showCallCaptions"><select id="nativeVoice" ${voiceDisabled ? 'disabled' : ''}><option>Ember</option></select><details><summary>API</summary><input type="password" id="voice-api-key"></details></section>`,
+      computer: `<section class="settings-section vm-settings"><input id="vm-host-draft" value="${host}"></section><section class="settings-section vm-backups vm-backup-import" data-setting-card="backup-import">Import backup file</section>`,
       account:
         '<section class="settings-section" data-setting-card="account">private-account@example.test<select id="model"><option>Default</option></select></section>',
       credentials:
         '<section class="settings-section credentials-settings"><input type="password" id="private-vault">Private credential nickname</section>',
       history:
-        '<section class="settings-section conversation-settings">Private conversation text<button data-action="memory">Memory</button></section>',
+        '<section class="settings-section conversation-settings">Private conversation text<button data-action="memory">Memory</button></section><section class="settings-section vm-backups">Backups</section>',
       telegram:
         '<section class="settings-section telegram-settings"><input type="password" id="telegram-token"></section>',
       about:
@@ -193,10 +193,16 @@ test('English and Chinese search find settings in every category without requiri
     ['font', 'font', 'appearance'],
     ['字体', 'font', 'appearance'],
     ['voice key', 'voice-key', 'voice'],
+    ['captions', 'call-captions', 'voice'],
+    ['字幕', 'call-captions', 'voice'],
     ['重连', 'connection', 'computer'],
     ['login', 'subscription', 'account'],
     ['密钥管理', 'vault', 'credentials'],
     ['清空', 'clear-history', 'history'],
+    ['backup', 'backups', 'history'],
+    ['恢复', 'backups', 'history'],
+    ['import backup', 'backup-import', 'computer'],
+    ['导入备份', 'backup-import', 'computer'],
     ['telegram bot', 'telegram-token', 'telegram'],
     ['version', 'version', 'about'],
     ['语言', 'language', 'general'],
@@ -228,6 +234,35 @@ test('search result selection expands advanced details and focuses and scrolls t
   assert.equal(defined(f.scroll.at(-1)).node, input);
   assert.deepEqual(defined(f.scroll.at(-1)).options, { block: 'center' });
   assert.equal(f.ui.category, 'appearance');
+});
+
+test('backup search opens Chat & data and results have no separate numeric counter', async () => {
+  const f = fixture();
+  await f.search('backup');
+  assert.equal(f.document.querySelector('.settings-result-count'), null);
+  assert.equal(f.document.querySelector('#settings-results-title')?.textContent, 'Search results');
+  assert.equal(
+    f.document.querySelector('.settings-search-results > div')?.getAttribute('aria-live'),
+    'polite',
+  );
+  await f.click('[data-settings-result="backups"]');
+  assert.equal(f.ui.category, 'history');
+  assert.deepEqual(visiblePanels(f), ['history']);
+  assert.ok(f.document.querySelector('[data-settings-panel="history"] .vm-backups'));
+  assert.equal(f.document.querySelector('[data-settings-panel="history"] .vm-backup-import'), null);
+  assert.equal(f.focus.at(-1)?.classList.contains('vm-backups'), true);
+});
+
+test('backup import search opens its separate Work computer card without opening the backup list', async () => {
+  const f = fixture();
+  for (const query of ['import backup file', '导入备份文件']) {
+    await f.search(query);
+    await f.click('[data-settings-result="backup-import"]');
+    assert.equal(f.ui.category, 'computer');
+    assert.deepEqual(visiblePanels(f), ['computer']);
+    assert.equal(f.focus.at(-1), f.document.querySelector('.vm-backup-import'));
+    assert.equal(f.ui.isVisible('history'), false);
+  }
 });
 
 test('English and Chinese editor searches reveal the fixed General setting without indexing a configured private path', async () => {

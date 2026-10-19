@@ -631,14 +631,14 @@ test('overlapping restore targets and simultaneous imports cannot overwrite an a
   }
 });
 
-test('linked sources are rejected and a live WAL database is copied through SQLite rather than raw sidecars', async (t) => {
-  const { root, options, workspaceRoot } = fixture(t),
+test('linked sources are rejected and data WAL databases use SQLite snapshots without raw sidecars', async (t) => {
+  const { root, options, dataDir, workspaceRoot } = fixture(t),
     external = path.join(root, 'outside');
   fs.mkdirSync(external);
   fs.symlinkSync(external, path.join(workspaceRoot, 'linked'), 'junction');
   assert.throws(() => createWorkerBackup(options), { code: 'invalid_backup' });
   fs.unlinkSync(path.join(workspaceRoot, 'linked'));
-  const file = path.join(workspaceRoot, 'artifact.sqlite'),
+  const file = path.join(dataDir, 'artifact.sqlite'),
     db = new DatabaseSync(file);
   db.exec(
     "PRAGMA journal_mode=WAL; CREATE TABLE artifact(value TEXT); INSERT INTO artifact VALUES ('committed artifact')",
@@ -651,7 +651,7 @@ test('linked sources are rejected and a live WAL database is copied through SQLi
     assert.ok(
       !decoded.entries.some((entry) => entry.path.endsWith('-wal') || entry.path.endsWith('-shm')),
     );
-    const restored = new DatabaseSync(path.join(stagingDir, 'workspace', 'artifact.sqlite'), {
+    const restored = new DatabaseSync(path.join(stagingDir, 'data', 'artifact.sqlite'), {
       readOnly: true,
     });
     try {
@@ -666,6 +666,282 @@ test('linked sources are rejected and a live WAL database is copied through SQLi
     snapshot.cleanup();
     db.close();
   }
+});
+
+test('an exclusively locked workspace database and its rollback journal roundtrip without opening SQLite', async (t) => {
+  const { root, options, workspaceRoot } = fixture(t),
+    project = path.join(workspaceRoot, 'browser-profile');
+  fs.mkdirSync(project);
+  const file = path.join(project, 'external.sqlite'),
+    db = new DatabaseSync(file);
+  let snapshot: ReturnType<typeof createWorkerBackup> | undefined;
+  try {
+    db.exec(
+      "CREATE TABLE artifact(value TEXT); INSERT INTO artifact VALUES ('committed'); BEGIN EXCLUSIVE; UPDATE artifact SET value='uncommitted'",
+    );
+    assert.throws(
+      () => {
+        const other = new DatabaseSync(file, { readOnly: true });
+        try {
+          other.prepare('PRAGMA data_version').get();
+        } finally {
+          other.close();
+        }
+      },
+      (error: unknown) => observedRecord(error).errcode === 5,
+    );
+    const expected = new Map(
+      ['', '-journal'].map((suffix) => [suffix, fs.readFileSync(file + suffix)]),
+    );
+    snapshot = createWorkerBackup(options);
+    const dataDir = path.join(root, 'locked-roundtrip-data'),
+      restoredWorkspace = path.join(root, 'locked-roundtrip-workspaces');
+    fs.mkdirSync(dataDir);
+    fs.mkdirSync(restoredWorkspace);
+    await restoreWorkerBackup({
+      dataDir,
+      workspaceRoot: restoredWorkspace,
+      restoreId: randomUUID(),
+      assertOffline() {},
+      input: snapshot.stream,
+    });
+    for (const [suffix, bytes] of expected) {
+      assert.deepEqual(fs.readFileSync(file + suffix), bytes, 'capture leaves source bytes intact');
+      assert.deepEqual(
+        fs.readFileSync(
+          path.join(restoredWorkspace, 'browser-profile', 'external.sqlite' + suffix),
+        ),
+        bytes,
+      );
+    }
+    assert.ok(
+      new Store(dataDir).state.workTasks.every((work) => work.status === TaskStatus.Unknown),
+    );
+  } finally {
+    snapshot?.cleanup();
+    db.exec('ROLLBACK');
+    db.close();
+  }
+});
+
+test('workspace WAL and SHM files are preserved with their database as exact ordinary bytes', async (t) => {
+  const { root, options, workspaceRoot } = fixture(t),
+    file = path.join(workspaceRoot, 'external.sqlite'),
+    db = new DatabaseSync(file);
+  let snapshot: ReturnType<typeof createWorkerBackup> | undefined;
+  try {
+    db.exec(
+      "PRAGMA journal_mode=WAL; CREATE TABLE artifact(value TEXT); INSERT INTO artifact VALUES ('retained external data')",
+    );
+    const expected = new Map(
+      ['', '-wal', '-shm'].map((suffix) => [suffix, fs.readFileSync(file + suffix)]),
+    );
+    snapshot = createWorkerBackup(options);
+    const stagingDir = path.join(root, 'workspace-wal-decoded');
+    fs.mkdirSync(stagingDir);
+    const decoded = await validateWorkerBackup({ input: snapshot.stream, stagingDir });
+    for (const [suffix, bytes] of expected) {
+      const relative = 'external.sqlite' + suffix;
+      assert.ok(
+        decoded.entries.some((entry) => entry.domain === 'workspace' && entry.path === relative),
+      );
+      assert.deepEqual(fs.readFileSync(path.join(stagingDir, 'workspace', relative)), bytes);
+      assert.deepEqual(fs.readFileSync(file + suffix), bytes);
+    }
+  } finally {
+    snapshot?.cleanup();
+    db.close();
+  }
+});
+
+test('whole-capture checks reject changed, added or removed external database group members', async (t) => {
+  for (const change of ['main', 'wal', 'shm', 'journal', 'add-journal', 'remove-wal'] as const)
+    await t.test(change, (child) => {
+      const { options, workspaceRoot } = fixture(child),
+        file = path.join(workspaceRoot, 'opaque.sqlite');
+      fs.writeFileSync(file, Buffer.concat([Buffer.from('SQLite format 3\0'), Buffer.alloc(128)]));
+      for (const suffix of ['-wal', '-shm', '-journal'])
+        if (change !== 'add-journal' || suffix !== '-journal')
+          fs.writeFileSync(file + suffix, 'isolated opaque sidecar');
+      let validations = 0;
+      assert.throws(
+        () =>
+          createWorkerBackup({
+            ...options,
+            validateCurrent() {
+              if (++validations !== 2) return;
+              if (change === 'remove-wal') fs.unlinkSync(file + '-wal');
+              else if (change === 'add-journal') fs.writeFileSync(file + '-journal', 'new sidecar');
+              else fs.appendFileSync(file + (change === 'main' ? '' : '-' + change), 'changed');
+            },
+          }),
+        { code: 'source_changed' },
+      );
+    });
+});
+
+test('external database sidecars still reject hard links and symbolic links', async (t) => {
+  for (const link of ['hard', 'symbolic'] as const)
+    await t.test(link, (child) => {
+      const { root, options, workspaceRoot } = fixture(child),
+        file = path.join(workspaceRoot, 'opaque.sqlite'),
+        external = path.join(root, 'external');
+      fs.writeFileSync(file, Buffer.from('SQLite format 3\0isolated opaque database'));
+      if (link === 'hard') {
+        fs.writeFileSync(external, 'retained external bytes');
+        fs.linkSync(external, file + '-wal');
+      } else {
+        fs.mkdirSync(external);
+        fs.symlinkSync(external, file + '-wal', 'junction');
+      }
+      assert.throws(() => createWorkerBackup(options), { code: 'invalid_backup' });
+      assert.ok(fs.existsSync(external));
+    });
+});
+
+function firefoxProfileFixture(t: TestContext, domain: 'data' | 'workspace' = 'workspace') {
+  const source = fixture(t),
+    profile = path.join(
+      domain === 'data' ? source.dataDir : source.workspaceRoot,
+      'browser-profile',
+    ),
+    external = path.join(source.root, 'external-lock-target');
+  fs.mkdirSync(profile);
+  fs.mkdirSync(external);
+  fs.writeFileSync(path.join(external, 'must-not-follow.txt'), 'outside retained source');
+  for (const marker of ['prefs.js', 'times.json', 'compatibility.ini'])
+    fs.writeFileSync(path.join(profile, marker), 'isolated profile marker');
+  fs.writeFileSync(
+    path.join(profile, 'places.sqlite'),
+    Buffer.from('SQLite format 3\0opaque external database'),
+  );
+  const lock = path.join(profile, 'lock');
+  // Junction creation is available without symbolic-link privileges on Windows.
+  // The readlink fixture models Firefox's Linux dangling host/PID target exactly.
+  fs.symlinkSync(external, lock, 'junction');
+  let target = 'profile-host:+123';
+  t.mock.method(fs, 'readlinkSync', (file: fs.PathLike) => {
+    assert.equal(file, lock, 'only the lock itself may be inspected');
+    return target;
+  });
+  return {
+    ...source,
+    profile,
+    external,
+    lock,
+    setTarget(value: string) {
+      target = value;
+    },
+  };
+}
+
+test('validated Firefox PID locks are omitted without following their target or omitting profile data', async (t) => {
+  const { root, options, external } = firefoxProfileFixture(t),
+    snapshot = createWorkerBackup(options),
+    stagingDir = path.join(root, 'firefox-decoded');
+  fs.mkdirSync(stagingDir);
+  try {
+    const decoded = await validateWorkerBackup({ input: snapshot.stream, stagingDir });
+    assert.equal(
+      fs.existsSync(path.join(stagingDir, 'workspace', 'browser-profile', 'lock')),
+      false,
+    );
+    for (const marker of ['prefs.js', 'times.json', 'compatibility.ini', 'places.sqlite'])
+      assert.ok(
+        decoded.entries.some(
+          (entry) => entry.domain === 'workspace' && entry.path === 'browser-profile/' + marker,
+        ),
+      );
+    assert.ok(!decoded.entries.some((entry) => entry.path.includes('must-not-follow')));
+    assert.equal(
+      fs.readFileSync(path.join(external, 'must-not-follow.txt'), 'utf8'),
+      'outside retained source',
+    );
+  } finally {
+    snapshot.cleanup();
+  }
+});
+
+test('unknown lock targets and incomplete or linked Firefox profile markers are rejected', async (t) => {
+  for (const target of [
+    'outside/path',
+    'profile-host:123',
+    'profile-host:+0',
+    'profile-host:+123/path',
+    'profile-host:+123\n',
+  ])
+    await t.test(target, (child) => {
+      const source = firefoxProfileFixture(child);
+      source.setTarget(target);
+      assert.throws(() => createWorkerBackup(source.options), { code: 'invalid_backup' });
+    });
+  for (const marker of ['missing', 'linked', 'not-sqlite'] as const)
+    await t.test(marker, (child) => {
+      const source = firefoxProfileFixture(child),
+        file = path.join(source.profile, marker === 'not-sqlite' ? 'places.sqlite' : 'prefs.js');
+      if (marker === 'not-sqlite') fs.writeFileSync(file, 'not a SQLite profile');
+      else {
+        fs.unlinkSync(file);
+        if (marker === 'linked')
+          fs.linkSync(path.join(source.external, 'must-not-follow.txt'), file);
+      }
+      assert.throws(() => createWorkerBackup(source.options), { code: 'invalid_backup' });
+    });
+  await t.test('data-tree profile lock', (child) => {
+    const source = firefoxProfileFixture(child, 'data');
+    assert.throws(() => createWorkerBackup(source.options), { code: 'invalid_backup' });
+  });
+});
+
+test('Firefox lock identity, target and profile marker changes invalidate the whole capture', async (t) => {
+  for (const change of ['identity', 'target', 'marker'] as const)
+    await t.test(change, (child) => {
+      const source = firefoxProfileFixture(child);
+      let validations = 0;
+      assert.throws(
+        () =>
+          createWorkerBackup({
+            ...source.options,
+            validateCurrent() {
+              if (++validations !== 2) return;
+              if (change === 'identity') {
+                fs.unlinkSync(source.lock);
+                fs.symlinkSync(source.external, source.lock, 'junction');
+              } else if (change === 'target') source.setTarget('profile-host:+456');
+              else fs.appendFileSync(path.join(source.profile, 'prefs.js'), 'changed');
+            },
+          }),
+        { code: 'source_changed' },
+      );
+    });
+});
+
+test('locked or corrupt data SQLite databases still prevent backup', async (t) => {
+  await t.test('locked', (child) => {
+    const { options, dataDir } = fixture(child),
+      file = path.join(dataDir, 'owned.sqlite'),
+      db = new DatabaseSync(file);
+    try {
+      db.exec(
+        "CREATE TABLE artifact(value TEXT); INSERT INTO artifact VALUES ('retained'); BEGIN EXCLUSIVE; UPDATE artifact SET value='uncommitted'",
+      );
+      assert.throws(
+        () => createWorkerBackup(options),
+        (error: unknown) => observedRecord(error).errcode === 5,
+      );
+    } finally {
+      db.exec('ROLLBACK');
+      db.close();
+    }
+  });
+  await t.test('corrupt schedule database', (child) => {
+    const { options, store } = fixture(child);
+    fs.writeFileSync(
+      store.scheduleDatabase.file,
+      Buffer.concat([Buffer.from('SQLite format 3\0'), Buffer.alloc(128)]),
+    );
+    assert.throws(() => createWorkerBackup(options), { code: 'ERR_SQLITE_ERROR' });
+  });
 });
 
 test('a real Worker stream survives the encrypted Controller vault and restores only as paused or unknown work', async (t) => {

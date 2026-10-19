@@ -13,6 +13,10 @@ import type { Diagnostics, DiagnosticsOptions } from '../diagnostics/diagnostics
 import type { UpdateService, UpdateServiceOptions } from '../updates/updates.mts';
 import type { AudioTranscriber } from '../voice/audio-transcription.mts';
 import type { ControllerAppOptions, ControllerVoiceKeys } from './controller-types.ts';
+import type {
+  AsyncWorkerBackupOptions,
+  AsyncWorkerBackupSnapshot,
+} from '../backups/archive-types.ts';
 
 export interface WorkerService extends WorkerPublic {
   error?: string | null;
@@ -78,6 +82,7 @@ export type TranscriberService = EngineTranscriber;
 
 export interface WorkerAppOptions {
   dataDir?: string;
+  backupSnapshotFactory?: (options: AsyncWorkerBackupOptions) => Promise<AsyncWorkerBackupSnapshot>;
   workerFactory?: (store: Store) => WorkerService;
   secretFactory?: (directory: string) => ControllerVoiceKeys;
   voiceFactory?: (options: ApiVoiceFactoryOptions) => ApiVoiceService;

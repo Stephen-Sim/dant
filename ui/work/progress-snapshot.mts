@@ -20,6 +20,7 @@ export interface ProgressMessage {
   role: string;
   text?: string;
   time?: unknown;
+  acceptedAt?: unknown;
   status?: unknown;
   source?: unknown;
   kind?: string;
@@ -85,7 +86,7 @@ export interface ProgressActive {
   startedAt?: unknown;
   updatedAt?: unknown;
   plan?: ProgressPlan;
-  callId?: string;
+  callId?: string | null;
   canSteer?: boolean;
   progressPriority?: unknown;
   step?: TaskProgressStageValue;
@@ -135,6 +136,7 @@ const message = objectOf<ProgressMessage>({
   role: string,
   text: optional(string),
   time: unknownValue,
+  acceptedAt: unknownValue,
   status: unknownValue,
   source: unknownValue,
   kind: optional(string),
@@ -214,7 +216,7 @@ const active = objectOf<ProgressActive>({
   startedAt: unknownValue,
   updatedAt: unknownValue,
   plan: optional(plan),
-  callId: optional(string),
+  callId: optional(nullable(string)),
   canSteer: optional(boolean),
   progressPriority: unknownValue,
   step: optional((value): value is TaskProgressStageValue => isEnumValue(TaskProgressStage, value)),

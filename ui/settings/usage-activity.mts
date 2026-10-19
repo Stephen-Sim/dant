@@ -1,4 +1,5 @@
 import { escapeHtml as escape } from '../shared/html.mts';
+import { isRecord } from '../shared/contracts.mts';
 import type { UsageSnapshot, UsageProvider, UsageMode } from '../shared/contracts.mts';
 interface UsageOptions {
   usage?: UsageSnapshot | null;
@@ -372,24 +373,82 @@ export function renderUsageActivity({
   return `<div data-usage-activity data-usage-current-mode="${mode}"><div class="usage-source" role="group" aria-label="${escape(tr.provider)}">${providers.map((key) => `<button type="button" data-usage-source="${key}" aria-pressed="${model.provider === key}">${tr[key]}</button>`).join('')}</div>${summaryHtml}<div class="usage-chart-heading"><div><h3>${tr.activity}</h3><small>${tr.chartYear} · ${escape(model.timeZone)}</small></div><div class="usage-mode" role="group" aria-label="${escape(tr.activity)}">${modes.map((key) => `<button type="button" data-usage-mode="${key}" aria-pressed="${mode === key}">${tr[key]}</button>`).join('')}</div></div>${chart}<div class="usage-chart-footer"><p class="usage-tooltip" data-usage-tooltip aria-live="polite">${escape(hint)}</p>${mode === 'daily' ? `<div class="usage-legend"><span class="usage-cell" data-usage-level="unknown" title="${escape(tr.missing)}"></span><span>${tr.missing}</span><span class="usage-legend-gap">${tr.less}</span>${[0, 1, 2, 3, 4].map((level) => `<span class="usage-cell" data-usage-level="${level}" aria-hidden="true"></span>`).join('')}<span>${tr.more}</span></div>` : ''}</div>${!model.known.length ? `<p class="usage-history-note">${tr.empty}</p>` : ''}<p class="usage-history-note">${tr.history} ${tr.unreported}${model.hasUndated ? ` ${tr.undated}` : ''}</p></div>`;
 }
 
+export function usageActivityScope(state: unknown): string {
+  const settings = isRecord(state) && isRecord(state.settings) ? state.settings : null,
+    vm = settings && isRecord(settings.vm) ? settings.vm : null,
+    usage = isRecord(state) && isRecord(state.usage) ? state.usage : null,
+    activity = usage && isRecord(usage.activity) ? usage.activity : null;
+  return JSON.stringify([
+    isRecord(state) ? (state.conversationId ?? null) : null,
+    vm?.host ?? null,
+    vm?.user ?? null,
+    vm?.port ?? null,
+    vm?.keyPath ?? null,
+    vm?.knownHosts ?? null,
+    usage?.recordedSince ?? null,
+    activity?.recordedSince ?? null,
+  ]);
+}
+
 export function createUsageActivityController({
   document,
   onChange = () => {},
+  getScope = () => null,
 }: {
   document: Document;
   onChange?: () => void;
+  getScope?: () => unknown;
 }) {
   let mode: UsageMode = 'daily',
     provider: UsageProvider = 'subscription',
+    detailsOpen = false,
+    scope: unknown = Symbol('initial-usage-scope');
+  const bound = new WeakSet(),
+    detailsScopes = new WeakMap<HTMLDetailsElement, unknown>(),
+    boundDetails = new WeakSet<HTMLDetailsElement>();
+  function synchronize() {
+    const next = getScope();
+    if (scope === next) return false;
+    scope = next;
     detailsOpen = false;
-  const bound = new WeakSet();
+    return true;
+  }
+  const open = (details: HTMLDetailsElement) =>
+    typeof details.open === 'boolean' ? details.open : details.hasAttribute('open');
+  function capture() {
+    if (synchronize()) return;
+    const details = document.querySelector<HTMLDetailsElement>(
+      '[data-usage-dashboard] [data-usage-details]',
+    );
+    // The native toggle event is queued. Read the live disclosure before a
+    // synchronous state render can remove its open attribute.
+    if (details && detailsScopes.get(details) === scope) detailsOpen = open(details);
+  }
   return {
     get state() {
+      capture();
       return { mode, provider, detailsOpen };
     },
     bind() {
+      synchronize();
       const root = document?.querySelector<HTMLElement>('[data-usage-dashboard]');
-      if (!root || bound.has(root)) return;
+      if (!root) return;
+      const details = root.querySelector<HTMLDetailsElement>('[data-usage-details]');
+      if (details) {
+        detailsScopes.set(details, scope);
+        if (!boundDetails.has(details)) {
+          boundDetails.add(details);
+          details.addEventListener('toggle', () => {
+            synchronize();
+            if (
+              detailsScopes.get(details) === scope &&
+              document.querySelector('[data-usage-dashboard] [data-usage-details]') === details
+            )
+              detailsOpen = open(details);
+          });
+        }
+      }
+      if (bound.has(root)) return;
       bound.add(root);
       root.addEventListener('click', (event) => {
         const modeButton = (event.target as Element | null)?.closest<HTMLElement>(
@@ -451,9 +510,6 @@ export function createUsageActivityController({
           points[next]!.focus();
           tooltip({ target: points[next] ?? null });
         }
-      });
-      root.querySelector('[data-usage-details]')?.addEventListener('toggle', (event) => {
-        detailsOpen = (event.currentTarget as HTMLDetailsElement).open;
       });
     },
   };

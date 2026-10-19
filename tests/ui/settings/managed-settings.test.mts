@@ -16,7 +16,10 @@ import type {
   UiSettings,
 } from '../../../ui/shared/contracts.mts';
 import { observedRecord, observedString } from '../../support/service-fixtures.mts';
-import { SKILL_SUPPORT_FILE_LIMIT } from '../../../src/skills/skill-limits.mts';
+import { SKILL_SUPPORT_FILE_LIMIT, SKILL_FILE_BYTES } from '../../../src/skills/skill-limits.mts';
+import { languages } from '../../../src/i18n/languages.mts';
+import { localizeMessages } from '../../../src/i18n/i18n.mts';
+import { loadLanguage } from '../../../ui/i18n/localization.mts';
 
 const settle = async () => {
   await new Promise((resolve) => setImmediate(resolve));
@@ -25,6 +28,7 @@ const settle = async () => {
 interface FixtureSkill extends SkillItem {
   instructions?: string;
   files?: Record<string, string>;
+  assets?: { path: string; mediaType: 'application/octet-stream'; size: number }[];
 }
 interface FixtureSkills {
   items: FixtureSkill[];
@@ -294,6 +298,29 @@ test('vault and skill dictionaries are balanced and both languages render safe m
   }
 });
 
+test('all supported languages describe opaque assets and the current skill capacity without English fallback', async () => {
+  for (const language of languages) {
+    await loadLanguage(language.code);
+    const words = localizeMessages(managedMessages, language.code);
+    for (const key of [
+      'skillAssets',
+      'skillAssetsHint',
+      'skillExportUnsupported',
+      'skillExportCredentials',
+      'skillFilesHint',
+      'skillReadLimit',
+      'skillImportFileHint',
+    ] as const) {
+      assert.ok(words[key].trim());
+      if (language.code !== 'en')
+        assert.notEqual(words[key], managedMessages.en[key], language.code + ':' + key);
+    }
+    assert.match(words.skillFilesHint, new RegExp(String(SKILL_SUPPORT_FILE_LIMIT)));
+    assert.match(words.skillFilesHint, new RegExp(String(SKILL_FILE_BYTES / 1024)));
+    assert.match(words.skillImportFileHint, /1[.,]25/);
+  }
+});
+
 test('credential creation uses a private live field, survives reconciliation, and clears it after successful save', async () => {
   const f = fixture();
   await f.click('[data-credential-add]');
@@ -523,6 +550,42 @@ test('skills create, load, edit, toggle and remove real supporting text files wi
   );
 });
 
+test('skill editor preserves read-only binary assets while replacing its text JSON', async () => {
+  for (const language of ['en', 'zh']) {
+    const f = fixture({
+      language,
+      skills: {
+        items: [
+          {
+            name: 'image-workflow',
+            description: 'Review the image',
+            enabled: true,
+            files: { 'scripts/check.py': '# Current helper' },
+            assets: [
+              { path: 'scripts/reference.png', mediaType: 'application/octet-stream', size: 5726 },
+            ],
+          },
+        ],
+      },
+    });
+    await f.click('[data-skill-edit]');
+    const metadata = defined(f.document.querySelector<HTMLElement>('.skill-asset-files'));
+    assert.match(metadata.textContent, /scripts\/reference\.png/);
+    assert.match(metadata.textContent, /5726 B/);
+    assert.equal(metadata.querySelector('input,textarea'), null);
+    const files = defined(f.document.querySelector<HTMLTextAreaElement>('[name="files"]'));
+    assert.doesNotMatch(files.value, /reference\.png|base64/);
+    f.input('files', '{"scripts/new.py":"# Updated text"}');
+    await f.submit('#skill-form');
+    const patch = defined(f.calls.find((call) => call.method === 'PATCH')),
+      body = observedRecord(patch.body);
+    assert.deepEqual(body.files, { 'scripts/new.py': '# Updated text' });
+    assert.equal(body.preserveBinaryFiles, true);
+    assert.equal(Object.hasOwn(body, 'binaryFiles'), false);
+    assert.equal(f.modal, null);
+  }
+});
+
 test('invalid or failed skill forms preserve the draft and never POST malformed supporting files', async () => {
   const f = fixture();
   await f.click('[data-skill-add]');
@@ -578,12 +641,14 @@ test('support-file validation enforces text, containment, UTF-8 byte and count l
   assert.equal(SKILL_SUPPORT_FILE_LIMIT, 128);
   assert.deepEqual(parseSkillFiles(JSON.stringify(boundary)), boundary);
   assert.throws(() => parseSkillFiles(JSON.stringify({ ...boundary, 'scripts/overflow': 'x' })));
-  assert.throws(() => parseSkillFiles(JSON.stringify({ 'scripts/a': '中'.repeat(22000) })));
+  assert.throws(() =>
+    parseSkillFiles(JSON.stringify({ 'scripts/a': '中'.repeat(Math.ceil(SKILL_FILE_BYTES / 3)) })),
+  );
   assert.throws(() =>
     parseSkillFiles(
       JSON.stringify(
         Object.fromEntries(
-          Array.from({ length: 5 }, (_, i) => ['scripts/' + i, 'x'.repeat(65536)]),
+          Array.from({ length: 5 }, (_, i) => ['scripts/' + i, 'x'.repeat(SKILL_FILE_BYTES)]),
         ),
       ),
     ),

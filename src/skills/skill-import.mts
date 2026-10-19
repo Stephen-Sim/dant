@@ -6,17 +6,23 @@ import {
   SKILL_MAX_DEPTH,
   SKILL_RELATIVE_PATH_CHARACTERS,
   SKILL_NAME_PATTERN,
+  SKILL_ARCHIVE_BYTES,
 } from './skill-limits.mts';
 import { isRecord, errorCode, includesValue } from '../contracts/json.mts';
 import type { Readable } from 'node:stream';
 import type { SkillLibrary } from './skill-library.mts';
+import type { SkillBinaryFile } from './skill-types.ts';
+import { skillFileFromBytes } from './skill-files.mts';
 interface SkillCandidate {
   name: string;
   description: string;
   instructions: string;
 }
 interface ImportPreview {
-  value: SkillCandidate & { files: Record<string, string> };
+  value: SkillCandidate & {
+    files: Record<string, string>;
+    binaryFiles: Record<string, SkillBinaryFile>;
+  };
   source: string;
   expiresAt: number;
 }
@@ -65,7 +71,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import yauzl from 'yauzl';
 import { SKILL_SUPPORT_FILE_LIMIT, SKILL_TREE_ENTRY_LIMIT } from './skill-limits.mts';
 
-const MAX_ARCHIVE = 1024 * 1024,
+const MAX_ARCHIVE = SKILL_ARCHIVE_BYTES,
   MAX_FILE = SKILL_FILE_BYTES,
   MAX_TOTAL = SKILL_TOTAL_BYTES,
   TTL = 10 * 60 * 1000;
@@ -207,7 +213,7 @@ function supported(relative: unknown): asserts relative is string {
   )
     throw fail(
       'unsupported_file',
-      'Only SKILL.md, README/LICENSE/NOTICE documents, and text files in scripts, references, or assets are supported.',
+      'Use SKILL.md, README/LICENSE/NOTICE documents, or supporting files in scripts, references, or assets.',
     );
 }
 function select<Value>(files: ReadonlyMap<string, Value>): Map<string, Value> {
@@ -488,7 +494,7 @@ async function unzip(data: Buffer, signal: AbortSignal) {
   }
 }
 
-/** Previews hold inert text in RAM. Only an explicit commit writes a managed skill. */
+/** Previews hold bounded inert files in RAM. Only an explicit commit writes a managed skill. */
 export class SkillImporter {
   readonly skills: Pick<SkillLibrary, 'containsSecret' | 'locate' | 'save'>;
   readonly fetch: SkillFetch;
@@ -719,26 +725,34 @@ export class SkillImporter {
       const skillFile = files.get('SKILL.md');
       if (!skillFile) throw invalid();
       const candidate = manifest(skillFile, source),
-        support: Record<string, string> = Object.create(null);
+        support: Record<string, string> = Object.create(null),
+        binaryFiles: Record<string, SkillBinaryFile> = Object.create(null),
+        secretTexts: string[] = [];
       let total = Buffer.byteLength(candidate.instructions);
       const listed = [{ path: 'SKILL.md', size: skillFile.length }];
       for (const [name, data] of files)
         if (name !== 'SKILL.md') {
           supported(name);
           if (data.length > MAX_FILE) throw limited();
-          const text = plain(data);
-          support[name] = text;
-          total += Buffer.byteLength(text);
-          listed.push({ path: name, size: Buffer.byteLength(text) });
+          const file = skillFileFromBytes(name, data);
+          if (typeof file.value === 'string') {
+            support[name] = file.value;
+          } else {
+            binaryFiles[name] = file.value;
+          }
+          total += file.data.length;
+          listed.push({ path: name, size: file.data.length });
+          if (total > MAX_TOTAL) throw limited();
+          secretTexts.push(...file.secretTexts);
         }
-      if (total > MAX_TOTAL || Object.keys(support).length > SKILL_SUPPORT_FILE_LIMIT)
-        throw limited();
+      if (total > MAX_TOTAL || files.size > SKILL_SUPPORT_FILE_LIMIT + 1) throw limited();
       for (const value of [
         candidate.name,
         candidate.description,
         candidate.instructions,
         ...Object.keys(support),
-        ...Object.values(support),
+        ...Object.keys(binaryFiles),
+        ...secretTexts,
       ])
         if (this.skills?.containsSecret?.(value))
           throw fail(
@@ -748,7 +762,7 @@ export class SkillImporter {
       if (this.closed || controller.signal.aborted) throw remoteFailure();
       const id = randomUUID(),
         expiresAt = this.now() + TTL,
-        value = { ...candidate, files: support };
+        value = { ...candidate, files: support, binaryFiles };
       this.previews.set(id, { value, source, expiresAt });
       return { id, source, ...candidate, files: listed, expiresAt };
     } finally {

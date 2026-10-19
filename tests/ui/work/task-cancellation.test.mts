@@ -391,7 +391,7 @@ test('main uses task-scoped progress cancellation controls and refreshes failed 
   assert.doesNotMatch(progress, /data-action="stop"/);
   assert.match(
     progress,
-    /renderActiveWork\(model,\s*\{\s*pending:\s*busy,\s*planOpen:\s*Boolean\(active\.id\s*&&\s*workDisclosures\.isOpen\(active\.id\)\)\s*\}\)/,
+    /renderActiveWork\(model,\s*\{\s*pending:\s*busy,\s*planOpen:\s*Boolean\(active\.id\s*&&\s*workDisclosures\.isOpen\(active\.id\)\),\s*confirmation:/,
   );
   const start = sourceIndex(source, 'async function taskRequest('),
     end = sourceIndex(source, 'function resumeTask(', start),

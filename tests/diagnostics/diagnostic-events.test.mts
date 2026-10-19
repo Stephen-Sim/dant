@@ -58,6 +58,14 @@ test('HTTP diagnostics retain templates and fixed reasons, never route parameter
   for (const [url, expected] of [
     ['/api/messages/sensitive/reaction', '/api/messages/:id/reaction'],
     ['/api/skills/sensitive', '/api/skills/:name'],
+    ['/api/skills/sensitive/export', '/api/skills/:name/export'],
+    ['/api/skills/import/preview?url=sensitive', '/api/skills/import/preview'],
+    ['/api/backups/sensitive/restore', '/api/backups/:id/restore'],
+    ['/api/backups/sensitive/export', '/api/backups/:id/export'],
+    ['/api/backups/export?token=sensitive', '/api/backups/export'],
+    ['/api/memory/manage?q=sensitive', '/api/memory/manage'],
+    ['/api/memory/manage/semantic/sensitive', '/api/memory/manage/:kind/:id'],
+    ['/api/memory/manage/semantic/sensitive/confirm', '/api/memory/manage/:kind/:id/confirm'],
     ['/api/notifications/sensitive/ack', '/api/notifications/:id/ack'],
     ['/api/state?key=secret', '/api/state'],
   ])
