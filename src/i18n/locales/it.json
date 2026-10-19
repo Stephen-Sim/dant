@@ -1059,5 +1059,7 @@
   "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "Questi file vengono conservati byte per byte e inclusi nello ZIP. I file di testo grandi e gli altri formati sono di sola lettura in questo editor.",
   "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "Questa skill supera i limiti supportati (128 file di supporto, di 8 MiB ciascuno e 9 MiB in totale). Riduci il numero o le dimensioni dei file sul computer di lavoro, quindi riprova. I file esistenti non sono stati modificati.",
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Usa i percorsi scripts/, references/ o assets/, oppure i file README.md, LICENSE e NOTICE nella radice. Modifica fino a 128 file di testo, di 256 KiB ciascuno e 1 MiB in totale. I file di testo più grandi e gli altri formati vengono conservati come file di supporto di sola lettura.",
-  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Scegli SKILL.md o uno ZIP contenente una skill, fino a 10 MiB."
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Scegli SKILL.md o uno ZIP contenente una skill, fino a 10 MiB.",
+  "No starred messages yet.": "Non ci sono ancora messaggi importanti.",
+  "Star a message from its menu to keep it here.": "Aggiungi un messaggio agli importanti dal suo menu per ritrovarlo qui."
 }

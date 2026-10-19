@@ -1059,5 +1059,7 @@
   "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "Bu dosyalar bayt bayt korunur ve ZIP arşivine eklenir. Büyük metin dosyaları ve diğer biçimler bu düzenleyicide salt okunurdur.",
   "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "Bu beceri desteklenen sınırları aşıyor (her biri 8 MiB ve toplamı 9 MiB olmak üzere 128 destek dosyası). Çalışma bilgisayarında dosya sayısını veya boyutunu azaltıp yeniden deneyin. Mevcut dosyalar değiştirilmedi.",
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "scripts/, references/ veya assets/ yollarını ya da kökteki README.md, LICENSE ve NOTICE dosyalarını kullanın. Her biri 256 KiB ve toplamı 1 MiB olmak üzere en fazla 128 metin dosyasını düzenleyin. Daha büyük metin dosyaları ve diğer biçimler, salt okunur destek dosyaları olarak korunur.",
-  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md veya tek bir beceri içeren, en fazla 10 MiB boyutunda bir ZIP seçin."
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md veya tek bir beceri içeren, en fazla 10 MiB boyutunda bir ZIP seçin.",
+  "No starred messages yet.": "Henüz yıldızlı mesaj yok.",
+  "Star a message from its menu to keep it here.": "Burada bulmak için mesajın menüsünden yıldız ekleyin."
 }

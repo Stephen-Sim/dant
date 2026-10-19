@@ -442,9 +442,161 @@ test('starred list is paged, escapes contents and navigates after closing its di
   f.dispose();
 });
 
+test('starred empty state explains the menu action without fabricated cards or metadata requests', async () => {
+  const f = fixture();
+  await f.open('starred');
+  assert.equal(f.node('.chat-collection-empty').getAttribute('role'), 'status');
+  assert.equal(f.node('.chat-collection-empty h3').textContent, 'No starred messages yet.');
+  assert.equal(
+    f.node('.chat-collection-empty p').textContent,
+    'Star a message from its menu to keep it here.',
+  );
+  assert.equal(f.document.querySelector('.chat-collection-item'), null);
+  assert.equal(f.document.querySelector('[data-collection-more]'), null);
+  assert.equal(f.node('[data-action="close-modal"]').getAttribute('aria-label'), 'Close');
+  assert.equal(f.requests.length, 0);
+  f.dispose();
+});
+
+test('collection cards remove individual flags in place during active work and focus the close control after the last unstar', async () => {
+  const f = fixture(),
+    original = structuredClone(f.state);
+  Object.assign(defined(f.state.messages?.[0]), { pinned: true, starred: true });
+  await f.open('starred');
+  assert.equal(f.node('.chat-collection-meta strong').textContent, 'You');
+  assert.equal(
+    f.node('.chat-collection-meta time').getAttribute('datetime'),
+    new Date(1).toISOString(),
+  );
+  assert.equal(f.node('[data-collection-unpin="first"]').getAttribute('aria-label'), 'Unpin');
+  assert.equal(f.node('[data-collection-unstar="first"]').getAttribute('aria-label'), 'Unstar');
+  await f.click('[data-collection-unpin="first"]');
+  assert.deepEqual(f.requests[0]?.options.body, {
+    conversationId: 'conversation-one',
+    pinned: false,
+  });
+  assert.equal(f.state.messages?.[0]?.pinned, false);
+  assert.equal(f.state.messages?.[0]?.starred, true, 'an unpin acknowledgment cannot clear a star');
+  assert.equal(f.document.querySelector('[data-collection-unpin="first"]'), null);
+  assert.equal(f.document.querySelector('.chat-pinned-bar'), null);
+  f.node('[data-collection-unstar="first"]').focus();
+  await f.click('[data-collection-unstar="first"]');
+  assert.deepEqual(f.requests[1]?.options.body, {
+    conversationId: 'conversation-one',
+    starred: false,
+  });
+  assert.equal(f.state.messages?.[0]?.starred, false);
+  assert.equal(f.modal?.type, 'chat-collection', 'removing a flag does not dismiss the collection');
+  assert.equal(f.document.querySelector('.chat-collection-item'), null);
+  assert.equal(f.focused?.dataset.action, 'close-modal');
+  assert.deepEqual(f.state.active, original.active);
+  assert.deepEqual(f.state.queue, original.queue);
+  assert.deepEqual(f.state.call, original.call);
+  assert.deepEqual(f.navigation, []);
+  assert.equal(f.state.messages?.[0]?.read, undefined);
+  assert.equal(f.state.messages?.[0]?.text, original.messages?.[0]?.text);
+  f.dispose();
+});
+
+test('pinned bar unpins its exact selected message without toggling stale controls or removing stars', async () => {
+  const f = fixture();
+  Object.assign(defined(f.state.messages?.[0]), { pinned: true, starred: true });
+  Object.assign(defined(f.state.messages?.[1]), { pinned: true });
+  f.render();
+  const previous = f.node('[data-pin-remove="files"]');
+  previous.focus();
+  await f.click('[data-pin-remove="files"]');
+  assert.equal(f.state.messages?.[1]?.pinned, false);
+  assert.equal(f.node('.chat-pinned-preview').dataset.collectionGo, 'first');
+  assert.equal(f.focused?.dataset.collectionGo, 'first');
+  await invokeHandler(previous, 'click');
+  assert.equal(f.requests.length, 1, 'a stale Unpin must not re-pin an already cleared message');
+  f.node('[data-pin-remove="first"]').focus();
+  await f.click('[data-pin-remove="first"]');
+  assert.equal(f.document.querySelector('.chat-pinned-bar'), null);
+  assert.equal(f.state.messages?.[0]?.pinned, false);
+  assert.equal(f.state.messages?.[0]?.starred, true);
+  assert.equal(f.focused?.dataset.action, 'details');
+  assert.deepEqual(f.navigation, []);
+  f.dispose();
+});
+
+test('collection removals share per-message pending guards and late replies cannot mutate a replacement VM record', async () => {
+  const f = fixture();
+  Object.assign(defined(f.state.messages?.[0]), { pinned: true, starred: true });
+  let finish: (value: unknown) => void = () => assert.fail('request not started');
+  f.respond = () =>
+    new Promise((resolve) => {
+      finish = resolve;
+    });
+  await f.open('starred');
+  const operation = invokeHandler(f.node('[data-collection-unstar="first"]'), 'click');
+  assert.equal(f.requests.length, 1);
+  for (const selector of [
+    '[data-collection-unstar="first"]',
+    '[data-collection-unpin="first"]',
+    '[data-pin-remove="first"]',
+  ])
+    assert.equal(f.node(selector).hasAttribute('disabled'), true);
+  await invokeHandler(f.node('[data-collection-unpin="first"]'), 'click');
+  assert.equal(f.requests.length, 1);
+  assert.equal(
+    f.state.messages?.[0]?.starred,
+    true,
+    'removals wait for their authoritative acknowledgment',
+  );
+  defined(f.state.settings).vm = { host: 'vm-b' };
+  defined(f.state.messages)[0] = {
+    id: 'first',
+    role: 'user',
+    text: 'Another VM',
+    pinned: true,
+    starred: true,
+  };
+  f.render();
+  finish({
+    conversationId: 'conversation-one',
+    message: { id: 'first', pinned: true, starred: false },
+  });
+  await operation;
+  assert.equal(f.state.messages?.[0]?.starred, true);
+  assert.equal(f.state.messages?.[0]?.pinned, true);
+  assert.deepEqual(f.toasts, []);
+  f.dispose();
+});
+
+test('failed collection removal preserves flags without replay and stale or cached controls cannot issue a write', async () => {
+  const f = fixture();
+  Object.assign(defined(f.state.messages?.[0]), { pinned: true, starred: true });
+  f.respond = async () => {
+    throw Object.assign(Error('private failure'), { unknownOutcome: true });
+  };
+  await f.open('starred');
+  f.node('[data-collection-unpin="first"]').focus();
+  await f.click('[data-collection-unpin="first"]');
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.state.messages?.[0]?.pinned, true);
+  assert.match(defined(f.toasts.at(-1)), /unconfirmed/);
+  assert.doesNotMatch(f.toasts.join(''), /private failure/);
+  assert.equal(f.focused?.dataset.collectionUnpin, 'first');
+  const stale = f.node('[data-collection-unstar="first"]');
+  f.state.conversationId = 'conversation-two';
+  await invokeHandler(stale, 'click');
+  assert.equal(f.requests.length, 1);
+  f.state.controller = { status: ConnectionStatus.Online, cached: true };
+  f.render();
+  assert.equal(f.node('[data-collection-unpin="first"]').hasAttribute('disabled'), true);
+  await f.click('[data-collection-unstar="first"]');
+  assert.equal(f.requests.length, 1);
+  f.dispose();
+});
+
 test('shared media, documents and links resolve current owned records before preview or download', async () => {
   const f = fixture();
+  Object.assign(defined(f.state.messages?.[1]), { pinned: true, starred: true });
   await f.open('shared');
+  assert.equal(f.node('[data-collection-unpin="files"]').getAttribute('aria-label'), 'Unpin');
+  assert.equal(f.node('[data-collection-unstar="files"]').getAttribute('aria-label'), 'Unstar');
   assert.equal(f.document.querySelectorAll('[data-collection-file]').length, 2);
   assert.match(f.node('.chat-collection-list').textContent, /图片 <photo>.png/);
   assert.equal(f.document.querySelector('.chat-collection-list img'), null);
@@ -552,7 +704,7 @@ test('optional pinned and starred state flags reject malformed values while pres
       );
 });
 
-test('all supported locales include collection controls without translating message contents', () => {
+test('all supported locales include collection controls without translating message contents', async () => {
   assert.deepEqual(
     Object.keys(collectionMessages.en).sort(),
     Object.keys(collectionMessages.zh).sort(),
@@ -580,6 +732,9 @@ test('all supported locales include collection controls without translating mess
       f.ui.renderMessageActions(defined(f.state.messages?.[0])),
       new RegExp(escapeHtml(copy.unpin)),
     );
+    await f.open('starred');
+    assert.equal(f.node('.chat-collection-empty h3').textContent, copy.emptyStarred);
+    assert.equal(f.node('.chat-collection-empty p').textContent, copy.starHint);
     f.dispose();
   }
 });

@@ -669,8 +669,14 @@ test('message actions sit beside each bubble while reactions, receipts and attac
   const css = compactCss(
     fs.readFileSync(new URL('../../../ui/style.css', import.meta.url), 'utf8'),
   );
-  assert.match(css, /\.message-bubble-row\{[^}]*display:flex;align-items:center/);
-  assert.match(css, /\.user \.message-bubble-row\{flex-direction:row-reverse/);
+  assert.match(
+    css,
+    /\.message-content\{[^}]*display:grid;grid-template-columns:minmax\(0,1fr\) auto/,
+  );
+  assert.match(css, /\.message-bubble-row\{display:contents/);
+  assert.match(css, /\.message-meta\{grid-column:1;grid-row:2/);
+  assert.match(css, /\.user \.message-meta\{grid-column:2;justify-content:flex-end/);
+  assert.match(css, /\.user \.message-bubble-row>\.bubble\{grid-column:2/);
   assert.match(
     css,
     /@media\(hover:none\),\(pointer:coarse\)\{\.message-bubble-row>\.message-actions\{opacity:1;pointer-events:auto/,
@@ -1014,7 +1020,7 @@ test('reaction popups expand from the adjacent toolbar and remain within the cha
   const css = compactCss(
     fs.readFileSync(new URL('../../../ui/style.css', import.meta.url), 'utf8'),
   );
-  assert.match(css, /\.message-bubble-row>\.message-actions\{position:relative;display:flex/);
+  assert.match(css, /\.message-bubble-row>\.message-actions\{[^}]*position:relative;display:flex/);
   assert.match(
     css,
     /\.reaction-menu\{position:absolute;left:auto;right:0;bottom:calc\(100% \+ 8px\)/,

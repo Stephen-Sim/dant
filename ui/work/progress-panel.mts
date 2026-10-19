@@ -6,6 +6,7 @@ interface ProgressPanelOptions {
   title: () => string;
   closeLabel: () => string;
   closeIcon: () => string;
+  resizeLabel?: () => string;
   onChange: () => void;
   onClose?: () => void;
   getScope?: () => string;
@@ -18,6 +19,7 @@ export function createProgressPanel({
   title,
   closeLabel,
   closeIcon,
+  resizeLabel = title,
   onChange,
   onClose = () => {},
   getScope = () => '',
@@ -61,7 +63,7 @@ export function createProgressPanel({
   }
   function render() {
     if (!visible) return '';
-    return `<aside class="progress-panel" data-progress-panel data-key="progress-panel" id="work-progress-panel" aria-labelledby="work-progress-panel-title" tabindex="-1"><div class="panel-header"><strong id="work-progress-panel-title">${escapeHtml(title())}</strong><button type="button" class="icon-btn" data-progress-panel-close title="${escapeHtml(closeLabel())}" aria-label="${escapeHtml(closeLabel())}">${closeIcon()}</button></div><div class="progress-panel-body work-progress-body" data-progress-panel-body data-key="progress-panel-body" tabindex="0" role="region" aria-label="${escapeHtml(title())}">${renderContent()}</div></aside>`;
+    return `<div class="resize-handle progress-resize-handle" data-workspace-resize="progress" data-key="progress-resize" role="separator" aria-label="${escapeHtml(resizeLabel())}" aria-controls="work-progress-panel" aria-orientation="vertical" tabindex="0"></div><aside class="progress-panel" data-progress-panel data-key="progress-panel" id="work-progress-panel" aria-labelledby="work-progress-panel-title" tabindex="-1"><div class="panel-header"><strong id="work-progress-panel-title">${escapeHtml(title())}</strong><button type="button" class="icon-btn" data-progress-panel-close title="${escapeHtml(closeLabel())}" aria-label="${escapeHtml(closeLabel())}">${closeIcon()}</button></div><div class="progress-panel-body work-progress-body" data-progress-panel-body data-key="progress-panel-body" tabindex="0" role="region" aria-label="${escapeHtml(title())}">${renderContent()}</div></aside>`;
   }
   function bind() {
     const panel = document.querySelector<HTMLElement>('[data-progress-panel]'),

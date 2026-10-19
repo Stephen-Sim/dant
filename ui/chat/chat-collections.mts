@@ -10,6 +10,7 @@ import type {
 import { localizeMessages } from '../../src/i18n/i18n.mts';
 import { languageInfo } from '../../src/i18n/languages.mts';
 import { collectionMessages } from './chat-collections-copy.mts';
+import { formatMessageTime } from './render-cache.mts';
 import { ConnectionStatus } from '../../src/contracts/states.mts';
 
 const COLLECTION_PAGE_SIZE = 50;
@@ -133,6 +134,19 @@ export function createChatCollections({
     ).slice(0, 240);
   const action = (label: string, attributes: string, disabled = false) =>
     `<button type="button" class="text-btn" ${attributes} ${disabled ? 'disabled' : ''}>${escape(label)}</button>`;
+  const removeAction = (message: ChatMessage, flag: MetadataFlag, attribute: string) => {
+    if (message[flag] !== true) return '';
+    const label = flag === 'pinned' ? copy().unpin : copy().unstar;
+    return `<button type="button" class="text-btn chat-collection-remove" data-key="remove-${flag}-${escape(message.id)}" ${attribute}="${escape(message.id)}" aria-label="${escape(label)}" title="${escape(label)}" ${!online() || pending.has(message.id) ? 'disabled' : ''}>${icon('x')}<span>${escape(label)}</span></button>`;
+  };
+  function messageTime(message: ChatMessage) {
+    if (typeof message.time !== 'number' || !Number.isFinite(message.time) || message.time <= 0)
+      return '';
+    const date = new Date(message.time);
+    if (!Number.isFinite(date.getTime())) return '';
+    const text = formatMessageTime(date, languageInfo(getState()?.settings?.language).locale, true);
+    return `<time datetime="${escape(date.toISOString())}">${escape(text)}</time>`;
+  }
   function renderMenu() {
     synchronize();
     if (getModal()) menuOpen = false;
@@ -179,9 +193,9 @@ export function createChatCollections({
     if (!selected) return '';
     const number = new Intl.NumberFormat(languageInfo(getState()?.settings?.language).locale),
       index = pinned.indexOf(selected);
-    return `<section class="chat-pinned-bar" data-key="chat-pinned-bar" aria-label="${escape(tr.pinned)}"><button type="button" class="chat-pinned-preview" data-collection-go="${escape(selected.id)}" aria-label="${escape(tr.go)}">${icon('pin') || '⌖'}<span><strong>${escape(tr.pinned)}</strong><small>${escape(snippet(selected))}</small></span></button>${pinned.length > 1 ? `<button type="button" class="text-btn" data-pin-next aria-label="${escape(tr.nextPin)}">${number.format(index + 1)} / ${number.format(pinned.length)}${icon('chevron-down')}</button>` : ''}</section>`;
+    return `<section class="chat-pinned-bar" data-key="chat-pinned-bar" aria-label="${escape(tr.pinned)}"><button type="button" class="chat-pinned-preview" data-collection-go="${escape(selected.id)}" aria-label="${escape(tr.go)}">${icon('pin') || '⌖'}<span><strong>${escape(tr.pinned)}</strong><small>${escape(snippet(selected))}</small></span></button>${pinned.length > 1 ? `<button type="button" class="text-btn" data-pin-next aria-label="${escape(tr.nextPin)}">${number.format(index + 1)} / ${number.format(pinned.length)}${icon('chevron-down')}</button>` : ''}${removeAction(selected, 'pinned', 'data-pin-remove')}</section>`;
   }
-  async function setFlag(id: string | undefined, flag: MetadataFlag) {
+  async function setFlag(id: string | undefined, flag: MetadataFlag, desired?: boolean) {
     synchronize();
     const state = getState(),
       message = messages().find((item) => item.id === id);
@@ -190,6 +204,7 @@ export function createChatCollections({
       return;
     }
     if (!message || !state?.conversationId || pending.has(message.id)) return;
+    if (desired === false && message[flag] !== true) return;
     const operation = ++sequence,
       owner = generation,
       ownerScope = scope,
@@ -201,7 +216,7 @@ export function createChatCollections({
         '/messages/' + encodeURIComponent(message.id) + '/metadata',
         {
           method: 'PATCH',
-          body: { conversationId, [flag]: message[flag] !== true },
+          body: { conversationId, [flag]: desired ?? message[flag] !== true },
           beforeSend: () => {
             synchronize();
             return (
@@ -249,6 +264,32 @@ export function createChatCollections({
       }
     }
   }
+  async function removeFlag(node: HTMLElement, flag: MetadataFlag, id: string | undefined) {
+    const owner = generation,
+      modal = getModal(),
+      restoreFocus = document.activeElement === node;
+    await setFlag(id, flag, false);
+    synchronize();
+    if (
+      !restoreFocus ||
+      owner !== generation ||
+      modal !== getModal() ||
+      (document.activeElement &&
+        document.activeElement !== document.body &&
+        document.activeElement !== node)
+    )
+      return;
+    const target = node.isConnected
+      ? node
+      : modal
+        ? (document.querySelector<HTMLElement>('.chat-collection-dialog [data-collection-go]') ??
+          document.querySelector<HTMLElement>(
+            '.chat-collection-dialog [data-action="close-modal"]',
+          ))
+        : (document.querySelector<HTMLElement>('.chat-pinned-preview') ??
+          document.querySelector<HTMLElement>('.header-actions [data-action="details"]'));
+    target?.focus({ preventScroll: true });
+  }
   function go(id: string | undefined) {
     synchronize();
     if (!id || !messages().some((message) => message.id === id)) return;
@@ -290,10 +331,18 @@ export function createChatCollections({
                 )
               : [];
           const links = kind === 'shared' && tab === 'links' ? messageLinks(message.text) : [];
-          return `<article class="chat-collection-item"><button type="button" class="chat-collection-message" data-collection-go="${escape(message.id)}"><small>${message.role === 'user' ? escape(tr.you) : 'dant'}</small><span>${escape(snippet(message))}</span><small>${escape(tr.go)}</small></button>${files.map((file) => `<div class="chat-collection-file"><span>${escape(file.name)}</span>${action(tr.open, `data-collection-file="${escape(file.id)}" data-collection-message="${escape(message.id)}"`)}${action(tr.download, `data-collection-download="${escape(file.id)}" data-collection-message="${escape(message.id)}"`)}</div>`).join('')}${links.map((url) => action(url, `data-collection-link="${escape(url)}" data-collection-message="${escape(message.id)}"`)).join('')}</article>`;
+          return `<article class="chat-collection-item" data-key="collection-${escape(message.id)}"><div class="chat-collection-meta"><strong>${message.role === 'user' ? escape(tr.you) : 'dant'}</strong>${messageTime(message)}</div><p class="chat-collection-message">${escape(snippet(message))}</p>${files.map((file) => `<div class="chat-collection-file"><span>${escape(file.name)}</span>${action(tr.open, `data-collection-file="${escape(file.id)}" data-collection-message="${escape(message.id)}"`)}${action(tr.download, `data-collection-download="${escape(file.id)}" data-collection-message="${escape(message.id)}"`)}</div>`).join('')}${links.map((url) => action(url, `data-collection-link="${escape(url)}" data-collection-message="${escape(message.id)}"`)).join('')}<div class="chat-collection-footer">${action(tr.go, `data-collection-go="${escape(message.id)}"`)}<div class="chat-collection-actions">${removeAction(message, 'pinned', 'data-collection-unpin')}${removeAction(message, 'starred', 'data-collection-unstar')}</div></div></article>`;
         })
         .join('');
-    return `<div class="modal-backdrop" data-key="chat-collection-${kind}"><section class="dialog chat-collection-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1"><div class="dialog-header"><h2 id="dialog-title">${escape(tr[kind])}</h2><button type="button" class="icon-btn" data-action="close-modal" aria-label="${escape(tr.close)}">${icon('x') || '×'}</button></div><div class="dialog-body">${kind === 'shared' ? `<div class="chat-collection-tabs" role="group" aria-label="${escape(tr.shared)}">${(['media', 'docs', 'links'] as const).map((value) => action(tr[value], `data-collection-tab="${value}" aria-pressed="${tab === value}"`)).join('')}</div>` : ''}<div class="chat-collection-list">${items || `<p class="muted">${escape(tr.empty)}</p>`}</div>${selected.length > limit ? action(tr.more, 'data-collection-more') : ''}</div></section></div>`;
+    const emptyIcon =
+      kind === 'starred'
+        ? 'star'
+        : tab === 'media'
+          ? 'paperclip'
+          : tab === 'docs'
+            ? 'file-text'
+            : 'external-link';
+    return `<div class="modal-backdrop" data-key="chat-collection-${kind}"><section class="dialog chat-collection-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1"><div class="dialog-header"><h2 id="dialog-title">${escape(tr[kind])}</h2><button type="button" class="icon-btn" data-action="close-modal" aria-label="${escape(tr.close)}">${icon('x') || '×'}</button></div><div class="dialog-body">${kind === 'shared' ? `<div class="chat-collection-tabs" role="group" aria-label="${escape(tr.shared)}">${(['media', 'docs', 'links'] as const).map((value) => action(tr[value], `data-collection-tab="${value}" aria-pressed="${tab === value}"`)).join('')}</div>` : ''}<div class="chat-collection-list">${items || `<div class="chat-collection-empty" role="status"><span aria-hidden="true">${icon(emptyIcon) || (kind === 'starred' ? '☆' : '')}</span><h3>${escape(kind === 'starred' ? tr.emptyStarred : tr.empty)}</h3>${kind === 'starred' ? `<p>${escape(tr.starHint)}</p>` : ''}</div>`}</div>${selected.length > limit ? action(tr.more, 'data-collection-more') : ''}</div></section></div>`;
   }
   function bind() {
     synchronize();
@@ -322,6 +371,13 @@ export function createChatCollections({
     });
     click('[data-message-pin]', (node) => setFlag(node.dataset.messagePin, 'pinned'));
     click('[data-message-star]', (node) => setFlag(node.dataset.messageStar, 'starred'));
+    click('[data-pin-remove]', (node) => removeFlag(node, 'pinned', node.dataset.pinRemove));
+    click('[data-collection-unpin]', (node) =>
+      removeFlag(node, 'pinned', node.dataset.collectionUnpin),
+    );
+    click('[data-collection-unstar]', (node) =>
+      removeFlag(node, 'starred', node.dataset.collectionUnstar),
+    );
     click('[data-collection-go]', (node) => go(node.dataset.collectionGo));
     click('[data-pin-next]', () => {
       const pinned = messages().filter((message) => message.pinned === true),

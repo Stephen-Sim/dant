@@ -1059,5 +1059,7 @@
   "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "這些檔案會逐位元組保留並包含在 ZIP 中。大型文字檔案與其他格式檔案在此編輯器中為唯讀。",
   "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "此技能超過支援範圍（最多 128 個支援檔案，每個 8 MiB，總計 9 MiB）。請在工作電腦減少檔案數量或大小後重試。現有檔案未被變更。",
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "使用 scripts/、references/ 或 assets/ 路徑，或根目錄的 README.md、LICENSE 和 NOTICE 檔案。最多可編輯 128 個文字檔案，每個 256 KiB，總計 1 MiB。較大的文字檔案與其他格式檔案會作為唯讀支援檔案保留。",
-  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "請選擇 SKILL.md 或包含一項技能的 ZIP，大小上限為 10 MiB。"
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "請選擇 SKILL.md 或包含一項技能的 ZIP，大小上限為 10 MiB。",
+  "No starred messages yet.": "還沒有星號訊息。",
+  "Star a message from its menu to keep it here.": "在訊息選單中加上星號，就能在這裡找到。"
 }

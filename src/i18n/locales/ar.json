@@ -1059,5 +1059,7 @@
   "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "تُحفظ هذه الملفات بايتًا ببايت وتُضمّن في ZIP. الملفات النصية الكبيرة والصيغ الأخرى للقراءة فقط في هذا المحرر.",
   "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "تتجاوز هذه المهارة الحدود المدعومة (128 ملفًا مساندًا، بحد 8 MiB لكل ملف و9 MiB إجمالًا). قلّل عدد الملفات أو حجمها على كمبيوتر العمل ثم أعد المحاولة. لم تتغير الملفات الحالية.",
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "استخدم المسارات scripts/ أو references/ أو assets/، أو ملفات README.md وLICENSE وNOTICE في المجلد الرئيسي. يمكنك تحرير ما يصل إلى 128 ملفًا نصيًا، بحد 256 KiB لكل ملف و1 MiB إجمالًا. تُحفظ الملفات النصية الأكبر والصيغ الأخرى كملفات مساندة للقراءة فقط.",
-  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "اختر SKILL.md أو ملف ZIP يحتوي على مهارة واحدة، بحجم لا يتجاوز 10 MiB."
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "اختر SKILL.md أو ملف ZIP يحتوي على مهارة واحدة، بحجم لا يتجاوز 10 MiB.",
+  "No starred messages yet.": "لا توجد رسائل مميزة بنجمة بعد.",
+  "Star a message from its menu to keep it here.": "ميّز رسالة بنجمة من قائمتها لتجدها هنا."
 }

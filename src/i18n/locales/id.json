@@ -1059,5 +1059,7 @@
   "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "File ini dipertahankan byte demi byte dan disertakan dalam ZIP. File teks besar dan format lainnya bersifat hanya-baca di editor ini.",
   "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "Skill ini melebihi batas yang didukung (128 file pendukung, masing-masing 8 MiB dan total 9 MiB). Kurangi jumlah atau ukuran file di komputer kerja, lalu coba lagi. File yang ada tidak diubah.",
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Gunakan jalur scripts/, references/, atau assets/, atau file README.md, LICENSE, dan NOTICE di akar. Edit hingga 128 file teks, masing-masing 256 KiB dan total 1 MiB. File teks yang lebih besar dan format lainnya dipertahankan sebagai file pendukung hanya-baca.",
-  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Pilih SKILL.md atau ZIP yang berisi satu skill, hingga 10 MiB."
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Pilih SKILL.md atau ZIP yang berisi satu skill, hingga 10 MiB.",
+  "No starred messages yet.": "Belum ada pesan berbintang.",
+  "Star a message from its menu to keep it here.": "Beri bintang pada pesan dari menunya agar mudah ditemukan di sini."
 }

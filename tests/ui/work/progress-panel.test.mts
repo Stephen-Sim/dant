@@ -185,7 +185,13 @@ test('Work progress docks between retained chat and computer; closing it preserv
     workspace = defined(f.document.querySelector('.workspace'));
   assert.deepEqual(
     [...workspace.children].map((node) => node.className),
-    ['conversation', 'progress-panel', 'resize-handle', 'computer-panel'],
+    [
+      'conversation',
+      'resize-handle progress-resize-handle',
+      'progress-panel',
+      'resize-handle',
+      'computer-panel',
+    ],
   );
   assert.equal(f.document.querySelector('.modal-backdrop'), null);
   assert.equal(panel.getAttribute('aria-modal'), null);
@@ -270,15 +276,15 @@ test('header keyboard order is call, work progress, computer and details; respon
   );
   assert.match(css, /\.progress-panel\{display:flex;flex-direction:column/);
   assert.match(css, /\.progress-panel-body\{[^}]*min-height:0;[^}]*overflow:auto/);
-  assert.match(css, /@media\(max-width:1200px\)\{\.workspace\.progress-visible\{display:grid/);
+  assert.match(css, /\.workspace\.progress-visible\[data-workspace-layout='split'\]\{display:grid/);
   assert.match(css, /\.workspace\.progress-visible>\.computer-panel\{position:static;inset:auto/);
   assert.match(
     css,
-    /@media\(max-width:760px\)\{\.workspace\.progress-visible\{grid-template-columns:minmax\(0,1fr\)/,
+    /\.workspace\.progress-visible\[data-workspace-layout='stacked'\]\{display:grid;grid-template-columns:minmax\(0,1fr\)/,
   );
   assert.match(
     css,
-    /\.workspace\.progress-visible\.computer-visible\{grid-template-rows:repeat\(3,minmax\(180px,1fr\)\)/,
+    /\.workspace\.progress-visible\.computer-visible\[data-workspace-layout='stacked'\]\{grid-template-rows:repeat\(3,minmax\(180px,1fr\)\)/,
   );
 });
 

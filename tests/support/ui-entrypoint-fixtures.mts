@@ -178,6 +178,7 @@ export function uiEntrypointFixture<T extends object>(
   context: T,
 ): Omit<T, keyof UiMainFunctions> & UiMainFunctions & Omit<Partial<MainBindings>, keyof T> {
   const bindings: Partial<MainBindings> = {
+    workspaceLayout: { bind() {}, dispose() {} },
     chatCollections: {
       renderMenu: () => '',
       toggleMenu() {},

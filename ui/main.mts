@@ -144,6 +144,7 @@ import {
 } from './work/work-progress.mts';
 import { createProgressActions } from './work/progress-actions.mts';
 import { createProgressPanel } from './work/progress-panel.mts';
+import { createWorkspaceLayout } from './work/workspace-layout.mts';
 import { createNativeCallOverlay } from './platform/native-call-overlay.mts';
 import { createNativeTray } from './platform/native-tray.mts';
 import { createTextEditor } from './platform/text-editor.mts';
@@ -313,6 +314,7 @@ const progressPanel = createProgressPanel({
   title: () => t('progress'),
   closeLabel: () => t('close'),
   closeIcon: () => ico('x'),
+  resizeLabel: () => t('resizeProgress'),
   onChange: render,
   onClose: () => progressActions.onClose(),
   getScope: () =>
@@ -322,6 +324,7 @@ const progressPanel = createProgressPanel({
       state?.settings.vm?.provider ?? null,
     ]),
 });
+const workspaceLayout = createWorkspaceLayout({ document, window, storage: localStorage });
 const nativeCallOverlay = createNativeCallOverlay({
   desktop: Boolean(window.__TAURI_INTERNALS__),
   onAction: handleNativeCallAction,
@@ -1511,14 +1514,6 @@ function positionReactionMenus() {
 function renderComputer() {
   const online = computerReachable(),
     agentOnline = computerExecutorReady(),
-    maximum = Math.max(320, innerWidth - 52 - 320),
-    width = Math.max(
-      320,
-      Math.min(
-        maximum,
-        Number(localStorage.getItem('computerWidth')) || Math.round((innerWidth - 52) * 0.64),
-      ),
-    ),
     pending = pendingActions.has('takeover'),
     blocked = callBlocksControl(),
     controlHint = blocked
@@ -1527,7 +1522,7 @@ function renderComputer() {
         ? 'agentOfflineControl'
         : null,
     controlHintId = blocked ? 'takeover-call-hint' : 'takeover-agent-hint';
-  return `<div data-key="resize" class="resize-handle" role="separator" aria-label="${t('resizeComputer')}" aria-orientation="vertical" tabindex="0"></div><aside data-key="computer-panel" class="computer-panel" style="width:${width}px"><div class="panel-header"><strong>${t('computer')}</strong>${button('hide-computer', 'x', t('close'))}</div><div class="computer-meta"><span>${online ? t(!agentOnline ? 'vmConnectedAgentOffline' : humanControl() ? 'takeover' : 'controlledByDant') : t('computerEmpty')}</span>${button(online ? 'screen-refresh' : 'connect', 'refresh-cw', t(online ? 'refreshDesktop' : 'refresh'))}</div>${online && !agentOnline ? `<div class="computer-agent-notice" role="status"><p>${t('agentOfflineControl')}</p>${button('connect', 'refresh-cw', t('refresh'), 'text-btn')}</div>` : ''}<div class="screen-frame"><div class="desktop-surface">${online ? `<div class="screen-target ${computerInputReady() ? 'controlling' : ''}" id="screen-target" tabindex="${computerInputReady() ? 0 : -1}" aria-label="${t('vmDesktop')}"><img id="screen" ${screenURL ? `src="${screenURL}"` : ''} alt="${t('ubuntuDesktop')}" draggable="false"><textarea id="vm-ime" ${computerInputReady() ? '' : 'disabled'} aria-label="${t('vmKeyboard')}" autocapitalize="off" autocomplete="off"></textarea>${!screenURL || screenError ? `<div class="screen-status" data-key="screen-status">${esc(screenError ? t('screenFailed') : t('loadingDesktop'))}</div>` : ''}</div>` : `<div class="computer-empty">${ico('monitor')}<h3>${t('computerEmpty')}</h3><p>${t('computerSub')}</p><button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button></div>`}</div></div><div class="computer-footer ${controlHint ? 'control-unavailable' : ''}">${online ? `<button type="button" class="text-btn primary takeover-button" data-action="takeover" ${pending || controlHint ? 'disabled' : ''} ${controlHint ? `title="${t(controlHint)}" aria-describedby="${controlHintId}"` : ''}>${t(pending ? (humanControl() ? 'returningControl' : 'takingControl') : humanControl() ? 'give' : 'take')}</button>` : `<span>Ubuntu · ${t('computerHint')}</span>`}${controlHint ? `<p id="${controlHintId}" class="takeover-call-hint" role="status">${t(controlHint)}</p>` : ''}</div></aside>`;
+  return `<div data-key="resize" class="resize-handle" data-workspace-resize="computer" role="separator" aria-label="${t('resizeComputer')}" aria-controls="computer-panel" aria-orientation="vertical" tabindex="0"></div><aside data-key="computer-panel" id="computer-panel" class="computer-panel"><div class="panel-header"><strong>${t('computer')}</strong>${button('hide-computer', 'x', t('close'))}</div><div class="computer-meta"><span>${online ? t(!agentOnline ? 'vmConnectedAgentOffline' : humanControl() ? 'takeover' : 'controlledByDant') : t('computerEmpty')}</span>${button(online ? 'screen-refresh' : 'connect', 'refresh-cw', t(online ? 'refreshDesktop' : 'refresh'))}</div>${online && !agentOnline ? `<div class="computer-agent-notice" role="status"><p>${t('agentOfflineControl')}</p>${button('connect', 'refresh-cw', t('refresh'), 'text-btn')}</div>` : ''}<div class="screen-frame"><div class="desktop-surface">${online ? `<div class="screen-target ${computerInputReady() ? 'controlling' : ''}" id="screen-target" tabindex="${computerInputReady() ? 0 : -1}" aria-label="${t('vmDesktop')}"><img id="screen" ${screenURL ? `src="${screenURL}"` : ''} alt="${t('ubuntuDesktop')}" draggable="false"><textarea id="vm-ime" ${computerInputReady() ? '' : 'disabled'} aria-label="${t('vmKeyboard')}" autocapitalize="off" autocomplete="off"></textarea>${!screenURL || screenError ? `<div class="screen-status" data-key="screen-status">${esc(screenError ? t('screenFailed') : t('loadingDesktop'))}</div>` : ''}</div>` : `<div class="computer-empty">${ico('monitor')}<h3>${t('computerEmpty')}</h3><p>${t('computerSub')}</p><button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button></div>`}</div></div><div class="computer-footer ${controlHint ? 'control-unavailable' : ''}">${online ? `<button type="button" class="text-btn primary takeover-button" data-action="takeover" ${pending || controlHint ? 'disabled' : ''} ${controlHint ? `title="${t(controlHint)}" aria-describedby="${controlHintId}"` : ''}>${t(pending ? (humanControl() ? 'returningControl' : 'takingControl') : humanControl() ? 'give' : 'take')}</button>` : `<span>Ubuntu · ${t('computerHint')}</span>`}${controlHint ? `<p id="${controlHintId}" class="takeover-call-hint" role="status">${t(controlHint)}</p>` : ''}</div></aside>`;
 }
 function renderSettings() {
   const settings = currentState().settings,
@@ -3010,35 +3005,7 @@ function bind() {
   const callView = document.querySelector<HTMLElement>('.call-view');
   if (callView) callView.onclick = () => audio?.play().catch(() => {});
   if (document.querySelector<HTMLElement>('.schedules-page')) scheduledTasks.bind();
-  const handle = document.querySelector<HTMLElement>('.resize-handle');
-  if (handle) {
-    const setWidth = (width: number) => {
-      const progressWidth =
-        document.querySelector<HTMLElement>('[data-progress-panel]')?.offsetWidth || 0;
-      const bounded = Math.max(
-        320,
-        Math.min(Math.max(320, innerWidth - 52 - 320 - progressWidth), width),
-      );
-      const panel = document.querySelector<HTMLElement>('.computer-panel');
-      if (panel) panel.style.width = bounded + 'px';
-      localStorage.setItem('computerWidth', String(bounded));
-    };
-    handle.onpointerdown = (e) => {
-      e.preventDefault();
-      handle.setPointerCapture(e.pointerId);
-      handle.onpointermove = (ev) => setWidth(innerWidth - ev.clientX);
-      handle.onpointerup = handle.onpointercancel = () => (handle.onpointermove = null);
-    };
-    handle.onkeydown = (e) => {
-      if (['ArrowLeft', 'ArrowRight'].includes(e.key)) {
-        e.preventDefault();
-        setWidth(
-          (document.querySelector<HTMLElement>('.computer-panel')?.offsetWidth || 320) +
-            (e.key === 'ArrowLeft' ? 20 : -20),
-        );
-      }
-    };
-  }
+  workspaceLayout.bind();
   bindComputerInput();
   document
     .querySelectorAll<HTMLAnchorElement>(
@@ -4705,6 +4672,7 @@ window.addEventListener('resize', () => {
 window.addEventListener('beforeunload', () => {
   unloading = true;
   chatScroll.dispose();
+  workspaceLayout.dispose();
   messageWindow.dispose();
   chatCollections.dispose();
   memorySettings.dispose();
@@ -4941,6 +4909,7 @@ export type MainBindings = {
   document: Document;
   progressActions: typeof progressActions;
   progressPanel: typeof progressPanel;
+  workspaceLayout: Pick<typeof workspaceLayout, 'bind' | 'dispose'>;
   workDisclosures: typeof workDisclosures;
   chatHistory: typeof chatHistory;
   chatCollections: typeof chatCollections;
