@@ -35,7 +35,7 @@ Windows PowerShell 的保护脚本为固定内容。Key 仅通过子进程 stdin
 测试可通过构造参数注入 `platform`、`env`、`protect`、`unprotect` 或 `spawnProcess`。测试用临时虚构 token 检查原子保存、失败保留、清除、非 Windows 行为、子进程参数/stdout、Windows DPAPI 往返和篡改拒绝，不读取已有用户凭据。
 
 ```powershell
-node --test tests/secrets.test.mjs
+node --test tests/security/secrets.test.mts
 ```
 
 参考：[Microsoft ProtectedData](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata)、[CurrentUser 保护范围](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.dataprotectionscope)。

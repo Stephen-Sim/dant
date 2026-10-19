@@ -1,24 +1,5 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "allowJs": false,
-    "checkJs": false,
-    "strict": true,
-    "noEmit": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true,
-    "skipLibCheck": false,
-    "types": ["node"],
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "resolveJsonModule": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
-  },
-  "include": ["src/**/*.mts", "ui/**/*.mts", "src/contracts/**/*.ts", "tests/types/**/*.ts"]
+  "extends": "./tsconfig.base.json",
+  "include": ["src/**/*.mts", "src/**/*.ts", "scripts/**/*.mts", "vm/**/*.mts", "vite.config.mts"],
+  "exclude": ["scripts/**/*.test.mts"]
 }

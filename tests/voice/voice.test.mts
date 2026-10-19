@@ -1,0 +1,2111 @@
+import { operationError } from '../../src/runtime/errors.mts';
+import type {
+  VoiceOptions,
+  VoiceSocket,
+  VoiceConversationValue,
+} from '../../src/voice/voice-types.ts';
+import type { WorkMessage, EngineToolContext } from '../../src/work/engine-types.ts';
+import type { ToolArguments } from '../../src/runtime/protocol.ts';
+import type { ClientOptions } from 'ws';
+import { observedRecord } from '../support/service-fixtures.mts';
+import { defined } from '../support/fixture-assertions.mts';
+import type { TestContext as NodeTestContext } from 'node:test';
+import test from 'node:test';
+import { SKILL_SUPPORT_FILE_LIMIT } from '../../src/skills/skill-limits.mts';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { Voice, VOICES, VOICE_TOOLS, DEFAULT_VOICE_MODEL } from '../../src/voice/voice.mts';
+import {
+  TASK_LIST_SCHEMA,
+  TASK_CANCEL_SCHEMA,
+  taskListInput,
+  taskCancelInput,
+} from '../../src/work/task-cancel.mts';
+
+const KEY = 'sk-proj-fake-key-for-voice-tests-only';
+const SDP =
+  'v=0\r\ns=voice\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n';
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const response = (sdp = SDP, location = '/v1/realtime/calls/rtc_test') =>
+  new Response(sdp, {
+    status: 201,
+    headers: { Location: location, 'Content-Type': 'application/sdp' },
+  });
+interface FixtureWireEvent {
+  type: string;
+  event_id?: string;
+  item?: {
+    id?: string;
+    type?: string;
+    role?: string;
+    call_id?: string;
+    output?: string;
+    content?: Array<{ type?: string; text?: string }>;
+  };
+  session?: { type?: string; instructions?: string };
+}
+interface FixtureSocket extends VoiceSocket {
+  url: string;
+  options: ClientOptions;
+  sent: FixtureWireEvent[];
+  closeCount: number;
+  emit(name: string, ...args: unknown[]): boolean;
+}
+interface VoiceHarnessOptions extends Omit<VoiceOptions, 'fetchImpl'> {
+  socketError?: boolean;
+  holdSocket?: boolean;
+  onSend?: (socket: FixtureSocket, event: FixtureWireEvent) => void;
+  fetchImpl?: (url: string, options: RequestInit) => Response | Promise<Response>;
+}
+function fixtureWire(value: unknown): FixtureWireEvent {
+  const source = observedRecord(value);
+  assert.equal(typeof source.type, 'string');
+  const result: FixtureWireEvent = { type: String(source.type) };
+  if (typeof source.event_id === 'string') result.event_id = source.event_id;
+  if (source.item !== undefined) {
+    const item = observedRecord(source.item);
+    result.item = {};
+    for (const key of ['id', 'type', 'role', 'call_id', 'output'] as const)
+      if (typeof item[key] === 'string') result.item[key] = item[key];
+    if (Array.isArray(item.content))
+      result.item.content = item.content.map((value) => {
+        const part = observedRecord(value);
+        return {
+          ...(typeof part.type === 'string' ? { type: part.type } : {}),
+          ...(typeof part.text === 'string' ? { text: part.text } : {}),
+        };
+      });
+  }
+  if (source.session !== undefined) {
+    const session = observedRecord(source.session);
+    result.session = {
+      ...(typeof session.type === 'string' ? { type: session.type } : {}),
+      ...(typeof session.instructions === 'string' ? { instructions: session.instructions } : {}),
+    };
+  }
+  return result;
+}
+function formBody(request: { options: RequestInit }): FormData {
+  assert.ok(request.options.body instanceof FormData);
+  return request.options.body;
+}
+function conversationValue(
+  events: { conversation: VoiceConversationValue[] },
+  index: number,
+): VoiceConversationValue {
+  return defined(events.conversation[index]);
+}
+function currentCall(voice: Voice) {
+  return voice.call;
+}
+function authorization(request: { options: RequestInit }): string | null {
+  return new Headers(request.options.headers).get('Authorization');
+}
+function fixtureText(value: unknown): string {
+  assert.equal(typeof value, 'string');
+  return String(value);
+}
+function requestSession(request: { options: RequestInit }) {
+  const value: unknown = JSON.parse(fixtureText(formBody(request).get('session'))),
+    session = observedRecord(value),
+    audio = observedRecord(session.audio),
+    input = observedRecord(audio.input),
+    output = observedRecord(audio.output);
+  assert.ok(Array.isArray(session.tools));
+  return {
+    model: fixtureText(session.model),
+    instructions: fixtureText(fixtureText(session.instructions)),
+    audio: {
+      input: { transcription: input.transcription },
+      output: { voice: fixtureText(output.voice) },
+    },
+    tools: session.tools.map((value) => {
+      const tool = observedRecord(value);
+      return { name: fixtureText(tool.name), parameters: tool.parameters };
+    }),
+  };
+}
+function fixtureJson(value: unknown): unknown {
+  return JSON.parse(fixtureText(value));
+}
+function harness(t: NodeTestContext, overrides: VoiceHarnessOptions = {}) {
+  const requests: Array<{ url: string; options: RequestInit }> = [],
+    sockets: FixtureSocket[] = [],
+    tasks: Array<{ text: string; context: EngineToolContext }> = [],
+    tools: Array<{ name: string; args: ToolArguments }> = [],
+    events: {
+      closed: unknown[];
+      notices: string[];
+      changes: unknown[];
+      conversation: VoiceConversationValue[];
+    } = { closed: [], notices: [], changes: [], conversation: [] };
+  class Socket extends EventEmitter {
+    readonly url: string;
+    readonly options: ClientOptions;
+    readyState: number;
+    readonly sent: FixtureWireEvent[];
+    closeCount: number;
+    constructor(url: string, options: ClientOptions) {
+      super();
+      this.url = url;
+      this.options = options;
+      this.readyState = 0;
+      this.sent = [];
+      this.closeCount = 0;
+      sockets.push(this);
+      queueMicrotask(() => {
+        if (this.readyState !== 0) return;
+        if (overrides.socketError) {
+          this.readyState = 3;
+          this.emit('error', Error(`Transport exposed ${KEY}`));
+          this.emit('close');
+        } else if (!overrides.holdSocket) {
+          this.readyState = 1;
+          this.emit('open');
+        }
+      });
+    }
+    send(value: string, callback?: (error?: Error) => void) {
+      const raw: unknown = JSON.parse(value),
+        event = fixtureWire(raw);
+      this.sent.push(event);
+      callback?.();
+      overrides.onSend?.(this, event);
+    }
+    close() {
+      this.closeCount++;
+      this.readyState = 3;
+      queueMicrotask(() => this.emit('close'));
+    }
+    terminate() {
+      this.close();
+    }
+  }
+  const voice = new Voice({
+    getKey: overrides.getKey || (() => KEY),
+    runTask:
+      overrides.runTask ||
+      (async (text, context) => {
+        tasks.push({ text, context });
+        return { status: 'completed', text: 'VM task completed' };
+      }),
+    tool:
+      overrides.tool ||
+      (async (name, args) => {
+        tools.push({ name, args });
+        return { success: true };
+      }),
+    context: overrides.context || (() => 'The current text chat is about a report.'),
+    onConversationItem:
+      overrides.onConversationItem || (async (item) => events.conversation.push(item)),
+    WebSocketImpl: Socket,
+    fetchImpl: async (inputUrl, options = {}) => {
+      const url = String(inputUrl);
+      requests.push({ url, options });
+      return overrides.fetchImpl
+        ? await overrides.fetchImpl(url, options)
+        : String(url).endsWith('/hangup')
+          ? new Response(null, { status: 204 })
+          : response();
+    },
+    // Non-timeout tests must not race a busy Windows/CI event loop. The timeout
+    // regression below opts into a deliberately short, explicit deadline.
+    connectTimeoutMs: overrides.connectTimeoutMs || 5000,
+    requestTimeoutMs: overrides.requestTimeoutMs || 30000,
+    hangupTimeoutMs: overrides.hangupTimeoutMs || 1000,
+    contextTimeoutMs: overrides.contextTimeoutMs || 5000,
+  });
+  voice.on('closed', (event) => events.closed.push(event));
+  voice.on('notice', (message) => events.notices.push(message));
+  voice.on('change', (state) => events.changes.push(state));
+  t.after(() => voice.close().catch(() => {}));
+  return { voice, requests, sockets, tasks, tools, events };
+}
+function emit(socket: FixtureSocket | undefined, event: unknown) {
+  defined(socket).emit('message', Buffer.from(JSON.stringify(event)));
+}
+function completed(output: unknown[], status = 'completed') {
+  return { type: 'response.done', response: { status, output } };
+}
+function call(name: string, args: unknown, id = 'call_tool') {
+  return {
+    type: 'function_call',
+    status: 'completed',
+    name,
+    arguments: JSON.stringify(args),
+    call_id: id,
+  };
+}
+
+test('completed API voice responses expose provider usage independently of transcripts and tools', async (t) => {
+  const { voice, sockets } = harness(t),
+    usage: unknown[] = [];
+  voice.on('usage', (event) => usage.push(event));
+  await voice.start({ sdp: SDP, callId: 'usage-call' });
+  const reported = {
+    input_tokens: 40,
+    output_tokens: 10,
+    total_tokens: 50,
+    input_token_details: { cached_tokens: 5 },
+  };
+  emit(sockets[0], {
+    type: 'response.done',
+    response: { id: 'response-usage', status: 'cancelled', output: [], usage: reported },
+  });
+  await tick();
+  assert.deepEqual(usage, [
+    { callId: 'usage-call', responseId: 'response-usage', usage: reported },
+  ]);
+  assert.equal(defined(currentCall(voice)).status, 'active');
+});
+
+test('voice uses the host key only for API and sideband authentication and returns SDP alone', async (t) => {
+  const { voice, requests, sockets, events } = harness(t);
+  assert.equal(voice.call, null);
+  assert.equal(requests.length, 0);
+  assert.deepEqual(await voice.start({ sdp: SDP, memory: 'Prefers Chinese' }), { sdp: SDP });
+  const session = requestSession(defined(requests[0]));
+  assert.equal(defined(requests[0]).url, 'https://api.openai.com/v1/realtime/calls');
+  assert.equal(defined(requests[0]).options.redirect, 'error');
+  assert.equal(authorization(defined(requests[0])), `Bearer ${KEY}`);
+  assert.equal(formBody(defined(requests[0])).get('sdp'), SDP);
+  assert.equal(session.model, DEFAULT_VOICE_MODEL);
+  assert.equal(session.audio.output.voice, 'marin');
+  assert.deepEqual(session.audio.input.transcription, { model: 'gpt-transcribe' });
+  assert.match(fixtureText(session.instructions), /Prefers Chinese/);
+  assert.match(fixtureText(session.instructions), /current text chat/);
+  assert.deepEqual(
+    session.tools.map((tool) => tool.name),
+    [
+      'run_task',
+      'task_list',
+      'task_cancel',
+      'memory_write',
+      'send_message',
+      'react_message',
+      'credential_find',
+      'credential_get',
+      'credential_request',
+      'credential_store',
+      'skill_list',
+      'skill_get',
+      'skill_save',
+      'send_file',
+      'schedule_list',
+      'schedule_save',
+      'schedule_delete',
+      'end_call',
+    ],
+  );
+  assert.equal(defined(sockets[0]).url, 'wss://api.openai.com/v1/realtime?call_id=rtc_test');
+  assert.equal(defined(defined(sockets[0]).options.headers).Authorization, `Bearer ${KEY}`);
+  assert.equal(defined(currentCall(voice)).status, 'active');
+  assert.equal(JSON.stringify({ state: voice.state, events }).includes(KEY), false);
+  assert.ok(VOICES.includes('cedar'));
+  assert.equal(VOICE_TOOLS.length, 18);
+});
+
+test('API voice can list actual task IDs without executing work and rejects task-list selectors', async (t) => {
+  assert.deepEqual(TASK_LIST_SCHEMA, {});
+  assert.deepEqual(taskListInput({}), {});
+  assert.deepEqual(taskListInput(Object.create(null)), {});
+  for (const value of [
+    null,
+    [],
+    { workId: 'other' },
+    { conversationId: 'other' },
+    { status: 'running' },
+    Object.create({}),
+  ])
+    assert.throws(() => taskListInput(value), /empty arguments/);
+  const items = [
+      {
+        workId: 'actual-work',
+        title: 'Verify the change',
+        status: 'continuing',
+        steps: { completed: 1, total: 2 },
+      },
+    ],
+    h = harness(t, {
+      tool: async (name, args) => {
+        assert.equal(name, 'task_list');
+        assert.deepEqual(args, {});
+        return { items };
+      },
+    });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0],
+    session = requestSession(defined(h.requests[0])),
+    spec = session.tools.find((tool) => tool.name === 'task_list');
+  assert.deepEqual(defined(spec).parameters, {
+    type: 'object',
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  });
+  assert.match(fixtureText(session.instructions), /Use read-only task_list/);
+  assert.match(fixtureText(session.instructions), /never guess an ID/);
+  emit(socket, completed([call('task_list', {}, 'list-work')]));
+  await tick();
+  assert.deepEqual(
+    fixtureJson(
+      defined(defined(defined(socket).sent.find((item) => item.item?.call_id === 'list-work')).item)
+        .output,
+    ),
+    { items },
+  );
+  emit(socket, completed([call('task_list', { workId: 'other' }, 'forged-list')]));
+  await tick();
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((item) => item.item?.call_id === 'forged-list')).item,
+        ).output,
+      ),
+    ).success,
+    false,
+  );
+  assert.equal(h.tasks.length, 0);
+  assert.equal(defined(h.voice.call).status, 'active');
+});
+
+test('task cancellation has one work ID and cannot accept caller-selected execution identifiers', () => {
+  assert.deepEqual(Object.keys(TASK_CANCEL_SCHEMA), ['workId']);
+  assert.equal(taskCancelInput({ workId: 'known-work' }), 'known-work');
+  for (const value of [
+    null,
+    [],
+    {},
+    { workId: '' },
+    { workId: ' ' },
+    { workId: 'a b' },
+    { workId: 'a\n' },
+    { workId: 'x'.repeat(129) },
+    { workId: 7 },
+    { workId: 'known', turnId: 'other' },
+    { workId: 'known', callId: 'other' },
+    { workId: 'known', status: 'completed' },
+    Object.assign(Object.create({}), { workId: 'known' }),
+  ])
+    assert.throws(() => taskCancelInput(value), /existing workId/);
+});
+
+test('API voice cancellation preserves requested versus confirmed results without creating work or ending the call', async (t) => {
+  const invoked: Array<{ name: string; args: ToolArguments; context: EngineToolContext }> = [],
+    h = harness(t, {
+      tool: async (name, args, context) => {
+        invoked.push({ name, args, context });
+        return args.workId === 'running-work'
+          ? { cancelRequested: true, workId: args.workId, turnId: 'current-turn' }
+          : { cancelled: true, workId: args.workId };
+      },
+    });
+  await h.voice.start({ sdp: SDP, callId: 'current-call' });
+  const socket = h.sockets[0],
+    session = requestSession(defined(h.requests[0])),
+    spec = session.tools.find((tool) => tool.name === 'task_cancel');
+  assert.deepEqual(defined(spec).parameters, {
+    type: 'object',
+    properties: TASK_CANCEL_SCHEMA,
+    required: ['workId'],
+    additionalProperties: false,
+  });
+  assert.match(fixtureText(session.instructions), /Do not infer cancellation from silence/);
+  assert.match(fixtureText(session.instructions), /cancelRequested:true/);
+  const event = completed([
+    call('task_cancel', { workId: 'running-work' }, 'cancel-running'),
+    call('task_cancel', { workId: 'inactive-work' }, 'cancel-inactive'),
+  ]);
+  emit(socket, event);
+  await tick();
+  emit(socket, event);
+  await tick();
+  assert.deepEqual(
+    invoked.map(({ name, args }) => ({ name, args })),
+    [
+      { name: 'task_cancel', args: { workId: 'running-work' } },
+      { name: 'task_cancel', args: { workId: 'inactive-work' } },
+    ],
+  );
+  assert.ok(
+    invoked.every(
+      (item) => item.context.callId === 'current-call' && defined(item.context.isCurrent)(),
+    ),
+  );
+  const outputs = defined(socket)
+    .sent.filter((item) => item.type === 'conversation.item.create')
+    .map((item) => fixtureJson(defined(item.item).output));
+  assert.deepEqual(outputs, [
+    { cancelRequested: true, workId: 'running-work', turnId: 'current-turn' },
+    { cancelled: true, workId: 'inactive-work' },
+  ]);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(defined(h.voice.call).status, 'active');
+  assert.equal(h.requests.filter((request) => request.url.endsWith('/hangup')).length, 0);
+  for (const [index, args] of [
+    {},
+    { workId: '' },
+    { workId: 'a b' },
+    { workId: 'valid', turnId: 'forged' },
+    { workId: 'valid', callId: 'forged' },
+  ].entries())
+    emit(socket, completed([call('task_cancel', args, 'bad-cancel-' + index)]));
+  await tick();
+  assert.equal(invoked.length, 2);
+  assert.ok(
+    defined(socket)
+      .sent.filter((item) => item.item?.call_id?.startsWith('bad-cancel-'))
+      .every((item) => observedRecord(fixtureJson(defined(item.item).output)).success === false),
+  );
+});
+
+test('missing keys and invalid offers fail before sending requests', async (t) => {
+  const h = harness(t, { getKey: () => '' });
+  await assert.rejects(h.voice.start({ sdp: SDP }), /Add an OpenAI API key/);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.voice.call, null);
+  await assert.rejects(h.voice.start({ sdp: 'not SDP' }), /valid WebRTC/);
+  assert.equal(h.requests.length, 0);
+  await assert.rejects(h.voice.start({ sdp: SDP, voice: 'unsupported' }), /Unsupported voice/);
+  assert.equal(h.requests.length, 0);
+});
+
+test('HTTP failures do not echo the API key or server response body', async (t) => {
+  const h = harness(t, {
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ error: { message: `Invalid Authorization Bearer ${KEY}` } }), {
+        status: 401,
+      }),
+  });
+  let failure;
+  try {
+    await h.voice.start({ sdp: SDP });
+  } catch (error) {
+    failure = error;
+  }
+  assert.match(fixtureText(observedRecord(failure).message), /key was rejected/);
+  assert.equal(
+    JSON.stringify({
+      error: observedRecord(failure).message,
+      state: h.voice.state,
+      events: h.events,
+    }).includes(KEY),
+    false,
+  );
+  assert.equal(h.voice.call, null);
+  assert.equal(h.sockets.length, 0);
+});
+
+test('network and WebSocket errors are sanitized even when the transport error contains headers', async (t) => {
+  const network = harness(t, {
+    fetchImpl: async () => {
+      throw Error(`Authorization: Bearer ${KEY}`);
+    },
+  });
+  await assert.rejects(
+    network.voice.start({ sdp: SDP }),
+    (error) =>
+      !fixtureText(observedRecord(error).message).includes(KEY) &&
+      /could not be reached/.test(fixtureText(observedRecord(error).message)),
+  );
+  const socket = harness(t, { socketError: true });
+  await assert.rejects(socket.voice.start({ sdp: SDP }), /control connection failed/);
+  assert.equal(socket.requests.filter((request) => request.url.endsWith('/hangup')).length, 1);
+  assert.equal(
+    JSON.stringify({ state: socket.voice.state, events: socket.events }).includes(KEY),
+    false,
+  );
+});
+
+test('an invalid SDP answer is rejected and its created remote call is hung up', async (t) => {
+  const h = harness(t, {
+    fetchImpl: async (url) =>
+      String(url).endsWith('/hangup') ? new Response(null, { status: 204 }) : response('not SDP'),
+  });
+  await assert.rejects(h.voice.start({ sdp: SDP }), /invalid audio connection answer/);
+  assert.equal(h.requests.filter((request) => request.url.endsWith('/hangup')).length, 1);
+  assert.equal(h.sockets.length, 0);
+  assert.equal(h.voice.call, null);
+});
+
+test('untrusted call locations cannot redirect the key or sideband connection', async (t) => {
+  const h = harness(t, {
+    fetchImpl: async () => response(SDP, 'https://attacker.invalid/v1/realtime/calls/rtc_secret'),
+  });
+  await assert.rejects(h.voice.start({ sdp: SDP }), /valid call identifier/);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.sockets.length, 0);
+});
+
+test('completed function calls run on the coworker adapter once and return actual results', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  const event = completed([
+    call('run_task', { text: 'Build the report' }, 'call_task'),
+    call('memory_write', { text: 'Prefers Chinese' }, 'call_memory'),
+    call('send_message', { text: 'Report link' }, 'call_message'),
+    call('send_file', { path: '/home/dant/work/report.pdf' }, 'call_file'),
+  ]);
+  emit(socket, event);
+  await tick();
+  emit(socket, event);
+  await tick();
+  assert.equal(h.tasks.length, 1);
+  assert.equal(defined(h.tasks[0]).text, 'Build the report');
+  assert.deepEqual(
+    h.tools.map((item) => item.name),
+    ['memory_write', 'send_message', 'send_file'],
+  );
+  const outputs = defined(socket).sent.filter((item) => item.type === 'conversation.item.create');
+  assert.equal(outputs.length, 4);
+  assert.deepEqual(
+    fixtureJson(
+      defined(defined(outputs.find((item) => defined(item.item).call_id === 'call_task')).item)
+        .output,
+    ),
+    { status: 'completed', text: 'VM task completed' },
+  );
+  assert.equal(defined(socket).sent.filter((item) => item.type === 'response.create').length, 1);
+});
+
+test('cancelled and incomplete argument events cannot trigger VM actions', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  for (const status of ['cancelled', 'incomplete']) {
+    const item = call('run_task', { text: 'Must not execute' }, `call_${status}`);
+    emit(socket, {
+      ...item,
+      type: 'response.function_call_arguments.done',
+    });
+    emit(socket, completed([item], status));
+  }
+  await tick();
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.tools.length, 0);
+  assert.equal(defined(socket).sent.length, 0);
+});
+
+test('tool errors and results are redacted before being sent back to the voice model', async (t) => {
+  const h = harness(t, {
+    runTask: async () => ({ status: 'failed', text: `Credential ${KEY}` }),
+    tool: async () => {
+      throw Error(`Bad secret ${KEY}`);
+    },
+  });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  emit(
+    socket,
+    completed([
+      call('run_task', { text: 'Test' }, 'call_key'),
+      call('memory_write', { text: 'Test' }, 'call_error'),
+    ]),
+  );
+  await tick();
+  assert.equal(JSON.stringify(defined(socket).sent).includes(KEY), false);
+  assert.match(JSON.stringify(defined(socket).sent), /redacted/);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((item) => item.item?.call_id === 'call_error')).item,
+        ).output,
+      ),
+    ).success,
+    false,
+  );
+});
+
+test('end_call sends its result before hanging up and does not invoke Engine end_call recursively', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  emit(socket, completed([call('end_call', {})]));
+  await tick();
+  assert.equal(h.tools.length, 0);
+  assert.deepEqual(fixtureJson(defined(defined(defined(socket).sent[0]).item).output), {
+    ended: true,
+  });
+  assert.equal(
+    defined(socket).sent.some((item) => item.type === 'response.create'),
+    false,
+  );
+  assert.equal(h.voice.call, null);
+  assert.equal(h.events.closed.length, 1);
+  assert.equal(observedRecord(h.events.closed[0]).reason, 'tool');
+  assert.equal(h.requests.filter((item) => item.url.endsWith('/hangup')).length, 1);
+});
+
+test('simultaneous and repeated stops hang up once and emit a single closed event', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  await Promise.all([h.voice.stop(), h.voice.stop()]);
+  await h.voice.stop();
+  assert.equal(h.requests.filter((item) => item.url.endsWith('/hangup')).length, 1);
+  assert.equal(h.events.closed.length, 1);
+  assert.equal(defined(h.sockets[0]).closeCount, 1);
+  assert.equal(h.voice.call, null);
+});
+
+test('cancellation during call creation never revives a call and cleans up a late creation response', async (t) => {
+  let resolveCreate: ((response: Response) => void) | undefined;
+  const h = harness(t, {
+    fetchImpl: async (url) =>
+      String(url).endsWith('/hangup')
+        ? new Response(null, { status: 204 })
+        : new Promise((resolve) => (resolveCreate = resolve)),
+  });
+  const start = h.voice.start({ sdp: SDP });
+  const rejected = assert.rejects(start, /cancelled/);
+  await tick();
+  await h.voice.stop();
+  defined(resolveCreate)(response());
+  await rejected;
+  assert.equal(h.voice.call, null);
+  assert.equal(h.events.closed.length, 1);
+  assert.equal(h.sockets.length, 0);
+  assert.equal(h.requests.filter((item) => item.url.endsWith('/hangup')).length, 1);
+});
+
+test('closing during sideband setup cancels the handshake and reclaims the remote call', async (t) => {
+  const h = harness(t, { holdSocket: true });
+  const start = h.voice.start({ sdp: SDP });
+  const rejected = assert.rejects(start, /cancelled/);
+  await tick();
+  await h.voice.close();
+  await rejected;
+  assert.equal(h.voice.call, null);
+  assert.equal(h.events.closed.length, 1);
+  assert.equal(h.requests.filter((item) => item.url.endsWith('/hangup')).length, 1);
+  await assert.rejects(h.voice.start({ sdp: SDP }), /provider is closed/);
+});
+
+test('failed responses produce a notice without forwarding raw model error text', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  emit(h.sockets[0], {
+    type: 'response.done',
+    response: { status: 'failed', status_details: { error: { message: KEY } } },
+  });
+  await tick();
+  assert.equal(h.events.notices.length, 1);
+  assert.match(defined(h.events.notices[0]), /could not complete/);
+  assert.equal(defined(h.events.notices[0]).includes(KEY), false);
+});
+
+test('a hangup network failure still closes locally once and exposes only a safe error', async (t) => {
+  const h = harness(t, {
+    fetchImpl: async (url) => {
+      if (String(url).endsWith('/hangup')) throw Error(KEY);
+      return response();
+    },
+  });
+  await h.voice.start({ sdp: SDP });
+  await assert.rejects(h.voice.stop(), /could not confirm hangup/);
+  await h.voice.stop();
+  assert.equal(h.voice.call, null);
+  assert.equal(h.events.closed.length, 1);
+  assert.equal(JSON.stringify({ state: h.voice.state, events: h.events }).includes(KEY), false);
+});
+
+const reference = (id: string, text = 'Actual typed message', reactions: string[] = []) => ({
+  id,
+  role: 'user',
+  text,
+  reactions,
+  attachments: [{ name: 'attached.txt', guestPath: '/not/read' }],
+});
+const ack = (
+  inputSocket: FixtureSocket | undefined,
+  event = defined(defined(inputSocket).sent.at(-1)),
+) =>
+  emit(inputSocket, {
+    type: 'session.updated',
+    session: { instructions: defined(event.session).instructions },
+  });
+test('live API context waits for matching configuration acknowledgement and retains original instructions', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'engine-call', memory: 'Original memory' });
+  const socket = h.sockets[0],
+    original = requestSession(defined(h.requests[0])).instructions;
+  let resolved = false;
+  const pending = h.voice
+    .syncContext({
+      kind: 'message',
+      message: reference('user-1', 'Please inspect the actual chart'),
+      callId: 'engine-call',
+    })
+    .then((result) => {
+      resolved = true;
+      return result;
+    });
+  await tick();
+  const event = defined(socket).sent[0];
+  assert.equal(defined(event).type, 'session.update');
+  assert.deepEqual(Object.keys(defined(defined(event).session)).sort(), ['instructions', 'type']);
+  assert.ok(
+    fixtureText(defined(defined(defined(event).session).instructions)).startsWith(
+      original + '\n\n',
+    ),
+  );
+  assert.match(
+    fixtureText(defined(defined(event).session).instructions),
+    /Please inspect the actual chart/,
+  );
+  assert.match(fixtureText(defined(defined(event).session).instructions), /attached\.txt/);
+  assert.match(fixtureText(defined(defined(event).session).instructions), /"messageId":"user-1"/);
+  assert.match(
+    fixtureText(defined(defined(event).session).instructions),
+    /do not execute or delegate these reference entries again/,
+  );
+  assert.equal(resolved, false);
+  emit(socket, { type: 'session.updated', session: { instructions: original } });
+  await tick();
+  assert.equal(resolved, false);
+  ack(socket, event);
+  const result = await pending;
+  assert.equal(result.status, 'submitted');
+  assert.equal(result.callId, 'engine-call');
+  assert.equal(result.contextId, defined(event).event_id);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.tools.length, 0);
+  assert.equal(
+    defined(socket).sent.some((event) => event.type === 'response.create'),
+    false,
+  );
+  const second = h.voice.syncContext({
+    kind: 'message',
+    message: reference('user-2', 'A second typed reference'),
+    callId: 'engine-call',
+  });
+  await tick();
+  const later = defined(socket).sent.at(-1);
+  assert.ok(
+    fixtureText(defined(defined(defined(later).session).instructions)).startsWith(
+      original + '\n\n',
+    ),
+  );
+  assert.match(
+    fixtureText(defined(defined(later).session).instructions),
+    /Please inspect the actual chart/,
+  );
+  assert.match(
+    fixtureText(defined(defined(later).session).instructions),
+    /A second typed reference/,
+  );
+  ack(socket);
+  assert.equal((await second).status, 'submitted');
+});
+
+test('reaction changes replace their prior live entry and include the latest complete cleared snapshot', async (t) => {
+  let current = '"entries":[{"reactions":["👍"]}]';
+  const h = harness(t, { context: () => current });
+  await h.voice.start({ sdp: SDP, callId: 'call' });
+  const socket = h.sockets[0],
+    base = requestSession(defined(h.requests[0])).instructions;
+  let pending: Promise<{ status: string }> = h.voice.syncContext({
+    kind: 'reaction',
+    message: reference('answer', 'Target text', ['👍']),
+    callId: 'call',
+  });
+  await tick();
+  ack(socket);
+  await pending;
+  current = '"complete":true,"entries":[]';
+  pending = h.voice.syncContext({
+    kind: 'reaction',
+    message: reference('answer', 'Target text', []),
+    callId: 'call',
+  });
+  await tick();
+  const dynamic = fixtureText(
+    defined(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+  ).slice(base.length);
+  assert.match(dynamic, /"reactions":\[\]/);
+  assert.match(dynamic, /"complete":true,"entries":\[\]/);
+  assert.doesNotMatch(dynamic, /👍/);
+  ack(socket);
+  assert.equal((await pending).status, 'submitted');
+});
+
+test('an unacknowledged API context update becomes unknown and is never automatically resent', async (t) => {
+  const h = harness(t, { contextTimeoutMs: 5 });
+  await h.voice.start({ sdp: SDP, callId: 'call' });
+  assert.equal(
+    (await h.voice.syncContext({ kind: 'message', message: reference('first'), callId: 'call' }))
+      .status,
+    'unknown',
+  );
+  assert.equal(
+    (await h.voice.syncContext({ kind: 'message', message: reference('second'), callId: 'call' }))
+      .status,
+    'unknown',
+  );
+  assert.equal(defined(h.sockets[0]).sent.length, 1);
+  assert.equal(defined(h.voice.call).status, 'active');
+});
+
+test('a correlated API rejection is failed and its unsent reference does not replay in later updates', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'call' });
+  const socket = h.sockets[0];
+  let pending: Promise<{ status: string }> = h.voice.syncContext({
+    kind: 'message',
+    message: reference('rejected', 'Must not replay this rejected reference'),
+    callId: 'call',
+  });
+  await tick();
+  emit(socket, {
+    type: 'error',
+    error: {
+      event_id: defined(defined(socket).sent[0]).event_id,
+      code: 'invalid_value',
+      message: KEY,
+    },
+  });
+  assert.equal((await pending).status, 'failed');
+  pending = h.voice.syncContext({
+    kind: 'message',
+    message: reference('accepted', 'Accepted update'),
+    callId: 'call',
+  });
+  await tick();
+  assert.doesNotMatch(
+    fixtureText(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+    /Must not replay/,
+  );
+  ack(socket);
+  assert.equal((await pending).status, 'submitted');
+  assert.equal(JSON.stringify(h.events).includes(KEY), false);
+});
+
+test('pending reactions coalesce and a lost sideband marks only the dispatched update unknown', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'call' });
+  const socket = h.sockets[0];
+  const first = h.voice.syncContext({
+    kind: 'message',
+    message: reference('task'),
+    callId: 'call',
+  });
+  await tick();
+  const old = h.voice.syncContext({
+      kind: 'reaction',
+      message: reference('answer', 'Old reference', ['👍']),
+      callId: 'call',
+    }),
+    latest = h.voice.syncContext({
+      kind: 'reaction',
+      message: reference('answer', 'New reference', ['❤️']),
+      callId: 'call',
+    });
+  assert.equal((await old).status, 'superseded');
+  assert.equal(defined(socket).sent.length, 1);
+  ack(socket);
+  await first;
+  await tick();
+  assert.equal(defined(socket).sent.length, 2);
+  assert.match(
+    fixtureText(defined(defined(defined(socket).sent[1]).session).instructions),
+    /New reference/,
+  );
+  assert.doesNotMatch(
+    fixtureText(defined(defined(defined(socket).sent[1]).session).instructions),
+    /Old reference/,
+  );
+  const queued = h.voice.syncContext({
+    kind: 'message',
+    message: reference('not-sent'),
+    callId: 'call',
+  });
+  defined(socket).readyState = 3;
+  defined(socket).emit('close');
+  assert.equal((await latest).status, 'unknown');
+  assert.equal((await queued).status, 'cancelled');
+  assert.equal(defined(socket).sent.length, 2);
+});
+
+test('closing a call cancels context updates and stale acknowledgements cannot update a later call', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'old-call' });
+  const oldSocket = h.sockets[0],
+    pending = h.voice.syncContext({
+      kind: 'message',
+      message: reference('old'),
+      callId: 'old-call',
+    });
+  await tick();
+  const sent = defined(oldSocket).sent[0];
+  await h.voice.stop();
+  assert.equal((await pending).status, 'cancelled');
+  await h.voice.start({ sdp: SDP, callId: 'new-call' });
+  ack(oldSocket, sent);
+  assert.equal(
+    (
+      await h.voice.syncContext({
+        kind: 'message',
+        message: reference('stale'),
+        callId: 'old-call',
+      })
+    ).status,
+    'cancelled',
+  );
+  assert.equal(defined(h.sockets[1]).sent.length, 0);
+  const current = h.voice.syncContext({
+    kind: 'message',
+    message: reference('current'),
+    callId: 'new-call',
+  });
+  await tick();
+  ack(h.sockets[1]);
+  assert.equal((await current).status, 'submitted');
+});
+
+test('live context keeps earlier updates without an app token budget and preparation errors do not expose credentials', async (t) => {
+  let fail = false;
+  const h = harness(t, {
+    context: () => {
+      if (fail) throw Error(KEY);
+      return 'Current complete reaction snapshot';
+    },
+    onSend: (socket, event) => {
+      if (event.type === 'session.update') queueMicrotask(() => ack(socket, event));
+    },
+  });
+  await h.voice.start({ sdp: SDP, callId: 'call' });
+  const base = requestSession(defined(h.requests[0])).instructions;
+  for (let index = 0; index < 20; index++)
+    assert.equal(
+      (
+        await h.voice.syncContext({
+          kind: 'message',
+          message: reference('user-' + index, 'Actual reference ' + index + ' ' + 'x'.repeat(3000)),
+          callId: 'call',
+        })
+      ).status,
+      'submitted',
+    );
+  const final = defined(defined(defined(h.sockets[0]).sent.at(-1)).session).instructions;
+  assert.ok(Buffer.byteLength(defined(final).slice(base.length)) > 60000);
+  for (let index = 0; index < 20; index++)
+    assert.ok(defined(final).includes('"messageId":"user-' + index + '"'));
+  fail = true;
+  const result = await h.voice.syncContext({
+    kind: 'message',
+    message: reference('failed'),
+    callId: 'call',
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(JSON.stringify(result).includes(KEY), false);
+});
+
+test('API startup passes complete memory and chat references without token or truncation overrides', async (t) => {
+  const memory = '记忆'.repeat(60000) + 'MEMORY_TAIL',
+    reference = '聊天'.repeat(60000) + 'CHAT_TAIL',
+    h = harness(t, { context: () => reference });
+  await h.voice.start({ sdp: SDP, memory });
+  const session = requestSession(defined(h.requests[0]));
+  assert.ok(session.instructions.includes(memory));
+  assert.ok(session.instructions.includes(reference));
+  for (const key of [
+    'max_output_tokens',
+    'max_response_output_tokens',
+    'model_context_window',
+    'model_auto_compact_token_limit',
+    'truncation',
+  ])
+    assert.equal(Object.hasOwn(session, key), false);
+  assert.equal(
+    Object.hasOwn(defined(h.sockets[0]).options, 'maxPayload'),
+    false,
+    'Use the WebSocket transport default rather than a smaller dant context echo ceiling',
+  );
+});
+
+test('the API voice tool output preserves a complete long task result for provider context management', async (t) => {
+  const text = '完整任务结果'.repeat(25000) + 'TASK_RESULT_TAIL',
+    h = harness(t, { runTask: async () => ({ result: text }) });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  emit(
+    socket,
+    completed([call('run_task', { text: 'Return the complete verified result' }, 'full-result')]),
+  );
+  await tick();
+  const delivered = defined(socket).sent.find(
+    (event) => event.item?.type === 'function_call_output' && event.item.call_id === 'full-result',
+  );
+  assert.ok(delivered);
+  assert.deepEqual(fixtureJson(defined(delivered.item).output), { result: text });
+  assert.equal(
+    defined(socket).sent.filter((event) => event.item?.call_id === 'full-result').length,
+    1,
+  );
+});
+
+test('API task requests preserve text beyond the former app character limit', async (t) => {
+  const text = '任务上下文'.repeat(25000) + 'TASK_INPUT_TAIL',
+    h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  assert.equal(
+    Object.hasOwn(
+      defined(
+        defined(VOICE_TOOLS.find((tool) => tool.name === 'run_task')).parameters.properties.text,
+      ),
+      'maxLength',
+    ),
+    false,
+  );
+  emit(socket, completed([call('run_task', { text }, 'full-input')]));
+  await tick();
+  assert.equal(h.tasks.length, 1);
+  assert.equal(defined(h.tasks[0]).text, text);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((event) => event.item?.call_id === 'full-input')).item,
+        ).output,
+      ),
+    ).status,
+    'completed',
+  );
+});
+
+const committed = (socket: FixtureSocket | undefined, id: string, previous: string | null = null) =>
+  emit(socket, { type: 'input_audio_buffer.committed', item_id: id, previous_item_id: previous });
+const transcript = (socket: FixtureSocket | undefined, id: string, text: string) =>
+  emit(socket, {
+    type: 'conversation.item.input_audio_transcription.completed',
+    item_id: id,
+    content_index: 0,
+    transcript: text,
+  });
+const spoken = (id: string, text: string) => ({
+  id,
+  type: 'message',
+  role: 'assistant',
+  status: 'completed',
+  content: [{ type: 'audio', transcript: text }],
+});
+const added = (socket: FixtureSocket | undefined, item: unknown, previous: string | null = null) =>
+  emit(socket, { type: 'conversation.item.added', item, previous_item_id: previous });
+
+const typed = (id: string, text = '这个', replyTo: string | null = null): WorkMessage => ({
+  id,
+  role: 'user',
+  text,
+  replyTo,
+  attachments: [],
+});
+const inputEvent = (socket: FixtureSocket | undefined) =>
+  defined(socket)
+    .sent.filter(
+      (event) => event.type === 'conversation.item.create' && event.item?.role === 'user',
+    )
+    .at(-1);
+const acceptInput = (socket: FixtureSocket | undefined, event = defined(inputEvent(socket))) =>
+  added(socket, event.item);
+
+test('typed API call input is one authoritative quoted user message and acknowledgement starts a spoken response', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0],
+    message = typed('typed-input', '这个', 'answer'),
+    reply = {
+      id: 'answer',
+      role: 'assistant' as const,
+      text: 'The blue example from the current call',
+      attachments: [],
+    };
+  let settled = false;
+  const pending = defined(h.voice.message({ message, reply, callId: 'current' })).then((result) => {
+    settled = true;
+    return result;
+  });
+  await tick();
+  const event = inputEvent(socket);
+  assert.ok(event);
+  assert.match(fixtureText(defined(defined(defined(event.item).content)[0]).text), /这个/);
+  assert.match(
+    fixtureText(defined(defined(defined(event.item).content)[0]).text),
+    /The blue example from the current call/,
+  );
+  assert.match(
+    fixtureText(defined(defined(defined(event.item).content)[0]).text),
+    /"messageId":"typed-input"/,
+  );
+  assert.equal(settled, false);
+  assert.equal(
+    defined(socket).sent.some((event) => event.type === 'response.create'),
+    false,
+  );
+  added(socket, { ...event.item, id: 'unrelated' });
+  await tick();
+  assert.equal(settled, false);
+  acceptInput(socket, event);
+  const result = await pending;
+  assert.equal(result.submission, 'confirmed');
+  assert.equal(result.messageId, message.id);
+  assert.ok(result.confirmedAt);
+  assert.equal(defined(socket).sent.filter((event) => event.type === 'response.create').length, 1);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.tools.length, 0);
+  assert.equal(
+    h.events.conversation.length,
+    0,
+    'The existing typed chat record is not copied into speech transcripts',
+  );
+});
+
+test('pending and acknowledged API call input IDs deduplicate and cannot change their content', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0],
+    message = typed('same-id', 'One actual current request');
+  const first = h.voice.message({ message, callId: 'current' }),
+    second = h.voice.message({ message, callId: 'current' });
+  assert.equal(first, second);
+  await tick();
+  assert.equal(defined(socket).sent.length, 1);
+  await assert.rejects(
+    h.voice.message({ message: { ...message, text: 'Different request' }, callId: 'current' }),
+    /different call input/,
+  );
+  acceptInput(socket);
+  const result = await first;
+  assert.deepEqual(await h.voice.message({ message, callId: 'current' }), result);
+  assert.equal(defined(socket).sent.filter((event) => event.item?.role === 'user').length, 1);
+  assert.equal(defined(socket).sent.filter((event) => event.type === 'response.create').length, 1);
+});
+
+test('rapid API call inputs serialize and wait for the current spoken response before asking for another', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0],
+    first = h.voice.message({ message: typed('one', 'First input'), callId: 'current' }),
+    second = h.voice.message({ message: typed('two', 'Second input'), callId: 'current' });
+  await tick();
+  assert.equal(defined(socket).sent.filter((event) => event.item?.role === 'user').length, 1);
+  acceptInput(socket);
+  await first;
+  await tick();
+  assert.equal(defined(socket).sent.filter((event) => event.item?.role === 'user').length, 2);
+  acceptInput(socket);
+  await second;
+  assert.equal(defined(socket).sent.filter((event) => event.type === 'response.create').length, 1);
+  emit(socket, completed([]));
+  assert.equal(defined(socket).sent.filter((event) => event.type === 'response.create').length, 2);
+  assert.equal(h.tasks.length, 0);
+});
+
+test('a response-start race with VAD preserves the typed-input audio response until the active response finishes', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0],
+    pending = h.voice.message({ message: typed('race'), callId: 'current' });
+  await tick();
+  acceptInput(socket);
+  await pending;
+  assert.equal(defined(socket).sent.filter((event) => event.type === 'response.create').length, 1);
+  emit(socket, { type: 'error', error: { code: 'response_already_in_progress' } });
+  assert.equal(defined(socket).sent.filter((event) => event.type === 'response.create').length, 1);
+  emit(socket, completed([]));
+  assert.equal(defined(socket).sent.filter((event) => event.type === 'response.create').length, 2);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.events.notices.length, 0);
+});
+
+test('a correlated API call-input rejection has no receipt or response and does not replay on the next message', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0],
+    rejected = h.voice.message({ message: typed('rejected'), callId: 'current' });
+  await tick();
+  const event = inputEvent(socket);
+  emit(socket, {
+    type: 'error',
+    error: { event_id: defined(event).event_id, code: 'invalid_value', message: KEY },
+  });
+  await assert.rejects(
+    rejected,
+    (error) =>
+      operationError(error).submission === 'rejected' &&
+      !fixtureText(observedRecord(error).message).includes(KEY),
+  );
+  assert.equal(
+    defined(socket).sent.some((event) => event.type === 'response.create'),
+    false,
+  );
+  const accepted = h.voice.message({
+    message: typed('accepted', 'A fresh request'),
+    callId: 'current',
+  });
+  await tick();
+  acceptInput(socket);
+  assert.equal(defined(await accepted).submission, 'confirmed');
+  assert.equal(defined(socket).sent.filter((event) => event.item?.role === 'user').length, 2);
+  assert.equal(JSON.stringify(h.events).includes(KEY), false);
+});
+
+test('an unacknowledged API call input becomes unknown and blocks later input without replay', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  h.voice.requestTimeoutMs = 15;
+  const socket = h.sockets[0],
+    message = typed('uncertain');
+  await assert.rejects(
+    h.voice.message({ message, callId: 'current' }),
+    (error) =>
+      operationError(error).unknownOutcome && operationError(error).submission === 'unknown',
+  );
+  assert.equal(h.voice.state.inputUnconfirmed, true);
+  await assert.rejects(
+    h.voice.message({ message, callId: 'current' }),
+    (error) => operationError(error).unknownOutcome,
+  );
+  await assert.rejects(
+    h.voice.message({ message: typed('later'), callId: 'current' }),
+    (error) => operationError(error).submission === 'not-submitted',
+  );
+  assert.equal(defined(socket).sent.length, 1);
+  assert.equal(h.tasks.length, 0);
+});
+
+test('typed API input waits for finalized speech and its canonical-context callback before admission', async (t) => {
+  let release: (() => void) | undefined;
+  const h = harness(t, {
+    onConversationItem: () => new Promise<void>((resolve) => (release = resolve)),
+  });
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0];
+  committed(socket, 'human');
+  const pending = h.voice.message({
+    message: typed('after-speech', 'Use what I just said'),
+    callId: 'current',
+  });
+  await tick();
+  assert.equal(defined(socket).sent.length, 0);
+  transcript(socket, 'human', 'Remember the blue example');
+  await tick();
+  assert.equal(defined(socket).sent.length, 0);
+  defined(release)();
+  await tick();
+  assert.ok(inputEvent(socket));
+  acceptInput(socket);
+  assert.equal(defined(await pending).submission, 'confirmed');
+  assert.equal(h.tasks.length, 0);
+});
+
+test('Stop while an API typed message waits in the provider queue cancels that unsent message', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0];
+  let epoch = 0;
+  const isCurrent = () => epoch === 0;
+  const first = h.voice.message({
+      message: typed('first', 'Already dispatched input'),
+      callId: 'current',
+      isCurrent,
+    }),
+    second = h.voice.message({
+      message: typed('second', 'Must remain unsent after Stop'),
+      callId: 'current',
+      isCurrent,
+    }),
+    cancelled = assert.rejects(
+      second,
+      (error) =>
+        operationError(error).submission === 'not-submitted' &&
+        !operationError(error).unknownOutcome,
+    );
+  await tick();
+  assert.equal(defined(socket).sent.filter((event) => event.item?.role === 'user').length, 1);
+  epoch++;
+  acceptInput(socket);
+  assert.equal(defined(await first).submission, 'confirmed');
+  await cancelled;
+  assert.equal(defined(socket).sent.filter((event) => event.item?.role === 'user').length, 1);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.voice.state.inputUnconfirmed, false);
+});
+
+test('Stop during newly committed speech after the Engine barrier blocks the provider input send', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0];
+  await h.voice.conversationReady('current');
+  committed(socket, 'new-audio-after-engine-barrier');
+  let active = true;
+  const pending = h.voice.message({
+      message: typed('after-barrier', 'Must not send after Stop'),
+      callId: 'current',
+      isCurrent: () => active,
+    }),
+    cancelled = assert.rejects(
+      pending,
+      (error) =>
+        operationError(error).submission === 'not-submitted' &&
+        !operationError(error).unknownOutcome,
+    );
+  await tick();
+  assert.equal(defined(socket).sent.length, 0);
+  active = false;
+  transcript(socket, 'new-audio-after-engine-barrier', 'A newly completed spoken fact');
+  await cancelled;
+  assert.equal(defined(socket).sent.length, 0);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.voice.state.inputUnconfirmed, false);
+  await assert.rejects(
+    h.voice.message({
+      message: typed('already-stopped'),
+      callId: 'current',
+      isCurrent: () => false,
+    }),
+    (error) => operationError(error).submission === 'not-submitted',
+  );
+  assert.equal(defined(socket).sent.length, 0);
+});
+
+test('hangup before typed input dispatch never submits it to a later call', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'old' });
+  const old = h.sockets[0];
+  committed(old, 'pending-speech');
+  const pending = h.voice.message({ message: typed('unsent'), callId: 'old' }),
+    rejected = assert.rejects(
+      pending,
+      (error) => operationError(error).submission === 'not-submitted',
+    );
+  await tick();
+  const stopping = h.voice.stop();
+  emit(old, {
+    type: 'conversation.item.input_audio_transcription.failed',
+    item_id: 'pending-speech',
+  });
+  await stopping;
+  await rejected;
+  assert.equal(defined(old).sent.length, 0);
+  await h.voice.start({ sdp: SDP, callId: 'new' });
+  await assert.rejects(
+    h.voice.message({ message: typed('stale'), callId: 'old' }),
+    (error) => operationError(error).submission === 'not-submitted',
+  );
+  assert.equal(defined(h.sockets[1]).sent.length, 0);
+  assert.equal(h.tasks.length, 0);
+});
+
+test('sideband loss after typed input dispatch is unknown and stale acknowledgements cannot revive it', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'old' });
+  const old = h.sockets[0],
+    pending = h.voice.message({ message: typed('lost'), callId: 'old' }),
+    rejected = assert.rejects(pending, (error) => operationError(error).unknownOutcome);
+  await tick();
+  const event = inputEvent(old);
+  defined(old).readyState = 3;
+  defined(old).emit('close');
+  await rejected;
+  await h.voice.stop();
+  await h.voice.start({ sdp: SDP, callId: 'new' });
+  acceptInput(old, event);
+  await tick();
+  assert.equal(defined(h.sockets[1]).sent.length, 0);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(JSON.stringify(h.events).includes(KEY), false);
+});
+
+test('API voice-only input retains full text and rejects invalid media or a mismatched quote without sending', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0];
+  await assert.rejects(
+    h.voice.message({
+      message: { ...typed('media'), attachments: [{ name: 'recording.webm' }] },
+      callId: 'current',
+    }),
+    /without attachments/,
+  );
+  await assert.rejects(
+    h.voice.message({
+      message: typed('wrong-quote', 'This one', 'actual'),
+      reply: { id: 'other', role: 'assistant', text: 'Wrong source' },
+      callId: 'current',
+    }),
+    /quoted reply is invalid/,
+  );
+  assert.equal(defined(socket).sent.length, 0);
+  const text = '完整 typed input '.repeat(10000) + 'UNCUT_INPUT_TAIL',
+    pending = h.voice.message({ message: typed('long', text), callId: 'current' });
+  await tick();
+  assert.ok(
+    defined(defined(defined(defined(defined(inputEvent(socket)).item).content)[0]).text).includes(
+      text,
+    ),
+  );
+  acceptInput(socket);
+  assert.equal(defined(await pending).submission, 'confirmed');
+});
+
+test('final API speech callbacks follow default conversation order despite late input transcriptions and are deduplicated', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'shared-call' });
+  const socket = h.sockets[0],
+    answer = spoken('answer', 'Completed spoken answer');
+  committed(socket, 'user-1');
+  added(socket, answer, 'user-1');
+  committed(socket, 'user-2', 'answer');
+  emit(socket, {
+    type: 'conversation.item.input_audio_transcription.delta',
+    item_id: 'user-1',
+    delta: 'Do not save partial speech',
+  });
+  emit(socket, completed([answer]));
+  transcript(socket, 'user-2', 'Second user turn');
+  await tick();
+  assert.deepEqual(h.events.conversation, []);
+  transcript(socket, 'user-1', `First user turn ${KEY}`);
+  await tick();
+  assert.deepEqual(h.events.conversation, [
+    {
+      callId: 'shared-call',
+      itemId: 'user-1',
+      previousItemId: null,
+      role: 'user',
+      text: 'First user turn [redacted]',
+    },
+    {
+      callId: 'shared-call',
+      itemId: 'answer',
+      previousItemId: 'user-1',
+      role: 'assistant',
+      text: 'Completed spoken answer',
+    },
+    {
+      callId: 'shared-call',
+      itemId: 'user-2',
+      previousItemId: 'answer',
+      role: 'user',
+      text: 'Second user turn',
+    },
+  ]);
+  transcript(socket, 'user-1', 'Duplicate text must not replace confirmed context');
+  emit(socket, completed([answer]));
+  await tick();
+  assert.equal(h.events.conversation.length, 3);
+  assert.equal(
+    defined(socket).sent.length,
+    0,
+    'Sharing finalized speech does not create a model response or visible chat message',
+  );
+});
+
+test('only finalized default audio items become context, excluding OOB, cancelled, partial, text-only and tool payloads', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  const partial = spoken('cancelled', 'Do not save cancelled audio');
+  added(socket, partial);
+  emit(socket, {
+    type: 'response.output_audio_transcript.done',
+    item_id: partial.id,
+    transcript: defined(partial.content[0]).transcript,
+  });
+  emit(socket, completed([partial], 'cancelled'));
+  const oob = spoken('oob', 'Do not save OOB audio');
+  added(socket, oob, partial.id);
+  emit(socket, {
+    ...completed([oob]),
+    response: { status: 'completed', conversation_id: null, output: [oob] },
+  });
+  const text = {
+    id: 'text-only',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    content: [{ type: 'text', text: 'Do not save text as speech' }],
+  };
+  added(socket, text, oob.id);
+  emit(socket, completed([text]));
+  committed(socket, 'failed-input', text.id);
+  emit(socket, {
+    type: 'conversation.item.input_audio_transcription.failed',
+    item_id: 'failed-input',
+    error: { message: KEY },
+  });
+  const final = spoken('final', 'Valid final speech');
+  added(socket, final, 'failed-input');
+  emit(socket, completed([final]));
+  await tick();
+  assert.equal(h.events.conversation.length, 1);
+  assert.equal(conversationValue(h.events, 0).text, 'Valid final speech');
+  assert.equal(JSON.stringify(h.events).includes(KEY), false);
+});
+
+test('API run_task waits for the preceding human transcription and its asynchronous shared-context save', async (t) => {
+  let release: (() => void) | undefined;
+  const order: string[] = [],
+    h = harness(t, {
+      onConversationItem: async (item) => {
+        order.push('context:' + item.text);
+        await new Promise<void>((resolve) => (release = resolve));
+      },
+      runTask: async (text) => {
+        order.push('task:' + text);
+        return { result: 'done' };
+      },
+    });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  committed(socket, 'human');
+  emit(socket, completed([call('run_task', { text: 'Use the spoken context' }, 'after-speech')]));
+  await tick();
+  assert.deepEqual(order, []);
+  transcript(socket, 'human', 'Remember this spoken fact');
+  await tick();
+  assert.deepEqual(order, ['context:Remember this spoken fact']);
+  assert.equal(defined(socket).sent.length, 0);
+  defined(release)();
+  await tick();
+  assert.deepEqual(order, ['context:Remember this spoken fact', 'task:Use the spoken context']);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((event) => event.item?.call_id === 'after-speech'))
+            .item,
+        ).output,
+      ),
+    ).result,
+    'done',
+  );
+});
+
+test('conversationReady exposes the same bounded speech barrier to typed tasks and rejects stale calls', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'current' });
+  const socket = h.sockets[0];
+  await assert.rejects(h.voice.conversationReady('old'), /no longer current/);
+  committed(socket, 'late-input');
+  let ready = false;
+  const pending = h.voice.conversationReady('current').then((result) => {
+    ready = true;
+    return result;
+  });
+  await tick();
+  assert.equal(ready, false);
+  transcript(socket, 'late-input', 'Available to the typed task');
+  assert.equal((await pending).status, 'submitted');
+  assert.equal(conversationValue(h.events, 0).text, 'Available to the typed task');
+  h.voice.requestTimeoutMs = 20;
+  committed(socket, 'lost-transcript', 'late-input');
+  await assert.rejects(h.voice.conversationReady('current'), /timed out/);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.tools.length, 0);
+  emit(socket, {
+    type: 'conversation.item.input_audio_transcription.failed',
+    item_id: 'lost-transcript',
+  });
+});
+
+test('speech barriers include callbacks and input committed while an earlier context write is pending', async (t) => {
+  for (const closing of [false, true])
+    await t.test(closing ? 'hangup' : 'typed task', async (t) => {
+      const releases = new Map(),
+        h = harness(t, {
+          onConversationItem: (item) =>
+            new Promise((resolve) => releases.set(item.itemId, resolve)),
+        });
+      await h.voice.start({ sdp: SDP, callId: 'call' });
+      const socket = h.sockets[0];
+      committed(socket, 'first');
+      transcript(socket, 'first', 'First finalized fact');
+      await tick();
+      let resolved = false;
+      const pending = (closing ? h.voice.stop() : h.voice.conversationReady('call')).then(
+        () => (resolved = true),
+      );
+      committed(socket, 'second', 'first');
+      transcript(socket, 'second', 'Second finalized fact');
+      releases.get('first')();
+      await tick();
+      assert.ok(releases.has('second'));
+      assert.equal(
+        resolved,
+        false,
+        'The second context callback must finish before the barrier resolves',
+      );
+      committed(socket, 'third', 'second');
+      releases.get('second')();
+      await tick();
+      assert.equal(
+        resolved,
+        false,
+        'Newly committed input must finish transcription before the barrier resolves',
+      );
+      transcript(socket, 'third', 'Third finalized fact');
+      await tick();
+      assert.ok(releases.has('third'));
+      assert.equal(resolved, false);
+      releases.get('third')();
+      await pending;
+      assert.equal(resolved, true);
+      assert.equal(h.tasks.length, 0);
+    });
+});
+
+test('a dropped input transcript times out run_task without executing or retrying it', async (t) => {
+  const h = harness(t, { requestTimeoutMs: 10 });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  committed(socket, 'lost');
+  emit(socket, completed([call('run_task', { text: 'Must wait for context' }, 'lost-input')]));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.tasks.length, 0);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((event) => event.item?.call_id === 'lost-input')).item,
+        ).output,
+      ),
+    ).success,
+    false,
+  );
+  transcript(socket, 'lost', 'Arrived after timeout');
+  await tick();
+  assert.equal(h.events.conversation.length, 1);
+  assert.equal(h.tasks.length, 0);
+});
+
+test('hangup accepts a just-committed final transcript while stopping and cannot start a new tool', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'stopping' });
+  const socket = h.sockets[0];
+  committed(socket, 'last-input');
+  const stopping = h.voice.stop();
+  assert.equal(defined(h.voice.call).status, 'stopping');
+  emit(
+    socket,
+    completed([call('run_task', { text: 'Must not start while stopping' }, 'late-tool')]),
+  );
+  transcript(socket, 'last-input', 'Fact spoken immediately before hangup');
+  await stopping;
+  assert.equal(conversationValue(h.events, 0).text, 'Fact spoken immediately before hangup');
+  assert.equal(h.events.closed.length, 1);
+  assert.equal(h.tasks.length, 0);
+  assert.equal(
+    defined(socket).sent.some((event) => event.type === 'response.create'),
+    false,
+  );
+});
+
+test('hangup bounds a missing final transcript and never invents or replays it after closure', async (t) => {
+  const h = harness(t, { hangupTimeoutMs: 10 });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  committed(socket, 'missing-final');
+  await h.voice.stop();
+  assert.equal(h.voice.call, null);
+  assert.equal(h.events.closed.length, 1);
+  assert.deepEqual(h.events.conversation, []);
+  assert.ok(h.events.notices.some((notice) => /not confirmed before hangup/.test(notice)));
+  transcript(socket, 'missing-final', 'Too late after the call closed');
+  await tick();
+  assert.deepEqual(h.events.conversation, []);
+  assert.equal(h.tasks.length, 0);
+});
+
+test('API hangup drains accepted speech callbacks and stale sockets cannot write context into a later call', async (t) => {
+  let release: (() => void) | undefined;
+  const saved: VoiceConversationValue[] = [],
+    h = harness(t, {
+      onConversationItem: async (item) => {
+        saved.push(item);
+        if (item.callId === 'old') await new Promise<void>((resolve) => (release = resolve));
+      },
+    });
+  await h.voice.start({ sdp: SDP, callId: 'old' });
+  const old = h.sockets[0];
+  committed(old, 'old-input');
+  transcript(old, 'old-input', 'Completed before hangup');
+  await tick();
+  let stopped = false;
+  const stopping = h.voice.stop().then(() => (stopped = true));
+  await tick();
+  assert.equal(stopped, false);
+  assert.equal(h.events.closed.length, 0);
+  defined(release)();
+  await stopping;
+  assert.equal(h.events.closed.length, 1);
+  await h.voice.start({ sdp: SDP, callId: 'new' });
+  transcript(old, 'late-old', 'Must not cross calls');
+  const current = h.sockets[1];
+  committed(current, 'new-input');
+  transcript(current, 'new-input', 'Current call');
+  await tick();
+  assert.deepEqual(
+    saved.map((item) => [item.callId, item.text]),
+    [
+      ['old', 'Completed before hangup'],
+      ['new', 'Current call'],
+    ],
+  );
+});
+
+test('a shared speech-context save failure prevents task execution without exposing callback errors or retrying', async (t) => {
+  const h = harness(t, {
+    onConversationItem: async () => {
+      throw Error(KEY);
+    },
+  });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  committed(socket, 'human');
+  transcript(socket, 'human', 'Final speech');
+  emit(
+    socket,
+    completed([call('run_task', { text: 'Must not run without the context' }, 'unsaved')]),
+  );
+  await tick();
+  assert.equal(h.tasks.length, 0);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((event) => event.item?.call_id === 'unsaved')).item,
+        ).output,
+      ),
+    ).success,
+    false,
+  );
+  assert.equal(JSON.stringify(h.events).includes(KEY), false);
+  assert.match(defined(h.events.notices[0]), /could not be saved/);
+});
+
+test('a missing default-conversation predecessor cannot let a task bypass finalized speech context', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  committed(socket, 'human', 'missing-predecessor');
+  transcript(socket, 'human', 'A finalized fact with an unresolved position');
+  emit(
+    socket,
+    completed([call('run_task', { text: 'Do not bypass the missing context' }, 'missing-context')]),
+  );
+  await tick();
+  assert.equal(h.tasks.length, 0);
+  assert.deepEqual(h.events.conversation, []);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((event) => event.item?.call_id === 'missing-context'))
+            .item,
+        ).output,
+      ),
+    ).success,
+    false,
+  );
+  added(socket, { id: 'missing-predecessor', type: 'function_call_output' });
+  await tick();
+  assert.equal(h.events.conversation.length, 1);
+  assert.equal(conversationValue(h.events, 0).text, 'A finalized fact with an unresolved position');
+  assert.equal(h.tasks.length, 0, 'A context fix must not replay the failed task');
+});
+
+test('API memory refresh replaces the prior snapshot after acknowledgement and preserves chat and live references without inference', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'memory-call', memory: 'Old unique durable memory' });
+  const socket = h.sockets[0];
+  let pending: Promise<{ status: string }> = h.voice.syncContext({
+    kind: 'message',
+    message: reference('live-user', 'Keep this live typed reference'),
+    callId: 'memory-call',
+  });
+  await tick();
+  ack(socket);
+  await pending;
+  let resolved = false;
+  pending = h.voice
+    .syncMemory({ memory: 'New unique durable memory', callId: 'memory-call' })
+    .then((result) => {
+      resolved = true;
+      return result;
+    });
+  await tick();
+  const update = defined(socket).sent.at(-1);
+  assert.doesNotMatch(
+    fixtureText(defined(defined(update).session).instructions),
+    /Old unique durable memory/,
+  );
+  assert.match(
+    fixtureText(defined(defined(update).session).instructions),
+    /New unique durable memory/,
+  );
+  assert.match(
+    fixtureText(defined(defined(update).session).instructions),
+    /current text chat is about a report/,
+  );
+  assert.match(
+    fixtureText(defined(defined(update).session).instructions),
+    /Keep this live typed reference/,
+  );
+  assert.equal(
+    (
+      fixtureText(defined(defined(defined(update).session).instructions)).match(
+        /<dant_shared_memory>/g,
+      ) || []
+    ).length,
+    1,
+  );
+  assert.equal(resolved, false);
+  ack(socket);
+  assert.equal((await pending).status, 'submitted');
+  pending = h.voice.syncContext({
+    kind: 'reaction',
+    message: reference('live-user', 'Keep this live typed reference', ['👍']),
+    callId: 'memory-call',
+  });
+  await tick();
+  assert.match(
+    fixtureText(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+    /New unique durable memory/,
+  );
+  assert.doesNotMatch(
+    fixtureText(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+    /Old unique durable memory/,
+  );
+  ack(socket);
+  await pending;
+  pending = h.voice.syncMemory({ memory: '', callId: 'memory-call' });
+  await tick();
+  assert.match(
+    fixtureText(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+    /"memory":""/,
+  );
+  assert.doesNotMatch(
+    fixtureText(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+    /New unique durable memory/,
+  );
+  ack(socket);
+  assert.equal((await pending).status, 'submitted');
+  assert.equal(
+    defined(socket).sent.some((event) => event.type === 'response.create'),
+    false,
+  );
+  assert.equal(h.tasks.length, 0);
+  assert.equal(h.tools.length, 0);
+  assert.equal(
+    (await h.voice.syncMemory({ memory: 'stale', callId: 'old-call' })).status,
+    'cancelled',
+  );
+});
+
+test('a rejected API memory refresh leaves the last acknowledged snapshot intact', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP, callId: 'call', memory: 'Acknowledged original memory' });
+  const socket = h.sockets[0];
+  let pending = h.voice.syncMemory({ memory: 'Rejected new memory', callId: 'call' });
+  await tick();
+  emit(socket, {
+    type: 'error',
+    error: {
+      event_id: defined(defined(socket).sent.at(-1)).event_id,
+      code: 'invalid_value',
+      message: KEY,
+    },
+  });
+  assert.equal((await pending).status, 'failed');
+  pending = h.voice.syncContext({
+    kind: 'message',
+    message: reference('after-rejection'),
+    callId: 'call',
+  });
+  await tick();
+  assert.match(
+    fixtureText(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+    /Acknowledged original memory/,
+  );
+  assert.doesNotMatch(
+    fixtureText(defined(defined(defined(socket).sent.at(-1)).session).instructions),
+    /Rejected new memory/,
+  );
+  ack(socket);
+  assert.equal((await pending).status, 'submitted');
+});
+
+test('API voice may explicitly set or remove a reaction through the existing tool callback', async (t) => {
+  const h = harness(t);
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0];
+  emit(
+    socket,
+    completed([
+      call('react_message', { messageId: 'actual-user-id', emoji: '😆' }, 'reaction-set'),
+      call('react_message', { messageId: 'actual-user-id', emoji: null }, 'reaction-remove'),
+      call(
+        'react_message',
+        { messageId: 'actual-user-id', emoji: 'invalid text' },
+        'reaction-invalid',
+      ),
+    ]),
+  );
+  await tick();
+  assert.deepEqual(h.tools, [
+    { name: 'react_message', args: { messageId: 'actual-user-id', emoji: '😆' } },
+    { name: 'react_message', args: { messageId: 'actual-user-id', emoji: null } },
+  ]);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((event) => event.item?.call_id === 'reaction-invalid'))
+            .item,
+        ).output,
+      ),
+    ).success,
+    false,
+  );
+});
+
+test('API credential and skill tools validate required, nullable and structured fields and carry the real call scope', async (t) => {
+  const received: Array<{ name: string; args: ToolArguments; scope?: EngineToolContext }> = [],
+    h = harness(t, {
+      tool: async (name, args, scope) => {
+        received.push({ name, args, scope });
+        return { saved: true };
+      },
+    });
+  await h.voice.start({ sdp: SDP, callId: 'actual-api-session' });
+  const socket = h.sockets[0];
+  const valid: Array<[string, ToolArguments]> = [
+    ['credential_find', { query: '' }],
+    ['credential_get', { id: 'actual-vault-id' }],
+    ['credential_request', { name: 'Work', service: '', reason: '' }],
+    ['credential_store', { name: 'Work', service: '', username: '', secret: 'private-test-value' }],
+    ['skill_list', {}],
+    ['skill_get', { name: 'report-review' }],
+    [
+      'skill_save',
+      {
+        name: 'report-review',
+        description: 'Review reports',
+        instructions: 'Read and verify the report.',
+        files: { 'scripts/check.py': 'print("check")' },
+        enabled: false,
+      },
+    ],
+  ];
+  for (const [index, [name, args]] of valid.entries())
+    emit(socket, completed([call(name, args, 'valid-' + index)]));
+  await tick();
+  assert.equal(received.length, valid.length);
+  assert.deepEqual(
+    received.map((item) => [item.name, item.args]),
+    valid,
+  );
+  for (const item of received) {
+    assert.equal(defined(item.scope).callId, 'actual-api-session');
+    assert.equal(defined(item.scope).owner, 'actual-api-session');
+    assert.equal(defined(defined(item.scope).isCurrent)(), true);
+    assert.equal(defined(defined(item.scope).signal).aborted, false);
+  }
+  const invalid: Array<[string, unknown]> = [
+    ['credential_get', {}],
+    ['credential_store', { name: 'Work', service: '', username: '' }],
+    ['credential_request', { name: 'Work', service: '', reason: 2 }],
+    ['credential_find', { query: 4 }],
+    ['skill_get', { name: 'x', extra: 'forbidden' }],
+    ['skill_save', { name: 'x', description: 'Test', instructions: 'Test', enabled: 'false' }],
+    ['skill_save', { name: 'x', description: 'Test', instructions: 'Test', files: [] }],
+    [
+      'skill_save',
+      {
+        name: 'x',
+        description: 'Test',
+        instructions: 'Test',
+        files: { 'scripts/check.py': false },
+      },
+    ],
+    ['react_message', { messageId: 'user' }],
+  ];
+  for (const [index, [name, args]] of invalid.entries())
+    emit(socket, completed([call(name, args, 'invalid-' + index)]));
+  await tick();
+  assert.equal(received.length, valid.length);
+  for (let index = 0; index < invalid.length; index++)
+    assert.equal(
+      observedRecord(
+        fixtureJson(
+          defined(
+            defined(
+              defined(socket).sent.find((event) => event.item?.call_id === 'invalid-' + index),
+            ).item,
+          ).output,
+        ),
+      ).success,
+      false,
+    );
+  const scope = defined(defined(received[0]).scope);
+  await h.voice.stop();
+  assert.equal(defined(scope.isCurrent)(), false);
+  assert.equal(defined(scope.signal).aborted, true);
+  await h.voice.start({ sdp: SDP, callId: 'later-session' });
+  assert.equal(defined(scope.isCurrent)(), false);
+});
+
+test('API voice skill input accepts all 128 supporting files and rejects 129 before dispatch without truncating', async (t) => {
+  const received: Array<{ name: string; args: ToolArguments; scope?: EngineToolContext }> = [],
+    h = harness(t, {
+      tool: async (name, args) => {
+        received.push({ name, args });
+        return { saved: true };
+      },
+    });
+  await h.voice.start({ sdp: SDP });
+  const socket = h.sockets[0],
+    files = Object.fromEntries(
+      Array.from({ length: SKILL_SUPPORT_FILE_LIMIT }, (_, index) => [
+        `scripts/helper-${index}.py`,
+        `print(${index})\n`,
+      ]),
+    ),
+    args = {
+      name: 'complete-skill',
+      description: 'A complete skill.',
+      instructions: 'Use all packaged helpers.',
+      files,
+    };
+  emit(socket, completed([call('skill_save', args, 'full-skill')]));
+  await tick();
+  assert.equal(received.length, 1);
+  assert.deepEqual(received[0], { name: 'skill_save', args });
+  emit(
+    socket,
+    completed([
+      call(
+        'skill_save',
+        { ...args, files: { ...files, 'scripts/overflow.py': 'extra' } },
+        'overflow-skill',
+      ),
+    ]),
+  );
+  await tick();
+  assert.equal(received.length, 1);
+  assert.equal(
+    observedRecord(
+      fixtureJson(
+        defined(
+          defined(defined(socket).sent.find((event) => event.item?.call_id === 'overflow-skill'))
+            .item,
+        ).output,
+      ),
+    ).success,
+    false,
+  );
+});

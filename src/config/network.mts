@@ -1,6 +1,6 @@
 import protocol from './protocol.json' with { type: 'json' };
 
-const MAX_PORT = 65_535;
+export const MAX_PORT = 65_535;
 
 // Environment and transport values are untrusted until their field validators
 // have accepted them. This also accepts process.env without widening to any.

@@ -18,6 +18,7 @@ export interface InstallLeaseOptions {
   id?: () => string;
 }
 export interface MutationRequest {
+  body?: unknown;
   method: string;
   originalUrl?: string;
   path?: string;

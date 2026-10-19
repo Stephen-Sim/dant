@@ -6,17 +6,17 @@ case "$source_dir" in "$HOME"/dant/releases/source.*) ;; *) echo 'Invalid worker
 update_running_work=false
 case "${2:-}" in '') ;; --update-running-work) update_running_work=true ;; *) echo 'Invalid worker update option' >&2; exit 1;; esac
 test "$(id -u)" -ne 0 || { echo 'Run the worker deployment as its ordinary VM user.' >&2; exit 1; }
-require_typescript_runtime() {
+require_worker_runtime() {
   # Probe only a fixed expression before loading new application source. An
-  # incompatible existing runtime is never overwritten or used to stop work.
-  if ! timeout 15s "$1" --input-type=module-typescript -e 'const [major, minor] = process.versions.node.split(".").map(Number); const supported: boolean = ((major === 22 && minor >= 18) || major >= 24) && ["strip", "transform"].includes(process.features.typescript); if (!supported) process.exit(1);' >/dev/null 2>&1; then
+  # incompatible TypeScript/SQLite/FTS5 runtime is never overwritten or used to stop work.
+  if ! timeout 15s "$1" --input-type=module-typescript -e 'const [major, minor] = process.versions.node.split(".").map(Number); const supported: boolean = ((major === 22 && minor >= 18) || major >= 24) && ["strip", "transform"].includes(process.features.typescript); if (!supported) process.exit(1); const {DatabaseSync} = await import("node:sqlite"); const database = new DatabaseSync(":memory:", {enableForeignKeyConstraints: true, enableDoubleQuotedStringLiterals: false}); try { database.exec("CREATE VIRTUAL TABLE runtime_search USING fts5(text)"); database.prepare("INSERT INTO runtime_search(text) VALUES (?)").run("dant"); if (database.prepare("SELECT text FROM runtime_search WHERE runtime_search MATCH ?").get("dant")?.text !== "dant") process.exitCode = 1; } finally { database.close(); } if (process.exitCode) process.exit(process.exitCode);' >/dev/null 2>&1; then
     echo 'DANT_UPDATE_FAILED:runtime-incompatible:prepare' >&2
     echo 'The VM Node runtime cannot run this update. Existing services and runtime were preserved; update the runtime through a verified maintenance procedure before reconnecting.' >&2
     return 1
   fi
 }
 if [ -e "$HOME/dant/runtime/node" ] || [ -L "$HOME/dant/runtime/node" ]; then
-  require_typescript_runtime "$HOME/dant/runtime/node/bin/node"
+  require_worker_runtime "$HOME/dant/runtime/node/bin/node"
 fi
 # Only validated, non-secret deployment options are transferred from Windows.
 # Never source a host .env file or interpolate arbitrary environment variables.
@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory(dir=root) as temporary:
     extracted.rename(root / 'node')
 PY
 fi
-require_typescript_runtime "$HOME/dant/runtime/node/bin/node"
+require_worker_runtime "$HOME/dant/runtime/node/bin/node"
 export PATH="$HOME/dant/runtime/node/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"
 node --version
 cd "$source_dir"
@@ -217,7 +217,7 @@ if [ -f "$HOME/dant/deployed-source.json" ] && \
   cmp -s deploy-manifest.json "$HOME/dant/deployed-source.json" && \
   systemctl --user is-active --quiet dant-worker.service dant-guest-local.service; then
   prepare_transcription
-  node vm/migrate-state.mjs "$source_dir/migration" "$HOME/dant/data"
+  node vm/migrate-state.mts "$source_dir/migration" "$HOME/dant/data"
   echo 'DANT_UPDATE_CURRENT'
   echo 'The current VM worker is already deployed; running work was preserved.'
   exit 0
@@ -236,7 +236,7 @@ if "$update_running_work"; then check_idle_worker pause; else check_idle_worker 
 
 # Only an untouched VM data directory can import a host archive. The original
 # Windows files are backed up before upload and are never removed by migration.
-node vm/migrate-state.mjs "$source_dir/migration" "$HOME/dant/data"
+node vm/migrate-state.mts "$source_dir/migration" "$HOME/dant/data"
 
 # Preserve the old executable files/configuration separately from authoritative
 # data. A failed new service restores these files, never old chat/task records.
@@ -332,7 +332,7 @@ Requires=dant-guest-local.service
 [Service]
 Type=simple
 WorkingDirectory=%h/dant/app
-ExecStart=%h/dant/runtime/node/bin/node src/server.mjs --vm-worker
+ExecStart=%h/dant/runtime/node/bin/node src/server.mts --vm-worker
 Environment=DANT_DATA=%h/dant/data
 Environment=DANT_WORKSPACE_ROOT=%h/dant/workspaces
 Environment=DISPLAY=:0

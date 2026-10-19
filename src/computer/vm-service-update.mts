@@ -17,8 +17,8 @@ export interface ServiceUpdateObservation {
 
 export interface ServiceUpdateBridge {
   readonly status: ConnectionState;
-  readonly generation: number;
-  readonly serviceUpdate?: ServiceUpdateObservation | null;
+  readonly generation?: number | undefined;
+  readonly serviceUpdate?: ServiceUpdateObservation | null | undefined;
   readonly sourceVerified?: boolean;
   refresh(force: boolean): Promise<unknown>;
   confirmServiceVersion?(): Promise<unknown>;

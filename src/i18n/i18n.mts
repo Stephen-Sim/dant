@@ -47,7 +47,8 @@ export function translateCount(
   plural: string,
   chinese?: string,
 ): string {
-  if (!Number.isSafeInteger(count) || count < 0) throw Error('Invalid localized count');
+  if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0)
+    throw Error('Invalid localized count');
   const selected = normalizeLanguage(language, 'en'),
     template = translate(selected, count === 1 ? singular : plural, chinese);
   return template.replaceAll(

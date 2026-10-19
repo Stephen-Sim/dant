@@ -6,9 +6,11 @@ Cross-platform checks and Windows packaging are separate, following the division
 
 ## Checks
 
-JavaScript coverage must reach at least 90% of lines, 80% of branches, and 80% of functions overall. Connection discovery, the Controller, VM transport, Telegram, and appearance also require 90% line coverage individually. Every server module and UI helper must appear in the report; a newly added module cannot pass just by being omitted from tests. The browser entrypoint has separate render/handler fixtures because Node does not load its CSS and live DOM.
+TypeScript coverage must reach at least 90% of lines, 80% of branches, and 80% of functions overall. Connection discovery, the Controller, VM transport, Telegram, and appearance also require 90% line coverage individually. Every server module and UI helper must appear in the report; a newly added module cannot pass just by being omitted from tests. The browser entrypoint has separate render/handler fixtures because Node does not load its CSS and live DOM.
 
-`CI` runs on Ubuntu 24.04 and Windows 2025 with Node.js 22 and Python 3.12. It installs locked npm dependencies, runs JavaScript unit tests and coverage checks, tests Python VM helpers, and builds the frontend. `pycdlib==1.14.0` and OpenSSH are required so seed-image and SSH-key tests cannot silently disappear when tools are missing. Windows DPAPI tests use temporary test keys; Linux explicitly skips Windows-only checks.
+`CI` runs on Ubuntu 24.04 and Windows 2025 with Node.js 22.18+ and Python 3.12. It installs locked npm dependencies, runs TypeScript unit tests and coverage checks, tests Python VM helpers, and builds the frontend. `pycdlib==1.14.0` and OpenSSH are required so seed-image and SSH-key tests cannot silently disappear when tools are missing. Windows DPAPI tests use temporary test keys; Linux explicitly skips Windows-only checks.
+
+The strict compiler checks Node sources, browser sources, and tests as separate projects. Node tests are grouped by module under `tests/`; UI tests mirror `ui/`, shared fixtures live in `tests/support/`, and Python VM tests live in `tests/vm/`. Unit tests and coverage use the same recursive discovery helper and a shared limit of four isolated test processes to bound desktop and CI resource usage.
 
 Bash and PowerShell files are parsed without creating a VM or requesting administrator access. Tests do not use real model accounts, open microphones, or contact a configured Telegram bot. Telegram tests inject a simulated Bot API and verify owner pairing, authorization, deduplication, attachment bounds, delivery results, and shutdown.
 
@@ -40,10 +42,10 @@ npm run format:check
 npm run typecheck
 npm run check:states
 npm run test:coverage
-python -m unittest discover -s tests -p test_vm.py -v
-node scripts/ci/version.mjs
-node --test scripts/ci/version.test.mjs
-node scripts/ci/preflight.mjs
+python -m unittest discover -s tests/vm -p "test_*.py" -v
+node scripts/ci/version.mts
+node --test scripts/ci/version.test.mts
+node scripts/ci/preflight.mts
 pwsh -File scripts/ci/check-powershell.ps1
 npm run build
 ```

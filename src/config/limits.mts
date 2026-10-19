@@ -4,3 +4,6 @@ export const INSTALL_LEASE_TTL_MS = 30_000;
 export const DESKTOP_TRANSITION_TIMEOUT_MS = 150_000;
 export const VM_PAUSE_TIMEOUT_MS = 45_000;
 export const VM_OPERATION_TIMEOUT_MS = 85_000;
+
+// Shared wire limit for desktop, browser and worker attachment delivery.
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;

@@ -1,2 +1,0 @@
-export const SKILL_SUPPORT_FILE_LIMIT = 128;
-export const SKILL_TREE_ENTRY_LIMIT = 4096;

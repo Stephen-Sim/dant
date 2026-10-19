@@ -14,10 +14,10 @@ Legacy Windows chat migration saves a complete backup first, then imports attach
 
 ```powershell
 # Deploy using the selected data directory's existing vm.json, without a Windows UI.
-node src/server.mjs --deploy-worker
+node src/server.mts --deploy-worker
 
 # Show setup preparation only; do not automatically connect the Worker.
-node src/server.mjs --prepare
+node src/server.mts --prepare
 ```
 
 Authoritative VM data is in `~/dant/data/`, conversation workspaces are in `~/dant/workspaces/<conversationId>/`, and deployed application versions are in `~/dant/releases/`. Inspect user services with `systemctl --user status dant-worker dant-guest-local` and `journalctl --user -u dant-worker`. Do not commit raw logs containing private conversations.
@@ -143,7 +143,7 @@ Changing the chat model or application mode does not change Windows Hyper-V/UAC 
 ## Local verification
 
 ```powershell
-python -m unittest discover -s tests -p test_vm.py -v
+python -m unittest discover -s tests/vm -p test_vm.py -v
 python -m py_compile scripts/seed.py scripts/patch-image.py scripts/vm-key.py vm/desktop.py vm/guest.py
 ```
 

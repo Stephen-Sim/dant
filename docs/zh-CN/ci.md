@@ -4,9 +4,11 @@
 
 参考 [Codex 的工作流分工](https://github.com/openai/codex/blob/main/.github/workflows/README.md)，本项目将跨平台检查与 Windows 打包分开。两个工作流都响应所有分支的 push、pull request 和手动运行，默认分支为 `master`。标签构建不会被后续运行取消。
 
-`CI` 在 Ubuntu 24.04 与 Windows 2025 上使用 Node.js 22、Python 3.12，执行 `npm ci`、后端测试、Python VM 辅助测试及前端构建。固定安装 `pycdlib==1.14.0` 并检查 OpenSSH，防止种子镜像和 SSH 密钥测试因缺少工具被跳过。Windows 的 DPAPI 测试使用临时测试密钥；Linux 会按测试声明跳过这项 Windows 专属检查。Bash 与 PowerShell 脚本只做语法解析，不创建 VM、不提权、不进行真实模型或语音 API 调用。
+`CI` 在 Ubuntu 24.04 与 Windows 2025 上使用 Node.js 22.18+、Python 3.12，执行 `npm ci`、后端测试、Python VM 辅助测试及前端构建。固定安装 `pycdlib==1.14.0` 并检查 OpenSSH，防止种子镜像和 SSH 密钥测试因缺少工具被跳过。Windows 的 DPAPI 测试使用临时测试密钥；Linux 会按测试声明跳过这项 Windows 专属检查。Bash 与 PowerShell 脚本只做语法解析，不创建 VM、不提权、不进行真实模型或语音 API 调用。
 
 `Windows build` 在 Windows 2025 上先执行同样的 Node/Python 检查，再使用 Rust 1.99.1 和 `cargo --locked` 构建 Tauri NSIS 安装包。Rust 缓存仅保存依赖和编译中间文件，不缓存用户数据、VM 镜像或打包输出。没有平台签名密钥也可以构建，当前产物未签名。
+
+严格编译分别检查 Node 源码、浏览器源码与全部 Node 测试。测试按模块放入 `tests/<module>/`，UI 测试对应 `ui/`，共享夹具位于 `tests/support/`，Python VM 测试位于 `tests/vm/`。普通测试与覆盖率共用递归发现逻辑和最多四个隔离测试进程，限制桌面与 CI 资源占用。
 
 两个工作流都执行格式、严格 TypeScript 类型及已接入状态域的检查。Windows 打包 job 自己执行这些门禁，标签不能依赖另一个 `CI` 工作流中尚未确认的结果就生成发布草稿。
 
@@ -30,10 +32,10 @@ npm run format:check
 npm run typecheck
 npm run check:states
 npm run test:coverage
-python -m unittest discover -s tests -p test_vm.py -v
-node scripts/ci/version.mjs
-node --test scripts/ci/version.test.mjs
-node scripts/ci/preflight.mjs
+python -m unittest discover -s tests/vm -p "test_*.py" -v
+node scripts/ci/version.mts
+node --test scripts/ci/version.test.mts
+node scripts/ci/preflight.mts
 pwsh -File scripts/ci/check-powershell.ps1
 npm run build
 ```

@@ -5,8 +5,8 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "node src/server.mjs",
-    "start": "node src/server.mjs",
+    "dev": "node src/server.mts",
+    "start": "node src/server.mts",
     "build": "vite build",
     "format": "npm run format:prettier && npm run format:rust",
     "format:check": "npm run format:prettier:check && npm run format:rust:check",
@@ -14,12 +14,12 @@
     "format:prettier:check": "prettier --check .",
     "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
-    "test": "node --test tests/*.test.mjs",
-    "test:coverage": "node scripts/ci/coverage.mjs",
-    "typecheck": "tsc --project tsconfig.json --noEmit",
-    "check:states": "node scripts/ci/check-state-contracts.mjs",
-    "desktop": "npm run build && node scripts/package-resources.mjs && tauri dev",
-    "desktop:build": "npm run build && node scripts/package-resources.mjs && tauri build && node scripts/package-resources.mjs --stage-release"
+    "test": "node scripts/ci/test.mts",
+    "test:coverage": "node scripts/ci/coverage.mts",
+    "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.ui.json --noEmit && tsc --project tsconfig.tests.json --noEmit",
+    "check:states": "node scripts/ci/check-state-contracts.mts",
+    "desktop": "npm run build && node scripts/package-resources.mts && tauri dev",
+    "desktop:build": "npm run build && node scripts/package-resources.mts && tauri build && node scripts/package-resources.mts --stage-release"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -35,7 +35,12 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
+    "@types/estree": "1.0.9",
+    "@types/express": "5.0.6",
+    "@types/multer": "2.3.0",
     "@types/node": "22.20.5",
+    "@types/ws": "8.18.2",
+    "@types/yauzl": "3.4.0",
     "linkedom": "0.18.13",
     "postcss": "8.5.30",
     "prettier": "3.9.10",

@@ -22,7 +22,7 @@ dant checks the bundled work computer service when connecting after installation
 
 **Settings → Work computer** shows the service update status and target / confirmed running versions. A cached connection or a successful installer exit alone does not mean the service is current; dant confirms the running version through the live VM connection. An executor intentionally stopped for safety is not restarted by automatic updates. Unconfirmed update outcomes are reconciled through read-only checks instead of replaying pause or restart operations. **Pause updates** suspends automatic service updates until **Resume updates**. **Pause work and install**, or an explicit **Reconnect**, first pauses current work and verifies its saved records before replacing the service. A changed call, control owner or unknown execution outcome prevents replacement. Paused tasks require an explicit task reply or Resume afterward.
 
-The bundled service requires Node.js 22.18+ LTS or 24+ with native TypeScript support. If Reconnect reports `runtime-incompatible`, dant preserves the existing VM runtime and service. Update that Node runtime through the VM’s maintenance process, then reconnect.
+The bundled service requires Node.js 22.18+ LTS or 24+ with native TypeScript, built-in SQLite and FTS5 support. Preflight, packaging and VM deployment verify these capabilities with a bounded in-memory database query. If Reconnect reports `runtime-incompatible`, dant preserves the existing VM runtime and service. Update that Node runtime through the VM’s maintenance process, then reconnect.
 
 ## Work computer updates in 0.4.7-beta.5
 

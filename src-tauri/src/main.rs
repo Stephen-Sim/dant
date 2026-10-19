@@ -138,7 +138,7 @@ fn main() {
                 .open(data.join("startup.log"))?;
             writeln!(log, "Starting dant backend in {}", backend_root.display())?;
             command
-                .arg("src/server.mjs")
+                .arg("src/server.mts")
                 .current_dir(&backend_root)
                 .env("DANT_DATA", &data)
                 .env("DANT_MANAGED", "1")

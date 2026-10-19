@@ -11,7 +11,7 @@ import type { DesktopExitResult } from '../contracts/contracts.ts';
 
 export interface DesktopBridge {
   status: string;
-  cached?: { worker?: { status?: unknown } };
+  cached?: { worker?: { status?: unknown } } | undefined;
   connect(options: { deploy: false }): Promise<unknown>;
   refresh(force: true): Promise<unknown>;
   pauseWorkForUpdate(options: { reason: 'install' | 'exit' }): Promise<unknown>;

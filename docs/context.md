@@ -24,6 +24,8 @@ Saving durable memory refreshes the current voice session and backing thread. AP
 
 ## Durable memory and personality
 
+Durable notes and retained project context now live in SQLite, behind `MemoryStore` and its revision-aware cache. The `identity.md` / `working-memory.md` labels remain compatible views; Markdown files are explicit import/export snapshots after migration. Candidate facts require confirmation before entering effective context. The latest 32 confirmed structured entries can also appear there. FTS5 recall is currently an explicit API, with automatic retrieval listed as the next integration priority in [architecture](architecture.md#memory-storage-cache-and-recall).
+
 Conversation history and durable notes are separate sources. The **Memory & personality** page shows the fixed `DANT_IDENTITY_INSTRUCTIONS` under Shared personality, and the complete credential-redacted `identity.md` and `working-memory.md` under Current memory. `identity.md` starts with an empty **Identity and preferences** heading; `working-memory.md` starts empty, unless older saved notes are migrated. A sparse page does not mean the conversation thread has been emptied.
 
 The model is instructed to use `memory_write` for durable facts and preferences, but dant does not automatically extract or consolidate notes from each message, call or completed task. Without an explicit save, the files can retain their initial content. Saved notes can influence future responses; the fixed identity instructions are not a separately learned personality profile. Refreshing the read-only page reloads saved content and does not generate new notes.

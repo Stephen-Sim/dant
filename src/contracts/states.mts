@@ -103,8 +103,56 @@ export const TaskProgressStage = Object.freeze({
 export const ComputerControlStatus = Object.freeze({
   Dant: 'dant',
   Acquiring: 'acquiring',
+  TakingOver: 'taking-over',
   Human: 'human',
 } as const);
+export const ScheduleStatus = Object.freeze({
+  Pending: 'pending',
+  Paused: 'paused',
+  Dispatched: 'dispatched',
+} as const);
+export type ScheduleStatusValue = (typeof ScheduleStatus)[keyof typeof ScheduleStatus];
+export const ProvisioningStatus = Object.freeze({
+  Idle: 'idle',
+  Preparing: 'preparing',
+  AwaitingAdmin: 'awaiting-admin',
+  Creating: 'creating',
+  Installing: 'installing',
+  Ready: 'ready',
+  Failed: 'failed',
+} as const);
+export type ProvisioningStatusValue = (typeof ProvisioningStatus)[keyof typeof ProvisioningStatus];
+export const AppUpdateStatus = Object.freeze({
+  Idle: 'idle',
+  Checking: 'checking',
+  Available: 'available',
+  Current: 'current',
+  Failed: 'failed',
+} as const);
+export type AppUpdateStatusValue = (typeof AppUpdateStatus)[keyof typeof AppUpdateStatus];
+export const UpdateDownloadStatus = Object.freeze({
+  Downloading: 'downloading',
+  Ready: 'ready',
+  Installing: 'installing',
+  DownloadFailed: 'downloadFailed',
+} as const);
+export type UpdateDownloadStatusValue =
+  (typeof UpdateDownloadStatus)[keyof typeof UpdateDownloadStatus];
+export const RecordingDraftStatus = Object.freeze({
+  Recording: 'recording',
+  Paused: 'paused',
+  Ready: 'ready',
+  Finishing: 'finishing',
+} as const);
+export type RecordingDraftStatusValue =
+  (typeof RecordingDraftStatus)[keyof typeof RecordingDraftStatus];
+export const MemoryEntryStatus = Object.freeze({
+  Candidate: 'candidate',
+  Confirmed: 'confirmed',
+  Conflicted: 'conflicted',
+  Rejected: 'rejected',
+} as const);
+export type MemoryEntryStatusValue = (typeof MemoryEntryStatus)[keyof typeof MemoryEntryStatus];
 
 export type DesktopPhaseValue = (typeof DesktopPhase)[keyof typeof DesktopPhase];
 export type ServiceUpdateStatusValue =

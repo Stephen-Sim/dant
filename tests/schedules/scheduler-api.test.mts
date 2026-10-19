@@ -1,0 +1,269 @@
+import { activeTaskFixture } from '../support/service-fixtures.mts';
+import type { RpcParams, RpcResult } from '../../src/runtime/protocol.ts';
+import { VoiceFixture } from '../support/protocol-fixtures.mts';
+import { NativeVoiceFixture } from '../support/native-service-fixtures.mts';
+import { WorkerServiceFixture, listeningPort } from '../support/service-fixtures.mts';
+import { defined } from '../support/fixture-assertions.mts';
+import type { TestContext as NodeTestContext } from 'node:test';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { createWorkerApp } from '../../src/app/server.mts';
+
+const base = path.resolve('.cache/tests');
+fs.mkdirSync(base, { recursive: true });
+class Worker extends WorkerServiceFixture {
+  declare calls: Array<{ method: string; params: RpcParams | undefined }>;
+  declare turns: number;
+  declare connections: number;
+  declare connectWait: (() => Promise<unknown>) | undefined;
+  constructor() {
+    super();
+    this.status = 'online';
+    this.calls = [];
+  }
+  async request(method: string, params?: RpcParams): Promise<RpcResult> {
+    this.calls.push({ method, params });
+    return {};
+  }
+  disconnect() {
+    this.status = 'offline';
+  }
+}
+class Provider extends VoiceFixture {
+  declare state: { available: boolean };
+  constructor() {
+    super();
+    this.state = { available: true };
+  }
+  close = async () => {};
+}
+class NativeProvider extends NativeVoiceFixture {
+  async close() {}
+}
+async function fixture(t: NodeTestContext) {
+  const dir = fs.mkdtempSync(path.join(base, 'scheduler-api-')),
+    worker = new Worker(),
+    instance = createWorkerApp({
+      dataDir: dir,
+      workerFactory: () => worker,
+      voiceFactory: () => new Provider(),
+      nativeVoiceFactory: () => new NativeProvider(),
+    });
+  await new Promise<void>((resolve) => instance.server.listen(0, '127.0.0.1', resolve));
+  const apiBase = 'http://127.0.0.1:' + listeningPort(instance.server),
+    { token } = await fetch(apiBase + '/api/session').then((response) => response.json());
+  t.after(async () => {
+    instance.engine.active = null;
+    await instance.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const api = (route: string, method = 'GET', body?: unknown) =>
+    fetch(apiBase + '/api' + route, {
+      method,
+      headers: { 'X-Dant-Token': token, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  return {
+    instance,
+    worker,
+    api,
+    privateApi: (name: string, args: unknown, privateToken = worker.credentialBridgeToken) =>
+      fetch(apiBase + '/api/internal/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Dant-Credential-Token': privateToken },
+        body: JSON.stringify({ tool: name, arguments: args }),
+      }),
+  };
+}
+
+test('HTTP schedule create/edit/pause/delete share the persistent service and stable creation retry ID', async (t) => {
+  const f = await fixture(t),
+    body = {
+      text: 'A synthetic future task',
+      at: Date.now() + 3600000,
+      timeZone: 'Asia/Kuala_Lumpur',
+      clientRequestId: randomUUID(),
+    },
+    first = await f.api('/schedules', 'POST', body);
+  assert.equal(first.status, 200);
+  const saved = await first.json();
+  assert.equal(saved.timeZone, 'Asia/Kuala_Lumpur');
+  assert.equal(saved.status, 'pending');
+  const duplicate = await f.api('/schedules', 'POST', body);
+  assert.equal((await duplicate.json()).id, saved.id);
+  assert.equal(
+    (await f.api('/schedules', 'POST', { ...body, text: 'Different request' })).status,
+    409,
+  );
+  const listing = await f.api('/schedules').then((response) => response.json());
+  assert.equal(listing.items.length, 1);
+  assert.ok(listing.now);
+  assert.equal((await f.api('/schedules/' + saved.id, 'PATCH', { enabled: false })).status, 200);
+  assert.equal(defined(f.instance.store.state.schedules[0]).status, 'paused');
+  const changed = await f
+    .api('/schedules/' + saved.id, 'PATCH', { text: 'An updated instruction', enabled: true })
+    .then((response) => response.json());
+  assert.equal(changed.id, saved.id);
+  assert.equal(changed.status, 'pending');
+  assert.equal(changed.text, 'An updated instruction');
+  assert.equal(f.instance.store.state.messages.length, 0);
+  assert.equal(f.worker.calls.length, 0);
+  assert.equal((await f.api('/schedules/' + saved.id, 'DELETE')).status, 200);
+  assert.equal((await f.api('/schedules', 'POST', body)).status, 409);
+  assert.equal(f.instance.store.state.schedules.length, 0);
+});
+
+test('schedule HTTP validation rejects stale IDs and invalid timezones without partially changing saved settings or tasks', async (t) => {
+  const f = await fixture(t);
+  assert.equal((await f.api('/settings', 'PATCH', { timeZone: 'Asia/Kuala_Lumpur' })).status, 200);
+  assert.equal(f.instance.scheduler.list().timeZone, 'Asia/Kuala_Lumpur');
+  const before = structuredClone(f.instance.store.state);
+  assert.equal(
+    (await f.api('/settings', 'PATCH', { language: 'en', timeZone: 'Invalid/Zone' })).status,
+    400,
+  );
+  assert.deepEqual(f.instance.store.state, before);
+  assert.equal(
+    (await f.api('/schedules', 'POST', { text: 'No guessed time', at: '2026-10-18T12:00:00' }))
+      .status,
+    400,
+  );
+  assert.equal((await f.api('/schedules/missing', 'PATCH', { enabled: false })).status, 404);
+  assert.equal((await f.api('/schedules/missing', 'DELETE')).status, 404);
+  assert.equal(f.instance.store.state.schedules.length, 0);
+});
+
+test('private MCP schedule management checks its token and the current acknowledged owner before saving', async (t) => {
+  const f = await fixture(t),
+    args = {
+      text: 'A synthetic agent scheduled task',
+      at: new Date(Date.now() + 3600000).toISOString(),
+      timeZone: 'UTC',
+    };
+  assert.equal((await f.privateApi('schedule_save', args, 'forged')).status, 403);
+  assert.equal((await f.privateApi('schedule_save', args)).status, 409);
+  const message = f.instance.store.add({
+      role: 'user',
+      text: 'Schedule this requested synthetic check',
+      status: 'running',
+    }),
+    active = activeTaskFixture({
+      threadId: 'thread',
+      turnId: 'current-owned',
+      startAcknowledged: true,
+      messageId: message.id,
+      messageIds: [message.id],
+      assistantIds: [],
+      outputs: new Map(),
+      explicitPaths: [],
+      resolveStopped() {},
+    });
+  f.instance.engine.active = active;
+  const result = await f.privateApi('schedule_save', args);
+  assert.equal(result.status, 200);
+  const saved = await result.json();
+  assert.equal(saved.saved, true);
+  assert.equal(f.instance.store.state.schedules.length, 1);
+  assert.equal((await f.privateApi('schedule_list', {})).status, 200);
+  active.stopRequested = true;
+  assert.equal((await f.privateApi('schedule_delete', { id: saved.item.id })).status, 409);
+  active.stopRequested = false;
+  assert.equal((await f.privateApi('schedule_delete', { id: saved.item.id })).status, 200);
+  assert.equal(f.instance.store.state.schedules.length, 0);
+  assert.equal(f.instance.store.state.messages.length, 1);
+  assert.equal(f.worker.calls.length, 0);
+});
+
+test('HTTP recurring schedules round-trip cron and priority with a durable next time and paused resume', async (t) => {
+  const f = await fixture(t);
+  await f.api('/settings', 'PATCH', { timeZone: 'Asia/Kuala_Lumpur' });
+  const capabilities = await f.api('/state').then((response) => response.json());
+  assert.equal(capabilities.capabilities.recurringSchedules, true);
+  const body = {
+      text: 'A requested daily check',
+      cron: '0 9 * * *',
+      priority: 'high',
+      clientRequestId: randomUUID(),
+    },
+    response = await f.api('/schedules', 'POST', body);
+  assert.equal(response.status, 200);
+  const saved = await response.json();
+  assert.equal(saved.cron, body.cron);
+  assert.equal(saved.priority, 'high');
+  assert.equal(saved.timeZone, 'Asia/Kuala_Lumpur');
+  assert.ok(saved.at > Date.now());
+  assert.equal(f.instance.store.state.messages.length, 0);
+  assert.equal(
+    (await f.api('/schedules', 'POST', body).then((response) => response.json())).id,
+    saved.id,
+  );
+  const paused = await f
+    .api('/schedules/' + saved.id, 'PATCH', { enabled: false })
+    .then((response) => response.json());
+  assert.equal(paused.status, 'paused');
+  f.instance.scheduler.now = () => saved.at + 8 * 86400000;
+  const resumedResponse = await f.api('/schedules/' + saved.id, 'PATCH', {
+    enabled: true,
+    priority: 'low',
+  });
+  assert.equal(resumedResponse.status, 200);
+  const resumed = await resumedResponse.json();
+  assert.equal(resumed.cron, saved.cron);
+  assert.equal(resumed.priority, 'low');
+  assert.ok(resumed.at > f.instance.scheduler.now());
+  assert.equal(resumed.id, saved.id);
+  const listing = await f.api('/schedules').then((response) => response.json());
+  assert.equal(listing.items[0].cron, saved.cron);
+  assert.equal(listing.items[0].priority, 'low');
+  assert.equal(f.instance.store.state.messages.length, 0);
+  assert.equal(f.worker.calls.length, 0);
+  for (const patch of [
+    { cron: '* * * * * *' },
+    { priority: 'urgent' },
+    { cron: '0 9 * * *', at: new Date(Date.now() + 86400000).toISOString() },
+  ] as const)
+    assert.equal((await f.api('/schedules/' + saved.id, 'PATCH', patch)).status, 400);
+  assert.equal((await f.api('/schedules/' + saved.id, 'DELETE')).status, 200);
+});
+
+test('private MCP recurring schedules use the same owned scheduler, timezone default and priority validation', async (t) => {
+  const f = await fixture(t);
+  f.instance.store.state.settings.timeZone = 'Asia/Kuala_Lumpur';
+  const message = f.instance.store.add({
+    role: 'user',
+    text: 'Run this daily check',
+    status: 'running',
+  });
+  f.instance.engine.active = activeTaskFixture({
+    threadId: 'thread',
+    turnId: 'owned-daily',
+    startAcknowledged: true,
+    messageId: message.id,
+    messageIds: [message.id],
+    assistantIds: [],
+    outputs: new Map(),
+    explicitPaths: [],
+    resolveStopped() {},
+  });
+  const response = await f.privateApi('schedule_save', {
+    text: 'A requested weekly check',
+    cron: '0 9 * * mon',
+    priority: 'low',
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.saved, true);
+  assert.equal(result.item.cron, '0 9 * * mon');
+  assert.equal(result.item.priority, 'low');
+  assert.equal(result.item.timeZone, 'Asia/Kuala_Lumpur');
+  assert.equal(f.instance.store.state.messages.length, 1);
+  assert.equal(f.worker.calls.length, 0);
+  assert.equal(
+    (await f.privateApi('schedule_save', { id: result.item.id, priority: 'urgent' })).status,
+    400,
+  );
+  assert.equal(defined(f.instance.store.state.schedules[0]).priority, 'low');
+});

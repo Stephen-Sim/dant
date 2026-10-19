@@ -1,0 +1,9 @@
+export const SKILL_SUPPORT_FILE_LIMIT = 128;
+export const SKILL_TREE_ENTRY_LIMIT = 4096;
+export const SKILL_DESCRIPTION_BYTES = 1000;
+export const SKILL_INSTRUCTION_BYTES = 49152;
+export const SKILL_FILE_BYTES = 65536;
+export const SKILL_TOTAL_BYTES = 262144;
+export const SKILL_MAX_DEPTH = 16;
+export const SKILL_RELATIVE_PATH_CHARACTERS = 180;
+export const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;

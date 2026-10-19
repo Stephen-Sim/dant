@@ -39,7 +39,7 @@ The PowerShell protection script is fixed. Keys arrive over child-process stdin,
 Constructor overrides inject `platform`, `env`, `protect`, `unprotect`, or `spawnProcess`. Tests use temporary invented values to exercise atomic saves, failure preservation, deletion, non-Windows behavior, subprocess arguments/output, Windows DPAPI round trips, and tamper rejection. They do not read existing credentials.
 
 ```powershell
-node --test tests/secrets.test.mjs
+node --test tests/security/secrets.test.mts
 ```
 
 References: Microsoft [ProtectedData](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata) and [CurrentUser scope](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.dataprotectionscope).

@@ -46,14 +46,14 @@ jobs:
       - name: Install VM test dependency
         run: python -m pip install --disable-pip-version-check pycdlib==1.14.0
       - name: Require VM test tools and check Bash syntax
-        run: node scripts/ci/preflight.mjs
+        run: node scripts/ci/preflight.mts
       - name: Check PowerShell syntax without running VM scripts
         shell: pwsh
         run: ./scripts/ci/check-powershell.ps1
       - name: Check application versions
-        run: node scripts/ci/version.mjs
+        run: node scripts/ci/version.mts
       - name: Test release version gate
-        run: node --test scripts/ci/version.test.mjs scripts/ci/coverage.test.mjs
+        run: node --test scripts/ci/version.test.mts scripts/ci/coverage.test.mts scripts/ci/test-files.test.mts
       - name: Test application and enforce coverage
         run: npm run test:coverage
       - name: Upload coverage reports
@@ -66,6 +66,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Test VM image, seed, desktop and SSH key helpers
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        run: python -m unittest discover -s tests/vm -p "test_*.py" -v
       - name: Build frontend
         run: npm run build

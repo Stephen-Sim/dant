@@ -20,6 +20,8 @@ Search uses a fixed catalog of setting names and help keywords. It does not sear
 
 Switching categories preserves local form drafts and an ongoing call. Some settings require a connected work computer; appearance, application version and update checks are handled locally. See [updates](updates.md).
 
+The memory display now reads current SQLite-backed reference context, not stale Markdown exports. Structured candidate management currently has a storage API but no complete editor on this page. See [memory architecture](architecture.md#memory-storage-cache-and-recall).
+
 ## Token usage
 
 **Settings → Usage** shows the provider-reported input, cached input, output, reasoning output and total tokens received by dant. ChatGPT work and optional API voice are counted separately, with recorded totals and the latest model response. Cached input is already included in input; reasoning output is already included in output. Missing fields remain unavailable, rather than appearing as zero. These statistics do not represent account quota or a bill.

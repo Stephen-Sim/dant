@@ -264,7 +264,12 @@ export function isTaskExecutionEvent(event: unknown): boolean {
   );
 }
 export function registeredWorkFinalStatus<Status extends TaskStatusValue>(
-  task: TaskProgressTask | null | undefined,
+  task:
+    | (Pick<TaskProgressTask, 'awaitingChatInput' | 'credentialWaits' | 'planWaitingForUser'> & {
+        workRecord?: { plan?: Pick<TaskPlan, 'steps'> | null } | null;
+      })
+    | null
+    | undefined,
   status: Status,
 ): Status | typeof TaskStatus.WaitingUser | typeof TaskStatus.Continuing {
   const plan = task?.workRecord?.plan;

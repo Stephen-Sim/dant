@@ -1,4 +1,4 @@
-import {
+import type {
   ChatTaskStatus,
   ComputerControlStatus,
   ConnectionStatus,
@@ -161,8 +161,4 @@ export interface ConnectionSnapshot {
   status: ConnectionStatusValue;
   cached: boolean;
   authority: 'vm';
-}
-
-export function assertNever(value: never): never {
-  throw new Error(`Unexpected contract state: ${String(value)}`);
 }

@@ -24,6 +24,8 @@ dant 的文字任务和原生订阅语音任务复用当前会话的 Codex 线�
 
 ## 持久记忆与人格
 
+持久笔记与保留的项目上下文现在由 SQLite 保存，通过 `MemoryStore` 和 revision 缓存访问。`identity.md` / `working-memory.md` 保留为兼容视图，迁移后的 Markdown 文件是显式导入导出快照。候选事实确认后才进入有效上下文，其中还可包含最新 32 条已确认结构化条目。FTS5 目前提供显式 API，自动检索是[架构文档](architecture.md#memory存储缓存与召回)中的下一集成优先级。
+
 会话历史与持久笔记是两种独立来源。**记忆与人格**页的“共享人格”显示固定的 `DANT_IDENTITY_INSTRUCTIONS`，“当前记忆”显示 `identity.md` 与 `working-memory.md` 脱敏后的完整内容。`identity.md` 初始只有 **Identity and preferences** 标题，`working-memory.md` 初始为空，迁移旧笔记时除外。页面内容少，不代表模型会话已被清空。
 
 模型指令要求通过 `memory_write` 保存持久事实与偏好，但 dant 目前不会在每条消息、每次通话或任务完成后自动提取和整理笔记；没有明确保存时，文件可能一直保留初始化内容。已保存的笔记可影响后续回应，固定身份指令则不是单独学习得到的人格档案。刷新这个只读页面只会重新读取已保存内容，不会生成新笔记。

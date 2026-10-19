@@ -1,167 +1,252 @@
-# dant Windows 实现架构
+# 系统架构
 
 [English](../architecture.md) · Chinese
 
-实现依据为用户提供的 Mac / UTM 架构与 15 张界面参考。Windows 版本沿用职责划分，平台部分替换为 Hyper-V、AMD64 Ubuntu、OpenSSH 与 Windows 原生桌面宿主。
+dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括本次 SQLite 记忆迁移；已发布的安装包可能仍是较早的实现。
+
+## 总体系统
 
 ```mermaid
-flowchart LR
-  UI[共享 JavaScript / CSS 界面] -->|浏览器 HTTP + SSE| Controller
-  UI -->|桌面 IPC| Rust[Tauri / Rust]
-  Rust -->|固定本机 HTTP| Controller[Windows Controller 127.0.0.1:4317]
-  Controller -->|SSH 本地隧道| Worker[Ubuntu Worker 127.0.0.1:4317]
-  Worker --> Engine[任务引擎与唯一持续对话]
-  Telegram[已配对 Telegram 私聊] <-->|Bot API 消息和文件同步| Gateway[VM Telegram 网关]
-  Gateway --> Engine
-  Engine --> Codex[Codex App Server / stdio JSON-RPC]
-  Engine --> Files[VM 记忆、附件、工作目录]
-  Codex --> Desktop[Python 桌面工具]
-  Worker -->|人工输入| Desktop
-  Desktop --> Lock[共享文件锁与控制租约]
+flowchart TB
+  subgraph Windows
+    UI[TypeScript UI · Vite · DOM / CSS]
+    Native[Tauri 2 / Rust<br/>窗口 · 托盘 · 通知 · 安装器]
+    Controller[Node.js Controller<br/>VM 生命周期 · 设置 · 离线缓存]
+    UI -->|桌面 IPC| Native
+    Native -->|鉴权的回环 HTTP| Controller
+    UI -->|浏览器 HTTP / SSE| Controller
+  end
+  subgraph Ubuntu 工作电脑
+    Worker[Worker API]
+    Engine[Engine<br/>单执行入口 · 任务 / turn 所有权]
+    Heartbeat[WorkContinuationSupervisor]
+    Scheduler[Scheduler<br/>一次性 · cron · 优先级]
+    Codex[Codex App Server<br/>模型推理 / 工具循环 · 持久线程]
+    Tools[动态工具 / dant_desktop MCP]
+    Desktop[Python 桌面工具<br/>截图 · 输入 · 共享控制租约]
+    State[Store · state.json<br/>消息 · 任务 · 调度 · 回执]
+    Memory[MemoryStore<br/>SQLite + 有界缓存 + FTS5]
+    Skills[Skills / Markdown 与配套文件]
+    Files[不可变附件 / 工作区产物]
+    Telegram[配对的 Telegram 网关]
+    Worker --> Engine
+    Heartbeat -->|符合条件的未完成任务| Engine
+    Scheduler -->|保存并入队到期任务| Engine
+    Telegram <--> Engine
+    Engine <--> Codex
+    Codex <--> Tools
+    Tools --> Desktop
+    Engine <--> State
+    Engine <--> Memory
+    Engine --> Skills
+    Engine --> Files
+    Worker -->|确认后的人类接管| Desktop
+  end
+  Controller <-->|SSH 本地转发| Worker
+  Codex <-->|提供商连接| Models[模型服务]
+  Telegram <-->|HTTPS Bot API| Phone[Telegram 私聊]
 ```
 
-## 运行模式与数据归属
+UI 展示状态并提交操作。Controller **不会创建 Engine，也不会在 Windows 上执行 Agent 任务**。Worker 必须在有可用图形桌面的 Linux VM 内，以普通用户身份启动。UI 断开不会把 Controller 变成执行器。
 
-| 模式                     | 职责                                                               |
-| ------------------------ | ------------------------------------------------------------------ |
-| `--prepare`              | 界面与安装准备，不自动连接 VM 或启动模型                           |
-| 默认 / `--vm-controller` | Hyper-V 准备、部署、Windows 通知、离线缓存、工作 API 代理          |
-| `--vm-worker`            | VM 内普通用户运行，持有 Engine、Store、Codex、附件、记忆和桌面控制 |
-| `--deploy-worker`        | 仅部署或更新执行器，不启动本机界面                                 |
+| 组件        | 源码                                                            | 职责                                               |
+| ----------- | --------------------------------------------------------------- | -------------------------------------------------- |
+| 原生宿主    | `src-tauri/src/`                                                | 窗口、托盘、原生 IPC、通知、安全宿主集成、安装交接 |
+| 应用组装    | [`src/app/`](../../src/app/)                                    | Controller/Worker 模式、API 与服务所有权           |
+| 运行时通信  | [`src/runtime/`](../../src/runtime/)                            | Codex 进程、JSON-RPC、事件校验与响应所有权         |
+| Agent 执行  | [`engine.mts`](../../src/work/engine.mts)                       | 接纳输入、绑定确认的 turn、处理工具、保存结果      |
+| 任务连续性  | [`src/work/`](../../src/work/)                                  | 计划、回复、暂停/取消、项目上下文与安全续作        |
+| Heartbeat   | [`work-continuation.mts`](../../src/work/work-continuation.mts) | 判断已结束执行但未完成的任务能否继续               |
+| 调度器      | [`scheduler.mts`](../../src/schedules/scheduler.mts)            | 执行时间、重复规则、优先级和派发回执               |
+| 记忆 / 对话 | [`src/conversation/`](../../src/conversation/)                  | Store、共享参考上下文、SQLite 记忆与迁移           |
+| 电脑控制    | [`src/computer/`](../../src/computer/)、`vm/`                   | VM 部署、SSH、截图、输入和控制权                   |
 
-Controller 不创建任务 Engine，也不在 Windows 执行用户任务。Worker 启动时核验 Linux 虚拟环境、普通用户和图形桌面。两端 HTTP 服务只监听各自 loopback；VM API 不暴露到虚拟网卡，文件通过受控接口显式传递，不建立宿主目录共享。
+运行时模块使用 Node 原生可擦除类型的 TypeScript（`.mts`），纯类型放在 `.ts`。前端使用 Vite、TypeScript 和 DOM/CSS。模块与测试目录遵循[代码规范](code-style.md)。当前是 npm 仓库，尚未改成 React 应用或 pnpm workspace monorepo。
 
-Windows 保存 `controller.json`、`vm.json`、部署及迁移记录、`notifications.json`、加密的可选 API Key 和 `state-cache.json`。后者仅供断线展示，不成为新的对话存储。断线保留最后已知聊天和输入草稿，工作请求明确失败，不切换到宿主执行。
+## Agent loop 与执行所有权
 
-外观与语言属于 Controller 配置，离线也可更改。主题通过 CSS 颜色变量和原生窗口主题同步，字体包含中英文回退，不改变 VM 桌面的截图颜色。已运行过的有效连接目录登记在当前 Windows 用户的本地配置索引中；缺少绑定的安装版可以导入唯一有效来源，多个来源要求选择。导入只保存 SSH 连接资料，已有有效绑定不被自动替换；私钥仍保留原路径，虚拟磁盘和认证文件不移动。
-
-VM 保存 `~/dant/data/state.json`、`attachments/<UUID>.bin` 与元数据、`memory/dant/`，工作现场为 `~/dant/workspaces/<conversationId>/output/`。首次迁移保留 Windows 原始数据备份，转换附件引用；不复制 Codex 认证文件。部署只同步源码允许列表，保留工作数据和版本备份，活动任务期间推迟更新。
-
-Windows 应用更新为正式版和 Beta 分别查询元数据，原生后台下载使用独立通道。原生程序读取固定、已认证的 Controller 描述，只接受官方安装包并校验大小和摘要。安装前确认工作已暂停并取得短期 Controller 安装租约，在原生程序挂起所属 VM 时阻止新的变更请求。挂起期间延长租约，交给更新助手前重新计时。复制出的更新助手等待准确的父进程及自有 Controller 句柄退出，重新校验安装包，仅在获得授权后启动安装；准备失败时恢复所属 VM，但不会恢复已暂停任务。重新打开应用时检查配套服务。详见[版本与更新](updates.md)。
-
-## 持续对话和执行
-
-唯一 `conversationId` 为永久 UUID，对应固定工作目录并复用 Codex 线程。用户消息先保存送达时间，`turn/start` 返回有效轮次 ID 后才标记执行器已确认。提前到达的轮次事件受数量和大小限制，确认后只重放匹配 ID 的事件。
-
-模型工具和 `dant_desktop` MCP 均提供 `task_plan {title, steps, workId?, status?}`，先保存公开计划，再返回确认。可选 `status` 只接受 `running` 或 `waiting_user`，省略时保留原有行为。明确的 `waiting_user` 表示任务确实缺少用户信息，至少须有一个待办步骤，且不得有正在执行的步骤，已全部完成的清单不能变成等待输入。共同指令要求已接受的实际委托都先登记，包括简单发送链接或文件；需要澄清时先记录等待状态，再询问。普通聊天和单纯询问进度不建新工作条目；相关补充明确复用真实返回的 `workId`，可以跨执行轮次接续，不猜测最近任务，无关的新工作另建记录。持久记录保留原任务身份、开始时间及所属轮次，使回复和结果回执不再生成重复任务。接续要求当前已确认的归属，原记录须处于进行中、等待回复或暂停状态；拒绝归属未知及其他正在执行的记录。
-
-一句回复结束不等于任务完成。执行回合正常结束但计划步骤尚未做完时，任务仍为**进行中**；确实等待用户输入时显示**等待你回复**，完整计划且没有待回复的实际问题时才进入待验收。进度面板把进行中的工作与最近结果分开，不把轮次间隙伪装成仍有执行器运行。普通语音、转写收尾及对话工具不会闪出通用任务卡。重启将被打断的执行恢复为暂停，已保留的未完成计划仍可辨认；收起历史条目不改变执行或共享上下文。
-
-Worker 维护一个未完成任务巡检器，每 30 秒检查，并在进度变化后合并安排约 5 秒的补查。只有已结束执行、仍为 `continuing` 且有真实未完成步骤（或真实观察到的无计划记录）才可接续；按优先级和到期时间选择一项，让真实用户输入与普通队列优先。任何异步操作前先持久保存归属申请，再实时读取线程，证明旧轮次结束、共享执行器空闲。发 RPC 前保存提交阶段，真实新轮次确认后先绑定原工作身份，再处理缓冲的工具请求。内部续作不伪造用户消息，不重新提交原附件。仍未完成时退避后再检查；连续三轮既没有公开计划进展、也没有符合条件的执行证据，则暂停并记录明确原因。成功进程的新输出可有限延长执行；重复不变的观察、失败操作和只有开始事件均不算推进。等待输入、暂停、取消、待验收、提交未确认及人工接管都不会自动重跑。
-
-自动续作是实际执行路径，不是状态汇报作业。普通文字和明确交付先缓冲，不新增聊天、未读或完成记录；已保存计划全部完成、真正需要输入或执行失败时，才交付汇总结果。私有 MCP 投递策略查询沿用准确轮次归属，缓冲回执不会声称已发送；输入提醒在确认收到人的回答后可再次触发。Telegram 宣告完成前也核对关联的已保存工作。
-
-原生通话在空闲执行器接续时保留媒体身份，归属预留保护同时到达的语音委派与准确轮次。上游 `turn/start` 可能把输入加入已在运行的原生轮次，因此竞争的委派或含糊确认不能作为绑定任务、打断该原生执行的依据；保留不确定申请且不自动重试。若已确认真实新轮次但绑定保存失败，会继续保留内存归属并准确停止该轮次，只有匹配的实际结束事件才能把申请收尾为暂停历史。关闭服务先清理巡检器，再处理执行器。这参考了 [OpenClaw 心跳机制](https://docs.openclaw.ai/gateway/heartbeat) 对定时检查、持久工作与串行执行的区分，不把无声回复等同于任务完成。
-
-如果准确归属的执行事件先于计划到达，Worker 会保存没有步骤清单的临时任务，不编造完成比例。后续真实计划更新同一身份，也可通过明确匹配的 `workId` 原子接续原任务。兜底只保留实际执行这一事实，不读取命令参数、输出或推理；原生事件缩减大载荷后仍保留这一分类。未核实的任务不会因回合结束而完成。澄清等待需要明确更新为 `running` 或确认收到用户回复才能继续；旧操作结束、迟到的委派回执都不能清除新问题。澄清前登记属于模型指令，不会把每句话都自动分类成任务。
-
-明确取消与可恢复的暂停分别处理。工作进度在确认前捕获所选任务、轮次和通话身份；只有确认中断后才标记为 `cancelled`，停止未确认时保持可见。已结束执行但未完成的记录也可取消，不影响其他正在运行的任务。历史保留计划、结果和优先级，旧计划更新不能恢复它，也不计入“清空已完成”。限定作用域的 `task_list {}` 工具只读任务身份与状态摘要，`task_cancel {workId}` 使用同一取消流程；取消自身执行时先确认请求，不在工具事件链内等待自身结束。取消不会结束通话音频，也不会清空其他排队工作。聊天保留正常回复和真实结果，不再额外插入固定停止提示或已取消任务的 Retry；取消历史留在工作进度中。
-
-侧栏和 `schedule_list`、`schedule_save`、`schedule_delete` 模型工具共用 Worker 的定时任务服务，覆盖两种语音及 MCP。保存不会立即执行；单次任务使用准确时间点和 IANA 时区，重复任务在保存的时区计算五字段 Cron 的未来下一次时间。到期派发先原子保存领取记录及一条排队消息，再交给串行队列。离线重复任务只补一次，同一定时任务尚有未完成工作时不会重叠；重启保留领取记录，不重复派发。桌面创建使用稳定请求 ID 处理 HTTP 回执不确定，删除后保留请求墓碑。优先级只重排定时任务在队列中的位置，不改变普通消息位置、不抢占正在执行的工作。通话、人工接管和归属未确认会延后执行；移除定时条目不取消已派发的工作。
-
-定向任务回复通过 `/api/messages` 携带 `workReply:{workId,turnId,conversationId}` 及稳定的客户端消息 ID。保存和实际派发前均核对准确任务归属；正在执行的匹配轮次接收精确后续输入，已结束的工作沿用自动续作的持久领取与轮次绑定流程，使用新的人类输入并正常回复聊天。其他工作不会误收这条回复。Worker 快照明确声明 `workReply` 和 `recurringSchedules` 能力；Controller 转发新操作前检查新鲜能力及 VM 身份，避免旧服务静默忽略新字段。
-
-模型上下文窗口、token 计量和自动压缩由 Codex 管理。dant 不覆盖上下文窗口、最大输出 token 或压缩阈值，也不根据缩短后的界面聊天记录重建模型线程。通话中的文字消息、安全记忆及已启用技能描述不再使用额外的 dant 上下文字数预算。可选 API 语音同样由服务方管理 token/截断策略，并保留完整传入聊天参考；模型和服务本身的限制仍适用。补充的消息 ID/表情查找标签、存储校验及观察/控制队列上限各有用途，不会缩短 Codex 原始会话。
-
-```mermaid
-stateDiagram-v2
-  [*] --> queued: 保存用户输入
-  queued --> running: 取得唯一执行位置
-  running --> waiting_user: 等待执行器交互
-  waiting_user --> running: 明确回应
-  running --> pausing: 请求停止
-  pausing --> paused: 确认暂停
-  pausing --> cancelled: 确认取消
-  running --> review: 成功结束本轮
-  review --> completed: 用户验收
-  running --> failed: 已确认失败
-  paused --> queued: 用户明确继续
-  failed --> queued: 用户明确重试
-```
-
-`review`、`completed` 和“已读”各有独立含义。助手结果只有在页面可见、有焦点且进入视口持续约 450 ms 后才标为已读。普通成功轮次生成 Completion，供宿主延迟三秒检查未读，并通知这次交付中最后一条已完成的助手消息。预览为最多 240 个 Unicode 字符的纯文本，只有附件时显示文件名。预览内容仅保留在内存中，通知送达不会把消息标为已读。
-
-桌面及 Telegram 的普通消息采用交互投递：当前已确认任务能接收输入时，消息通过 `turn/steer` 直接补充该轮次。请求绑定接收时的 `expectedTurnId` 串行提交，待确认的消息 ID 去重，仅在执行器确认后记录送达回执。计划任务、明确恢复及内部语音任务仍保持独立排队语义。等待启动回执时先排队。订阅通话留下的后台任务可接收文字补充，保留交接及归属保护；附件仍排队。未知提交结果被暂停，不自动重发。重启遗留运行、暂停中、等待决定及排队工作保留为暂停，避免无意重放外部操作。
-
-## 文件与记忆
-
-附件最多五个、每个 10 MiB；后端根据内容识别媒体格式，按 UUID 存储，不信任客户端 MIME 或原文件名路径。活动 HTML / SVG 作为下载，远程图片不自动加载，收到音频不自动播放。
-
-所有显式下载入口均为按钮，点击文件或图片下载不会让主 WebView 离开聊天。`GET /api/files/:id?download=1` 强制附件下载，普通图片、音频请求仍用于内嵌预览。Windows 原生下载命令仅允许主窗口调用，从固定且需认证的 Controller 接口读取最多 10 MiB，打开“另存为”，再原子保存完整内容。取消不会改动文件或聊天。浏览器路径读取相同内容，通过临时 Blob 下载后回收 URL。文件名保留实际扩展名：PNG 截图和独立的 JSON 运行报告是不同附件。
-
-每轮工作前计算 `output/` SHA-256 基线，成功后归档新增或变化文件；明确引用可再次交付已有文件。交付保存独立副本，后续修改原件不改变消息附件。扫描限制为 512 项、64 MiB、八层，拒绝符号链接、多硬链接、秘密及日志文件名；Linux 扫描以目录文件描述符锚定子路径，检查读前读后 inode 与状态。
-
-记忆为 `README.md`、`identity.md`、`working-memory.md`，单文件存储上限为 64 KiB。安全参考内容完整提供给模型，不再额外设置上下文字数预算。记忆内容经过凭据脱敏和边界转义，只作参考数据，不能授予新权限。它与 ChatGPT 云端记忆独立。
-
-## 桌面互斥
+**Codex App Server 负责模型推理、工具迭代和模型对话；dant Engine 负责执行准入、持久化、身份、确认和交付。** 应用没有另起一个按固定间隔调用 LLM 的循环。
 
 ```mermaid
 sequenceDiagram
-  participant UI as Windows UI
-  participant Session as ComputerSession
-  participant Engine as VM Engine
-  participant Lock as Python flock / 租约
-  UI->>Session: 请求接管
-  Session->>Engine: 保留执行位置，暂停队列
-  Session->>Lock: 建立 taking-over 租约
-  Session->>Engine: 中断活动轮次并等待确认
-  Engine-->>Session: 已停止
-  Session->>Lock: 确认 human
-  Session-->>UI: sessionId / expiresAt
-  UI->>Lock: 携带 sessionId 的输入
-  Lock-->>UI: 成功并续租
+  participant Input as 聊天 / 语音 / 定时输入
+  participant Store as 持久 Store
+  participant Engine
+  participant Codex as Codex App Server
+  participant Tool as 工具 / VM 桌面
+  Input->>Engine: 带稳定身份的已授权输入
+  Engine->>Store: 保存输入与排队状态
+  Engine->>Engine: 获取执行名额；准备附件与上下文
+  Engine->>Store: 保存提交意图
+  Engine->>Codex: thread/start 或 resume；turn/start
+  Codex-->>Engine: 确认真实 threadId / turnId
+  Engine->>Store: 绑定准确的执行所有者
+  loop 推理、执行、观察
+    Codex->>Engine: 带作用域的工具请求 / 执行事件
+    Engine->>Engine: 校验使用的字段与所有权
+    Engine->>Tool: 执行获准操作
+    Tool-->>Engine: 实际观察结果
+    Engine->>Store: 公开计划 / 相关回执
+    Engine-->>Codex: 工具结果
+  end
+  Codex-->>Engine: 匹配当前所有者的终止事件
+  Engine->>Store: 保存结果与未完成任务
+  Engine-->>Input: 验证后的结果、失败或需要人类回复的问题
 ```
 
-模型 Python 工具与人工输入共享 `flock` 和控制文件。接管停止未确认时不开放输入；旧会话 ID、未确认租约及过期租约均拒绝。两分钟没有输入则释放，交还后由用户明确继续已暂停任务。电脑面板仅在可见时串行取截图，并按实际图片区域换算坐标。
+`Engine.pump()` 选择排队任务，线程初始化恢复当前对话对应的 Codex 线程，`handle()` 分派有作用域的事件/工具，`complete()` 保存结果和附件。提前到达的事件有界保存，不能在有效 `turn/start` 确认之前证明执行归属。提交状态和任务状态是 [`states.mts`](../../src/contracts/states.mts) 中的不同状态域。
 
-已确认接通的通话可在人工接管时保持连接。Worker 暂停排队任务，并等待准确的活动轮次确认停止；人工输入仍须取得 VM 确认的控制租约。交还不会重跑已中断或排队的任务，可在原通话中发出新指令继续工作。连接中、停止中、恢复中或状态未确认时禁止开始接管；已有人工租约仍可交还。接管不会结束媒体连接。
+持久 `workId` 可以跨 turn 保留。`task_plan` 记录真实步骤，`task_list` 和 `task_cancel` 使用已保存身份。回复任务时，普通聊天输入携带 `workId`、预期 turn 和对话 ID；执行中的回复只送给匹配所有者，已结束任务则带着保留的项目上下文，从同一入口重开。
 
-互斥约束覆盖应用调度及桌面工具，不能保证此前启动的独立后台进程停止，也不能代替 VM 的操作系统权限隔离。
+```mermaid
+stateDiagram-v2
+  [*] --> running: 执行已确认
+  running --> continuing: 本轮结束但任务未完成
+  continuing --> running: 安全续作已确认
+  running --> waiting_user: 真实输入阻塞
+  waiting_user --> running: 明确且匹配的用户回复
+  running --> pausing: 请求停止
+  pausing --> paused: 已确认暂停
+  pausing --> cancelled: 已确认取消
+  running --> unknown: 提交 / 停止结果不明
+  running --> review: 已验证计划全部完成
+  review --> completed: 用户验收
+  paused --> running: 明确恢复且执行已确认
+  running --> failed: 已确认失败
+```
 
-## 语音
+此图概括持久任务，不是所有聊天通信状态。回复结束、消息已读、计划完成、用户验收是不同事件。重启后，中断或不确定的执行会暂停。结果未知时必须先核实实际状态再提交；请求超时不能证明操作从未发生。
 
-默认订阅通道使用 `thread/realtime/start`、`version: v3`、`gpt-live-1-codex` 与 WebRTC。前端拥有音轨和 `oai-events` 数据通道；Controller 和 VM 只传递协商与工作控制。实际媒体连接确认后才记录通话开始，单有 SDP 不算接通。
+## Heartbeat 与 Scheduler
 
-通话共享当前聊天线程和 VM 工作现场；明确交付的消息与文件进入聊天，语音转写不作为普通消息保存。媒体关闭与明确中断工作分别处理：媒体分离未确认时，保持控制锁定并保留已知任务；真正无法确认任务归属时，仍使用受保护的执行器恢复流程。
+**Heartbeat 用来继续已有的授权任务，不是定时汇报进度。** 如果任务已经在执行，就继续原来的执行；supervisor 不会再开一轮，也不会添加 heartbeat 消息。
 
-应用内的迷你通话采用横条，头像在左。拖动非按钮区域可在应用内移动，状态刷新保留位置，调整窗口大小后限制在可见范围。Windows 桌面版通话时最小化主窗口，会在显示器工作区右下角出现可拖动、置顶的小通话条；恢复主窗口或结束通话后隐藏。第二个窗口只接收通话元数据，并把限定于当前通话的控制交回主窗口；媒体连接仍由主窗口持有。小窗不另开麦克风、音频流，也没有通用本地 API 或语音进程权限。
+```mermaid
+flowchart LR
+  Tick[30 秒检查 / 合并后的变更检查] --> Available{Worker 在线且执行器可用？}
+  Available -->|否| Wait[等待]
+  Available -->|是| Candidate{有符合条件的已结束未完成任务？}
+  Candidate -->|否| Wait
+  Candidate -->|是| Guard[核对 workId / 前一 turn<br/>预留唯一执行名额]
+  Guard --> Claim[持久化续作认领]
+  Claim --> Reconcile[确认前一轮执行已结束]
+  Reconcile -->|已确认| Continue[通过 Engine 继续同一任务]
+  Reconcile -->|不确定 / 受阻| Preserve[保留状态；不重放]
+```
 
-通话启动读取权威 Codex 会话文字与共享持久记忆。原生语音在关闭前写入 Codex 历史；通话内已完成的语音快照同时供文字任务使用。API 语音以不启动推理的方式注入，并另存私有 `state.voiceHistory`，因为 Codex 的公开任务投影不会返回原始注入条目；该字段不进入状态快照或可见聊天。记忆保存会刷新两个模型，已完成的文字回复也同步给实时 API 语音。排序及不重放规则见[共享上下文](context.md#语音与文字共享会话)。
+| 机制                  | 时机                               | 行为                                 |
+| --------------------- | ---------------------------------- | ------------------------------------ |
+| 未完成任务 supervisor | 每 30 秒；Engine 变更合并后约 5 秒 | 检查执行条件，最多接纳一个续作       |
+| 调度时钟              | 每 1 秒                            | 检查一次性/cron 任务是否到期并入队   |
+| 当前执行              | Codex 事件驱动                     | 持续推理和使用工具，不等待 heartbeat |
 
-`src/conversation/identity.mjs` 统一定义文字、订阅语音和可选 API 语音的助手身份，三个入口都把 dant 识别为助手，并保留用户独立的角色；VM 或操作系统账号名不代表真人用户姓名。原生语音适配器同时把身份传入真正的实时 `prompt` 和后台任务指令。保存的聊天角色与原生传输中的任务结果标记分别处理。各适配器保留连接、音频和工具路由逻辑。
+空闲检查不调用 LLM。暂停、取消、等待用户、待验收和结果不确定的任务不会自动续作。离线、执行器忙碌和用户接管也会阻止准入。符合条件的任务按优先级、到期时间和稳定的保存顺序选择，优先级不会抢占当前任务。
 
-通话中输入的文字直接作为当前语音对话的用户输入，保留稳定消息 ID，并带上完整引用及原说话者。`Engine.rememberCallInput` 先以参考数据追加到权威会话，不启动推理；订阅语音随后使用 `thread/realtime/appendText`，可选 API 语音使用确认接收的用户 `input_text` 条目，并由现有响应状态安排语音回答。打字本身不再独立调用 `turn/start` 或 `turn/steer`；实际执行通过同一语音任务交接。确认收到的通话文字使用 `accepted` 投递状态，不伪造已完成工作，真实后台计划仍单独记录。普通语音回答不再自动变成聊天最终回复，明确请求的实用文字和文件仍可交付。表情保持参考数据语义；上下文或输入投递未知时不自动重放。
+续作在异步提交前保存认领，并再次核对准确的任务/turn。自动续作中的普通叙述与交付先缓冲，只有完成、失败或真实输入阻塞才合并发布结果。连续三轮没有进展会暂停任务；新的有效执行证据可以允许有限延长，重复观察和失败动作不算进展。延长上限不等于通用的模型工具步数或 token 预算。
 
-模型通过 VM 工具选择对用户消息的表情，独立保存为 `assistantReaction` / `assistantReactionUpdatedAt`，不混入人工 `reactions`。界面为 dant 的徽章注明归属，不提供用户切换操作。同一 emoji 可以分别属于双方，助手表情不会被当作用户反馈；界面也不会根据消息文字猜测表情。
+调度支持一次性时间点和按 IANA 时区计算的五字段 cron。错过重复任务最多补跑一次，再计算未来时间；同一调度不会与自身未完成任务重叠。派发先把认领与排队消息一起保存，再进入执行器；稳定的创建请求 ID 和删除记录防止确认不明时重复创建。调度目前保存在 `state.json`，尚未迁入 SQLite 租约表。
 
-缩小到聊天和展开只改变通话视图，保留 Peer 连接、媒体、通话 ID 与计时。计时从确认连接的时间开始，本机断线或挂断时暂停，最终与已保存的通话记录同步。
+当前没有另一套每 15 分钟自主创建目标的 AI heartbeat。后续增加主动事件来源，也必须经过明确条件、去重和同一执行入口。
 
-可选独立 API 通道显式启用，使用单独 API 费用。Key 只在 Windows DPAPI 持久化，经 SSH 短时交给 VM 通话进程使用。听写、浏览器朗读和本地 WAV 语音文件属于独立辅助通路。
+## Memory：存储、缓存与召回
 
-输入框麦克风录制 WebM 或 Ogg 语音文件，提供计时条、暂停/继续、本地预览和取消。点击“发送语音”后才上传并单独发送录音，保留原文字、附件和引用回复草稿。取消或录音失败会丢弃音频并释放麦克风音轨。“语音转文字”仍是附件菜单中的独立操作。
+SQLite 管理持久记忆，不替代 Codex 原始对话，也不管理应用的所有记录。当前直接使用内置 `node:sqlite`，无需独立数据库服务。
 
-输入框录音、上传音频和 Telegram 语音共用后台识别入口。提交任务前，`Engine.prepareInput` 通过 `AudioTranscriber` 调用 `AttachmentStore.read` 读取不可变附件、验证内容哈希，并在 VM 内识别语音。识别结果作为当前用户的讲话，连同文字说明及其他附件送入原 Codex 线程；不会新增可见文字气泡、记忆文件、诊断日志或独立转写缓存。原始语音及其播放、下载保持不变。与文字输入一样，识别内容会进入私有模型会话上下文。
+| 记忆类型          | 当前实现                                       | 持久数据权威                             |
+| ----------------- | ---------------------------------------------- | ---------------------------------------- |
+| Working Memory    | Engine 当前状态、任务检查点、复用的 Codex 线程 | `state.json` 与 Codex 线程，配合进程状态 |
+| Episodic Memory   | 按对话/任务 ID 保留的项目上下文；显式经历条目  | `memory.sqlite`                          |
+| Semantic Memory   | 身份/工作参考笔记；已确认的事实与偏好          | `memory.sqlite`                          |
+| Procedural Memory | 托管 `SKILL.md` 及必要的配套文件               | 现有 Skills 存储 / Markdown              |
 
-`vm/install-transcription.sh` 在 `~/dant/runtime/transcription` 安装独立、固定版本的 `faster-whisper` 和多语言 small 模型，下载验证包与模型哈希。依赖锁定 Ubuntu 24.04 的 Python 3.12 / x86_64；其他来宾环境即使无法准备本地识别，文字与通话仍可使用。识别使用本地模型、CPU int8 和两个线程，不调用云端转写接口，也不需要额外 API Key。首次准备 VM 需要联网下载依赖，其中模型约 484 MB。识别进程串行执行，可取消、有执行超时，并在原有 10 MiB 附件限制之外限制解码音频为十分钟；超长会明确失败，不会悄悄截断。静音、损坏音频、依赖缺失或识别失败时，不会只把二进制路径交给模型猜测。用户暂停会在推理提交前取消准备；模型提交结果未知时仍不自动重放。
+历史名称 `working-memory.md` 保留为持久参考笔记的兼容标签，不代表完整的实时 Working Memory。助手共同身份来自 [`identity.mts`](../../src/conversation/identity.mts)，与用户参考记忆分开。记忆不能授权工具或启动任务。
 
-正常挂断只结束音频连接，已确认接收的任务继续在同一个 Codex 会话中执行。原生通话在分离音频后保留已确认任务的观察器；可选 API 通话的任务仍由原 Engine 执行。结果、错误及需要你回答的问题会发到聊天中，并保留未读状态。登录凭据请求继续显示在安全表单里。显式停止工作仍会中断任务；任务归属或停止状态无法确认时，仍执行原有的保守恢复规则。
+### 持久存储与缓存
 
-已确认的任务运行时，也可以开始新的原生通话。媒体连接身份与任务、轮次和凭据的稳定归属分别管理；既有任务不会因此暂停或重复提交。Codex 将语音交给实际当前轮次来开始或调整执行。只有媒体握手通知能绕过被阻塞的工作事件链，任务与交接通知仍保持原顺序。连接失败时保留工作；媒体关闭未确认时，不会误报成功或终止任务。上一通话的过时控制不能挂断新通话。
+`~/dant/data/memory/dant/memory.sqlite` 包含 `notes`、`projects`、`memory_entries`、修订信息和 FTS5 索引。`MemoryStore` 是统一入口，[`memory-sqlite.mts`](../../src/conversation/memory-sqlite.mts) 负责事务，[`memory-markdown.mts`](../../src/conversation/memory-markdown.mts) 负责显式 Markdown 导入导出。
 
-明确发送的模型文本引用当前输出文件时，会通过原有受限归档器仅处理链接指向的文件，把不可变附件精确加入同一条消息，并保留已验证的来源路径用于匹配。桌面中的本地链接只能打开该消息唯一匹配的归档附件；无法匹配的旧路径提示重新发送，不保留可跳转系统的链接。Telegram 按实际内容把符合限制的 PNG/JPEG 作为照片发送，其他格式保留文档。只有明确的照片拒绝才能回退原文件；发送成功必须带有效消息 ID，回执不确定或 HTTP 5xx 不能触发重放。
+每次读取在同一 SQLite 读事务中检查持久 revision，再决定是否复用笔记、确认条目或项目缓存。表触发器在数据变化时增加 revision，其他连接的写入也能使缓存失效；本地写入主动失效缓存。返回记录使用副本，项目缓存有数量上限，短连接在每次事务后释放句柄。缓存不能成为另一份数据权威。
 
-## Telegram
+数据库启用 schema 版本、外键检查、有界忙等待、`synchronous=FULL`，采用 **DELETE journal**。当前没有直接开启 WAL，因为声明支持的较早 Node/SQLite 基线需要兼容；切换应先约束 SQLite 版本并验证并发。参见 [Node SQLite](https://nodejs.org/api/sqlite.html) 和 [SQLite WAL](https://www.sqlite.org/wal.html)。
 
-Telegram 网关与 Worker 同进程运行，默认关闭。通过固定 Telegram HTTPS API 长轮询，不要求公网入站端口。首次设置生成短时一次性配对码，绑定私聊的用户与聊天 ID；群聊和未配对用户不能创建任务。Telegram 输入有稳定外部消息 ID，与桌面共用 Store 和串行 Engine，每条指令只进入任务引擎一次。配对私聊同步桌面新发的用户消息、已完成的助手消息和受控附件，Telegram 原始输入不回传。配对或升级时用配对周期标记已有消息，不批量导出历史；持久化消息标记和有界外发队列用于防止重启后重复发送，旧配对账号的任务结果不会发送给新账号。编辑、删除、引用回复关联和 reaction 不在当前同步范围内。
+迁移先校验并备份旧 Markdown/项目 JSON，再导入。保留项目原 ID 和已有来源时间，不补造缺失时间。随后 SQLite 成为数据权威，修改 `.md` 快照不会静默覆盖数据库，导入导出需要显式调用。任务 JSON 可以保留历史项目快照，但回复任务时通过绑定的 SQLite adapter 读取当前上下文。迁移失败保留来源，并停止失败操作。
 
-已配对账号可通过 `/status` 和 `/progress`（别名 `/porgress`）查看共享工作状态。`/pause` 使用共享的确认中断流程，不结束通话媒体；`/resume` 选择已知暂停消息任务，保留归属、通话和人工控制检查，候选不唯一时须给出完整任务 ID。原有 `/stop` 仍只控制本 Telegram 的任务。命令不会建立第二个执行器或重建上下文。
+### Consolidation 与检索
 
-Bot Token 单独保存在 VM 用户数据目录的受限文件中，不进入状态快照、离线缓存、记忆或聊天。外发请求未获明确结果时记录未知状态，不盲目重发。VM 重启保留偏移和去重信息，但不会自动恢复执行先前被暂停的任务。完整配对和故障处理见 [Telegram 接入](TELEGRAM.md)。
+```mermaid
+flowchart TB
+  Fact[带来源的记忆提案] --> Validate[校验大小 / 来源<br/>拒绝疑似秘密值]
+  Validate --> Dedupe[规范化 key / 去重 / 冲突检查]
+  Dedupe --> Pending[候选或冲突条目]
+  Pending --> Confirm[显式确认 / 解决冲突]
+  Confirm --> SQL[SQLite 已确认条目]
+  SQL --> Revision[缓存失效 / 可重建的 FTS5 索引]
+  Query[明确的关键词查询] --> FTS[参数化 FTS5 检索]
+  Revision --> FTS
+  FTS --> Results[排序、脱敏摘要<br/>笔记 / 项目 / 已确认条目]
+```
 
-Telegram 的当前连接错误与历史投递记录使用独立字段。已连接、已配对仍可同时存在旧的未确认消息；公开投递摘要只包含数量、最新时间和白名单原因。私有外发队列保存有限的传输分类，不保存原始异常细节。轮询恢复确认后清除当前连接错误，不删除投递历史或重新发送消息。
+`proposeEntry`、`confirmEntry`、`updateEntry` 和 `deleteEntry` 实现存储流程。条目保留来源类型、已知的对话/任务/消息引用、提供的置信度及真实创建/更新时间。候选和冲突条目不进入有效上下文或检索；冲突必须明确解决，编辑已确认条目后需要重新确认。疑似凭据会被拒绝，供模型使用的参考文本会清理和脱敏。这些控制不代表任意敏感资料都适合保存。
 
-## 平台差异与验证边界
+`search(query)` 在笔记、项目上下文、已确认 semantic/episodic 条目中提供有界关键词召回。FTS 使用参数绑定和字面关键词，索引可重建，支持中文关键词。目前没有 embeddings 或向量检索。
 
-Windows 版保留现有 Express、WebSocket、Vite 等依赖，没有为了追求 Mac 原型的零 npm 依赖重写网络栈。浏览器默认 SSE，桌面 JSON 请求经 Rust IPC，状态在上次请求结束约 700 ms 后再轮询；Controller 合并 VM 状态读取，缓存窗口两秒。请求失败不会自动重发业务操作。
+当前 prompt 包含安全的身份/工作笔记，以及最多 32 条最新确认条目；回复项目任务时还读取对应项目上下文。**FTS 目前是显式 MemoryStore API，尚未用于每条消息或 heartbeat 的自动召回。** 候选增删改查也是程序接口，现有 Memory & personality 页面仍只读展示有效上下文。完整编辑界面、自动候选提取、按相关性/新近程度/置信度综合排序仍需集成。兼容的 `memory_write` 工具仍直接编辑参考笔记，尚未统一改成结构化候选确认流程。
 
-自动测试使用隔离数据目录、模拟执行器及 loopback 服务，验证回执时序、未知结果、数据迁移、归档、租约和传输。真实 VM 模型回复、桌面操作、附件以及 V3 静默 WebRTC 连接另行验收。真人麦克风、扬声器、连续语音打断和系统通知横幅必须与协议测试区别看待。
+Codex 管理模型线程、上下文窗口、压缩和提供商 token 统计。dant 不会把全部聊天转成语义记忆，也不会用截短的 UI 历史重建线程。参见[上下文](context.md)。
+
+## 工具、鉴权与电脑控制权
+
+工具 schema 与 handler 支持桌面、计划、调度、凭据和 Skills，包括 `dant_desktop` MCP。网页、文件和记忆是参考数据，不是权限。运行时解码器负责校验未知磁盘/网络数据的实际使用字段，TypeScript 类型本身不能完成校验。
+
+Controller 与 Worker 默认各自在本机绑定 `127.0.0.1:4317`，VM 桌面服务默认 `127.0.0.1:4320`。共享配置校验部署选项，开发 `.env` 可选，安装包有默认值。参见[配置](configuration.md)。
+
+API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。**Token 用于鉴权，不会加密 HTTP。** Controller/Worker 流量经 SSH 本地转发；模型/Telegram 使用各自的加密通信。API 不暴露到 VM 网卡。Token 和秘密不进入公开快照、日志或记忆；VM vault 与 Windows DPAPI 各自负责相应凭据。
+
+当前 Codex 在 VM 内使用 `approvalPolicy: 'never'` 和 `danger-full-access`。实际边界包括 VM、普通用户、受限文件接口、鉴权和桌面租约。**当前没有覆盖所有模型 shell 操作的独立通用 Policy Engine，也没有逐命令/逐删除审批。** Tauri capabilities 限制原生 bridge，不会限制 Node Worker 的全部权限。更强的工具策略与审批需要单独实现。
+
+用户接管先预留控制权，中断准确 turn，确认停止后才授予 VM 控制租约。Python 工具与 UI 输入共用锁/租约，过期或不匹配的 session 不能输入；归还控制权不会重放暂停任务。这些控制不能保证杀死此前脱离的后台进程，也不能替代系统权限。
+
+## 数据与生命周期
+
+| 所有者             | 数据                                               | 恢复规则                                     |
+| ------------------ | -------------------------------------------------- | -------------------------------------------- |
+| Windows Controller | 连接/部署回执、设置、离线 `state-cache.json`       | 展示缓存不能启用宿主任务执行                 |
+| Worker Store       | `state.json`：消息、任务、调度、已读/交付/提交回执 | 保留身份，暂停中断/不确定执行                |
+| Worker Memory      | `memory/dant/memory.sqlite`、显式导出、迁移备份    | 事务 + revision 缓存；旧文件不是实时数据权威 |
+| Worker 文件        | 不可变 UUID 附件、对话工作区/产物                  | 有界归档，交付保存独立副本                   |
+| Codex 运行时       | 持久线程与私有对话                                 | 只恢复匹配对话/运行时的线程                  |
+| 凭据               | 受限 VM vault、相应的 Windows DPAPI 秘密           | 普通状态导出不含秘密原值                     |
+
+托盘初始化成功时，关主窗口会隐藏到托盘；托盘不可用则回退为正常关闭。明确 Exit 会先暂停任务、确认停止，再挂起本应用拥有的 VM。重新打开恢复 VM，不会悄悄恢复暂停任务。服务更新保持 VM 开机，在暂停任务后替换并验证版本；安装交接还增加执行准入租约及进程/VM 所有权检查。关窗口可以继续后台工作，但 **Exit 后 VM 挂起或宿主休眠时不能继续执行**。参见 [VM](VM.md) 和[更新](updates.md)。
+
+通话媒体与任务身份分开：正常挂断可以保留已接纳任务，关闭结果不明不能证明任务已停。浮动通话窗口只转发限定控制，不拥有另一套麦克风/执行器。Telegram 共享 Store 和 Engine，使用稳定输入 ID、配对和持久发送回执，不会另建运行时。参见[语音](VOICE-KEY.md)、[共享上下文](context.md)与 [Telegram](TELEGRAM.md)。
+
+## 当前边界与后续工作
+
+以下决策指导后续实现，保留现有执行架构，不再增加一套 Agent 运行时。
+
+| 模块                       | 决策                     | 下一步                                                |
+| -------------------------- | ------------------------ | ----------------------------------------------------- |
+| Controller / Worker        | 保留职责边界             | 执行与持久对话的数据权威仍在 Worker                   |
+| Codex App Server           | 保留模型/工具循环        | 扩展编排，不重复实现推理循环                          |
+| Single execution admission | 保留单执行权             | 新输入来源统一经过现有准入和确认检查                  |
+| Heartbeat                  | 保留当前续作设计         | 继续符合条件的未完成任务，不定时发聊天汇报            |
+| Scheduler                  | 暂时保持当前存储         | 保留重复、补跑和防重叠行为，暂不迁入 SQL              |
+| MemoryStore                | **第一优先级：自动检索** | 将有界、带作用域的 FTS 召回接入上下文构造             |
+| SQLite + FTS5              | 保留关键词检索           | 当前不引入独立 Vector DB                              |
+| VM 跨平台                  | 进一步抽象 Provider      | 把生命周期能力与 Windows 的 Hyper-V / VMware 适配分开 |
+| Tool security              | 增加独立权限控制         | 覆盖所有执行路径，包括 Codex 内置工具和 MCP           |
+
+自动检索应使用当前用户请求或选中任务的真实上下文，在正确的对话/项目范围查询已确认记忆，注入有长度限制、脱敏且带来源的参考内容。候选不能混入，明确身份/偏好要保留，修改和删除后召回结果必须失效。空闲 heartbeat 不能仅因计时器触发就检索或推理。验收需覆盖跨项目隔离、无匹配、旧缓存、已删除/冲突事实，以及用户内容保持原样。这是下一阶段的集成目标，不是当前已实现的行为。
+
+独立权限服务应在**执行前**校验真实工具、参数、任务/turn 所有者和获准资源，再允许、拒绝或保存审批请求。审批绑定具体操作，参数或所有者变化后必须失效。必须同时覆盖 Codex 内置 shell/文件操作和应用工具；只拦动态工具会留下绕过路径。这需要调整当前执行/审批配置，并验证被拒操作和审批结果不明的情形，不能新增第二套 Agent loop，也不能把模型文字、记忆或网页内容当成权限。
+
+参考架构用于指导边界，不代表其中的提案已经全部实现：
+
+- SQLite 当前覆盖记忆，没有把消息、task runs、事件、审批和调度统一迁到 SQL。
+- 已有续作保护、停止控制、超时和有界证据延长；统一的每任务工具步数、执行时间和 token 预算仍需设计。
+- 已有关键词检索与候选存储；自动召回、记忆编辑器、embeddings 和自动 consolidation 需要集成与验证。
+- 已有 Windows Controller / Ubuntu Worker 生命周期，尚未实现通过 named pipes/Unix sockets 通信的跨平台独立用户服务。
+- 已有 TypeScript 合约与运行时校验；React、Zustand、Tailwind、Zod 和 pnpm monorepo 不是当前依赖。
+
+模块测试使用隔离 Store、注入时钟/通信和 fixture 执行器，验证所有权、持久化、不确定结果和恢复，不操作用户真实 VM 或账号。通过测试不能证明真实音频质量、通知送达或桌面任务成功。检查命令与验收记录见 [CI](ci.md)和[验证](verification.md)。

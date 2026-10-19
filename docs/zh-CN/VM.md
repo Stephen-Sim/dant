@@ -14,10 +14,10 @@ Windows 原有聊天迁移前保存完整备份，再把附件复制为 VM UUID 
 
 ```powershell
 # 已有 data/vm.json 时单独部署，不启动 Windows UI
-node src/server.mjs --deploy-worker
+node src/server.mts --deploy-worker
 
 # 仅展示安装准备界面，不自动连接 Worker
-node src/server.mjs --prepare
+node src/server.mts --prepare
 ```
 
 VM 权威数据为 `~/dant/data/`，工作目录为 `~/dant/workspaces/<conversationId>/`，程序版本保存在 `~/dant/releases/`。诊断用户服务时使用 `systemctl --user status dant-worker dant-guest-local` 和 `journalctl --user -u dant-worker`；不要把包含私人聊天的日志原文提交仓库。
@@ -143,7 +143,7 @@ Windows 的 `data/vm-setup-status.json` 保存阶段、最近更新时间、日�
 ## 本地验证
 
 ```powershell
-python -m unittest discover -s tests -p test_vm.py -v
+python -m unittest discover -s tests/vm -p test_vm.py -v
 python -m py_compile scripts/seed.py scripts/patch-image.py scripts/vm-key.py vm/desktop.py vm/guest.py
 ```
 

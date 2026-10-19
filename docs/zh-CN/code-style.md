@@ -19,11 +19,13 @@
 | `ui/chat/`、`ui/call/`、`ui/work/`、`ui/schedules/`、`ui/files/`   | 浏览器功能及其渲染、交互模块。                      |
 | `ui/settings/`、`ui/platform/`、`ui/shared/`、`ui/i18n/`           | 设置界面、原生适配、共享浏览器基础模块、本地化。    |
 
-为保留现有启动和打包契约，稳定的 `src/server.mjs` 启动入口和浏览器入口文件可以留在各自源码根目录。
+为保留现有启动和打包契约，稳定的 `src/server.mts` 启动入口和浏览器入口文件可以留在各自源码根目录。
 
 浏览器渲染状态并提交经过校验的用户操作；Windows Controller 管理宿主机配置、VM 连接和请求转发；Ubuntu Worker 拥有任务 Engine 和持久工作状态；Tauri 负责 Windows 原生集成。提取或移动模块时必须保留这些边界，详见[架构文档](architecture.md)。
 
 移动文件时一并修改导入、打包白名单、测试夹具、覆盖率路径、命令和文档链接。保留已有数据位置与公开接口；需要改变时必须同时提供明确迁移。避免循环依赖，不要用无边界的工具目录混放各功能逻辑。
+
+测试目录也按模块对应：后端测试放在 `tests/work/`、`tests/conversation/`、`tests/computer/` 等目录；界面测试放在 `tests/ui/chat/`、`tests/ui/settings/` 等对应目录。公共夹具放在 `tests/support/`，编译期契约放在 `tests/types/`，Python VM 测试放在 `tests/vm/`。`npm test` 和覆盖率检查使用同一个递归发现模块，移动目录不能漏跑测试。单独执行时使用完整路径，例如 `node --test tests/work/task-cancel.test.mts`。
 
 ## 格式化命令
 
@@ -62,11 +64,17 @@ Prettier 处理 JavaScript、TypeScript、JSON、CSS、HTML、Markdown 和 YAML�
 
 `ChatTaskStatus` 与 `WorkStatus` 有意区分：聊天任务沿用原来的允许状态；持久任务可在两个执行回合间保持 `continuing`，或在核对结果时保持 `unknown`。旧显示值仍由原兼容边界处理。接受未知输入时使用 `isEnumValue(domain, value)` 校验，明确拒绝或保留未确认结果，不要凭空补出安全状态。
 
-`src/contracts/contracts.ts` 定义严格的共享边界结构。固定版本 TypeScript 编译器开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 和 `noEmit`。编译夹具包含必须始终被拒绝的非法状态。`npm run typecheck` 检查共享契约及 src、ui 中所有已迁移的 `.mts` 模块，保留严格类型；其余旧 JavaScript 按所属领域继续迁移。`npm run check:states` 对已接入的 Store、计划、续作、桌面生命周期与 VM 生命周期模块禁止原始状态字面量。各模块明确适用的状态域，避免将无关品牌名或外部协议字段误判为状态；迁移其他域时同步扩展检查名单。
+`src/contracts/contracts.ts` 定义共享边界结构；各功能专用的类型放在所属模块旁。所有维护中的应用代码、浏览器代码、工具和 Node 测试均使用 TypeScript。运行时模块使用 `.mts`；纯类型文件使用 `.ts`，并通过 type-only import 引入。生成的浏览器 bundle、第三方文件和用户文件测试夹具中的 JavaScript 保留原格式。
 
-运行时 TypeScript 使用可擦除类型的 `.mts`，要求 Node 22.18+ LTS 或 24+。预检和打包会执行有时间上限的真实 TypeScript 探针；VM 安装器在改变现有运行时或服务前检查，不兼容时保留原状并报告 `runtime-incompatible`，维护升级运行时后再重新连接。迁移必须补齐严格类型、引用、打包和行为测试，再移除旧实现；不允许用 `any`、跳过检查或仅改后缀代替迁移。Vite 负责转换，独立类型检查门禁必须保留。
+固定版本编译器开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 和 `noEmit`。`npm run typecheck` 依次检查三个工程：Node 入口与工具、Vite 浏览器应用、全部 Node 测试。Node 使用 `NodeNext` 解析；浏览器和混合浏览器测试使用 `Bundler`，对应实际依赖包入口。声明文件检查保持开启。编译夹具包含必须始终被拒绝的非法状态。`npm run check:states` 对已接入的 Store、计划、续作、调度器、桌面生命周期与 VM 生命周期模块禁止原始状态字面量。各模块明确适用的状态域，避免将无关品牌名或外部协议字段误判为状态；迁移其他域时同步扩展检查名单。
 
-需要提取源码的测试通过 `tests/source-fixtures.mjs` 使用 JavaScript AST 定位声明和事件绑定。CSS 断言视图通过 PostCSS 规范空白，保留带引号选择器、颜色写法和属性值；不要依赖固定空格或单个物理行来提取函数。
+运行时 TypeScript 使用可擦除类型的 `.mts`，要求 Node 22.18+ LTS 或 24+。预检和打包会执行有时间上限的探针，确认原生 TypeScript、内置 SQLite 和 FTS5 查询可用；VM 安装器在改变现有运行时或服务前检查相同能力，不兼容时保留原状并报告 `runtime-incompatible`，维护升级运行时后再重新连接。迁移必须补齐严格类型、引用、打包和行为测试，再移除旧实现；不允许用 `any`、跳过检查或仅改后缀代替迁移。Vite 负责转换，独立类型检查门禁必须保留。
+
+磁盘 JSON 和传输返回值先按 `unknown` 处理，由所属边界验证实际消费的字段。兼容旧记录缺失的字段，不生成虚假的任务标识、执行确认或时间。注入服务按消费者实际使用的能力定义接口，不要求具体实现的私有字段，也不让事件监听方法的返回值绑定到完整具体类。
+
+需要提取源码的测试通过 `tests/support/source-fixtures.mts` 擦除 TypeScript 注解，再使用 JavaScript AST 定位声明和事件绑定。VM 执行选定的源码夹具前同样擦除类型。CSS 断言视图通过 PostCSS 规范空白，保留带引号选择器、颜色写法和属性值；不要依赖固定空格或单个物理行来提取函数。
+
+DOM 测试仅使用 LinkeDOM 的公开 `parseHTML` 入口。`tests/types/linkedom.d.ts` 保留该入口原有的公开返回类型，并将输入限定为 HTML 字符串。这个明确边界隔离了上游内部 DOM 类声明的兼容问题，仓库和其他依赖的声明文件检查保持开启。
 
 ## 验证与副作用
 
