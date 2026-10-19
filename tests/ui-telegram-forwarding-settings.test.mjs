@@ -1,3 +1,5 @@
+import {sourceIndex,sourceSection} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,13 +9,13 @@ import {reconcile} from '../ui/dom.js';
 import {telegramConnectionError,telegramDeliveryNotice} from '../ui/telegram-delivery.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
-const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
+const section=(start,end)=>sourceSection(source,start,end);
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 function fixture({language='en',sync={mode:'new-shared-messages',forwardMode:'unread',combineReplies:true,readState:'independent'},paired=false}={}){
  const {document}=parseHTML('<html><body><main></main></body></html>'),main=document.querySelector('main'),requests=[],toasts=[],cleared=[];
  const status={enabled:true,configured:true,connected:true,bot:{username:'example_bot'},paired,owner:paired?{userId:123}:null,pairing:null,lastError:null,delivery:{failed:0,unknown:0},...(sync===undefined?{}:{sync})};
  const context={document,Date,URL,telegramConnectionError,telegramDeliveryNotice,fallbackLanguage:language,state:{conversationId:'chat',settings:{language,vm:{host:'vm-one',user:'dant',port:22,keyPath:'private-vm-key'}},controller:{status:'online',cached:false},worker:{status:'online'},telegram:status},eventConnected:true,telegramStatus:null,telegramLoading:false,telegramError:'',telegramPairing:null,telegramPairTimer:null,pendingActions:new Set(),page:'settings',esc:value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])),ico:()=>'',formatTime:value=>new Date(value).toISOString(),errorText:error=>error?.message||String(error),toast:message=>toasts.push(message),clearTimeout:value=>cleared.push(value),setTimeout:()=>31};
- vm.createContext(context);vm.runInContext(section('const zh={','const subscriptionVoiceUnavailable=')+'\n'+section('function currentTelegram(){','function renderVoiceSettings(settings){'),context);
+ vm.createContext(Object.assign(context,languageContext));vm.runInContext(section('const zh={','const subscriptionVoiceUnavailable=')+'\n'+section('function currentTelegram(){','function renderVoiceSettings(settings){'),context);
  let requestHandler;
  context.post=async(route,body)=>{requests.push({route,body:structuredClone(body)});if(requestHandler)return requestHandler(route,body);return {...context.state.telegram,sync:{...context.state.telegram.sync,...body}};};
  context.api=async()=>{throw Error('Forwarding settings must not reload or reconfigure Telegram');};

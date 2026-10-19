@@ -11,25 +11,30 @@ struct NativeTray { icon: TrayIcon, open: MenuItem<tauri::Wry>, progress: MenuIt
 pub struct BackgroundTray { ready: AtomicBool, exiting: AtomicBool, inner: Mutex<Option<NativeTray>> }
 
 fn valid(value: &Status) -> bool {
-    matches!(value.language.as_str(), "en" | "zh") && matches!(value.connection.as_str(), "online" | "offline" | "connecting")
+    crate::l10n::supported(&value.language) && matches!(value.connection.as_str(), "online" | "offline" | "connecting")
         && matches!(value.task.as_str(), "idle" | "running" | "background" | "waiting_user" | "pausing" | "unknown") && value.queued <= 999
 }
 fn should_hide(ready: bool, exiting: bool, main: bool) -> bool { ready && !exiting && main }
-fn call_window_label(language: &str) -> &'static str { if language == "zh" { "显示通话窗口" } else { "Show call window" } }
-fn labels(value: &Status) -> (&'static str, &'static str, &'static str, String) {
-    let zh = value.language == "zh";
-    let state = if value.connection != "online" && value.task != "idle" { if zh { "任务状态待确认" } else { "Work status unconfirmed" } }
-    else { match (zh, value.task.as_str()) {
-        (true, "running") => "正在工作", (false, "running") => "Working",
-        (true, "background") => "后台执行中", (false, "background") => "Working in background",
-        (true, "waiting_user") => "等待你回复", (false, "waiting_user") => "Waiting for your reply",
-        (true, "pausing") => "正在暂停", (false, "pausing") => "Pausing work",
-        (true, "unknown") => "任务结果待确认", (false, "unknown") => "Work outcome unconfirmed",
-        (true, _) => if value.connection == "online" { "在线" } else if value.connection == "connecting" { "连接中" } else { "离线" },
-        (false, _) => if value.connection == "online" { "Online" } else if value.connection == "connecting" { "Connecting" } else { "Offline" },
+fn call_window_label(language: &str) -> String { crate::l10n::text(language, "Show call window", "显示通话窗口") }
+fn labels(value: &Status) -> (String, String, String, String) {
+    let (english, chinese) = if value.connection != "online" && value.task != "idle" {
+        ("Work status unconfirmed", "任务状态待确认")
+    } else { match value.task.as_str() {
+        "running" => ("Working", "正在工作"),
+        "background" => ("Working in background", "后台执行中"),
+        "waiting_user" => ("Waiting for your reply", "等待你回复"),
+        "pausing" => ("Pausing work", "正在暂停"),
+        "unknown" => ("Work outcome unconfirmed", "任务结果待确认"),
+        _ => if value.connection == "online" { ("Online", "在线") } else if value.connection == "connecting" { ("Connecting", "连接中") } else { ("Offline", "离线") },
     }};
-    let state = if value.queued == 0 { state.to_string() } else if zh { format!("{state} · {} 项排队", value.queued) } else { format!("{state} · {} queued", value.queued) };
-    if zh { ("打开 dant", "任务进度", "退出 dant", state) } else { ("Open dant", "Work progress", "Exit dant", state) }
+    let mut state = crate::l10n::text(&value.language, english, chinese);
+    if value.queued > 0 {
+        let queued = crate::l10n::text(&value.language, "{count} queued", "{count} 项排队").replace("{count}", &value.queued.to_string());
+        state = format!("{state} · {queued}");
+    }
+    (crate::l10n::text(&value.language, "Open dant", "打开 dant"),
+     crate::l10n::text(&value.language, "Work progress", "任务进度"),
+     crate::l10n::text(&value.language, "Exit dant", "退出 dant"), state)
 }
 
 pub fn restore(app: &AppHandle) {
@@ -47,10 +52,13 @@ pub fn call_window_changed(app: &AppHandle, active: bool, language: Option<&str>
     if tray.call_language != language { if tray.call_window.set_text(call_window_label(&language)).is_ok() { tray.call_language = language; } }
 }
 fn exit(app: &AppHandle) {
+    crate::lifecycle::request_exit(app);
+}
+pub fn mark_exiting(app: &AppHandle) {
     if let Some(state) = app.try_state::<BackgroundTray>() { state.exiting.store(true, Ordering::SeqCst); }
-    // AppHandle::exit delivers RunEvent::Exit, which owns the existing graceful
-    // controller shutdown. Hiding the window never enters that path.
-    app.exit(0);
+}
+pub fn language(app: &AppHandle) -> String {
+    app.try_state::<BackgroundTray>().and_then(|state|state.inner.lock().ok().and_then(|inner|inner.as_ref().and_then(|tray|tray.last.as_ref().map(|status|status.language.clone())))).unwrap_or_else(||"en".into())
 }
 pub fn setup(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "dant-open", "打开 dant", true, None::<&str>)?;

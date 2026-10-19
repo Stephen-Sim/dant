@@ -1,3 +1,5 @@
+import {sourceIndex,sourceSection,compactCss} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import {createCallSubtitles} from '../ui/call-subtitles.js';
 import assert from 'node:assert/strict';
@@ -7,13 +9,13 @@ import {parseHTML} from 'linkedom';
 import {reconcile} from '../ui/dom.js';
 import {formatCallDuration} from '../ui/call-duration.js';
 
-const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');
-const part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
+const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=compactCss(fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8'));
+const part=(start,end)=>sourceSection(source,start,end);
 function style(selector){return Object.fromEntries([...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match=>match[1].trim()===selector).flatMap(match=>match[2].split(';').filter(Boolean).map(value=>{const colon=value.indexOf(':');return [value.slice(0,colon).trim(),value.slice(colon+1).trim()];})));}
 function fixture(language){
  const {document}=parseHTML('<html><body><main id="app"></main></body></html>');
  const c={document,formatCallDuration,fallbackLanguage:language,state:{settings:{language},call:{id:'call-a',provider:'subscription'}},pc:{connectionState:'connected'},callMini:true,callStarting:false,callConnected:true,callChannel:{readyState:'open'},callProvider:'subscription',stream:{},callMuted:false,callStops:{pending:false},callDuration:{snapshot:{confirmed:true,seconds:123}},ico:name=>`<svg data-icon="${name}"></svg>`};
- c.callSubtitles=createCallSubtitles();vm.createContext(c);vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('const button=','async function api(')+'\n'+part('function updateCallDuration(){','function renderUnconfirmedMessage(){')+'\nglobalThis.words={t};',c);
+ c.callSubtitles=createCallSubtitles();vm.createContext(Object.assign(c,languageContext));vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('const button=','async function api(')+'\n'+part('function updateCallDuration(){','function renderUnconfirmedMessage(){')+'\nglobalThis.words={t};',c);
  c.callId='call-a';c.nativeCallOverlay={update(){}};const render=()=>{const template=document.createElement('template');template.innerHTML=c.renderCall();reconcile(document.querySelector('#app'),template.content);};render();return {c,document,render};
 }
 

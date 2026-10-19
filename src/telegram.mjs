@@ -1,3 +1,5 @@
+import {localizeMessages} from './i18n.mjs';
+import {normalizeLanguage} from './languages.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {EventEmitter} from 'node:events';
@@ -88,7 +90,7 @@ export class TelegramGateway extends EventEmitter{
   }
   this.engineListener=()=>{if(this.closed||!this.config.enabled||!this.config.owner||this.flushTimer)return;this.flushTimer=setTimeout(()=>{this.flushTimer=null;try{this.scanResults();this.kickOutbound();}catch{this.fail('Telegram results could not be queued');}},100);this.flushTimer.unref?.();};engine.on('change',this.engineListener);
  }
- words(){return telegramText[this.store.state.settings?.language==='en'?'en':'zh'];}
+ words(){return localizeMessages(telegramText,normalizeLanguage(this.store.state.settings?.language));}
  status(){
   const c=this.config,issues=c.outbox.filter(item=>['unknown','failed'].includes(item.status)),latest=issues.reduce((previous,item)=>!previous||(validTime(item.failureAt)||validTime(item.lastAttemptAt)||validTime(item.at)||0)>=(validTime(previous.failureAt)||validTime(previous.lastAttemptAt)||validTime(previous.at)||0)?item:previous,null),deliveryError=issues.some(item=>item.error===c.lastError),connectionError=c.enabled&&!this.connected?(c.pollError||(!deliveryError?c.lastError:null)):null;
   return {enabled:!!c.enabled,configured:!!c.token,connected:this.connected,bot:c.bot?{id:c.bot.id,username:c.bot.username}:null,paired:!!c.owner,owner:c.owner?{chatId:c.owner.chatId,userId:c.owner.userId}:null,pairing:c.pairing&&c.pairing.expiresAt>this.now()?{expiresAt:c.pairing.expiresAt}:null,lastError:c.lastError?this.safe(c.lastError):null,connectionError:connectionError?this.safe(connectionError):null,lastInboundAt:c.lastInboundAt||null,lastOutboundAt:c.lastOutboundAt||null,pendingOutbound:c.outbox.filter(item=>['queued','sending'].includes(item.status)).length,delivery:{failed:issues.filter(item=>item.status==='failed').length,unknown:issues.filter(item=>item.status==='unknown').length,lastIssue:latest?{status:latest.status,at:validTime(latest.failureAt)||validTime(latest.lastAttemptAt)||validTime(latest.at),reason:failureReasons.has(latest.failureReason)?latest.failureReason:latest.status==='unknown'?'unconfirmed':'rejected'}:null},sync:{mode:'new-messages',forwardMode:c.forwardMode,combineReplies:c.combineReplies,readState:'independent',active:!!c.enabled&&!!c.owner&&c.owner.syncVersion===1,historyBackfill:false,edits:false,deletes:false,reactions:false}};

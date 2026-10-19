@@ -44,7 +44,7 @@ fn authorized(folder:&Path,hash:&str)->bool{let now=std::time::SystemTime::now()
 fn phases(mut wait_parent:impl FnMut()->Result<(),String>,mut wait_controller:impl FnMut()->Result<(),String>,mut verify:impl FnMut()->Result<(),String>,mut install:impl FnMut()->Result<bool,String>,mut restart:impl FnMut()->Result<(),String>)->Result<(),String>{wait_parent()?;wait_controller()?;verify()?;if !install()?{return Err(FAILED.into())}restart()}
 #[cfg(windows)]fn failure_notice(){
  #[link(name="user32")]extern "system"{fn MessageBoxW(window:*mut std::ffi::c_void,text:*const u16,title:*const u16,kind:u32)->i32;}
- let text:Vec<u16>="The dant update was not confirmed. Your VM work was not stopped. The verified installer was retained. Please open dant manually or install the release package again.\n\ndant 更新未获确认，虚拟机任务未被停止。已保留验证过的安装包。请手动打开 dant，或重新运行发布版本的安装包。".encode_utf16().chain(Some(0)).collect();let title:Vec<u16>="dant update / 更新".encode_utf16().chain(Some(0)).collect();unsafe{MessageBoxW(std::ptr::null_mut(),text.as_ptr(),title.as_ptr(),0x10);}
+ let text:Vec<u16>="The dant update was not confirmed. Work and VM suspension records were preserved. Open dant to restore its VM connection, or install the retained release package again.\n\ndant 更新未获确认，已保留任务和虚拟机挂起记录。请打开 dant 恢复虚拟机连接，或重新运行保留的安装包。".encode_utf16().chain(Some(0)).collect();let title:Vec<u16>="dant update / 更新".encode_utf16().chain(Some(0)).collect();unsafe{MessageBoxW(std::ptr::null_mut(),text.as_ptr(),title.as_ptr(),0x10);}
 }
 pub fn startup_fenced()->bool{#[cfg(windows)]{return std::env::current_exe().is_ok_and(|app|process::fenced(&app));}#[cfg(not(windows))]false}
 

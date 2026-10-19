@@ -1,3 +1,6 @@
+import {languageInfo} from '../src/languages.mjs';
+import {localizeMessages} from '../src/i18n.mjs';
+import {loadLanguage} from './localization.js';
 import {formatCallDuration} from './call-duration.js';
 
 const words={en:{calling:'Connecting…',talking:'In a call',recovering:'Call needs reconnecting',stopping:'Ending call…',mute:'Mute microphone',unmute:'Unmute microphone',hangup:'End call',restore:'Return to dant',hide:'Hide call window',duration:'Call duration',failed:'Action unconfirmed. Return to dant.'},zh:{calling:'正在连接…',talking:'正在通话',recovering:'通话需要重新连接',stopping:'正在结束通话…',mute:'关闭麦克风',unmute:'开启麦克风',hangup:'结束通话',restore:'返回 dant',hide:'隐藏通话窗口',duration:'通话时长',failed:'操作未确认，请返回 dant。'}};
@@ -7,10 +10,10 @@ export async function mountCallOverlay({document=globalThis.document,window=glob
  const status=document.querySelector('#call-status'),duration=document.querySelector('#call-duration'),mute=document.querySelector('#call-mute'),hangup=document.querySelector('#call-hangup'),restore=document.querySelector('#call-restore'),hide=document.querySelector('#call-hide'),slash=document.querySelector('#mute-slash');
  function tick(){if(!state)return;const seconds=state.running&&Number.isFinite(state.connectedAt)?Math.max(state.seconds,Math.round((now()-state.connectedAt)/1000)):state.seconds;duration.textContent=formatCallDuration(seconds);}
  function render(){
-  root.hidden=!state;if(!state)return;const text=words[state.language==='zh'?'zh':'en'];document.documentElement.lang=state.language==='zh'?'zh':'en';document.documentElement.dataset.theme=state.theme==='dark'?'dark':'light';root.setAttribute('aria-label',text.talking);status.textContent=failure?text.failed:text[state.status]||text.calling;status.title=status.textContent;duration.hidden=!state.confirmed;duration.setAttribute('aria-label',text.duration);tick();
+  root.hidden=!state;if(!state)return;const text=localizeMessages(words,state.language);document.documentElement.lang=languageInfo(state.language).locale;document.documentElement.dir=languageInfo(state.language).direction;document.documentElement.dataset.theme=state.theme==='dark'?'dark':'light';root.setAttribute('aria-label',text.talking);status.textContent=failure?text.failed:text[state.status]||text.calling;status.title=status.textContent;duration.hidden=!state.confirmed;duration.setAttribute('aria-label',text.duration);tick();
   for(const [node,label]of [[mute,text[state.muted?'unmute':'mute']],[hangup,text.hangup],[restore,text.restore],[hide,text.hide]]){node.title=label;node.setAttribute('aria-label',label);}mute.hidden=!state.canMute;mute.disabled=!!pending;hangup.disabled=!!pending||state.status==='stopping';mute.setAttribute('aria-pressed',String(!!state.muted));slash.hidden=!state.muted;
  }
- function update(value){revision++;if(closed)return;if(!value||typeof value.callId!=='string'||!value.callId){state=null;pending=null;render();return;}if(pending&&(pending.callId!==value.callId||(pending.action==='mute'&&pending.muted===value.muted)||pending.action==='restore'))pending=null;state=value;failure=false;render();}
+ function update(value){const current=++revision;if(closed)return;if(!value||typeof value.callId!=='string'||!value.callId){state=null;pending=null;render();return;}if(pending&&(pending.callId!==value.callId||(pending.action==='mute'&&pending.muted===value.muted)||pending.action==='restore'))pending=null;state=value;failure=false;render();if(!['en','zh'].includes(value.language))void loadLanguage(value.language).then(()=>{if(!closed&&revision===current)render();}).catch(()=>{});}
  async function action(name){
   if(closed||!state||(pending&&!['restore','hide'].includes(name))||(name==='mute'&&!state.canMute))return;
   const call=state.callId,requestId=randomId(),muted=!state.muted;

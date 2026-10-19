@@ -1,3 +1,5 @@
+import {languageInfo} from '../src/languages.mjs';
+import {localizeMessages,translateCount} from '../src/i18n.mjs';
 const DAY=86400000;
 const modes=['daily','weekly','cumulative'];
 const providers=['subscription','apiVoice'];
@@ -38,7 +40,7 @@ export function buildUsageActivity({usage,provider='subscription',now=Date.now()
 }
 
 export function renderUsageActivity({usage,language='en',provider='subscription',mode='daily',now=Date.now()}={}){
- const tr=words[language==='zh'?'zh':'en'],locale=language==='zh'?'zh-CN':'en',model=buildUsageActivity({usage,provider,now});mode=modes.includes(mode)?mode:'daily';
+ const tr={...localizeMessages(words,language),days:value=>translateCount(language,value,'{count} day','{count} days','{count} 天')},locale=languageInfo(language).locale,model=buildUsageActivity({usage,provider,now});mode=modes.includes(mode)?mode:'daily';
  const number=value=>integer(value)?new Intl.NumberFormat(locale).format(value):tr.unavailable;
  const compact=value=>integer(value)?new Intl.NumberFormat(locale,{notation:'compact',maximumFractionDigits:1}).format(value):'—';
  const date=value=>new Intl.DateTimeFormat(locale,{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(value));
@@ -60,7 +62,7 @@ export function renderUsageActivity({usage,language='en',provider='subscription'
   let previousMonth=-1;const labels=[];for(const week of model.weeks){const current=new Date(week.at).getUTCMonth();if(current!==previousMonth){labels.push(`<text x="${Math.max(left,Math.min(width-right-12,x(week.at)))}" y="${height-9}">${escape(month(week.at))}</text>`);previousMonth=current;}}
   let marks='';
   if(mode==='weekly'){
-   const barWidth=Math.max(3,plotWidth/model.weeks.length-3);marks=items.map((item,index)=>{const label=`${date(item.at)} – ${date(dateNumber(item.end))} · ${valueLabel(item.value)} · ${item.reports} ${tr.reportDays}`,barHeight=item.value===null?3:Math.max(2,plotHeight*item.value/highest);return `<g data-usage-point data-usage-label="${escape(label)}" data-usage-date="${item.date}" tabindex="${index===items.length-1?'0':'-1'}" role="button" aria-label="${escape(label)}"><title>${escape(label)}</title><rect class="usage-week-bar${item.value===null?' usage-week-unknown':''}" x="${left+index*(plotWidth/items.length)}" y="${top+plotHeight-barHeight}" width="${barWidth}" height="${barHeight}" rx="2"/></g>`;}).join('');
+   const barWidth=Math.max(3,plotWidth/model.weeks.length-3);marks=items.map((item,index)=>{const label=`${date(item.at)} – ${date(dateNumber(item.end))} · ${valueLabel(item.value)} · ${number(item.reports)} ${tr.reportDays}`,barHeight=item.value===null?3:Math.max(2,plotHeight*item.value/highest);return `<g data-usage-point data-usage-label="${escape(label)}" data-usage-date="${item.date}" tabindex="${index===items.length-1?'0':'-1'}" role="button" aria-label="${escape(label)}"><title>${escape(label)}</title><rect class="usage-week-bar${item.value===null?' usage-week-unknown':''}" x="${left+index*(plotWidth/items.length)}" y="${top+plotHeight-barHeight}" width="${barWidth}" height="${barHeight}" rx="2"/></g>`;}).join('');
   }else{
    const points=items.map(item=>`${x(item.at)},${y(item.total)}`).join(' ');
    marks=`${items.length>1?`<polyline class="usage-cumulative-line" points="${points}"/>`:''}${items.map((item,index)=>{const label=`${date(item.at)} · ${tr.recorded} ${number(item.total)} ${tr.tokens} · ${valueLabel(item.value)}`;return `<g data-usage-point data-usage-label="${escape(label)}" data-usage-date="${item.date}" tabindex="${index===items.length-1?'0':'-1'}" role="button" aria-label="${escape(label)}"><title>${escape(label)}</title><circle class="usage-cumulative-point" cx="${x(item.at)}" cy="${y(item.total)}" r="3"/><circle class="usage-point-target" cx="${x(item.at)}" cy="${y(item.total)}" r="8"/></g>`;}).join('')}`;

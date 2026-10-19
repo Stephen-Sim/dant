@@ -1,3 +1,4 @@
+import {localizeMessages} from '../src/i18n.mjs';
 const copy={
  en:{title:'Remove unfinished task?',hint:'This task is not completed. Remove it from Work progress? Its chat and results will stay.',cancel:'Cancel',remove:'Remove task',cleared:'Completed tasks cleared',kept:'Tasks still in use were kept. Try again later.',changed:'This task has changed. Check its current status and try again.',offline:'Reconnect to change Work progress.',failed:'The task could not be updated. Please try again.'},
  zh:{title:'删除未完成的任务？',hint:'这项任务尚未完成。确认从工作进度中移除？聊天和结果会保留。',cancel:'取消',remove:'确认删除',cleared:'已清空已完成的任务',kept:'仍在使用的任务已保留，请稍后再试。',changed:'任务状态已变化，请检查后重试。',offline:'请先重新连接，再修改工作进度。',failed:'任务修改失败，请重试。'}
@@ -14,7 +15,7 @@ const identity=item=>item.registered||item.work?{id:item.id,kind:'work'}:item.vo
 const missingServiceRoute=error=>error?.status===404&&error.message==='Request failed (404)'&&!error.unknownOutcome;
 export function createProgressActions({getModel,request,render,toast,getLanguage=()=> 'en',formatError=error=>error.message,document=globalThis.document,isPending=()=>false}={}){
  let confirmation=null,busy=false,epoch=0;
- const labels=()=>copy[getLanguage()==='zh'?'zh':'en'];
+ const labels=()=>localizeMessages(copy,getLanguage());
  const valid=(id,kind)=>typeof id==='string'&&id.length>0&&id.length<=128&&kinds.has(kind);
  const find=(id,kind)=>{const model=getModel();return [...(model.items||[]),...(model.ongoing||[]),...(model.recent||model.history||[]),...(model.completed||[])].find(item=>{const key=identity(item);return key.id===id&&key.kind===kind;});};
  const sameTarget=(a,b)=>a&&b&&a.id===b.id&&a.kind===b.kind&&a.turnId===b.turnId&&(a.callId||null)===(b.callId||null);

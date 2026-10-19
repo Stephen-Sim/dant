@@ -1,3 +1,4 @@
+import {compactCss} from './source-fixtures.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -95,7 +96,7 @@ test('task buttons support both progress selectors and Chinese labels without na
 
 test('file callback failures are generic and unloading clears file leases and pending requests',async()=>{
  const f=fixture({ui:{onDownload:async()=>{throw Error('Private download URL secret');}}});await f.ui.open(target);f.document.querySelector('[data-task-detail-download]').click();await tick();assert.match(f.document.body.textContent,/file could not be opened/);assert.doesNotMatch(f.document.body.textContent,/Private download|secret/);assert.equal(f.listeners.has('beforeunload'),true);f.listeners.get('beforeunload')();assert.equal(f.ui.file(file.id),null);assert.equal(f.listeners.size,0);f.ui.dispose();assert.equal(await f.ui.open(target),false);
- const source=fs.readFileSync(new URL('../ui/task-details.js',import.meta.url),'utf8');assert.doesNotMatch(source,/\bfetch\s*\(|\b(?:eval|Function)\s*\(/);assert.doesNotMatch(source,/method:\s*['"](?:POST|PATCH|DELETE)/);assert.match(fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8'),/\.task-detail-dialog/);
+ const source=fs.readFileSync(new URL('../ui/task-details.js',import.meta.url),'utf8');assert.doesNotMatch(source,/\bfetch\s*\(|\b(?:eval|Function)\s*\(/);assert.doesNotMatch(source,/method:\s*['"](?:POST|PATCH|DELETE)/);assert.match(compactCss(fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8')),/\.task-detail-dialog/);
 });
 
 test('main modal lifecycle synchronization clears closed requests and keeps only the exact child preview lease',async()=>{

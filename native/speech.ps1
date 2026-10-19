@@ -18,6 +18,20 @@ function Assert-SpeechOutputAvailable {
     param([ScriptBlock]$ReadCount = { Get-SpeechOutputDeviceCount })
     if ((& $ReadCount) -lt 1) { throw 'speech-output-unavailable' }
 }
+function Get-SpeechLocale {
+    param([object]$Request)
+    # Current hosts resolve this from the shared language registry. Keep the
+    # original two request forms compatible without guessing a new language.
+    $locale = if ($Request.locale) { [string]$Request.locale } elseif ($Request.language -eq 'zh') { 'zh-CN' } elseif ($Request.language -eq 'en') { 'en-US' } else { throw 'speech-language-unavailable' }
+    if ($locale -notmatch '^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$') { throw 'speech-invalid-request' }
+    try { return [Globalization.CultureInfo]::GetCultureInfo($locale).Name } catch { throw 'speech-language-unavailable' }
+}
+function Select-SpeechVoice {
+    param([object[]]$Voices, [string]$Locale)
+    $matching = @($Voices | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq $Locale })
+    if ($matching.Count -eq 0) { throw 'speech-language-unavailable' }
+    return $matching[0]
+}
 function Get-SpeechFailure {
     param([Exception]$Failure, [string]$Phase)
     $leaf = $Failure
@@ -37,7 +51,7 @@ try {
     Add-Type -AssemblyName System.Speech | Out-Null
     $phase = 'request'
     $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-    $language = if ($request.language -eq 'zh') { 'zh-CN' } else { 'en-US' }
+    $language = Get-SpeechLocale -Request $request
     if ($request.mode -eq 'recognize') {
         $installed = @([System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers())
         $selected = $installed | Where-Object { $_.Culture.Name -eq $language } | Select-Object -First 1
@@ -61,8 +75,8 @@ try {
         Assert-SpeechOutputAvailable
         $phase = 'voice-selection'
         $synthesizer = New-Object System.Speech.Synthesis.SpeechSynthesizer
-        $voices = @($synthesizer.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -eq $language })
-        if ($voices.Count -gt 0) { $synthesizer.SelectVoice($voices[0].VoiceInfo.Name) }
+        $selectedVoice = Select-SpeechVoice -Voices @($synthesizer.GetInstalledVoices()) -Locale $language
+        $synthesizer.SelectVoice($selectedVoice.VoiceInfo.Name)
         $phase = 'speak-output'
         $synthesizer.SetOutputToDefaultAudioDevice()
         $phase = 'speak-run'

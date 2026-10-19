@@ -1,15 +1,20 @@
+import {localizeMessages} from '../src/i18n.mjs';
+import {languageInfo} from '../src/languages.mjs';
 export const speechMessages={
  zh:{cancelled:'语音辅助已停止。',dictationUnsupported:'当前浏览器不支持听写，请使用 Windows 桌面版。',permissionDenied:'麦克风权限未获准，请在系统或浏览器设置中允许使用麦克风。',dictationFailed:'听写失败',noSpeech:'没有听到语音，请重试。',microphoneUnavailable:'无法读取麦克风，请检查设备连接或占用情况。',languageUnsupported:'当前听写语言不可用，请检查语音识别语言设置。',recognitionNetwork:'听写服务连接失败，请检查网络或使用 Windows 桌面版。',readUnsupported:'当前浏览器不支持朗读，请使用 Windows 桌面版。',readFailed:'朗读失败'},
  en:{cancelled:'Speech helper stopped.',dictationUnsupported:'Dictation is not supported in this browser. Use the Windows app.',permissionDenied:'Microphone permission was not granted. Allow it in system or browser settings.',dictationFailed:'Dictation failed',noSpeech:'No speech was heard. Please try again.',microphoneUnavailable:'The microphone could not be read. Check the device connection or whether it is in use.',languageUnsupported:'The dictation language is unavailable. Check the speech recognition language settings.',recognitionNetwork:'The dictation service could not connect. Check the network or use the Windows app.',readUnsupported:'Read aloud is not supported in this browser. Use the Windows app.',readFailed:'Read aloud failed'},
 };
 Object.assign(speechMessages.zh,{outputUnavailable:'无法打开播放设备，请检查Windows声音输出后重试。',readFailed:'朗读失败，请重试。'});
 Object.assign(speechMessages.en,{outputUnavailable:'The playback device could not be opened. Check Windows sound output and try again.',readFailed:'Read aloud failed. Please try again.'});
-const speechText=(language,key)=>(speechMessages[language==='en'?'en':'zh'])[key];
+Object.assign(speechMessages.zh,{languageUnsupported:'尚未安装所选语音语言，请在 Windows 语音设置中添加。'});
+Object.assign(speechMessages.en,{languageUnsupported:'The selected speech language is not installed. Add it in Windows Speech settings.'});
+const speechText=(language,key)=>(localizeMessages(speechMessages,language))[key];
 const cancelled=language=>Object.assign(new Error(speechText(language,'cancelled')),{code:'speech-cancelled'});
 const speechErrorCode=error=>typeof error?.code==='string'?error.code:typeof error==='string'?error:typeof error?.message==='string'?error.message:'';
 function readError(error,language){
  const value=speechErrorCode(error),message=typeof error==='string'?error:typeof error?.message==='string'?error.message:'';
  if(value==='speech-cancelled'||/^Speech cancell?ed\.?$/i.test(value))return cancelled(language);
+ if(value==='speech-language-unavailable')return Object.assign(Error(speechText(language,'languageUnsupported')),{code:'speech-language-unavailable'});
  if(value==='speech-output-unavailable'||message==='speech-output-unavailable'||/Audio device error encountered[\s\S]*\b0x0*2\b/i.test(message))return Object.assign(Error(speechText(language,'outputUnavailable')),{code:'speech-output-unavailable'});
  return Object.assign(Error(speechText(language,'readFailed')),{code:'read-failed'});
 }
@@ -27,7 +32,7 @@ export class SpeechHelper{
   await this.stop();if(generation!==this.generation)throw cancelled(language);
   if(!this.Recognizer)throw Error(speechText(language,'dictationUnsupported'));
   return new Promise((resolve,reject)=>{
-   const recognition=new this.Recognizer();this.recognition=recognition;recognition.lang=language==='zh'?'zh-CN':'en-US';recognition.continuous=false;recognition.interimResults=false;let text='',error;
+   const recognition=new this.Recognizer();this.recognition=recognition;recognition.lang=languageInfo(language).speech;recognition.continuous=false;recognition.interimResults=false;let text='',error;
    this.cancelRecognition=()=>{error=cancelled(language);recognition.abort();};
    recognition.onresult=event=>{text=Array.from(event.results||[]).filter(result=>result.isFinal).map(result=>result[0]?.transcript||'').join(' ');};
    recognition.onerror=event=>{const known={'not-allowed':'permissionDenied','service-not-allowed':'permissionDenied','no-speech':'noSpeech','audio-capture':'microphoneUnavailable','language-not-supported':'languageUnsupported',network:'recognitionNetwork'};error=Error(known[event.error]?speechText(language,known[event.error]):speechText(language,'dictationFailed')+': '+event.error);};
@@ -40,7 +45,7 @@ export class SpeechHelper{
   try{await this.stop();if(generation!==this.generation)throw cancelled(language);}catch(error){throw generation!==this.generation?cancelled(language):readError(error,language);}
   if(this.desktop){try{const result=await this.native('speech_start',{mode:'speak',language,text:text.slice(0,10000)});if(generation!==this.generation)throw cancelled(language);return result;}catch(error){throw generation!==this.generation?cancelled(language):readError(error,language);}}
   if(!this.synthesis||!this.Utterance)throw Error(speechText(language,'readUnsupported'));
-  try{return await new Promise((resolve,reject)=>{const utterance=new this.Utterance(text.slice(0,10000));utterance.lang=language==='zh'?'zh-CN':'en-US';const voice=this.synthesis.getVoices().find(voice=>voice.lang.startsWith(language==='zh'?'zh':'en'));if(voice)utterance.voice=voice;utterance.onend=()=>generation===this.generation?resolve():reject(cancelled(language));utterance.onerror=event=>reject(event.error==='canceled'||event.error==='interrupted'?cancelled(language):readError(event,language));this.synthesis.speak(utterance);});}catch(error){throw generation!==this.generation?cancelled(language):readError(error,language);}
+  try{return await new Promise((resolve,reject)=>{const utterance=new this.Utterance(text.slice(0,10000));utterance.lang=languageInfo(language).speech;const voice=this.synthesis.getVoices().find(voice=>voice.lang.toLowerCase()===utterance.lang.toLowerCase());if(voice)utterance.voice=voice;utterance.onend=()=>generation===this.generation?resolve():reject(cancelled(language));utterance.onerror=event=>reject(event.error==='canceled'||event.error==='interrupted'?cancelled(language):readError(event.error==='language-unavailable'||event.error==='voice-unavailable'?'speech-language-unavailable':event,language));this.synthesis.speak(utterance);});}catch(error){throw generation!==this.generation?cancelled(language):readError(error,language);}
  }
  async stop(){this.generation++;this.cancelRecognition?.();this.synthesis?.cancel();if(this.desktop)await this.native('speech_stop',{});}
 }

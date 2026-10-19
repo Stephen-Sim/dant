@@ -1,3 +1,4 @@
+import {localizeMessages} from '../src/i18n.mjs';
 const MAX_BYTES=1024*1024,MAX_FORMATTED=2*1024*1024;
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const jsonType=value=>value==='application/json'||/^application\/[a-z0-9!#$&^_.+-]+\+json$/.test(value);
@@ -38,7 +39,7 @@ export function formatFileText(text,{json=false}={}){
 export function createFilePreview({getState,getModal,openModal,render,getToken=()=>'',base='',fetchImpl=(...args)=>fetch(...args),document=globalThis.document,window=globalThis.window,schedule=setTimeout,cancel=clearTimeout,timeoutMs=30000,icon=()=>'',openExternal,desktop=Boolean(window?.__TAURI_INTERNALS__)}={}){
  let active=null,sequence=0,closed=false;
  const scope=()=>{const state=getState(),vm=state?.settings?.vm;return JSON.stringify([state?.conversationId??null,vm?.host??null,vm?.user??null,vm?.port??null,vm?.keyPath??null]);};
- const language=()=>getState()?.settings?.language==='en'?'en':'zh',tr=key=>words[language()][key];
+ const language=()=>getState()?.settings?.language||'en',tr=key=>localizeMessages(words,language())[key];
  const owns=operation=>!closed&&active===operation&&getModal()===operation.modal&&scope()===operation.scope;
  function clear(){if(!active)return;active.controller?.abort();active.text='';active=null;}
  function syncModal(modal){if(active&&(!owns(active)||modal!==active.modal))clear();return modal?.type==='file'&&(!active||active.modal!==modal)?null:modal;}

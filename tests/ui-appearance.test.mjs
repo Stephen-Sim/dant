@@ -1,3 +1,4 @@
+import {compactCss} from './source-fixtures.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -66,7 +67,7 @@ test('native titlebar follows the chosen preference and system mode is left to W
 });
 
 test('dant avatars use light bodies and dark eyes in resolved dark mode while every other image keeps its pixels',async()=>{
- const css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8'),rules=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match=>match[1].trim()===selector).map(match=>match[2]).join(';'),tokens=selector=>Object.fromEntries([...rules(selector).matchAll(/(--dant-avatar-[\w-]+):([^;]+)/g)].map(match=>[match[1],match[2]]));
+ const css=compactCss(fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8')),rules=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match=>match[1].trim()===selector).map(match=>match[2]).join(';'),tokens=selector=>Object.fromEntries([...rules(selector).matchAll(/(--dant-avatar-[\w-]+):([^;]+)/g)].map(match=>[match[1],match[2]]));
  const light=tokens(':root'),dark={...light,...tokens(':root[data-theme="dark"]')};
  assert.equal(light['--dant-avatar-logo-body'],'#202020');assert.equal(light['--dant-avatar-eyes'],'#FFFFFF');assert.equal(dark['--dant-avatar-logo-body'],'#F5F5F5');assert.equal(dark['--dant-avatar-eyes'],'#202020');assert.equal(dark['--dant-avatar-body-start'],'#FFFFFF');assert.equal(dark['--dant-avatar-body-end'],'#DEDEDE');
  const f=fixture();const selected=()=>f.root.dataset.theme==='dark'?dark:light;assert.equal(selected()['--dant-avatar-eyes'],'#FFFFFF');f.changeSystem(true);assert.equal(selected()['--dant-avatar-eyes'],'#202020');await f.appearance.update({theme:'light'});assert.equal(selected()['--dant-avatar-eyes'],'#FFFFFF');await f.appearance.update({theme:'dark',themePreset:'custom',backgroundColor:'#123456',foregroundColor:'#FEDCBA'});assert.equal(selected()['--dant-avatar-logo-body'],'#F5F5F5');f.appearance.dispose();

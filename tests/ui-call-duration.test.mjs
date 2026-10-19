@@ -1,3 +1,5 @@
+import {sourceIndex,sourceSection} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import {createCallSubtitles} from '../ui/call-subtitles.js';
 import assert from 'node:assert/strict';
@@ -30,7 +32,7 @@ test('duration formatting matches chat history for zero, long calls and invalid 
  assert.equal(formatCallDuration(0),'0:00');assert.equal(formatCallDuration(61),'1:01');assert.equal(formatCallDuration(3599),'59:59');assert.equal(formatCallDuration(3600),'1:00:00');assert.equal(formatCallDuration(3601),'1:00:01');assert.equal(formatCallDuration(3903),'1:05:03');assert.equal(formatCallDuration(4666),'1:17:46');assert.equal(formatCallDuration(36000),'10:00:00');assert.equal(formatCallDuration(86461),'24:01:01');assert.equal(formatCallDuration(-1),'0:00');assert.equal(formatCallDuration(NaN),'0:00');assert.equal(formatCallDuration(9.9),'0:09');
 });
 
-const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start))),settle=()=>new Promise(resolve=>setImmediate(resolve));
+const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),part=(start,end)=>sourceSection(source,start,end),settle=()=>new Promise(resolve=>setImmediate(resolve));
 function callFixture(){
  let now=10000,next=0;const intervals=new Map(),requests=[];
  class Peer{constructor(){this.connectionState='new';}addTrack(){}createDataChannel(){return this.dc={readyState:'connecting'};}async createOffer(){return {sdp:'offer'};}async setLocalDescription(){}async setRemoteDescription(value){this.remoteDescription=value;}close(){this.connectionState='closed';}}
@@ -38,7 +40,7 @@ function callFixture(){
  c.callDuration=createCallDuration({now:()=>now,schedule:fn=>{intervals.set(++next,fn);return next;},cancel:id=>intervals.delete(id)});
  c.post=async(route,body)=>{requests.push({route,body});if(route==='/call'){const id='call-'+requests.length;c.state.call={id,provider:'subscription',status:'connecting',connectedAt:null};return {callId:id,sdp:'answer'};}if(route==='/call/connected'){c.state.call.connectedAt=now;c.state.call.status='connected';return {callId:body.callId,connected:true,connectedAt:now};}if(route==='/call/stop'){if(c.stopFailure)throw Object.assign(Error('Network disconnected'),{unknownOutcome:true});c.state.messages.push({kind:'call',callId:body.callId,seconds:8});c.state.call=null;return {stopped:true};}throw Error('Unexpected mock route');};c.api=async()=>c.state;c.callStops=createCallStops(id=>c.post('/call/stop',{callId:id}));
  c.updateInstalling=false;c.callSubtitles=createCallSubtitles();
- vm.createContext(c);vm.runInContext(part('async function startCall(','async function toggleRecord(){')+'\n'+part('function connectEvents(){',"document.addEventListener('pointerdown'"),c);
+ vm.createContext(Object.assign(c,languageContext));vm.runInContext(part('async function startCall(','async function toggleRecord(){')+'\n'+part('function connectEvents(){',"document.addEventListener('pointerdown'"),c);
  return {c,intervals,requests,advance(ms){now+=ms;for(const tick of intervals.values())tick();},async connect(){await c.startCall();const peer=c.pc;assert.equal(intervals.size,0);peer.connectionState='connected';peer.onconnectionstatechange();await settle();assert.equal(intervals.size,0,'peer connection alone does not start duration');peer.dc.readyState='open';peer.dc.onopen();await settle();assert.equal(c.callConnected,true);assert.equal(intervals.size,1);return peer;}};
 }
 

@@ -42,9 +42,25 @@ test('manual update pauses beta2 work twice and preserves its authoritative lega
  const busy={...idle(),active:{workId:'one',turnId:'turn'},queue:['queued'],workTasks:[{id:'one',status:'running'}]};
  const ended={...idle(),workTasks:[{id:'one',status:'continuing'}]};
  const paused={...idle(),workTasks:[{id:'one',status:'paused'}]};
- const result=run([session(),state(busy),pause(),state(ended),pause(),witness(),state(paused)]);
+ const result=run([session(),state(busy),pause(),state(ended),pause(),state(paused),witness(),state(paused)]);
  assert.equal(result.status,0,result.stderr);assert.equal(result.report.remaining,0);
- assert.deepEqual(result.report.calls.map(call=>call.route),['/api/session','/api/state','/api/tasks/pause','/api/state','/api/tasks/pause','/api/connect','/api/state']);
+ assert.deepEqual(result.report.calls.map(call=>call.route),['/api/session','/api/state','/api/tasks/pause','/api/state','/api/tasks/pause','/api/state','/api/connect','/api/state']);
+});
+
+test('manual update pauses legacy continuing history through its owner-checked task endpoint',()=>{
+ const old={...idle(),workTasks:[{id:'old/task',turnId:'ended-turn',status:'continuing',plan:{steps:[]}}]};
+ const paused={...idle(),workTasks:[{...old.workTasks[0],status:'paused'}]};
+ const result=run([session(),state(old),pause(),state(old),pause(),state(old),step('/api/tasks/old%2Ftask/pause',{ok:true,paused:true},{method:'POST',body:{kind:'work',turnId:'ended-turn'}}),witness(),state(paused)]);
+ assert.equal(result.status,0,result.stderr);assert.equal(result.report.remaining,0);
+ assert.equal(result.report.calls.filter(call=>call.route==='/api/tasks/old%2Ftask/pause').length,1);
+});
+
+test('an unconfirmed legacy per-task pause stops installation without replaying it',()=>{
+ const old={...idle(),workTasks:[{id:'old',turnId:'ended-turn',status:'continuing'}]};
+ const result=run([session(),state(old),pause(),state(old),pause(),state(old),step('/api/tasks/old/pause',null,{method:'POST',body:{kind:'work',turnId:'ended-turn'},error:true})]);
+ assert.equal(result.status,1);assert.match(result.stderr,/DANT_UPDATE_FAILED:saved-pause-unconfirmed:saved-pause/);
+ assert.equal(result.report.calls.filter(call=>call.route==='/api/tasks/old/pause').length,1);
+ assert.equal(result.report.calls.filter(call=>call.route==='/api/connect').length,0);
 });
 
 test('automatic deployment leaves busy work running without issuing mutations',()=>{
@@ -63,7 +79,7 @@ test('automatic deployment defers during human control and keeps the existing se
 
 test('a known current call is closed normally and then saved work is paused again',()=>{
  const busy={...idle(),active:{turnId:'work'},call:{id:'call-one'}};
- const result=run([session(),state(busy),pause(),state({...idle(),call:{id:'call-one'}}),step('/api/call/stop',{stopped:true},{method:'POST',body:{callId:'call-one'}}),pause(),witness(),state(idle())]);
+ const result=run([session(),state(busy),pause(),state({...idle(),call:{id:'call-one'}}),step('/api/call/stop',{stopped:true},{method:'POST',body:{callId:'call-one'}}),pause(),state(idle()),witness(),state(idle())]);
  assert.equal(result.status,0,result.stderr);assert.equal(result.report.remaining,0);
 });
 
@@ -91,13 +107,13 @@ test('malformed state, human control and unconfirmed work fail before any mutati
 
 test('new activity or unresolved continuation after pause blocks replacement',()=>{
  for(const current of [{...idle(),active:{turnId:'new'}},{...idle(),queue:['new']},{...idle(),call:{id:'new'}},{...idle(),takeover:true},{...idle(),workTasks:[{status:'continuing'}]},{...idle(),workTasks:[{status:'paused',continuation:{dispatch:{phase:'acknowledged'}}}]}]){
-  const result=run([session(),state(idle()),pause(),state(idle()),pause(),witness(),state(current)]);
+  const result=run([session(),state(idle()),pause(),state(idle()),pause(),state(idle()),witness(),state(current)]);
   assert.equal(result.status,1,JSON.stringify(current));assert.equal(result.report.remaining,0);
  }
 });
 
 test('final state rejection aborts after confirmed pauses and the existing legacy witness',()=>{
- const result=run([session(),state(idle()),pause(),state(idle()),pause(),witness(),{...state(idle()),error:true}]);
+ const result=run([session(),state(idle()),pause(),state(idle()),pause(),state(idle()),witness(),{...state(idle()),error:true}]);
  assert.equal(result.status,1);assert.equal(result.report.calls.at(-1).route,'/api/state');assert.equal(result.report.calls.filter(call=>call.route==='/api/connect').length,1);
  assert.match(result.stderr,/^DANT_UPDATE_FAILED:state-unavailable:final$/m);
  assert.match(result.stderr,/Saved task records were preserved/);
@@ -135,7 +151,7 @@ test('passive checks defer every unconfirmed executor status using GET only, inc
  for(const mode of ['check','final','idle'])for(const worker of [undefined,null,{}, {status:'offline'},{status:'connecting'},{status:'unknown'}]){
   const current={...idle(),worker},result=run([session(),state(current)],{mode});assert.equal(result.status,79);assert.match(result.stderr,/^DANT_WORK_ACTIVE$/m);assert.match(result.stderr,new RegExp('^DANT_UPDATE_DEFERRED:executor-offline:'+(mode==='idle'?'rollback':mode==='final'?'final':'initial')+'$','m'));assert.ok(result.report.calls.every(call=>call.method==='GET'));
  }
- const race=run([session(),state(idle()),pause(),state(idle()),pause(),witness(),state({...idle(),worker:{status:'offline'}})]);assert.equal(race.status,1);assert.match(race.stderr,/^DANT_UPDATE_FAILED:executor-offline:final$/m);assert.equal(race.report.calls.filter(call=>call.method==='POST').length,3);
+ const race=run([session(),state(idle()),pause(),state(idle()),pause(),state(idle()),witness(),state({...idle(),worker:{status:'offline'}})]);assert.equal(race.status,1);assert.match(race.stderr,/^DANT_UPDATE_FAILED:executor-offline:final$/m);assert.equal(race.report.calls.filter(call=>call.method==='POST').length,3);
 });
 
 test('fixed guard reasons identify the failed stage without exposing private responses or replaying requests',()=>{
@@ -151,8 +167,8 @@ test('fixed guard reasons identify the failed stage without exposing private res
   [[session(),state({...idle(),call:{id:'old'}}),pause(),state({...idle(),call:{id:'other'}})],'call-owner-changed','post-pause'],
   [[session(),state({...idle(),call:{id:'old'}}),pause(),state({...idle(),call:{id:'old'}}),step('/api/call/stop',{stopped:false},{method:'POST',body:{callId:'old'}})],'call-stop-unconfirmed','call-stop'],
   [[session(),state(idle()),pause(),state(idle()),{...pause(),error:true}],'saved-pause-unconfirmed','saved-pause'],
-  [[session(),state(idle()),pause(),state(idle()),pause(),{...witness(),error:true}],'idle-unconfirmed','final'],
-  [[session(),state(idle()),pause(),state(idle()),pause(),witness(),state({...idle(),active:{turnId:'new'}})],'work-still-active','final']
+  [[session(),state(idle()),pause(),state(idle()),pause(),state(idle()),{...witness(),error:true}],'idle-unconfirmed','final'],
+  [[session(),state(idle()),pause(),state(idle()),pause(),state(idle()),witness(),state({...idle(),active:{turnId:'new'}})],'work-still-active','final']
  ];
  for(const [replies,reason,stage]of cases){const result=run(replies);assert.equal(result.status,1);assert.match(result.stderr,new RegExp('^DANT_UPDATE_FAILED:'+reason+':'+stage+'$','m'));assert.doesNotMatch(result.stderr,/PRIVATE|fixture-session|Traceback|TimeoutError/);assert.equal(result.report.remaining,0);assert.ok(result.report.calls.filter(call=>call.route==='/api/connect').length<=1);}
 });
@@ -187,7 +203,7 @@ check_idle_worker() { printf 'pause-check\n' >> "$HOME/events"; exit 9; }
  }
 });
 
-function deployment(t,{failure='',rollbackBusy=false,initialState='active',becomeActive=false,rollbackFailure=''}={}){
+function deployment(t,{failure='',rollbackBusy=false,initialState='active',becomeActive=false,rollbackFailure='',guestHost='127.0.0.1',guestPort='4320'}={}){
  const testRoot=path.resolve('.cache/tests');fs.mkdirSync(testRoot,{recursive:true});
  const root=fs.mkdtempSync(path.join(testRoot,'worker-install-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const home=path.join(root,'home'),stage=path.join(home,'dant/releases/source.fixture'),old=path.join(home,'dant/releases/source.old');
@@ -207,6 +223,9 @@ export HOME="$1"
 source_dir="$2"
 failure="$3"
 rollback_busy="$4"
+guest_host="$8"
+guest_port="$9"
+worker_port=4317
 printf '%s' "$5" > "$HOME/worker-active"
 become_active="$6"
 rollback_failure="$7"
@@ -249,7 +268,7 @@ sleep() { :; }
  const tail=script.slice(script.indexOf('# Preserve the old executable files/configuration'));
  const serviceState=script.slice(script.indexOf('worker_service_state() {'),script.indexOf('check_idle_worker() {'));
  const runFile=path.join(root,'run-fixture.sh');fs.writeFileSync(runFile,harness+'\n'+serviceState+'\n'+tail);
- const result=spawnSync(bash,['--noprofile','--norc',shellPath(runFile),shellPath(home),shellPath(stage),failure,String(rollbackBusy),initialState,String(becomeActive),rollbackFailure],{encoding:'utf8',shell:false,timeout:15000});
+ const result=spawnSync(bash,['--noprofile','--norc',shellPath(runFile),shellPath(home),shellPath(stage),failure,String(rollbackBusy),initialState,String(becomeActive),rollbackFailure,guestHost,guestPort],{encoding:'utf8',shell:false,timeout:15000});
  if(result.error)throw result.error;
  return {...result,home,stage,old,events:fs.existsSync(path.join(home,'events'))?fs.readFileSync(path.join(home,'events'),'utf8'):''};
 }
@@ -260,6 +279,15 @@ test('installation switches a confirmed idle worker, preserves paused data and c
  assert.equal(fs.readFileSync(path.join(result.home,'dant/deployed-source.json'),'utf8'),'new-source');
  assert.equal(JSON.parse(fs.readFileSync(path.join(result.home,'dant/data/state.json'),'utf8')).tasks[0].status,'paused');
  assert.ok(result.events.indexOf('check:final')<result.events.indexOf('systemctl:--user stop dant-worker.service'));
+});
+
+test('both installed services receive the same validated guest endpoint while worker IPC remains fixed',t=>{
+ const result=deployment(t,{guestHost:'localhost',guestPort:'5540'});assert.equal(result.status,0,result.stderr);
+ for(const name of ['dant-guest-local.service','dant-worker.service']){
+  const text=fs.readFileSync(path.join(result.home,'.config/systemd/user',name),'utf8');
+  assert.match(text,/^Environment=DANT_GUEST_HOST=localhost$/m);assert.match(text,/^Environment=DANT_GUEST_PORT=5540$/m);
+ }
+ assert.match(fs.readFileSync(path.join(result.home,'.config/systemd/user/dant-worker.service'),'utf8'),/^Environment=DANT_PORT=4317$/m);
 });
 
 test('a failed new worker restores the previous app, helpers and services without rolling back authoritative data',async t=>{

@@ -1,3 +1,4 @@
+import {sourceIndex} from './source-fixtures.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -78,6 +79,6 @@ test('cleared visible history drops vanished message anchors before later messag
 });
 
 test('main captures before appearance or DOM mutation, restores after composer layout and disposes on unload',()=>{
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),render=source.slice(source.indexOf('function render(){'),source.indexOf('function renderRail(){'));
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),render=source.slice(sourceIndex(source,'function render(){'),sourceIndex(source,'function renderRail(){'));
  assert.ok(render.indexOf('chatScroll.capture()')<render.indexOf('appearance.sync'));assert.ok(render.indexOf('chatScroll.restore()')>render.indexOf('resizeComposer()'));assert.doesNotMatch(render,/oldScroll|nearBottom/);assert.match(source,/unloading=true;chatScroll.dispose\(\)/);
 });

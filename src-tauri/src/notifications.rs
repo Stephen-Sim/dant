@@ -39,11 +39,8 @@ fn notification_body(notification: &serde_json::Value) -> String {
     let preview = notification.get("body").and_then(|value| value.as_str()).unwrap_or("");
     let plain: String = preview.chars().filter(|value| !value.is_control() && !matches!(*value, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')).take(240).collect();
     if !plain.trim().is_empty() { return plain; }
-    if notification.get("language").and_then(|value| value.as_str()) == Some("en") {
-        "You have an unread message from dant.".into()
-    } else {
-        "你有来自 dant 的未读消息。".into()
-    }
+    let language = notification.get("language").and_then(|value| value.as_str()).unwrap_or("zh");
+    crate::l10n::text(language, "You have an unread message from dant.", "你有来自 dant 的未读消息。")
 }
 
 pub fn start(app: &tauri::App) {

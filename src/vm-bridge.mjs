@@ -8,6 +8,8 @@ import {WebSocket} from 'ws';
 import {sshArgs} from './worker.mjs';
 import {readVmBinding} from './vm-profiles.mjs';
 import {serviceVersion} from './diagnostic-events.mjs';
+import {serviceUpdateIdle} from './vm-service-update.mjs';
+import {publicVmEnvironment,validatePublicVmEnvironment,NATIVE_PROTOCOL} from './config/network.mjs';
 
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const freePort=()=>new Promise((resolve,reject)=>{const server=net.createServer();server.once('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
@@ -16,16 +18,17 @@ const bindingIdentity=vm=>JSON.stringify([vm.host,vm.user,vm.port,vm.keyPath,vm.
 const versionPattern=/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 // File names and bytes, rather than tar mtimes, identify deployable source.
-export function vmSourceFingerprint(root){
+export function vmSourceFingerprint(root,publicEnvironment=publicVmEnvironment()){
  const files=[];let total=0;
- const walk=name=>{const file=path.join(root,name),stat=fs.lstatSync(file,{throwIfNoEntry:false});if(!stat)throw Error(`Build resources are missing: ${name}`);if(stat.isSymbolicLink()||!stat.isFile()&&!stat.isDirectory())throw Error('VM build resources must be ordinary files.');if(stat.isDirectory()){for(const child of fs.readdirSync(file).sort())walk(name+'/'+child);}else{total+=stat.size;if(files.length>=20000||total>512*1024*1024)throw Error('VM build resources exceed the supported size.');files.push(name);}};
+ const walk=name=>{if(/(?:^|\/)\.env(?:\.|$)/i.test(name))return;const file=path.join(root,name),stat=fs.lstatSync(file,{throwIfNoEntry:false});if(!stat)throw Error(`Build resources are missing: ${name}`);if(stat.isSymbolicLink()||!stat.isFile()&&!stat.isDirectory())throw Error('VM build resources must be ordinary files.');if(stat.isDirectory()){for(const child of fs.readdirSync(file).sort())walk(name+'/'+child);}else{total+=stat.size;if(files.length>=20000||total>512*1024*1024)throw Error('VM build resources exceed the supported size.');files.push(name);}};
  for(const name of sourceAllowlist)walk(name);
- const hash=createHash('sha256');for(const name of files.sort()){const bytes=fs.readFileSync(path.join(root,name));hash.update(JSON.stringify([name,bytes.length])+'\n');hash.update(bytes);hash.update('\n');}return hash.digest('hex');
+ const hash=createHash('sha256');hash.update(JSON.stringify(validatePublicVmEnvironment(publicEnvironment))+'\n');for(const name of files.sort()){const bytes=fs.readFileSync(path.join(root,name));hash.update(JSON.stringify([name,bytes.length])+'\n');hash.update(bytes);hash.update('\n');}return hash.digest('hex');
 }
 
 export class VmBridge extends EventEmitter {
- constructor({dataDir,projectRoot,spawnProcess=spawn,fetchImpl=fetch,WebSocketImpl=WebSocket,cacheMs=2000}={}){
+ constructor({dataDir,projectRoot,spawnProcess=spawn,fetchImpl=fetch,WebSocketImpl=WebSocket,cacheMs=2000,environment=process.env}={}){
   super();this.dataDir=dataDir;this.projectRoot=projectRoot;this.spawnProcess=spawnProcess;this.fetchImpl=fetchImpl;this.WebSocketImpl=WebSocketImpl;this.cacheMs=cacheMs;this.status='offline';this.error=null;this.closed=false;this.generation=0;
+  this.publicEnvironment=publicVmEnvironment(environment);
   this.serviceUpdate={status:'checking',targetVersion:serviceVersion(projectRoot),runningVersion:null,confirmed:false,reason:'not-configured'};
  }
  binding(){return readVmBinding(this.dataDir);}
@@ -63,7 +66,7 @@ export class VmBridge extends EventEmitter {
     if(updateRunningWork||!error.updateDeferred&&!autoUpdate)throw error;
     if(!autoUpdate)this.emit('event',{type:'notice',data:{message:'The VM is still working. Its service update was deferred until work has stopped.'}});
    }if(this.closed||generation!==this.generation||identity!==bindingIdentity(this.binding()))throw Error('VM connection cancelled');
-   this.port=await freePort();if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');const child=this.spawnProcess('ssh',[...sshArgs(vm),'-N','-L',`127.0.0.1:${this.port}:127.0.0.1:4317`,'-o','ExitOnForwardFailure=yes',`${vm.user}@${vm.host}`],{shell:false,windowsHide:true,stdio:['ignore','ignore','pipe']});this.child=child;
+   this.port=await freePort();if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');const child=this.spawnProcess('ssh',[...sshArgs(vm),'-N','-L',`${NATIVE_PROTOCOL.host}:${this.port}:${NATIVE_PROTOCOL.host}:${NATIVE_PROTOCOL.port}`,'-o','ExitOnForwardFailure=yes',`${vm.user}@${vm.host}`],{shell:false,windowsHide:true,stdio:['ignore','ignore','pipe']});this.child=child;
    child.stderr?.on('data',()=>{});child.once('error',()=>this.failed(generation,'Could not start the SSH connection.'));child.once('close',()=>this.failed(generation,'The VM connection was lost. Cached conversation remains available.'));
    let session;const deadline=Date.now()+30000;
    while(Date.now()<deadline){
@@ -95,6 +98,56 @@ export class VmBridge extends EventEmitter {
   try{return await this.fetchImpl(`http://127.0.0.1:${this.port}${route}`,{...options,method,headers:{...options.headers,'X-Dant-Token':this.token},signal:options.signal||AbortSignal.timeout(60000)});}
   catch{throw Object.assign(Error(method==='GET'?'The VM request failed. Cached conversation remains available.':'The VM connection ended before the result was confirmed. This action was not resent; reconnect and check its state before retrying.'),{status:502,unknownOutcome:method!=='GET'});}
  }
+ // Installation and Exit use the same explicit stop-and-confirm operation.
+ // An unresolved pause is persisted before the first POST, so restarting the
+ // Controller cannot replay an interruption whose result was never confirmed.
+ pauseReceipt(vm,action='read'){
+  const file=path.join(this.dataDir,'vm-work-pause.json'),binding=createHash('sha256').update(bindingIdentity(vm)).digest('hex');let entries=[];
+  try{const stat=fs.lstatSync(file,{throwIfNoEntry:false});if(stat){if(!stat.isFile()||stat.isSymbolicLink()||stat.size>8192)throw Error();const value=JSON.parse(fs.readFileSync(file,'utf8'));if(value.schemaVersion!==1||!Array.isArray(value.entries)||value.entries.length>64||value.entries.some(entry=>typeof entry!=='string'||!/^[a-f0-9]{64}$/.test(entry)))throw Error();entries=value.entries;}}
+  catch{throw Object.assign(Error('The previous work pause could not be confirmed. Check the work computer before trying again.'),{status:409,code:'vm_pause_unconfirmed',unknownOutcome:true});}
+  if(action==='read')return entries.includes(binding);
+  const next=entries.filter(entry=>entry!==binding);if(action==='start'){if(next.length>=64)throw Error('Previous work pauses must be checked before continuing.');next.push(binding);}
+  fs.mkdirSync(this.dataDir,{recursive:true});const temporary=path.join(this.dataDir,`.vm-pause-${randomUUID()}.tmp`);try{fs.writeFileSync(temporary,JSON.stringify({schemaVersion:1,entries:next}),{flag:'wx',mode:0o600});fs.renameSync(temporary,file);}finally{fs.rmSync(temporary,{force:true});}
+ }
+ pauseWorkForUpdate({reason='install'}={}){
+  if(!['install','exit'].includes(reason))return Promise.reject(Error('Invalid work pause reason.'));
+  if(this.pausingWork)return this.pausingWork;
+  const generation=this.generation,vm=this.binding(),identity=bindingIdentity(vm),deadline=Date.now()+45000;
+  const conflict=()=>Object.assign(Error('The work pause could not be confirmed. Saved tasks were preserved; no unconfirmed action was resent.'),{status:409,code:'vm_pause_unconfirmed',unknownOutcome:true});
+  const current=()=>{if(this.closed||Date.now()>=deadline||this.status!=='online'||generation!==this.generation||identity!==bindingIdentity(this.binding()))throw conflict();};
+  const snapshot=async({allowHuman=false}={})=>{current();const state=await this.refresh(true);current();
+   if(!state||!Array.isArray(state.messages)||!Array.isArray(state.workTasks)||!Array.isArray(state.queue)||typeof state.takeover!=='boolean'||state.active!==null&&(!state.active||typeof state.active!=='object')||state.call!==null&&(!state.call||typeof state.call!=='object')||state.acquiring||state.worker?.status!=='online')throw conflict();
+   const computer=state.computer,human=allowHuman&&state.takeover===true&&computer?.status==='human'&&typeof computer.sessionId==='string'&&computer.sessionId.length>0&&computer.sessionId.length<=256;
+   if(!computer||computer.pending||computer.acquiring||!human&&(state.takeover||computer.status!=='dant'||computer.sessionId))throw conflict();return state;
+  };
+  const unresolved=state=>[...state.messages,...state.workTasks].some(entry=>!entry||typeof entry!=='object'||entry.unknownOutcome===true||['unknown','submitting'].includes(entry.submission)||entry.status==='unknown'||entry.continuation?.invalid||entry.continuation?.dispatch&&(!['accepted','acknowledged'].includes(entry.continuation.dispatch.phase)||!state.active||entry.turnId!==state.active.turnId&&entry.id!==state.active.workId));
+  const post=async(route,body,accept=value=>value?.ok===true)=>{current();const response=await this.request(route,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1,deadline-Date.now()))});current();let value;try{value=await response.json();}catch{throw conflict();}if(!response.ok||!accept(value))throw conflict();return value;};
+  const pending=(async()=>{
+   let state=await snapshot({allowHuman:true});
+   if(this.pauseReceipt(vm)){if(!serviceUpdateIdle(state))throw conflict();this.pauseReceipt(vm,'clear');return state;}
+   if(unresolved(state))throw conflict();
+   const callId=state.call?.id;if(state.call&&(typeof callId!=='string'||!callId||callId.length>256))throw conflict();
+   this.pauseReceipt(vm,'start');
+   if(state.takeover){await post('/api/takeover',{enabled:false,sessionId:state.computer.sessionId});state=await snapshot();}
+   await post('/api/tasks/pause',{});state=await snapshot();
+   if(state.call){if(!callId||state.call.id!==callId)throw conflict();await post('/api/call/stop',{callId},value=>value?.stopped===true);}
+   await post('/api/tasks/pause',{});state=await snapshot();
+   if(state.active||state.call||state.queue.length||unresolved(state))throw conflict();
+   // Older workers' bulk pause skips historical continuing records without an
+   // unfinished plan. Their owner-checked per-task API can still pause them.
+   const remaining=state.workTasks.filter(entry=>['continuing','waiting_user'].includes(entry.status));
+   for(const entry of remaining){
+    if(typeof entry.id!=='string'||!entry.id||entry.id.length>128||typeof entry.turnId!=='string'||!entry.turnId||entry.turnId.length>256||entry.continuation?.dispatch)throw conflict();
+    await post('/api/tasks/'+encodeURIComponent(entry.id)+'/pause',{kind:'work',turnId:entry.turnId},value=>value?.ok===true&&value.paused===true);
+   }
+   // The legacy idleRecovery witness checks hidden finalization and handoffs;
+   // worker.status was freshly online, so it cannot start an offline executor.
+   await post('/api/connect',{idleRecovery:true});state=await snapshot();
+   if(!serviceUpdateIdle(state))throw conflict();
+   this.pauseReceipt(vm,'clear');return state;
+  })().catch(error=>{if(error?.code==='vm_pause_unconfirmed')throw error;throw conflict();}).finally(()=>{if(this.pausingWork===pending)this.pausingWork=null;});
+  this.pausingWork=pending;return pending;
+ }
  async prepare(vm=this.binding(),{updateRunningWork=false}={}){
   if(this.closed)throw Error('VM bridge is closed');
   updateRunningWork=updateRunningWork===true;
@@ -115,7 +168,7 @@ export class VmBridge extends EventEmitter {
    const finish=(error)=>{if(settled)return;settled=true;clearTimeout(timer);this.preparationChildren?.delete(child);error?reject(error):resolve(output);};
    this.preparationChildren??=new Set();this.preparationChildren.add(child);child.once('error',()=>finish(Error('Could not start VM preparation.')));child.once('close',code=>{
     const marker=[...output.matchAll(/DANT_UPDATE_(?:FAILED|DEFERRED):([a-z-]{1,64}):([a-z-]{1,32})(?:\s|$)/g)].at(-1);
-    finish(code===0?null:Object.assign(Error(`VM preparation failed (${code}).`),{updateDeferred:output.includes('DANT_WORK_ACTIVE')&&[75,79].includes(code)&&marker?.[2]!=='rollback',updateReason:output.includes('DANT_UPDATE_DEFERRED:executor-offline:')?'executor-offline':'work-active',...(marker?{updateGuardReason:marker[1],updateStage:marker[2]}:{}),exitCode:code}));
+    finish(code===0?null:Object.assign(Error(`VM preparation failed (${code}).`),{updateDeferred:output.includes('DANT_WORK_ACTIVE')&&[75,79].includes(code)&&marker?.[2]!=='rollback',updateReason:output.includes('DANT_UPDATE_DEFERRED:executor-offline:')?'executor-offline':'work-active',...(marker?{updateGuardReason:marker[1],updateStage:marker[2],updateNotInstalled:marker[2]!=='rollback'&&!['pause-unconfirmed','call-stop-unconfirmed','saved-pause-unconfirmed','idle-unconfirmed','request-unconfirmed'].includes(marker[1])}:{}),exitCode:code}));
    });child.stdout?.on('data',data=>{output=(output+data.toString()).slice(-6000);});child.stderr?.on('data',data=>{output=(output+data.toString()).slice(-6000);});child.stdin?.on('error',()=>{});
    if(input)fs.createReadStream(input).on('error',error=>{child.kill();finish(error);}).pipe(child.stdin);else child.stdin?.end();
   });
@@ -146,15 +199,15 @@ export class VmBridge extends EventEmitter {
   fs.mkdirSync(this.dataDir,{recursive:true});const temporary=fs.mkdtempSync(path.join(this.dataDir,'deploy-'));const archive=path.join(temporary,'source.tar');
   try{
    const generation=this.generation,identity=bindingIdentity(vm),current=()=>{if(this.closed||generation!==this.generation||identity!==bindingIdentity(this.binding()))throw Object.assign(Error('VM preparation cancelled because its connection changed'),{cancelled:true});};
-   current();const fingerprint=vmSourceFingerprint(this.projectRoot);this.desiredSource=fingerprint;
+   current();const fingerprint=vmSourceFingerprint(this.projectRoot,this.publicEnvironment);this.desiredSource=fingerprint;
    const remote=await this.deployedSource(vm);current();
    if(remote.active&&remote.sha256&&this.updateAttempts(vm,remote.sha256,'has-source'))this.updateAttempts(vm,remote.sha256,'clear');
    if(!updateRunningWork&&this.updateAttempts(vm,fingerprint))throw Object.assign(Error('A previous work computer update is unconfirmed.'),{unknownOutcome:true});
    if(remote.sha256===fingerprint&&remote.active)return {fingerprint,current:true};
    const tar=process.platform==='win32'?path.join(process.env.SystemRoot||'C:/Windows','System32/tar.exe'):'tar';
-   await this.run(tar,['-cf',archive,'-C',this.projectRoot,...sourceAllowlist]);current();
-   if(vmSourceFingerprint(this.projectRoot)!==fingerprint)throw Object.assign(Error('VM build resources changed during preparation.'),{cancelled:true});
-   fs.writeFileSync(path.join(temporary,'deploy-manifest.json'),JSON.stringify({schemaVersion:2,sha256:fingerprint}));
+   await this.run(tar,['-cf',archive,'-C',this.projectRoot,'--exclude=.[eE][nN][vV]','--exclude=.[eE][nN][vV].*',...sourceAllowlist]);current();
+   if(vmSourceFingerprint(this.projectRoot,this.publicEnvironment)!==fingerprint)throw Object.assign(Error('VM build resources changed during preparation.'),{cancelled:true});
+   fs.writeFileSync(path.join(temporary,'deploy-manifest.json'),JSON.stringify({schemaVersion:2,sha256:fingerprint,publicEnvironment:this.publicEnvironment}));
    await this.run(tar,['-rf',archive,'-C',temporary,'deploy-manifest.json']);
    current();
    const stateFile=path.join(this.dataDir,'state.json'),receipt=path.join(this.dataDir,'vm-migration.json');
@@ -169,7 +222,7 @@ export class VmBridge extends EventEmitter {
    // No keys, CODEX_HOME, node_modules, Windows runtime, or personal caches enter the archive.
    const command='umask 077; set -e; mkdir -p "$HOME/dant/releases"; stage=$(mktemp -d "$HOME/dant/releases/source.XXXXXX"); tar -xf - -C "$stage"; bash "$stage/vm/install-worker.sh" "$stage"'+(updateRunningWork===true?' --update-running-work':'');
    current();this.updateAttempts(vm,fingerprint,updateRunningWork?'start-explicit':'start');this.updateService({status:'updating',confirmed:false,reason:null},'activate');
-   try{await this.run('ssh',[...sshArgs(vm),`${vm.user}@${vm.host}`,command],{input:archive});}catch(error){if(error.updateDeferred)this.updateAttempts(vm,fingerprint,'clear');else error.unknownOutcome=true;throw error;}
+   try{await this.run('ssh',[...sshArgs(vm),`${vm.user}@${vm.host}`,command],{input:archive});}catch(error){if(error.updateDeferred||error.updateNotInstalled)this.updateAttempts(vm,fingerprint,'clear');else error.unknownOutcome=true;throw error;}
    current();let confirmed;try{confirmed=await this.deployedSource(vm);}catch{throw Object.assign(Error('The work computer update was not confirmed.'),{unknownOutcome:true});}current();if(!confirmed.active||confirmed.sha256!==fingerprint)throw Object.assign(Error('The work computer update was not confirmed.'),{unknownOutcome:true});
    this.updateAttempts(vm,fingerprint,'clear');if(migration)fs.writeFileSync(receipt,JSON.stringify({...migration,host:vm.host,completedAt:new Date().toISOString()},null,2));return {fingerprint,current:false};
   }finally{const relative=path.relative(this.dataDir,temporary);if(relative&&!relative.startsWith('..')&&!path.isAbsolute(relative)&&path.basename(temporary).startsWith('deploy-'))fs.rmSync(temporary,{recursive:true,force:true});}

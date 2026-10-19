@@ -1,3 +1,5 @@
+import {sourceIndex} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -81,8 +83,8 @@ test('binding reports failure without replacing the current dialog or opening an
 });
 
 test('all app attachment download affordances are buttons and image preview remains independently closable',()=>{
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),attachment=source.slice(source.indexOf('function renderAttachment(file){'),source.indexOf('function renderMessages(){')),modal=source.slice(source.indexOf('function renderModal(){'),source.indexOf('function bind(){'));
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),attachment=source.slice(sourceIndex(source,'function renderAttachment(file){'),sourceIndex(source,'function renderMessages(){')),modal=source.slice(sourceIndex(source,'function renderModal(){'),sourceIndex(source,'function bind(){'));
  const {document}=parseHTML('<html><body></body></html>'),context={canPreviewFile,language:()=>'en',base:'',token:'token',fileURL:()=>'/original-inline-image',esc:value=>String(value),ico:name=>`<svg data-icon="${name}"></svg>`,t:value=>value,button:(action,icon,label)=>`<button type="button" data-action="${action}">${label}</button>`,modal:{type:'image',fileId:id},managedSettings:{renderModal:()=>null},chatHistory:{renderModal:()=>null},conversationFiles:()=>[{...file,type:'image/png',name:'tetrio-live.png'}]};
- vm.createContext(context);vm.runInContext(attachment+modal,context);document.body.innerHTML=context.renderModal();const download=document.querySelector('[data-download]');assert.equal(download.tagName,'BUTTON');assert.equal(download.getAttribute('href'),null);assert.equal(download.getAttribute('type'),'button');assert.ok(document.querySelector('[data-action="close-modal"]'));assert.equal(document.querySelector('img').getAttribute('src'),'/original-inline-image');
+ vm.createContext(Object.assign(context,languageContext));vm.runInContext(attachment+modal,context);document.body.innerHTML=context.renderModal();const download=document.querySelector('[data-download]');assert.equal(download.tagName,'BUTTON');assert.equal(download.getAttribute('href'),null);assert.equal(download.getAttribute('type'),'button');assert.ok(document.querySelector('[data-action="close-modal"]'));assert.equal(document.querySelector('img').getAttribute('src'),'/original-inline-image');
  document.body.innerHTML=context.renderAttachment(file);assert.equal(document.querySelector('.file-card').tagName,'BUTTON');assert.equal(document.querySelector('.file-card').getAttribute('data-file-preview'),id);assert.equal(document.querySelector('[data-download]').tagName,'BUTTON');assert.equal(document.querySelector('[data-download]').getAttribute('data-download'),id);assert.equal(document.querySelector('a'),null);assert.doesNotMatch(modal,/<a[^>]+download=/);assert.match(source,/downloads\.bind\(id=>conversationFiles\(\)\.find/);
 });

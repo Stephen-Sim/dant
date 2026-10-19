@@ -1,3 +1,5 @@
+import {sourceIndex,sourceSection} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import {createTaskReplyController} from '../ui/task-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,14 +11,14 @@ import {bindAttachmentImages} from '../ui/attachment-images.js';
 import {createWorkDisclosures} from '../ui/work-disclosures.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
-const part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start))),settle=()=>new Promise(resolve=>setImmediate(resolve));
+const part=(start,end)=>sourceSection(source,start,end),settle=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(language='en'){
  const {document,Event}=parseHTML('<!doctype html><html><body><main id="app"></main></body></html>'),app=document.querySelector('#app'),requests=[],toasts=[];
  const c={bindAttachmentImages,downloads:{bind(){}},filePreview:{bind(){},syncModal:value=>value},modal:null,managedSettings:{renderRequests:()=>'',renderCredentials:()=>'',renderSkills:()=>'',renderModal:()=>null,bind(){},load:async()=>{},onClose(){}},chatHistory:{renderActions:()=>'',renderEdited:()=>'',renderSettings:()=>'',renderModal:()=>null,bind(){},bindModal(){},onClose(){}},document,Event,window:{},innerWidth:1440,localStorage:{getItem:()=>null,setItem(){}},fallbackLanguage:language,state:{settings:{language,vm:{host:'192.0.2.10',user:'dant',port:22,keyPath:'C:/vm-key'}},worker:{status:'online'},computer:{status:'agent',sessionId:'lease-1'},call:null,messages:[]},eventConnected:true,pc:null,callStarting:false,callStops:{pending:false},pendingActions:new Set(),screenURL:'/fixture/desktop.png',screenError:'',page:'chat',chatMode:'text',showComputer:true,vmDraft:null,vmProfilesVisible:false,manualVMExpanded:false,render(){},toast:message=>toasts.push(message),icons:{},createElement:()=>({outerHTML:'<svg aria-hidden="true"></svg>'}),bindSteer(){},bindProvision(){},bindVoiceKey(){},bindTelegram(){},bindAppearance(){},bindVMSettings(){},bindComputerInput(){}};
  c.progressActions={bind(){},renderConfirmation:()=>'',onClose(){},busy:false};
  c.workDisclosures=createWorkDisclosures({getState:()=>c.state,document});
  c.post=async(route,body)=>{requests.push({route,body});if(route==='/takeover')c.state.computer.status=body.enabled?'human':'agent';return {ok:true};};c.api=async route=>{requests.push({route});assert.equal(route,'/state');return c.state;};
- c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};c.taskReplies??=createTaskReplyController({document:c.document,getModel:()=>({})});vm.createContext(c);vm.runInContext([
+ c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};c.taskReplies??=createTaskReplyController({document:c.document,getModel:()=>({})});vm.createContext(Object.assign(c,languageContext));vm.runInContext([
   part('const zh={','const subscriptionVoiceUnavailable='),part('const subscriptionVoiceUnavailable=','const eyes='),
   part('function renderComputer(){','function renderSettings(){'),part('function hasVMConnection(){','function renderVMProfiles(){'),
   part('function bind(){','async function taskRequest('),part('async function action(a){','async function checkUnconfirmedMessage(){'),

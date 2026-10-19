@@ -15,6 +15,7 @@ class FakeBridge extends EventEmitter{
  constructor(){super();this.status='offline';this.error=null;this.requests=[];}
  emit(event,...args){if(event==='state'&&args[0])args[0].settings={language:'zh',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone,...args[0].settings};return super.emit(event,...args);}
  async refresh(){return this.cached;}
+ async pauseWorkForUpdate(){this.pauses=(this.pauses||0)+1;return this.cached;}
  async request(route,options){this.requests.push({route,...options});if(this.fail)throw Object.assign(Error('Unknown outcome; not resent'),{unknownOutcome:true,status:502});return new Response(JSON.stringify({ok:true}),{headers:{'Content-Type':'application/json'}});}
  close(){}disconnect(){this.status='offline';this.emit('change');}
 }
@@ -242,7 +243,7 @@ test('invalid persisted appearance values fall back to safe defaults and font en
  const response=await fetch(base+'/api/fonts',{headers});assert.equal(response.status,503);assert.equal((await response.json()).error,'Windows font list is unavailable.');assert.equal(bridge.requests.length,0);
 });
 
-const idleRecoveryState=()=>({conversationId:'preserved-conversation',messages:[{id:'paused-task',role:'user',text:'Existing work',status:'paused',pauseReason:'executor-disconnected'}],settings:{language:'zh',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},worker:{status:'offline',error:'Worker stopped'},active:null,queue:[],call:null,takeover:false,computer:{status:'dant',sessionId:null,expiresAt:0}});
+const idleRecoveryState=()=>({conversationId:'preserved-conversation',messages:[{id:'paused-task',role:'user',text:'Existing work',status:'paused',pauseReason:'executor-disconnected'}],settings:{language:'zh',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},worker:{status:'offline',error:'Worker stopped'},active:null,queue:[],workTasks:[],call:null,takeover:false,computer:{status:'dant',sessionId:null,expiresAt:0}});
 class RecoveryBridge extends FakeBridge{
  constructor(state=idleRecoveryState()){super();this.state=state;this.connections=0;this.refreshes=[];}
  async connect(){this.connections++;this.status='online';this.cached=this.state;this.emit('state',this.state);return this.state;}
@@ -253,7 +254,7 @@ async function recoveryFixture(t,state=idleRecoveryState(),options={}){const dir
 
 test('explicit Controller Reconnect starts an idle stopped VM executor once and refreshes its authoritative state without replaying paused history',async t=>{
  const {app,base,headers,bridge}=await recoveryFixture(t),messages=structuredClone(bridge.state.messages);
- const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);assert.equal(bridge.connections,1);assert.equal(bridge.requests.length,1);assert.deepEqual(bridge.refreshes,[true,true]);assert.equal(app.snapshot().worker.status,'online');assert.equal(app.snapshot().conversationId,'preserved-conversation');assert.deepEqual(app.snapshot().messages,messages);assert.deepEqual(app.snapshot().queue,[]);
+ const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);assert.equal(bridge.connections,2);assert.equal(bridge.requests.length,1);assert.deepEqual(bridge.refreshes,[true,true,true]);assert.equal(app.snapshot().worker.status,'online');assert.equal(app.snapshot().conversationId,'preserved-conversation');assert.deepEqual(app.snapshot().messages,messages);assert.deepEqual(app.snapshot().queue,[]);
 });
 
 test('automatic Controller startup and provisioning reconnect preserve a deliberately stopped executor',async t=>{
@@ -290,12 +291,12 @@ test('explicit executor recovery is blocked by fresh active work, queues, calls,
 });
 
 test('an online or already connecting executor is never restarted by Controller Reconnect',async t=>{
- for(const status of ['online','connecting'])await t.test(status,async t=>{const state=idleRecoveryState();state.worker.status=status;const {base,headers,bridge}=await recoveryFixture(t,state);const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);assert.equal(bridge.requests.length,0);assert.deepEqual(bridge.refreshes,[true]);assert.equal(bridge.state.worker.status,status);});
+ for(const status of ['online','connecting'])await t.test(status,async t=>{const state=idleRecoveryState();state.worker.status=status;const {base,headers,bridge}=await recoveryFixture(t,state);const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,status==='connecting'?409:200);assert.equal(bridge.requests.length,0);assert.deepEqual(bridge.refreshes,[true]);assert.equal(bridge.state.worker.status,status);});
 });
 
 test('simultaneous explicit reconnect clicks share one executor recovery and do not send duplicate mutations',async t=>{
  const {app,base,headers,bridge}=await recoveryFixture(t);let release,started,secondArrived,incoming=0;const entered=new Promise(resolve=>started=resolve),bothArrived=new Promise(resolve=>secondArrived=resolve);bridge.wait=()=>{started();return new Promise(resolve=>release=resolve);};app.server.on('request',req=>{if(req.url==='/api/connect'&&++incoming===2)req.once('end',()=>setImmediate(secondArrived));});
- const first=fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});await entered;const second=fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});await bothArrived;release();const responses=await Promise.all([first,second]);assert.deepEqual(responses.map(response=>response.status),[200,200]);assert.equal(bridge.connections,1);assert.equal(bridge.requests.length,1);assert.deepEqual(bridge.refreshes,[true,true]);
+ const first=fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});await entered;const second=fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});await bothArrived;release();const responses=await Promise.all([first,second]);assert.deepEqual(responses.map(response=>response.status),[200,200]);assert.equal(bridge.connections,2);assert.equal(bridge.requests.length,1);assert.deepEqual(bridge.refreshes,[true,true,true]);
 });
 
 test('executor recovery failures are surfaced once without replay or an automatic retry',async t=>{

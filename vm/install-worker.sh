@@ -6,6 +6,33 @@ case "$source_dir" in "$HOME"/dant/releases/source.*) ;; *) echo 'Invalid worker
 update_running_work=false
 case "${2:-}" in '') ;; --update-running-work) update_running_work=true ;; *) echo 'Invalid worker update option' >&2; exit 1;; esac
 test "$(id -u)" -ne 0 || { echo 'Run the worker deployment as its ordinary VM user.' >&2; exit 1; }
+# Only validated, non-secret deployment options are transferred from Windows.
+# Never source a host .env file or interpolate arbitrary environment variables.
+public_environment=$(python3 - "$source_dir" <<'PY'
+import json, pathlib, re, sys
+try:
+    root = pathlib.Path(sys.argv[1])
+    protocol = json.loads((root/'src/config/protocol.json').read_text(encoding='utf-8'))
+    manifest = json.loads((root/'deploy-manifest.json').read_text(encoding='utf-8'))
+    defaults = {'DANT_GUEST_HOST': protocol['loopbackHost'], 'DANT_GUEST_PORT': str(protocol['guestPort'])}
+    value = manifest.get('publicEnvironment', defaults)
+    if not isinstance(value,dict) or set(value) != set(defaults):
+        raise ValueError()
+    host, port = value['DANT_GUEST_HOST'], value['DANT_GUEST_PORT']
+    if not isinstance(host,str) or host not in protocol['loopbackHosts']:
+        raise ValueError()
+    if not isinstance(port,str) or re.fullmatch(r'[1-9][0-9]{0,4}',port) is None or not 1 <= int(port) <= 65535:
+        raise ValueError()
+    api_port = protocol['apiPort']
+    if type(api_port) is not int or not 1 <= api_port <= 65535:
+        raise ValueError()
+    print(host+'\t'+port+'\t'+str(api_port))
+except Exception:
+    print('Invalid public VM network configuration; existing services were preserved.', file=sys.stderr)
+    sys.exit(1)
+PY
+)
+IFS=$'\t' read -r guest_host guest_port worker_port <<< "$public_environment"
 mkdir -p "$HOME/dant/runtime" "$HOME/dant/data" "$HOME/dant/workspaces" "$HOME/dant/vm" "$HOME/.config/systemd/user"
 
 if [ ! -x "$HOME/dant/runtime/node/bin/node" ]; then
@@ -44,7 +71,7 @@ check_idle_worker() {
 worker_checked_state=$(worker_service_state) || return 1
 if [ "$worker_checked_state" = active ]; then
   python3 - "${1:-check}" <<'PY'
-import json, math, sys, urllib.request
+import json, math, sys, urllib.request, urllib.parse
 base = 'http://127.0.0.1:4317'
 manual = sys.argv[1] == 'pause'
 idle_witness = sys.argv[1] == 'idle'
@@ -140,6 +167,21 @@ try:
         # too, preventing its supervisor from starting another turn mid-update.
         stage = 'saved-pause'
         confirmed('/api/tasks/pause', {}, 'saved-pause-unconfirmed')
+        state = snapshot()
+        if state['active'] or state['call'] or state['queue'] or state['takeover'] or unresolved(state, final=True):
+            reject('work-still-active')
+        # Legacy bulk pause skips historical continuing records whose plans are
+        # complete or missing an end timestamp. Use their owner-checked pause
+        # endpoint instead of deleting history or treating them as live forever.
+        for entry in state.get('workTasks', []):
+            if entry.get('status') not in ('continuing', 'waiting_user'):
+                continue
+            task_id, turn_id = entry.get('id'), entry.get('turnId')
+            if not isinstance(task_id, str) or not task_id or len(task_id) > 128 or not isinstance(turn_id, str) or not turn_id or len(turn_id) > 256:
+                reject('work-unconfirmed')
+            result = request('/api/tasks/' + urllib.parse.quote(task_id, safe='') + '/pause', {'kind': 'work', 'turnId': turn_id}, 'saved-pause-unconfirmed')
+            if not isinstance(result, dict) or result.get('ok') is not True or result.get('paused') is not True:
+                reject('saved-pause-unconfirmed')
     if manual or idle_witness:
         stage = 'final' if manual else 'rollback'
         # Legacy snapshots omit pending handoffs and finalization. Preserve the
@@ -258,7 +300,8 @@ Type=simple
 WorkingDirectory=%h/dant/vm
 ExecStart=/usr/bin/python3 %h/dant/vm/guest.py
 Environment=DISPLAY=:0
-Environment=DANT_GUEST_PORT=4320
+Environment=DANT_GUEST_HOST=$guest_host
+Environment=DANT_GUEST_PORT=$guest_port
 Environment=DANT_CONTROL_FILE=%h/dant/data/computer-control.json
 Restart=on-failure
 RestartSec=2
@@ -282,6 +325,9 @@ Environment=DANT_WORKSPACE_ROOT=%h/dant/workspaces
 Environment=DISPLAY=:0
 Environment=CODEX_HOME=%h/.dant-codex
 Environment=DANT_CONTROL_FILE=%h/dant/data/computer-control.json
+Environment=DANT_PORT=$worker_port
+Environment=DANT_GUEST_HOST=$guest_host
+Environment=DANT_GUEST_PORT=$guest_port
 Environment=PATH=%h/dant/runtime/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=3

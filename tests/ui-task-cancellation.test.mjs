@@ -1,3 +1,5 @@
+import {sourceIndex} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -66,6 +68,6 @@ test('a historical dismiss confirmation cannot hide a task that became ongoing',
 });
 
 test('main uses task-scoped progress cancellation controls and refreshes failed cancellation without replay',async()=>{
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),renderStart=source.indexOf('function renderProgress(){'),renderEnd=source.indexOf('function renderModal(){',renderStart),progress=source.slice(renderStart,renderEnd);assert.doesNotMatch(progress,/data-action="stop"/);assert.match(progress,/renderActiveWork\(model,\{pending:busy,planOpen:workDisclosures\.isOpen\(active\.id\)\}\)/);
- const start=source.indexOf('async function taskRequest('),end=source.indexOf('function resumeTask(',start),requests=[],reads=[],context={state:null,pendingActions:new Set(),render(){},post:async(...args)=>{requests.push(args);throw Error('Unconfirmed');},api:async route=>{reads.push(route);return {active:{turnId:'turn',status:'unknown'}};}};vm.createContext(context);vm.runInContext(source.slice(start,end),context);await assert.rejects(context.taskRequest('work','/tasks/work/cancel',{kind:'work',turnId:'turn'}),/Unconfirmed/);assert.equal(requests.length,1);assert.deepEqual(reads,['/state']);assert.equal(context.state.active.status,'unknown');assert.equal(context.pendingActions.size,0);
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),renderStart=sourceIndex(source,'function renderProgress(){'),renderEnd=sourceIndex(source,'function renderModal(){',renderStart),progress=source.slice(renderStart,renderEnd);assert.doesNotMatch(progress,/data-action="stop"/);assert.match(progress,/renderActiveWork\(model,\{pending:busy,planOpen:workDisclosures\.isOpen\(active\.id\)\}\)/);
+ const start=sourceIndex(source,'async function taskRequest('),end=sourceIndex(source,'function resumeTask(',start),requests=[],reads=[],context={state:null,pendingActions:new Set(),render(){},post:async(...args)=>{requests.push(args);throw Error('Unconfirmed');},api:async route=>{reads.push(route);return {active:{turnId:'turn',status:'unknown'}};}};vm.createContext(Object.assign(context,languageContext));vm.runInContext(source.slice(start,end),context);await assert.rejects(context.taskRequest('work','/tasks/work/cancel',{kind:'work',turnId:'turn'}),/Unconfirmed/);assert.equal(requests.length,1);assert.deepEqual(reads,['/state']);assert.equal(context.state.active.status,'unknown');assert.equal(context.pendingActions.size,0);
 });

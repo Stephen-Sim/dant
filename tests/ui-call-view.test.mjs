@@ -1,3 +1,5 @@
+import {sourceIndex,sourceSection,compactCss} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import {createTaskReplyController} from '../ui/task-reply.js';
 import {bindAttachmentImages} from '../ui/attachment-images.js';
 import test from 'node:test';
@@ -12,8 +14,8 @@ import {createCallDuration,formatCallDuration} from '../ui/call-duration.js';
 import {createAppearance,appearanceDefaults} from '../ui/appearance.js';
 import {createWorkDisclosures} from '../ui/work-disclosures.js';
 
-const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');
-const part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start))),settle=()=>new Promise(resolve=>setImmediate(resolve));
+const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=compactCss(fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8'));
+const part=(start,end)=>sourceSection(source,start,end),settle=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture(language='en',theme='light'){
  const {document,Event}=parseHTML('<!doctype html><html><body><main id="app"></main></body></html>'),app=document.querySelector('#app'),intervals=new Map(),requests=[];let now=18000,nextTimer=0;
  const peer={connectionState:'connected',close(){throw Error('View changes must not close the peer');}},track={stop(){throw Error('View changes must not stop media');}},stream={getTracks:()=>[track]},audio={play:async()=>{},pause(){throw Error('View changes must not pause audio');}},call={id:'live-call',provider:'subscription',status:'connected',connectedAt:1000};
@@ -24,7 +26,7 @@ function fixture(language='en',theme='light'){
  c.createElement=definition=>{const previous=globalThis.document;globalThis.document=document;try{return lucide.createElement(definition);}finally{if(previous===undefined)delete globalThis.document;else globalThis.document=previous;}};
  c.callDuration=createCallDuration({now:()=>now,schedule:fn=>{intervals.set(++nextTimer,fn);return nextTimer;},cancel:id=>intervals.delete(id)});c.callDuration.start(call.id,call.connectedAt);
  c.appearance=createAppearance({document,storage:null,matchMedia:()=>null});c.appearance.sync(c.state.settings);c.post=async(route,body)=>{requests.push({route,body});throw Error('View changes must not send an API request');};
- c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};c.taskReplies??=createTaskReplyController({document:c.document,getModel:()=>({})});vm.createContext(c);vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const iconCache=','const eyes=')+'\n'+part('function renderCall(){','function renderUnconfirmedMessage(){')+'\n'+part('function bind(){','async function taskRequest(')+'\n'+part('async function action(a){','async function checkUnconfirmedMessage(){')+'\nglobalThis.renderIcon=ico;',c);
+ c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};c.taskReplies??=createTaskReplyController({document:c.document,getModel:()=>({})});vm.createContext(Object.assign(c,languageContext));vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const iconCache=','const eyes=')+'\n'+part('function renderCall(){','function renderUnconfirmedMessage(){')+'\n'+part('function bind(){','async function taskRequest(')+'\n'+part('async function action(a){','async function checkUnconfirmedMessage(){')+'\nglobalThis.renderIcon=ico;',c);
  c.render=()=>{const template=document.createElement('template');template.innerHTML=c.renderCall()+'<input id="file-input" type="file" hidden>';reconcile(app,template.content);c.bind();};c.render();
  return {c,document,requests,intervals,peer,stream,audio,call,async click(node){node.dispatchEvent(new Event('pointerdown',{bubbles:true}));node.dispatchEvent(new Event('pointerup',{bubbles:true}));node.dispatchEvent(new Event('click',{bubbles:true}));await settle();},advance(ms){now+=ms;for(const fn of intervals.values())fn();}};
 }

@@ -1,3 +1,5 @@
+import {sourceIndex,compactCss} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,7 +12,7 @@ import {canPreviewFile} from '../ui/file-preview.js';
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 function fixture(language='en'){
  const {document}=parseHTML('<main></main>'),context={canPreviewFile,language:()=>language,fileURL:file=>'/api/files/'+file.id+'?token=fixture',esc:value=>String(value).replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;'),ico:name=>`<svg data-icon="${name}"></svg>`,t:value=>value};
- vm.createContext(context);vm.runInContext(source.slice(source.indexOf('function renderAttachment(file){'),source.indexOf('function renderMessages(){')),context);
+ vm.createContext(Object.assign(context,languageContext));vm.runInContext(source.slice(sourceIndex(source,'function renderAttachment(file){'),sourceIndex(source,'function renderMessages(){')),context);
  return {document,render(files){document.querySelector('main').innerHTML=context.renderAttachments(files);return document.querySelector('main');},context};
 }
 const imageFile={id:'image',name:'tetrio-live.png',type:'image/png',size:300000},textFile={id:'report',name:'tetrio-2026-10-17T14-26-55.997Z.json',type:'application/json',size:1024};
@@ -95,5 +97,5 @@ test('long text and binary filenames share consistent metadata without losing th
 });
 
 test('attachment spacing and file actions have bounded responsive layout rules',()=>{
- const css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');assert.match(css,/\.attachment-list\{[^}]*flex-direction:column[^}]*gap:8px[^}]*max-width:100%/);assert.match(css,/\.attachment-list-wide\{width:440px\}/);assert.match(css,/\.file-card>\.file-view-label\{[^}]*flex:0 0 auto/);assert.match(css,/\.file-attachment\{[^}]*width:100%[^}]*min-height:64px[^}]*border:1px/);assert.match(css,/\.file-attachment-name\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);assert.match(css,/\.attachment-list>\.image-attachment\{[^}]*aspect-ratio:var\(--attachment-ratio,16 \/ 10\)/);assert.match(css,/\.attachment-list \.attachment-image\{[^}]*opacity:0/);assert.match(css,/\[data-image-state="ready"\] \.attachment-image\{opacity:1\}/);
+ const css=compactCss(fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8'));assert.match(css,/\.attachment-list\{[^}]*flex-direction:column[^}]*gap:8px[^}]*max-width:100%/);assert.match(css,/\.attachment-list-wide\{width:440px\}/);assert.match(css,/\.file-card>\.file-view-label\{[^}]*flex:0 0 auto/);assert.match(css,/\.file-attachment\{[^}]*width:100%[^}]*min-height:64px[^}]*border:1px/);assert.match(css,/\.file-attachment-name\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);assert.match(css,/\.attachment-list>\.image-attachment\{[^}]*aspect-ratio:var\(--attachment-ratio,16 \/ 10\)/);assert.match(css,/\.attachment-list \.attachment-image\{[^}]*opacity:0/);assert.match(css,/\[data-image-state="ready"\] \.attachment-image\{opacity:1\}/);
 });

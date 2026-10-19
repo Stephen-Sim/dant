@@ -1,3 +1,4 @@
+import {localizeMessages,translateCount} from '../src/i18n.mjs';
 import {formatCallDuration} from './call-duration.js';
 
 const copy={
@@ -37,7 +38,7 @@ export function updateWorkTimers(document,now=Date.now()){
 }
 
 export function workProgress(state,{language='en',connected=true,now=Date.now()}={}){
- const labels=copy[language==='zh'?'zh':'en'],messages=state?.messages||[],users=messages.filter(message=>message.role==='user'&&message.kind!=='call'&&message.workKind!=='conversation'&&!(message.voiceCallId&&!message.turnId)),byId=new Map(messages.map(message=>[message.id,message]));
+ const labels={...localizeMessages(copy,language),queuedCount:value=>translateCount(language,value,'{count} queued','{count} queued','{count} 项排队中'),reviewCount:value=>translateCount(language,value,'{count} awaiting review','{count} awaiting review','{count} 项待验收')},messages=state?.messages||[],users=messages.filter(message=>message.role==='user'&&message.kind!=='call'&&message.workKind!=='conversation'&&!(message.voiceCallId&&!message.turnId)),byId=new Map(messages.map(message=>[message.id,message]));
  const userIds=new Set(users.map(message=>message.id)),usersByTurn=new Map(),userById=new Map(),unconfirmedTurns=new Set(),unconfirmedWorkIds=new Set(),completedUserTurns=new Set(),workByTurn=new Map(),completionsByTurn=new Map();
  for(const message of messages){if(message.role!=='user')continue;userById.set(message.id,message);if(unconfirmed(message)&&message.workId)unconfirmedWorkIds.add(message.workId);if(!message.turnId)continue;const owners=usersByTurn.get(message.turnId)||[];owners.push(message);usersByTurn.set(message.turnId,owners);if(unconfirmed(message))unconfirmedTurns.add(message.turnId);if(message.status==='completed')completedUserTurns.add(message.turnId);}
  for(const record of state?.workTasks||[]){if(!record?.turnId)continue;for(const turnId of new Set([record.turnId,...(record.turnIds||[])])){const records=workByTurn.get(turnId)||[];records.push(record);workByTurn.set(turnId,records);}}

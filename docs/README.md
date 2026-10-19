@@ -19,6 +19,8 @@ English · [Chinese](zh-CN/README.md)
 
 ## Develop and troubleshoot
 
+- [Code conventions and module layout](code-style.md)
+- [Local configuration](configuration.md)
 - [Architecture and data ownership](architecture.md)
 - [CI and Windows builds](ci.md)
 - [Diagnostics and log retention](diagnostics.md)

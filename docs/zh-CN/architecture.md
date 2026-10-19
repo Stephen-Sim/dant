@@ -37,7 +37,7 @@ Windows 保存 `controller.json`、`vm.json`、部署及迁移记录、`notifica
 
 VM 保存 `~/dant/data/state.json`、`attachments/<UUID>.bin` 与元数据、`memory/dant/`，工作现场为 `~/dant/workspaces/<conversationId>/output/`。首次迁移保留 Windows 原始数据备份，转换附件引用；不复制 Codex 认证文件。部署只同步源码允许列表，保留工作数据和版本备份，活动任务期间推迟更新。
 
-Windows 应用更新为正式版和 Beta 分别查询元数据，原生后台下载使用独立通道。原生程序读取固定、已认证的 Controller 描述，只接受官方安装包并校验大小和摘要。安装前重新读取 VM 状态，再取得短期 Controller 安装租约，阻止新的本地通话、接管和环境配置，保留 VM 执行与普通消息。复制出的更新助手等待准确的父进程及自有 Controller 句柄退出，重新校验安装包，仅在获得授权后启动安装；此流程不部署或停止 VM Worker。详见[版本与更新](updates.md)。
+Windows 应用更新为正式版和 Beta 分别查询元数据，原生后台下载使用独立通道。原生程序读取固定、已认证的 Controller 描述，只接受官方安装包并校验大小和摘要。安装前确认工作已暂停并取得短期 Controller 安装租约，在原生程序挂起所属 VM 时阻止新的变更请求。挂起期间延长租约，交给更新助手前重新计时。复制出的更新助手等待准确的父进程及自有 Controller 句柄退出，重新校验安装包，仅在获得授权后启动安装；准备失败时恢复所属 VM，但不会恢复已暂停任务。重新打开应用时检查配套服务。详见[版本与更新](updates.md)。
 
 ## 持续对话和执行
 

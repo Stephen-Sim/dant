@@ -1,14 +1,16 @@
+import {sourceIndex,sourceSection} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {parseHTML} from 'linkedom';
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
-const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
+const section=(start,end)=>sourceSection(source,start,end);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 function fixture(language='en',update){
  const context={fallbackLanguage:language,state:{settings:{language,vm:{host:'example.invalid',user:'dant',port:22,keyPath:'fixture'}},worker:{status:'online'},controller:{status:'online',cached:false,...(update?{serviceUpdate:update}:{})}},vmDraft:null,hasVMConnection:()=>true,pendingActions:new Set(),pc:null,callStarting:false,callStops:{pending:false},vmProfilesVisible:false,manualVMExpanded:false,vmSystemDescription:()=> 'Linux · SSH',esc,button:(action,icon,label,cls,disabled)=>`<button data-action="${action}" ${disabled?'disabled':''}>${esc(label)}</button>`};
- vm.createContext(context);vm.runInContext(section('const zh={','const subscriptionVoiceUnavailable=')+section('function renderVMSettings(){','function renderVMProfiles(){'),context);
+ vm.createContext(Object.assign(context,languageContext));vm.runInContext(section('const zh={','const subscriptionVoiceUnavailable=')+section('function renderVMSettings(){','function renderVMProfiles(){'),context);
  return {context,render:()=>parseHTML('<html><body>'+context.renderVMSettings()+'</body></html>').document};
 }
 test('checking and updating are localized and disable conflicting connection controls',()=>{
@@ -28,4 +30,16 @@ test('an unconfigured computer keeps setup available before automatic updates ca
 });
 test('known update failures have short localized errors and unrelated diagnostics remain intact',()=>{
  for(const language of ['en','zh']){const f=fixture(language),expected=language==='en'?/update did not finish/:/更新未完成/;for(const error of [Error('VM preparation failed (1). PRIVATE stdout /home/private'),{code:'vm_update_work_unconfirmed',message:'PRIVATE raw output'}]){const text=f.context.errorText(error);assert.match(text,expected);assert.doesNotMatch(text,/PRIVATE|stdout|\/home/);}assert.match(f.context.errorText(Error('Unrelated fixture detail')),/Unrelated fixture detail/);assert.doesNotMatch(f.context.errorText({code:'service_update_required'}),/choose Reconnect|刷新连接/);}
+});
+
+test('a paused automatic update exposes resume and explicit pause-work-and-install controls',()=>{
+ const f=fixture('en',{status:'failed',targetVersion:'0.4.7-beta.7'});f.context.state.controller.updatesPaused=true;const document=f.render();assert.match(document.querySelector('[data-service-update]').textContent,/Automatic service updates paused/);assert.ok(document.querySelector('[data-action="service-resume"]'));assert.ok(document.querySelector('[data-action="service-install"]'));assert.equal(document.querySelector('[data-action="service-pause"]'),null);
+ f.context.state.controller.serviceUpdateBusy=true;assert.equal(f.render().querySelector('[data-action="service-install"]').hasAttribute('disabled'),true);
+});
+
+test('service controls submit the selected operation once and refresh authoritative state',async()=>{
+ const f=fixture('en',{status:'pending'}),c=f.context,requests=[];c.updateInstalling=false;c.render=()=>{};c.post=async(route,body)=>requests.push({route,body});c.api=async()=>c.state;
+ vm.runInContext(section('async function action(a){','async function checkUnconfirmedMessage(){'),c);
+ for(const action of ['pause','resume','install'])await c.action('service-'+action);assert.deepEqual(JSON.parse(JSON.stringify(requests)),['pause','resume','install'].map(action=>({route:'/service-update',body:{action}})));
+ c.pendingActions.add('service-update');await c.action('service-install');assert.equal(requests.length,3);
 });

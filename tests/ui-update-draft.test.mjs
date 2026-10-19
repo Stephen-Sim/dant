@@ -1,3 +1,5 @@
+import {sourceIndex} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import {createTaskReplyController} from '../ui/task-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -47,29 +49,29 @@ test('an empty composer must clear a stale restart draft successfully before ins
 });
 
 function mainFixture(){
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function updateInstallState(){'),end=source.indexOf('function toast(',start),calls=[],current=state(),input={value:'Current composer text'},context={state:current,eventConnected:true,pc:null,callStarting:false,callStops:{pending:false},recording:null,recordStarting:false,dictating:false,recordDraft:null,sending:false,uploading:0,messageSubmissions:{unknown:null},document:{querySelector:()=>input},composerDraft:'older render text',replyTo:ids[1],attachments:draft().attachments,updateInstalling:false,restoringUpdateDraft:false,unloading:false,render(){},updateDraftScope,updateDraft:{save:async(...args)=>{calls.push(args);return ids[0];},discard:id=>calls.push(['discard',id]),take:async()=>null}};context.taskReplies??=createTaskReplyController({document:context.document,getModel:()=>({})});vm.createContext(context);vm.runInContext(source.slice(start,end),context);return {source,context,calls,input};
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=sourceIndex(source,'function updateInstallState(){'),end=sourceIndex(source,'function toast(',start),calls=[],current=state(),input={value:'Current composer text'},context={state:current,eventConnected:true,pc:null,callStarting:false,callStops:{pending:false},recording:null,recordStarting:false,dictating:false,recordDraft:null,sending:false,uploading:0,messageSubmissions:{unknown:null},document:{querySelector:()=>input},composerDraft:'older render text',replyTo:ids[1],attachments:draft().attachments,updateInstalling:false,restoringUpdateDraft:false,unloading:false,render(){},updateDraftScope,updateDraft:{save:async(...args)=>{calls.push(args);return ids[0];},discard:id=>calls.push(['discard',id]),take:async()=>null}};context.taskReplies??=createTaskReplyController({document:context.document,getModel:()=>({})});vm.createContext(Object.assign(context,languageContext));vm.runInContext(source.slice(start,end),context);return {source,context,calls,input};
 }
 
 test('main maps actual controller state and every call/media/input guard without treating VM work as an install blocker',()=>{
  const f=mainFixture(),c=f.context;assert.equal(c.updateInstallState().mode,'controller');c.state.active={turnId:'ongoing'};c.state.queue=['next'];assert.equal(c.updateInstallState().unsafeLocalInput,false);
  for(const name of ['pc','callStarting']){c[name]=true;assert.equal(c.updateInstallState().call,true);c[name]=false;}c.callStops.pending=true;assert.equal(c.updateInstallState().call,true);c.callStops.pending=false;c.state.call={id:'remote-call'};assert.equal(c.updateInstallState().call,true);c.state.call=null;
- for(const name of ['recording','recordStarting','dictating','recordDraft','sending','uploading']){c[name]=true;assert.equal(c.updateInstallState().unsafeLocalInput,true);c[name]=false;}c.messageSubmissions.unknown={clientMessageId:'unconfirmed'};assert.equal(c.updateInstallState().unsafeLocalInput,true);c.messageSubmissions.unknown=null;c.eventConnected=false;assert.equal(c.updateInstallState().mode,'offline');c.eventConnected=true;c.state.controller.cached=true;assert.equal(c.updateInstallState().mode,'offline');
+ for(const name of ['recording','recordStarting','dictating','recordDraft','sending','uploading']){c[name]=true;assert.equal(c.updateInstallState().unsafeLocalInput,true);c[name]=false;}c.messageSubmissions.unknown={clientMessageId:'unconfirmed'};assert.equal(c.updateInstallState().unsafeLocalInput,true);c.messageSubmissions.unknown=null;c.eventConnected=false;assert.equal(c.updateInstallState().mode,'offline');c.eventConnected=true;c.state.controller.cached=true;assert.equal(c.updateInstallState().mode,'controller','the local app can confirm work by reconnecting before installing');
 });
 
 test('main saves only composer data then fences new calls/sends/uploads until failed-install cleanup releases it',async()=>{
- const f=mainFixture(),c=f.context,cleanup=await c.saveUpdateDraft();assert.equal(c.updateInstalling,true);assert.equal(f.calls[0][1].text,'Current composer text');assert.deepEqual(Object.keys(f.calls[0][1]),['text','replyTo','attachments']);const action=f.source.slice(f.source.indexOf('async function action(a){'),f.source.indexOf('async function checkUnconfirmedMessage(){'));vm.runInContext(action,c);await c.action('call');assert.equal(c.pc,null);assert.equal(f.calls.length,1);cleanup();assert.equal(c.updateInstalling,false);assert.deepEqual(f.calls[1],['discard',ids[0]]);
+ const f=mainFixture(),c=f.context,cleanup=await c.saveUpdateDraft();assert.equal(c.updateInstalling,true);assert.equal(f.calls[0][1].text,'Current composer text');assert.deepEqual(Object.keys(f.calls[0][1]),['text','replyTo','attachments']);const action=f.source.slice(sourceIndex(f.source,'async function action(a){'),sourceIndex(f.source,'async function checkUnconfirmedMessage(){'));vm.runInContext(action,c);await c.action('call');assert.equal(c.pc,null);assert.equal(f.calls.length,1);cleanup();assert.equal(c.updateInstalling,false);assert.deepEqual(f.calls[1],['discard',ids[0]]);
  c.recordDraft={previewURL:'blob:unsaved'};await assert.rejects(c.saveUpdateDraft(),/pending input/);assert.equal(f.calls.length,2);
 });
 
 test('install admission locks input before asynchronous draft storage and releases immediately on save failure',async()=>{
  const f=mainFixture(),c=f.context;let finish;c.updateDraft.save=()=>new Promise(resolve=>finish=resolve);const pending=c.saveUpdateDraft();assert.equal(c.updateInstalling,true,'typing and action admission must be locked before the first await');
- const action=f.source.slice(f.source.indexOf('async function action(a){'),f.source.indexOf('async function checkUnconfirmedMessage(){'));vm.runInContext(action,c);await c.action('call');assert.equal(c.pc,null);await assert.rejects(c.saveUpdateDraft(),/pending input/,'a second save cannot replace the admitted snapshot');finish(ids[0]);const cleanup=await pending;cleanup();assert.equal(c.updateInstalling,false);
+ const action=f.source.slice(sourceIndex(f.source,'async function action(a){'),sourceIndex(f.source,'async function checkUnconfirmedMessage(){'));vm.runInContext(action,c);await c.action('call');assert.equal(c.pc,null);await assert.rejects(c.saveUpdateDraft(),/pending input/,'a second save cannot replace the admitted snapshot');finish(ids[0]);const cleanup=await pending;cleanup();assert.equal(c.updateInstalling,false);
  c.updateDraft.save=async()=>{throw Error('Draft storage unavailable');};await assert.rejects(c.saveUpdateDraft(),/Draft storage unavailable/);assert.equal(c.updateInstalling,false,'failed persistence cannot leave the app locked or admit the installer');
 });
 
 test('a call awaiting speech cleanup cannot start after installation admission is locked',async()=>{
  const f=mainFixture(),c=f.context;let finish;c.state.worker={status:'online'};Object.assign(c,{apiVoiceUnavailable:()=>false,subscriptionVoiceUnavailable:()=>false,callGeneration:1,speakingId:'reading',navigator:{mediaDevices:{getUserMedia(){assert.fail('installation must not acquire microphone');}}},window:{RTCPeerConnection(){}},stopSpeech:()=>new Promise(resolve=>finish=resolve)});
- vm.runInContext(f.source.slice(f.source.indexOf("async function startCall(provider='subscription'){"),f.source.indexOf('function cleanupCall(')),c);
+ vm.runInContext(f.source.slice(sourceIndex(f.source,"async function startCall(provider='subscription'){"),sourceIndex(f.source,'function cleanupCall(')),c);
  const pending=c.startCall();await Promise.resolve();c.updateInstalling=true;finish();await pending;assert.equal(c.callStarting,false);assert.equal(c.pc,null);await c.startCall();
 });
 

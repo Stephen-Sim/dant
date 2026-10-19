@@ -1,3 +1,4 @@
+import {localizeMessages} from '../src/i18n.mjs';
 const words={
  en:{title:'Memory & personality',description:'The shared identity and durable notes dant currently uses in chat and calls. Read-only; maintained by dant.',identity:'Shared personality',identitySource:'The shared identity used by text chat and both voice providers.',memory:'Current memory',memorySource:'Identity and preferences, followed by working memory, from the work computer. Credential values are omitted.',refresh:'Refresh',refreshing:'Refreshing…',loading:'Reading current memory…',offline:'Connect the work computer to read current memory.',cached:'Last loaded copy. The current work computer has not confirmed a fresh read.',failed:'Current memory could not be read. Reconnect and try again.',empty:'No saved reference notes.'},
  zh:{title:'记忆与人格',description:'查看 dant 在文字和通话中使用的共享身份与持久记忆。此处只读，由 dant 维护。',identity:'共享人格',identitySource:'文字对话与两种语音通道共用的实际身份设定。',memory:'当前记忆',memorySource:'来自工作电脑的身份与偏好，以及工作记忆。凭据内容会被隐藏。',refresh:'刷新',refreshing:'正在刷新…',loading:'正在读取当前记忆…',offline:'请连接工作电脑以读取当前记忆。',cached:'上次读取的内容，当前工作电脑尚未确认最新内容。',failed:'暂时无法读取当前记忆，请重新连接后重试。',empty:'尚无持久记忆内容。'},
@@ -9,7 +10,7 @@ function valid(value,conversationId){return value?.readOnly===true&&value.conver
 
 export function createMemorySettings({request,getState,getLanguage=()=> 'en',onChange=()=>{},document=globalThis.document,connected=()=>true,renderMarkdown=text=>escape(text).replace(/\n/g,'<br>')}){
  let visible=false,generation=0,identity=null,lastRevision=null,lastOnline=false,data=null,status='idle';
- const text=()=>words[getLanguage()==='zh'?'zh':'en'],changed=()=>{if(visible)onChange();};
+ const text=()=>localizeMessages(words,getLanguage()),changed=()=>{if(visible)onChange();};
  const online=state=>connected()&&(state?.mode==='vm-controller'?state.controller?.status==='online'&&state.controller.cached!==true:state?.worker?.status==='online');
  function synchronize(){const state=getState(),next=scope(state),nextRevision=revision(state),ready=online(state),changedScope=next!==identity,changedMemory=nextRevision!==lastRevision,returned=ready&&!lastOnline,lost=!ready&&lastOnline;identity=next;lastRevision=nextRevision;lastOnline=ready;if(changedScope){data=null;status='idle';generation++;}if(lost)generation++;return {load:visible&&next&&ready&&(changedScope||changedMemory||returned||status==='idle'),ready};}
  function setVisible(value){const entered=!visible&&Boolean(value);visible=Boolean(value);if(!visible){generation++;return;}const state=synchronize();if((entered||state.load)&&state.ready){const run=++generation;status='loading';queueMicrotask(()=>{if(visible&&generation===run)void load();});}else if(!state.ready)status=data?'cached':'offline';}

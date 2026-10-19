@@ -1,3 +1,5 @@
+import {sourceIndex,sourceSection,sourceSelectorBinding} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +8,7 @@ import {parseHTML} from 'linkedom';
 import {createReadVisibility} from '../ui/read-state.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
-const part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
+const part=(start,end)=>sourceSection(source,start,end);
 const settle=async()=>{await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));};
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 function nativeFixture(options={}){
@@ -44,7 +46,7 @@ function fixture(language='en'){
  Object.defineProperty(document,'hidden',{get:()=>hidden});document.hasFocus=()=>focused;
  const root=document.querySelector('#messages'),article=document.querySelector('article'),timers=new Map(),requests=[],observerCalls=[];root.getBoundingClientRect=()=>({left:0,right:300,top:0,bottom:300,width:300,height:300});article.getBoundingClientRect=()=>rectangle;
  const c={document,window:{IntersectionObserver:true},state:{settings:{language},messages:[{id:'a',role:'assistant',text:'Completed result',status:'completed',read:false,time:1}]},eventConnected:true,page:'chat',chatMode:'text',readVisibility:{visible:true},modal:null,pc:null,callMini:false,fallbackLanguage:language,positionReactionMenus(){},ico:name=>`<svg data-icon="${name}"></svg>`,eyes:()=>'<i></i>',button:()=>'<button></button>',post:(route,body)=>{requests.push({route,body:structuredClone(body)});return fail?Promise.reject(Error('Offline')):Promise.resolve({ok:true});},setTimeout:(callback,ms)=>{const id=++sequence;timers.set(id,{callback,at:now+ms});return id;},clearTimeout:id=>timers.delete(id),IntersectionObserver:class{constructor(callback){observerCalls.push(callback);}observe(){}unobserve(){}disconnect(){}}};
- vm.createContext(c);vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('function unreadAssistant(','function revealMessage(){')+'\n'+part('function renderRail(){','function renderHeader(')+'\n'+part('const readTimers=','async function handleEvent('),c);
+ vm.createContext(Object.assign(c,languageContext));vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('function unreadAssistant(','function revealMessage(){')+'\n'+part('function renderRail(){','function renderHeader(')+'\n'+part('const readTimers=','async function handleEvent('),c);
  const advance=ms=>{const end=now+ms;while(true){const first=[...timers.entries()].filter(([,entry])=>entry.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!first)break;timers.delete(first[0]);now=first[1].at;first[1].callback();}now=end;};
  const render=()=>{document.querySelector('#rail').innerHTML=c.renderRail();document.querySelector('#control').innerHTML=c.renderUnreadControl();};render();
  return {c,document,Event,article,root,requests,timers,render,advance,get rectangle(){return rectangle;},set rectangle(value){rectangle=value;},set hidden(value){hidden=value;},set focused(value){focused=value;},set fail(value){fail=value;}};
@@ -77,7 +79,7 @@ test('restore alone does not read offscreen results and scrolling away resets th
 
 test('jump to first unread scrolls and focuses the bubble without bypassing visibility or dwell',()=>{
  const f=fixture();f.c.state.messages.unshift({id:'user',role:'user',status:'completed'});let revealed,scrolled,focused,navigated=0;f.c.chatScroll={navigate(action){navigated++;action();}};f.c.revealMessage=id=>revealed=id;f.article.scrollIntoView=options=>scrolled=options;f.article.focus=options=>focused=options;
- const start=source.indexOf(" document.querySelectorAll('[data-first-unread]')");vm.runInContext(source.slice(start,source.indexOf('\n',start)),f.c);f.document.querySelector('[data-first-unread]').dispatchEvent(new f.Event('click'));assert.equal(revealed,'a');assert.equal(navigated,1);assert.equal(scrolled.block,'center');assert.equal(focused.preventScroll,true);assert.equal(f.article.getAttribute('tabindex'),'-1');assert.equal(f.requests.length,0);f.advance(450);assert.equal(f.requests.length,1);
+ vm.runInContext(sourceSelectorBinding(source,'[data-first-unread]'),f.c);f.document.querySelector('[data-first-unread]').dispatchEvent(new f.Event('click'));assert.equal(revealed,'a');assert.equal(navigated,1);assert.equal(scrolled.block,'center');assert.equal(focused.preventScroll,true);assert.equal(f.article.getAttribute('tabindex'),'-1');assert.equal(f.requests.length,0);f.advance(450);assert.equal(f.requests.length,1);
 });
 
 test('failed read receipts preserve unread state and retry only after another visibility check',async()=>{

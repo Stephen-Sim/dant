@@ -1,3 +1,4 @@
+import {localizeMessages} from '../src/i18n.mjs';
 const copy={
  en:{reply:'Replying to task',reopen:'Reopen task',reopenHint:'Sending this message reopens the task with its saved project context.',reference:'Reply to task',task:'Task',cancel:'Cancel task reply',changed:'This task has changed or is no longer available. Open Work progress and select it again. Your draft has been kept.',offline:'Reconnect before replying to this task. Your draft has been kept.',unsupported:'Update the work computer service before replying to this task. Your draft has been kept.',sending:'Wait for the current message to finish sending.'},
  zh:{reply:'正在回复任务',reopen:'重新打开任务',reopenHint:'发送这条消息后，将保留已有项目上下文并重新打开任务。',reference:'回复任务',task:'任务',cancel:'取消回复任务',changed:'任务状态已变化或已不可用，请打开工作进度重新选择。草稿已保留。',offline:'请重新连接后再回复这项任务，草稿已保留。',unsupported:'请更新工作电脑服务后再回复这项任务，草稿已保留。',sending:'请等待当前消息发送完成。'},
@@ -12,7 +13,7 @@ const payload=target=>({workId:target.workId,turnId:target.turnId,conversationId
 // Selection never submits a message, resumes a task or changes another task's owner.
 export function createTaskReplyController({document=globalThis.document,getModel,getLanguage=()=> 'en',render=()=>{},openChat=()=>{},toast=()=>{},isPending=()=>false}={}){
  let selected=null,pending=false;
- const words=()=>copy[getLanguage()==='zh'?'zh':'en'];
+ const words=()=>localizeMessages(copy,getLanguage());
  const busy=()=>pending||isPending();
  const items=model=>[model?.active,...(model?.items||[]),...(model?.ongoing||[]),...(model?.recent||model?.history||[])].filter(Boolean);
  const targetItem=(target,model)=>model?.conversationId===target.conversationId?items(model).find(item=>same(item.replyTarget,target)):null;

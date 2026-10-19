@@ -6,19 +6,22 @@ import {Rpc} from './rpc.mjs';
 import {execFileSync,spawn} from 'node:child_process';
 import {injectReactionContext} from './reaction-context.mjs';
 import {injectMessageReferences} from './message-references.mjs';
+import {readNetworkConfig, PROTOCOL_PATHS} from './config/network.mjs';
 
-export async function assertVmRuntime({platform=process.platform,uid=process.getuid?.(),detect=()=>execFileSync('systemd-detect-virt',['--vm'],{encoding:'utf8',timeout:5000}).trim(),fetchImpl=fetch}={}){
+export async function assertVmRuntime({platform=process.platform,uid=process.getuid?.(),detect=()=>execFileSync('systemd-detect-virt',['--vm'],{encoding:'utf8',timeout:5000}).trim(),fetchImpl=fetch,environment=process.env}={}){
  if(platform!=='linux'||uid===0)throw Error('The executor requires an ordinary user inside a Linux VM.');
+ const guest=readNetworkConfig(environment).guest;
  let virtualization;try{virtualization=detect();}catch{throw Error('No virtual machine runtime was detected; execution was refused.');}
  if(!virtualization||virtualization==='none')throw Error('No virtual machine runtime was detected; execution was refused.');
- const health=await fetchImpl('http://127.0.0.1:4320/health',{signal:AbortSignal.timeout(5000)});if(!health.ok||!(await health.json()).ok)throw Error('The VM desktop bridge is not healthy.');
- const screen=await fetchImpl('http://127.0.0.1:4320/screen',{signal:AbortSignal.timeout(10000)});const bytes=Buffer.from(await screen.arrayBuffer());if(!screen.ok||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))throw Error('The VM display is unavailable.');
+ const health=await fetchImpl(guest.httpOrigin+PROTOCOL_PATHS.health,{signal:AbortSignal.timeout(5000)});if(!health.ok||!(await health.json()).ok)throw Error('The VM desktop bridge is not healthy.');
+ const screen=await fetchImpl(guest.httpOrigin+PROTOCOL_PATHS.screen,{signal:AbortSignal.timeout(10000)});const bytes=Buffer.from(await screen.arrayBuffer());if(!screen.ok||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))throw Error('The VM display is unavailable.');
 }
 
 // Only the VM service constructs this executor. A Controller never creates Rpc.
 export class LocalWorker extends EventEmitter {
- constructor(store,{rpcFactory=(command,args,options)=>new Rpc(command,args,options),platform=process.platform,home=os.homedir(),fetchImpl=fetch,verifyRuntime=()=>assertVmRuntime({fetchImpl})}={}){
+ constructor(store,{rpcFactory=(command,args,options)=>new Rpc(command,args,options),platform=process.platform,home=os.homedir(),fetchImpl=fetch,environment=process.env,verifyRuntime=()=>assertVmRuntime({fetchImpl,environment})}={}){
   super();this.store=store;this.rpcFactory=rpcFactory;this.platform=platform;this.home=home;this.fetchImpl=fetchImpl;this.verifyRuntime=verifyRuntime;this.status='offline';this.error=null;this.generation=0;
+  this.network=readNetworkConfig(environment);
   this.runtimeId=process.env.DANT_RUNTIME_ID||`vm:${os.hostname()}:${os.userInfo().username}`;
   this.workspaceRoot=process.env.DANT_WORKSPACE_ROOT||path.join(home,'dant/workspaces');
   this.desktopPath=path.join(home,'dant/vm/desktop.py');
@@ -57,11 +60,11 @@ export class LocalWorker extends EventEmitter {
  }
  request(method,params){if(this.status!=='online')throw Error('The VM executor is offline');let value=injectReactionContext(method,injectMessageReferences(method,params,this.store.state.messages),this.store.state.messages);if(this.skills&&['turn/start','turn/steer','thread/realtime/start'].includes(method)){const context=this.skills.context();if(method==='thread/realtime/start')value={...value,realtimeStartInstructions:(value.realtimeStartInstructions||'')+'\n\n'+context};else if(Array.isArray(value.input))value={...value,input:[...value.input,{type:'text',text:context,text_elements:[]}]};}return this.rpc.request(method,value);}
  async guest(route,body){
-  const readOnlyScreen=this.platform==='linux'&&route==='/screen'&&body===undefined;
+  const readOnlyScreen=this.platform==='linux'&&route===PROTOCOL_PATHS.screen&&body===undefined;
   if(this.status!=='online'&&!readOnlyScreen)throw Error('The VM executor is offline');
-  if(!['/screen','/input','/control','/file','/read-file'].includes(route))throw Error('Unsupported desktop operation');
+  if(![PROTOCOL_PATHS.screen,PROTOCOL_PATHS.input,PROTOCOL_PATHS.control,PROTOCOL_PATHS.file,PROTOCOL_PATHS.readFile].includes(route))throw Error('Unsupported desktop operation');
   let response;
-  try{response=await this.fetchImpl(`http://127.0.0.1:4320${route}`,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});}
+  try{response=await this.fetchImpl(this.network.guest.httpOrigin+route,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});}
   catch(error){if(readOnlyScreen)throw Error('The VM desktop bridge could not be reached',{cause:error});throw error;}
   if(!response.ok)throw Error(`Desktop operation failed (${response.status})`);return response;
  }

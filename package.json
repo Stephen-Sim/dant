@@ -8,8 +8,16 @@
     "dev": "node src/server.mjs",
     "start": "node src/server.mjs",
     "build": "vite build",
+    "format": "npm run format:prettier && npm run format:rust",
+    "format:check": "npm run format:prettier:check && npm run format:rust:check",
+    "format:prettier": "prettier --write .",
+    "format:prettier:check": "prettier --check .",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
     "test": "node --test tests/*.test.mjs",
     "test:coverage": "node scripts/ci/coverage.mjs",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "check:states": "node scripts/ci/check-state-contracts.mjs",
     "desktop": "npm run build && node scripts/package-resources.mjs && tauri dev",
     "desktop:build": "npm run build && node scripts/package-resources.mjs && tauri build && node scripts/package-resources.mjs --stage-release"
   },
@@ -28,6 +36,10 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
     "linkedom": "0.18.13",
+    "postcss": "8.5.30",
+    "prettier": "3.9.10",
+    "rollup": "4.64.7",
+    "typescript": "7.0.2",
     "vite": "^7.1.0"
   },
   "engines": {

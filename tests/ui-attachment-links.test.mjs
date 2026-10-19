@@ -1,3 +1,5 @@
+import {sourceIndex} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -88,7 +90,7 @@ test('current recovery failures are reported and can be retried without leaving 
 
 function mainRecoveryFixture(){
  const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),pending=[],context={state:{conversationId:'conversation-a',settings:{vm:{host:'vm-a',user:'dant',port:22,keyPath:'fixture-key'}},controller:{status:'online',cached:false},messages:[{id:'reply',role:'assistant',text:'Saved screenshot',attachments:[{id:'older'}]}]},page:'chat',eventConnected:true,language:()=> 'en',renders:0,render:()=>{context.renders++;},post:(route,body)=>{const wait=deferred();pending.push({route,body,...wait});return wait.promise;}};
- vm.createContext(context);vm.runInContext(source.slice(source.indexOf('const outputLinkRecoveries=new Map();'),source.indexOf('function renderProgress(){')),context);return {context,pending,resolve:()=>context.resolveMessageOutputLink({messageId:'reply',href:image.sourcePath}),result:()=>({conversationId:'conversation-a',messageId:'reply',attachment:image})};
+ vm.createContext(Object.assign(context,languageContext));vm.runInContext(source.slice(sourceIndex(source,'const outputLinkRecoveries=new Map();'),sourceIndex(source,'function renderProgress(){')),context);return {context,pending,resolve:()=>context.resolveMessageOutputLink({messageId:'reply',href:image.sourcePath}),result:()=>({conversationId:'conversation-a',messageId:'reply',attachment:image})};
 }
 
 test('main coalesces requests across replaced link nodes and adds only the restored attachment to that assistant message',async()=>{

@@ -1,3 +1,4 @@
+import {legacyLanguage,languageInfo} from './languages.mjs';
 import {EventEmitter} from 'node:events';
 import fs from 'node:fs';
 import {DANT_IDENTITY_INSTRUCTIONS} from './identity.mjs';
@@ -157,7 +158,7 @@ export class Engine extends EventEmitter {
   return [
    DANT_IDENTITY_INSTRUCTIONS,
    'Your work computer is your own Ubuntu VM. Speak naturally in the user language.',
-   'Support both Chinese and English. Match the current user message language; if it is ambiguous, use '+(this.store.state.settings.language==='en'?'English.':'Simplified Chinese.'),
+   'Match the current user message language; if it is ambiguous, use '+languageInfo(this.store.state.settings.language).name+'.',
    'All computer work and shell commands run inside this VM. Work serially, keep advancing the entrusted task through routine steps, and verify actual results before reporting completion. A progress update is not the end of a task.',
    TASK_PLAN_INSTRUCTIONS,
    TASK_CANCEL_INSTRUCTIONS,
@@ -308,20 +309,20 @@ export class Engine extends EventEmitter {
     else{this.backgroundCredentialNotice(active);for(const [requestId,event]of this.pendingUserRequests){this.requestChatInput(event,active);this.pendingUserRequests.delete(requestId);}}
    }else{
     this.queue=this.queue.filter(message=>message.id!==id);this.voiceTasks.delete(id);
-    const message=this.deliverText(this.store.state.settings.language==='en'?'The call ended before this task was submitted. Send the request again in chat if you still want it done.':'通话结束时，这个任务还没有提交。若仍需要执行，请在聊天中重新发送请求。');
+    const message=this.deliverText(legacyLanguage(this.store.state.settings.language)==='en'?'The call ended before this task was submitted. Send the request again in chat if you still want it done.':'通话结束时，这个任务还没有提交。若仍需要执行，请在聊天中重新发送请求。');
     this.store.addCompletion?.({turnId:id+':unsubmitted',messageIds:[message.messageId]});task.reject(Error('The call ended before task submission'));
    }
   }
  }
  backgroundCredentialNotice(active){
   if(!(active?.background||active?.backgroundVoice||active?.continuation)||!active.credentialWaits||active.backgroundWaitNotified)return;
-  active.backgroundWaitNotified=true;const sent=this.deliverText(this.store.state.settings.language==='en'?'I need a credential to continue this task. Please complete the secure credential form in chat.':'继续这个任务需要登录凭据，请填写聊天中的安全凭据表单。',active,{continuationDelivery:'input'});if(!sent.sent)return;
+  active.backgroundWaitNotified=true;const sent=this.deliverText(legacyLanguage(this.store.state.settings.language)==='en'?'I need a credential to continue this task. Please complete the secure credential form in chat.':'继续这个任务需要登录凭据，请填写聊天中的安全凭据表单。',active,{continuationDelivery:'input'});if(!sent.sent)return;
   if(active.continuation)active.quietInputCompletion=true;
   active.blockerSequence=(active.blockerSequence||0)+1;this.store.addCompletion?.({turnId:active.turnId+':credential:'+active.blockerSequence,messageIds:[sent.messageId],taskId:active.messageId});
  }
  requestChatInput(event,active){
   active.awaitingChatInput=true;
-  const prompts=(Array.isArray(event.params?.questions)?event.params.questions:[]).slice(0,8).map(item=>typeof item?.question==='string'?item.question.slice(0,5000):'').filter(Boolean),sent=this.deliverText((this.store.state.settings.language==='en'?'I need your input to continue this task.':'继续这个任务需要你提供信息。')+(prompts.length?'\n\n'+prompts.join('\n\n'):''),active,{continuationDelivery:'input'});
+  const prompts=(Array.isArray(event.params?.questions)?event.params.questions:[]).slice(0,8).map(item=>typeof item?.question==='string'?item.question.slice(0,5000):'').filter(Boolean),sent=this.deliverText((legacyLanguage(this.store.state.settings.language)==='en'?'I need your input to continue this task.':'继续这个任务需要你提供信息。')+(prompts.length?'\n\n'+prompts.join('\n\n'):''),active,{continuationDelivery:'input'});
   if(sent.sent){if(active.continuation)active.quietInputCompletion=true;active.blockerSequence=(active.blockerSequence||0)+1;this.store.addCompletion?.({turnId:active.turnId+':input:'+active.blockerSequence,messageIds:[sent.messageId],taskId:active.messageId});}
   this.worker.rpc?.send({id:event.id,error:{code:-32601,message:'Ask the human in the existing chat and wait for their reply. This client does not support requestUserInput forms.'}});
  }
@@ -407,7 +408,7 @@ export class Engine extends EventEmitter {
   // A real voice-owned turn may have no chat task. Retain an observed history
   // anchor before stopping it, without inventing an executor turn or request.
   if(!record&&!owner.messageIds?.some(messageId=>this.task(messageId)?.role==='user')){
-   const label=this.store.state.settings.language==='en'?'Task from a call':'通话任务';
+   const label=legacyLanguage(this.store.state.settings.language)==='en'?'Task from a call':'通话任务';
    owner.workRecord=this.store.registerWork({turnId:owner.turnId,source:'voice',title:label,plan:{steps:[{step:label,status:'inProgress'}]},startedAt:owner.workProgress?.startedAt,observed:true});
   }
   const cancellation={owner};this.cancelling=cancellation;this.followupEpoch++;this.followupPauseReason=pauseOnly?'user-paused':'user-cancelled';owner.pauseOnly=pauseOnly;if(!pauseOnly)owner.cancelRequested=true;
@@ -493,7 +494,7 @@ export class Engine extends EventEmitter {
  }
  input(message,speech=new Map()){
   const hasAudio=(message.attachments||[]).some(attachment=>attachment.type?.startsWith('audio/'));
-  const input=[{type:'text',text:message.text||(hasAudio?'Respond to the user\'s voice message below in the language they speak. The audio was recognized automatically; do not describe its file format or repeat a transcript unless asked.':this.store.state.settings.language==='en'?'Please inspect the attached files.':'请检查附件并用中文说明。'),text_elements:[]}];
+  const input=[{type:'text',text:message.text||(hasAudio?'Respond to the user\'s voice message below in the language they speak. The audio was recognized automatically; do not describe its file format or repeat a transcript unless asked.':legacyLanguage(this.store.state.settings.language)==='en'?'Please inspect the attached files.':'请检查附件并用中文说明。'),text_elements:[]}];
   if(message.replyTo){const target=this.task(message.replyTo);if(target)input[0].text='Replying to: '+target.text+'\n\n'+input[0].text;}
   const stored=this.task(message.id);if(stored?.role==='user')input[0].text='Current user message ID for optional react_message: '+JSON.stringify(stored.id)+'. This identifies this message; it is not a request to react.\n\n'+input[0].text;
   if(message.workReply){const record=this.store.state.workTasks.find(record=>record.id===message.workReply.workId);if(!record)throw Error('The selected task no longer exists.');input[0].text=workReplyInstructions(record,text=>this.redact(text))+input[0].text;}
@@ -702,7 +703,7 @@ export class Engine extends EventEmitter {
   task.workObserved=true;
   if(!task.workRecord){
    try{const message=this.task(task.messageId),source=this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice';
-    const fallback=this.store.state.settings.language==='en'?(source==='voice'?'Task from a call':'Chat task'):(source==='voice'?'通话中交办的任务':'聊天任务');
+    const fallback=legacyLanguage(this.store.state.settings.language)==='en'?(source==='voice'?'Task from a call':'Chat task'):(source==='voice'?'通话中交办的任务':'聊天任务');
     const title=String(this.redact(message?.role==='user'?message.text||fallback:fallback)).replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,240)||fallback;
     task.workRecord=this.store.registerWork({turnId:task.turnId,messageId:message?.role==='user'?message.id:null,source,title,plan:null,observed:true,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput?'waiting_user':'running'});
    }catch(error){this.emit('notice','Could not save observed task progress: '+error.message);}
@@ -814,7 +815,7 @@ export class Engine extends EventEmitter {
   const ordinary=[...active.outputs].map(([id,text])=>({text,...active.quietOutputMeta?.get(id)})).filter(item=>item.text?.trim()),explicit=active.quietTexts||[];
   const last=ordinary.findLast(item=>item.phase==='final_answer')||ordinary.at(-1),chosen=kind==='input'?[...explicit,...ordinary].findLast(item=>item.waiting)||last:null;
   let text;
-  if(kind==='failure')text=(this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(error?' '+this.redact(error):'');
+  if(kind==='failure')text=(legacyLanguage(this.store.state.settings.language)==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(error?' '+this.redact(error):'');
   else if(kind==='input')text=chosen?.text||'';
   else{
    const parts=[...new Set([...explicit.filter(item=>item.ready).map(item=>item.text),...(last?[last.text]:[])])];text=parts.join('\n\n')||explicit.at(-1)?.text||'';
@@ -961,12 +962,12 @@ export class Engine extends EventEmitter {
     this.continuationDeliveries?.delete(active.continuation.workId);
    }
    if(status==='completed'&&!this.quietContinuation(active)&&this.deliverables?.archive){
-    try{const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:active.explicitPaths,excludePaths:this.deliveredOutputPaths(active),text:[...active.outputs.values()].join('\n\n'),conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});this.attach(active,files||[]);}catch(archiveError){if(active.backgroundVoice)this.deliverText(this.store.state.settings.language==='en'?'The output files could not be added to chat. Check the work computer for the task\'s files.':'任务输出文件未能添加到聊天，请到工作电脑检查。',active);else this.emit('notice','Output could not be archived: '+archiveError.message);}
+    try{const files=await this.deliverables.archive({baseline:active.baseline,outputDir:this.outputDir,workspace:this.workspace,explicitPaths:active.explicitPaths,excludePaths:this.deliveredOutputPaths(active),text:[...active.outputs.values()].join('\n\n'),conversationId:this.store.state.conversationId,messageId:active.messageId,turnId:active.turnId});this.attach(active,files||[]);}catch(archiveError){if(active.backgroundVoice)this.deliverText(legacyLanguage(this.store.state.settings.language)==='en'?'The output files could not be added to chat. Check the work computer for the task\'s files.':'任务输出文件未能添加到聊天，请到工作电脑检查。',active);else this.emit('notice','Output could not be archived: '+archiveError.message);}
    }
    if(active.backgroundVoice&&!active.continuation){
     const result=this.redact([...(active.voiceOutputs?.values()||[])].map(output=>output.text).join('\n\n'));
-    if(status==='completed'){this.deliverBackgroundText(result,active);if(!active.assistantIds.length)this.deliverText(this.store.state.settings.language==='en'?'The background task has finished.':'后台任务已结束。',active);}
-    if(status!=='completed'&&!cancelled&&!active.pauseOnly){const detail=this.redact(error||'');this.deliverText((this.store.state.settings.language==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),active);}
+    if(status==='completed'){this.deliverBackgroundText(result,active);if(!active.assistantIds.length)this.deliverText(legacyLanguage(this.store.state.settings.language)==='en'?'The background task has finished.':'后台任务已结束。',active);}
+    if(status!=='completed'&&!cancelled&&!active.pauseOnly){const detail=this.redact(error||'');this.deliverText((legacyLanguage(this.store.state.settings.language)==='en'?'The task stopped before completion.':'任务尚未完成就停止了。')+(detail?' '+detail:''),active);}
    }
    for(const id of active.messageIds)this.updateWork(id,{status:taskStatus,error,pauseReason:taskStatus==='paused'?'executor-stopped':null});
    for(const [itemId,message] of this.items){if(message.status==='streaming')message.status=status==='completed'?'completed':'paused';bounded(this.completedItems,itemId);}

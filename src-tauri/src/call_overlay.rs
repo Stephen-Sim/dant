@@ -39,7 +39,7 @@ struct Action { call_id: String, action: String, request_id: String, muted: Opti
 fn identifier(value: &str) -> bool { !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_: .".contains(&byte)) && !value.contains(' ') }
 fn valid(value: &CallState) -> bool {
     identifier(&value.call_id) && matches!(value.status.as_str(), "calling" | "talking" | "recovering" | "stopping")
-        && matches!(value.language.as_str(), "en" | "zh") && matches!(value.theme.as_str(), "light" | "dark")
+        && crate::l10n::supported(&value.language) && matches!(value.theme.as_str(), "light" | "dark")
         && value.seconds <= 9_007_199_254_740 && value.connected_at.is_none_or(|at| at <= 8_640_000_000_000_000)
 }
 fn area(monitor: tauri::Monitor) -> Area { let work = monitor.work_area(); Area { x: work.position.x, y: work.position.y, width: work.size.width, height: work.size.height, scale: monitor.scale_factor() } }

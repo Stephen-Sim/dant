@@ -4,6 +4,8 @@ English · [Chinese](zh-CN/settings.md)
 
 Settings is organized into a category menu: General, Appearance, Voice, Work computer, ChatGPT, Usage, Credentials, Chat & data, Telegram, and About. On narrow windows, the menu uses a compact layout.
 
+**General → Language** uses a keyboard-accessible dropdown with 16 interface languages: English, 简体中文, 繁體中文, 日本語, 한국어, Español, Français, Deutsch, Português, Русский, العربية, हिन्दी, Bahasa Indonesia, Bahasa Melayu, Italiano and Türkçe. Dates and numbers follow the selected locale; Arabic uses right-to-left layout. The preference is saved locally and synchronized to a compatible work computer. Changing the interface never translates your chat history, task titles, files or memory. Local speech requires a matching installed Windows voice or recognizer.
+
 **Connect my computer** in the welcome screen or disconnected Computer panel opens **Settings → Work computer** directly and focuses the connection card. Any settings search is cleared, while connection form drafts are preserved. Opening this category does not save a configuration or start a connection.
 
 Use **Search settings** to find a setting across all categories. English and Chinese names and keywords work in either interface language. Selecting a result opens its category and focuses the matching control, including controls inside advanced sections.

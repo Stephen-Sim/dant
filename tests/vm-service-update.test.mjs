@@ -27,6 +27,13 @@ test('first connection failure retries with bounded backoff and one passive upda
  assert.equal(f.calls.length,5);assert.ok(f.calls.every(value=>value.deploy===true&&value.automatic===true));assert.equal(f.loop.checked,true);assert.equal(f.timers.size,0);
 });
 
+test('finished-call conversation receipts do not keep an idle computer busy',()=>{
+ const receipt={role:'user',workKind:'conversation',voiceCallId:'ended-call',status:'accepted'};
+ assert.equal(serviceUpdateIdle({...idle(),messages:[receipt]}),true);
+ for(const change of [{turnId:'execution'},{workId:'work'},{unknownOutcome:true},{submission:'unknown'},{continuation:{dispatch:{phase:'acknowledged'}}}])assert.equal(serviceUpdateIdle({...idle(),messages:[{...receipt,...change}]}),false);
+ assert.equal(serviceUpdateIdle({...idle(),messages:[receipt],call:{id:'ended-call'}}),false);
+});
+
 test('ordinary transport loss reconnects without uploading or pausing work',async t=>{
  const f=fixture(t);await f.loop.start();f.bridge.status='offline';f.loop.changed();await f.fire();
  assert.deepEqual(f.calls,[{deploy:true,automatic:true},{deploy:false,automatic:true}]);

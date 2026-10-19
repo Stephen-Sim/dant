@@ -1,3 +1,5 @@
+import {sourceIndex,sourceSection} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import {createTaskReplyController} from '../ui/task-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +10,7 @@ import {reconcile} from '../ui/dom.js';
 import {bindAttachmentImages} from '../ui/attachment-images.js';
 import {createWorkDisclosures} from '../ui/work-disclosures.js';
 
-const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),part=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start))),settle=async()=>{await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));};
+const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),part=(start,end)=>sourceSection(source,start,end),settle=async()=>{await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));};
 function fixture(language='en'){
  const {document,Event}=parseHTML('<main id="app"></main>'),app=document.querySelector('#app'),requests=[],screens=[],toasts=[],intervals=new Map(),timeouts=new Map(),revoked=[],images=[];let sequence=0,screenSequence=0,wait=null,decode='ok';
  class FrameImage{constructor(){this.naturalWidth=1280;this.naturalHeight=960;images.push(this);}get src(){return this.value||'';}set src(value){this.value=value;if(value&&decode!=='pending')queueMicrotask(()=>decode==='error'?this.onerror?.():this.onload?.());}}
@@ -17,7 +19,7 @@ function fixture(language='en'){
  c.progressActions={bind(){},renderConfirmation:()=>'',onClose(){},busy:false};
  c.workDisclosures=createWorkDisclosures({getState:()=>c.state,document});
  c.bindAttachmentImages=bindAttachmentImages;c.Image=FrameImage;c.fetch=async(url,options)=>{screens.push({url,options});if(wait)await wait();return {ok:true,blob:async()=>({type:'image/png'})};};c.post=async(route,body)=>{requests.push({route,body});if(route==='/connect')c.state.worker.status='online';if(route==='/takeover')c.state.computer.status=body.enabled?'human':'agent';return {ok:true};};c.api=async route=>{requests.push({route});assert.equal(route,'/state');return c.state;};
- c.filePreview={bind(){}};c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};c.taskReplies??=createTaskReplyController({document:c.document,getModel:()=>({})});vm.createContext(c);vm.runInContext([
+ c.filePreview={bind(){}};c.updateInstalling=false;c.chatScroll??={capture(){},restore(){},dispose(){},navigate:action=>action()};c.memorySettings??={setVisible(){},render:()=>'',bind(){},dispose(){}};c.taskReplies??=createTaskReplyController({document:c.document,getModel:()=>({})});vm.createContext(Object.assign(c,languageContext));vm.runInContext([
   part('const zh={','const subscriptionVoiceUnavailable='),part('const subscriptionVoiceUnavailable=','const eyes='),part('function renderComputer(){','function renderSettings(){'),part('function hasVMConnection(){','function renderVMSettings(){'),part('async function connectVM(){','async function saveAndConnectVM(){'),part('let inputChain=','async function taskRequest('),part('function bindComputerInput(){','async function openExternal('),part('async function action(a){','async function checkUnconfirmedMessage(){'),part('function screenVisible(){','async function loadVoices(){'),
  ].join('\n'),c);
  c.render=()=>{const template=document.createElement('template');template.innerHTML=c.renderComputer()+'<input type="file" id="file-input" hidden>';reconcile(app,template.content);const img=document.querySelector('#screen');if(img){Object.defineProperty(img,'naturalWidth',{configurable:true,value:1280});Object.defineProperty(img,'naturalHeight',{configurable:true,value:960});img.getBoundingClientRect=()=>({left:0,top:0,right:640,bottom:480,width:640,height:480});}c.bind();};c.render();

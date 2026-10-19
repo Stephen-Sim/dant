@@ -424,6 +424,15 @@ test('a definitely deferred installation permits a later idle attempt and preser
  await assert.rejects(bridge.deploy(bridge.binding()),error=>error.updateDeferred===true&&error.updateReason==='executor-offline'&&error.updateGuardReason==='executor-offline'&&error.updateStage==='final'&&!error.message.includes('PRIVATE'));assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir,'vm-update-attempts.json'))).entries.length,0);assert.equal(probes,1);
 });
 
+test('a confirmed pre-install guard rejection is distinct from an unknown pause or rollback',async t=>{
+ for(const [marker,notInstalled]of [['work-still-active:final',true],['state-invalid:initial',true],['pause-unconfirmed:pause',false],['saved-pause-unconfirmed:saved-pause',false],['work-still-active:rollback',false]]){
+  const {bridge,children,projectRoot,dataDir}=fixture(t);resources(projectRoot);bridge.deployedSource=async()=>({sha256:null,active:true});const run=bridge.run;
+  bridge.run=async(command,args,options)=>{if(command!=='ssh'){if(args[0]==='-cf')fs.writeFileSync(args[1],'fixture');return '';}const pending=run.call(bridge,command,args,options);children.at(-1).stderr.write('DANT_UPDATE_FAILED:'+marker+'\n');children.at(-1).emit('close',1);return pending;};
+  await assert.rejects(bridge.deploy(bridge.binding()),error=>error.updateNotInstalled===notInstalled&&(notInstalled?error.unknownOutcome!==true:error.unknownOutcome===true));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir,'vm-update-attempts.json'))).entries.length,notInstalled?0:1);
+ }
+});
+
 test('automatic deferred deployment keeps the old service connected and confirms its actual remote version',async t=>{
  const {bridge,requests}=fixture(t,{versionImpl:async(url,options)=>{requests.push({url,options});return Response.json({version:'0.4.7-beta.5'});}});bridge.serviceUpdate.targetVersion='0.4.7-beta.6';bridge.prepare=async()=>{throw Object.assign(Error('busy'),{updateDeferred:true,updateReason:'work-active'});};const notices=[];bridge.on('event',event=>notices.push(event));await bridge.connect({autoUpdate:true});
  assert.equal(bridge.status,'online');assert.deepEqual(bridge.serviceUpdate,{status:'pending',targetVersion:'0.4.7-beta.6',runningVersion:'0.4.7-beta.5',confirmed:true,reason:'work-active'});assert.equal(requests.filter(value=>value.url.endsWith('/api/version')).length,1);assert.deepEqual(notices,[]);bridge.disconnect();assert.equal(bridge.serviceUpdate.confirmed,false);

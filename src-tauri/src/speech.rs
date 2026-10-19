@@ -51,7 +51,7 @@ fn diagnostic_file(app:&tauri::AppHandle)->Option<PathBuf> {
 fn append_diagnostic(path:&Path,mode:&str,language:&str,outcome:&Result<String,SpeechFailure>,now:u64)->std::io::Result<()> {
     use std::io::Read;
     let _guard=DIAGNOSTIC_LOCK.lock().map_err(|_|std::io::ErrorKind::Other)?;
-    if !["recognize","speak","capabilities"].contains(&mode)||!["zh","en"].contains(&language){return Err(std::io::ErrorKind::InvalidInput.into())}
+    if !["recognize","speak","capabilities"].contains(&mode)||!crate::l10n::supported(language){return Err(std::io::ErrorKind::InvalidInput.into())}
     let parent=path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;ordinary_parent(parent)?;
     let mut records=Vec::new();
     if let Ok(meta)=fs::symlink_metadata(path){
@@ -60,7 +60,7 @@ fn append_diagnostic(path:&Path,mode:&str,language:&str,outcome:&Result<String,S
         for line in bytes.split(|byte|*byte==b'\n'){if line.len()>512{continue}if let Ok(value)=serde_json::from_slice::<serde_json::Value>(line){
             if let Some(at)=value.get("at").and_then(|v|v.as_u64()){if at<=now&&now-at<3*86400000&&value.get("schema").and_then(|v|v.as_str())==Some("dant.native-speech.v1") {
                 let string=|key|value.get(key).and_then(|v|v.as_str());
-                if string("event")==Some("speech.operation")&&string("mode").is_some_and(|v|["recognize","speak","capabilities"].contains(&v))&&string("language").is_some_and(|v|["zh","en"].contains(&v))&&string("phase").is_some_and(|v|PHASES.contains(&v))&&string("status").is_some_and(|v|["completed","failed"].contains(&v))&&string("reason").is_some_and(|v|v=="ok"||CODES.contains(&v)){
+                if string("event")==Some("speech.operation")&&string("mode").is_some_and(|v|["recognize","speak","capabilities"].contains(&v))&&string("language").is_some_and(crate::l10n::supported)&&string("phase").is_some_and(|v|PHASES.contains(&v))&&string("status").is_some_and(|v|["completed","failed"].contains(&v))&&string("reason").is_some_and(|v|v=="ok"||CODES.contains(&v)){
                     records.push(serde_json::json!({"schema":"dant.native-speech.v1","event":"speech.operation","at":at,"mode":string("mode"),"language":string("language"),"phase":string("phase"),"status":string("status"),"reason":string("reason"),"numericCode":value.get("numericCode").and_then(|v|v.as_i64()).filter(|v|*v>=i32::MIN as i64&&*v<=u32::MAX as i64)}));
                 }
             }}
@@ -77,12 +77,12 @@ fn append_diagnostic(path:&Path,mode:&str,language:&str,outcome:&Result<String,S
 pub async fn speech_start(app:tauri::AppHandle, window: tauri::WebviewWindow, mode: String, language: String, text: Option<String>, process: State<'_, SpeechProcess>) -> Result<String, String> {
     if window.label() != "main" { return Err("speech-invalid-request".into()); }
     if !cfg!(windows) { return Err("speech-unavailable".into()); }
-    if !matches!(mode.as_str(), "recognize" | "speak" | "capabilities") || !matches!(language.as_str(), "zh" | "en") { return Err("speech-invalid-request".into()); }
+    if !matches!(mode.as_str(), "recognize" | "speak" | "capabilities") || !crate::l10n::supported(&language) { return Err("speech-invalid-request".into()); }
     if text.as_ref().is_some_and(|value| value.chars().count() > 10000) { return Err("speech-too-long".into()); }
     let shared = process.inner().clone();let diagnostic_path=diagnostic_file(&app);
     tauri::async_runtime::spawn_blocking(move || {
       let outcome=(|| -> Result<String,SpeechFailure> {
-        let input = serde_json::json!({"mode": mode, "language": language, "text": text}).to_string();
+        let input = serde_json::json!({"mode": mode, "language": language, "locale": crate::l10n::speech_locale(&language), "text": text}).to_string();
         let script = include_str!("../../native/speech.ps1");
         let encoded = STANDARD.encode(script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>());
         let executable = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32/WindowsPowerShell/v1.0/powershell.exe");

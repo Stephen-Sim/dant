@@ -48,7 +48,7 @@ test('native lifecycle installs one instance first, hides only after successful 
  assert.ok(main.indexOf('.plugin(tauri_plugin_single_instance::init')<main.indexOf('.plugin(tauri_plugin_notification::init'));
  assert.match(main,/if !tray::on_window_event\(window,event\)\{call_overlay::on_window_event/);
  assert.match(main,/RunEvent::Exit=event/);assert.match(main,/drop\(child\.stdin\.take\(\)\)/);
- assert.match(tray,/window\.hide\(\)\.is_ok\(\)[\s\S]*api\.prevent_close\(\)/);assert.match(tray,/state\.ready\.store\(true/);assert.match(tray,/state\.exiting\.store\(true[\s\S]*app\.exit\(0\)/);
+ assert.match(tray,/window\.hide\(\)\.is_ok\(\)[\s\S]*api\.prevent_close\(\)/);assert.match(tray,/state\.ready\.store\(true/);assert.match(tray,/fn exit\(app:[\s\S]*crate::lifecycle::request_exit\(app\)/);assert.match(main,/ExitRequested\{api,\.\.\}[\s\S]*api\.prevent_exit\(\)/);
  assert.match(tray,/window\.label\(\) != "main"/);assert.match(tray,/dant-tray-progress/);assert.doesNotMatch(tray,/process::exit|api\/call\/stop|turn\/interrupt/);
  assert.match(overlay,/let background = minimized \|\| !main\.is_visible/);assert.match(overlay,/if !background \|\| call\.is_none\(\)/);assert.match(cargo,/features = \["tray-icon"\]/);
 });

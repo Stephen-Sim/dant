@@ -1,3 +1,5 @@
+import {sourceIndex} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -81,9 +83,9 @@ test('late responses cannot restore confirmation after the panel closed and exte
 
 test('progress separates completed work, keeps all-clear available beyond the visible limit and retains unfinished priority order',()=>{
  const state={messages:[...Array.from({length:20},(_,index)=>({id:'done-'+index,role:'user',status:'completed',time:1000+index,text:'Completed '+index})),{id:'low',role:'user',status:'paused',text:'Low unfinished',progressPriority:'low',time:3000},{id:'high',role:'user',status:'review',text:'High unfinished',progressPriority:'high',time:2000}],workTasks:[],completions:[],queue:[],worker:{status:'online'}};
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderProgress(){'),end=source.indexOf('function renderModal(){',start);
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=sourceIndex(source,'function renderProgress(){'),end=sourceIndex(source,'function renderModal(){',start);
  const context={state,workProgress,renderWorkReply,renderActiveWork,renderWorkTaskHistory,renderVoiceWorkHistory,renderWorkPriority,progressActions:{busy:false,renderConfirmation:()=>''},workDisclosures:{isOpen:()=>false},language:()=> 'en',eventConnected:true,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',t:key=>key,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',unknownTask:()=>false,humanControl:()=>false};
- vm.createContext(context);vm.runInContext(source.slice(start,end),context);const {document}=parseHTML(context.renderProgress());
+ vm.createContext(Object.assign(context,languageContext));vm.runInContext(source.slice(start,end),context);const {document}=parseHTML(context.renderProgress());
  assert.ok(document.querySelector('[data-progress-clear-completed]'));assert.match(document.querySelector('.progress-section-heading').textContent,/20/);
  const titles=[...document.querySelectorAll('.progress-item>div>p')].map(node=>node.textContent);assert.deepEqual(titles.slice(0,2),['High unfinished','Low unfinished']);assert.equal(titles.filter(title=>title.startsWith('Completed ')).length,12);assert.equal(state.messages.filter(message=>message.status==='completed').length,20);
 });

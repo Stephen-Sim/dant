@@ -1,3 +1,4 @@
+import {languageInfo} from '../src/languages.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -49,7 +50,7 @@ test('invalid metadata hides the overlay and parent action errors never leak det
 
 test('child renders bilingual metadata and elapsed duration without opening audio or network channels',async()=>{
  for(const language of ['en','zh']){
-  const f=childFixture({state:call({language,theme:'dark'})}),dispose=await f.ready;assert.equal(f.root.hidden,false);assert.equal(f.document.documentElement.lang,language);assert.equal(f.document.documentElement.dataset.theme,'dark');assert.equal(f.document.querySelector('#call-status').textContent,language==='en'?'In a call':'正在通话');assert.equal(f.document.querySelector('#call-duration').textContent,'0:10');f.advance(2500);assert.equal(f.document.querySelector('#call-duration').textContent,'0:13');assert.ok(f.document.querySelector('#call-mute').getAttribute('aria-label'));assert.equal(f.calls.length,1);
+  const f=childFixture({state:call({language,theme:'dark'})}),dispose=await f.ready;assert.equal(f.root.hidden,false);assert.equal(f.document.documentElement.lang,languageInfo(language).locale);assert.equal(f.document.documentElement.dataset.theme,'dark');assert.equal(f.document.querySelector('#call-status').textContent,language==='en'?'In a call':'正在通话');assert.equal(f.document.querySelector('#call-duration').textContent,'0:10');f.advance(2500);assert.equal(f.document.querySelector('#call-duration').textContent,'0:13');assert.ok(f.document.querySelector('#call-mute').getAttribute('aria-label'));assert.equal(f.calls.length,1);
   f.event(call({language,status:'recovering',confirmed:false,running:false,canMute:false}));assert.equal(f.document.querySelector('#call-duration').hidden,true);assert.equal(f.document.querySelector('#call-mute').hidden,true);f.event(null);assert.equal(f.root.hidden,true);await f.click('#call-hangup');assert.equal(f.calls.length,1);dispose();assert.equal(f.timers.size,0);assert.equal(f.stops,1);
  }
 });
@@ -85,7 +86,7 @@ test('late hide failure cannot alter a different call and a current failure stay
 
 test('initial read success or rejection cannot replace a newer call-state event',async()=>{
  for(const reject of [false,true]){
-  const wait=deferred(),f=childFixture({invoke:command=>command==='call_overlay_get'?wait.promise:undefined});await settle();f.event(call({callId:'new-call',language:'zh'}));if(reject)wait.reject(Error('Private failure'));else wait.resolve(call({callId:'old-call'}));const dispose=await f.ready;assert.equal(f.document.documentElement.lang,'zh');assert.equal(f.root.hidden,false);dispose();
+  const wait=deferred(),f=childFixture({invoke:command=>command==='call_overlay_get'?wait.promise:undefined});await settle();f.event(call({callId:'new-call',language:'zh'}));if(reject)wait.reject(Error('Private failure'));else wait.resolve(call({callId:'old-call'}));const dispose=await f.ready;assert.equal(f.document.documentElement.lang,'zh-CN');assert.equal(f.root.hidden,false);dispose();
  }
 });
 

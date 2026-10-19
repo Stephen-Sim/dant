@@ -1,3 +1,4 @@
+import {localizeMessages} from '../src/i18n.mjs';
 import {canPreviewFile} from './file-preview.js';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const escape=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -23,7 +24,7 @@ function appIcon(id){
 
 export function createTextEditor({desktop=Boolean(globalThis.window?.__TAURI_INTERNALS__),getLanguage=()=> 'en',getToken=()=>'',render=()=>{},document=globalThis.document,invoke,loadCore=()=>import('@tauri-apps/api/core')}={}){
  let preference={editor:'notepad',id:'notepad',name:'Notepad'},preferenceKnown=false,editors=[],loaded=false,busy=false,error=false,closed=false,loading=null,menuOpen=false,focused=null;const pending=new Map();
- const tr=key=>messages[getLanguage()==='zh'?'zh':'en'][key];
+ const tr=key=>localizeMessages(messages,getLanguage())[key];
  const call=async(command,args)=>{const core=invoke?{invoke}:await loadCore();if(closed)throw failure();return core.invoke(command,args);};
  function validate(value){
   if(!value||!['notepad','custom'].includes(value.editor)||!safeName(value.name))throw failure();const id=value.id??(value.editor==='notepad'?'notepad':'custom');

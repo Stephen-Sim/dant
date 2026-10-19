@@ -1,3 +1,5 @@
+import {sourceIndex} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,7 +26,7 @@ test('subtitle DOM uses plain assistant text with accessible bilingual labels an
 });
 
 test('actual full call renderer places captions underneath avatar without replacing media or chat content',()=>{
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function renderCall(){'),end=source.indexOf('function publishCallOverlay(){',start),{subtitles}=fixture(),{document}=parseHTML('<main></main>');subtitles.receive(caption(1,'正在检查这个结果。'));
- const peer={connectionState:'connected'},context={callSubtitles:subtitles,pc:peer,callStarting:false,state:{call:{id:'a',provider:'subscription'}},callStops:{pending:false},callProvider:'subscription',callMini:false,callConnected:true,callChannel:{readyState:'open'},callDuration:{snapshot:{confirmed:false}},stream:{},callMuted:false,eyes:()=>'<i class="call-avatar"></i>',t:key=>key,button:()=>'<button></button>',language:()=> 'zh'};vm.createContext(context);vm.runInContext(source.slice(start,end),context);document.querySelector('main').innerHTML=context.renderCall();const avatar=document.querySelector('.call-avatar'),captionNode=document.querySelector('[data-call-subtitles]');assert.ok(avatar.compareDocumentPosition(captionNode)&4);assert.equal(captionNode.textContent,'正在检查这个结果。');assert.equal(context.pc,peer);assert.equal(document.querySelector('.bubble'),null);
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=sourceIndex(source,'function renderCall(){'),end=sourceIndex(source,'function publishCallOverlay(){',start),{subtitles}=fixture(),{document}=parseHTML('<main></main>');subtitles.receive(caption(1,'正在检查这个结果。'));
+ const peer={connectionState:'connected'},context={callSubtitles:subtitles,pc:peer,callStarting:false,state:{call:{id:'a',provider:'subscription'}},callStops:{pending:false},callProvider:'subscription',callMini:false,callConnected:true,callChannel:{readyState:'open'},callDuration:{snapshot:{confirmed:false}},stream:{},callMuted:false,eyes:()=>'<i class="call-avatar"></i>',t:key=>key,button:()=>'<button></button>',language:()=> 'zh'};vm.createContext(Object.assign(context,languageContext));vm.runInContext(source.slice(start,end),context);document.querySelector('main').innerHTML=context.renderCall();const avatar=document.querySelector('.call-avatar'),captionNode=document.querySelector('[data-call-subtitles]');assert.ok(avatar.compareDocumentPosition(captionNode)&4);assert.equal(captionNode.textContent,'正在检查这个结果。');assert.equal(context.pc,peer);assert.equal(document.querySelector('.bubble'),null);
  context.callMini=true;document.querySelector('main').innerHTML=context.renderCall();assert.equal(document.querySelector('[data-call-subtitles]').hidden,true);
 });

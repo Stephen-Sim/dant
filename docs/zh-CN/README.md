@@ -41,7 +41,7 @@ npm run build
 npm start
 ```
 
-打开 <http://127.0.0.1:4317>。构建桌面版还需要 Visual Studio C++ Build Tools 与 Windows SDK，然后运行 `scripts/setup-tools.ps1`、`scripts/build-desktop.ps1`。详见[开发与 CI](ci.md)。
+打开 <http://127.0.0.1:4317>。构建桌面版还需要 Visual Studio C++ Build Tools 与 Windows SDK，然后运行 `scripts/setup-tools.ps1`、`scripts/build-desktop.ps1`。详见[开发与 CI](ci.md)、[代码规范](code-style.md)和[本地配置](configuration.md)。
 
 </details>
 

@@ -1,3 +1,4 @@
+import {localizeMessages} from '../src/i18n.mjs';
 import {workProgress} from './work-progress.js';
 
 const copy={
@@ -35,7 +36,7 @@ async function untilAbort(value,signal){let abort;try{return await Promise.race(
 // it never submits, resumes or changes a task by itself.
 export function createTaskDetails({document=globalThis.document,window=globalThis.window,getState,getLanguage=()=> 'en',getModal,openModal,request,render=()=>{},onReply,onFile,onDownload,onReveal,icon=()=>'',connected=()=>true}={}){
  let active=null,fileLease=null,sequence=0,disposed=false;
- const words=()=>copy[getLanguage()==='zh'?'zh':'en'];
+ const words=()=>localizeMessages(copy,getLanguage());
  const scope=()=>{const state=getState(),vm=state?.settings?.vm;return JSON.stringify([state?.conversationId??null,vm?.host??null,vm?.user??null,vm?.port??null,vm?.keyPath??null]);};
  const reliable=()=>{const state=getState();return (typeof connected==='function'?connected():connected)!==false&&state?.controller?.cached!==true&&(state?.controller?.status===undefined||state.controller.status==='online')&&state?.worker?.status==='online';};
  const record=target=>{const state=getState();return state?.conversationId===target.conversationId?(state.workTasks||[]).find(item=>item?.id===target.workId&&item.turnId===target.turnId&&!item.progressDismissedAt):null;};

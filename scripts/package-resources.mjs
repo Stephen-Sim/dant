@@ -52,7 +52,7 @@ function replaceTree(root,target,env,copy,{renameSync=fs.renameSync,platform=pro
  }finally{if(fs.existsSync(staging))removeStaging(parent,staging);}
  return destination;
 }
-const copyDirectory=(source,destination)=>fs.cpSync(source,destination,{recursive:true,filter:entry=>!path.relative(source,entry).split(path.sep).some(part=>part==='.cache'||part==='__pycache__')});
+const copyDirectory=(source,destination)=>fs.cpSync(source,destination,{recursive:true,filter:entry=>!path.relative(source,entry).split(path.sep).some(part=>part==='.cache'||part==='__pycache__'||/^\.env(?:\.|$)/i.test(part))});
 function validateSources(root){
  for(const name of directories)directory(path.join(root,name));
  for(const name of ['src/server.mjs','dist/index.html','node_modules/express/package.json'])file(path.join(root,name));

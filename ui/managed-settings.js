@@ -1,3 +1,4 @@
+import {localizeMessages} from '../src/i18n.mjs';
 import {SKILL_SUPPORT_FILE_LIMIT} from '../src/skill-limits.mjs';
 
 export const managedMessages={
@@ -25,7 +26,7 @@ export function parseSkillFiles(text,instructions=''){
 
 export function createManagedSettings({getState,getModal=()=>null,request,download,render,toast,openModal,closeModal,document=globalThis.document,connected=()=>true,confirm=message=>globalThis.confirm(message),icon=()=>''}={}){
  let credentialDraft=null,skillDraft=null,importDraft=null,importSequence=0,busy=false,loading=false,credentialError='',skillError='',skillSearch='',navigationGeneration=0,lastSkillItems=[],lastSkillScope=null,skillPathScope=null;const dismissed=new Set(),expandedSkillPaths=new Set();
- const tr=key=>managedMessages[getState()?.settings?.language==='en'?'en':'zh'][key]||key;
+ const tr=key=>localizeMessages(managedMessages,getState()?.settings?.language)[key]||key;
  const online=()=>connected()&&getState()?.worker?.status==='online';
  const credentials=()=>getState()?.credentials||{items:[],requests:[]};
  const skills=()=>{const data=getState()?.skills||{items:[]},current=scope();if(data.error)return {...data,items:lastSkillScope===current?lastSkillItems:[]};lastSkillItems=Array.isArray(data.items)?data.items:[];lastSkillScope=current;return {...data,items:lastSkillItems};};

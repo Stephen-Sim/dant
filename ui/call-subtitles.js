@@ -1,5 +1,6 @@
+import {translate} from '../src/i18n.mjs';
 const escape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-const label=language=>language==='zh'?'dant 实时字幕':'dant live captions';
+const label=language=>translate(language,"dant live captions","dant 实时字幕");
 
 /** Ephemeral display only: no messages, storage, transport writes or history. */
 export function createCallSubtitles({onChange=()=>{},schedule=setTimeout,cancel=clearTimeout,finalDelay=8000}={}){

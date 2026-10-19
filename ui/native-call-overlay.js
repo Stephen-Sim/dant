@@ -1,10 +1,11 @@
+import {isLanguage} from '../src/languages.mjs';
 const actions=new Set(['mute','hangup','restore']),statuses=new Set(['calling','talking','recovering','stopping']);
 const identifier=value=>typeof value==='string'&&/^[a-zA-Z0-9_:.-]{1,128}$/.test(value);
 export function createNativeCallOverlay({desktop=false,onAction=()=>{},onError=()=>{},loadCore=()=>import('@tauri-apps/api/core'),loadEvents=()=>import('@tauri-apps/api/event'),window=globalThis.window,document=globalThis.document,MutationObserver=globalThis.MutationObserver}={}){
  let latest=null,closed=false,revision=0,queued=false,unlisten=null,observer=null,lastSent='',ready=null,sending=Promise.resolve(),reported=false;const seen=new Set();
  const report=()=>{if(reported)return;reported=true;try{onError(Error('The floating call window is unavailable.'));}catch{}};
  function snapshot(value){
-  if(!value)return null;if(!identifier(value.callId)||!statuses.has(value.status)||!['en','zh'].includes(value.language)||!['light','dark'].includes(value.theme))return null;
+  if(!value)return null;if(!identifier(value.callId)||!statuses.has(value.status)||!isLanguage(value.language)||!['light','dark'].includes(value.theme))return null;
   return {callId:value.callId,status:value.status,connectedAt:Number.isSafeInteger(value.connectedAt)&&value.connectedAt>=0&&value.connectedAt<=8640000000000000?value.connectedAt:null,seconds:Number.isFinite(value.seconds)?Math.min(9007199254740,Math.max(0,Math.floor(value.seconds))):0,confirmed:!!value.confirmed,running:!!value.running,muted:!!value.muted,canMute:!!value.canMute,language:value.language,theme:value.theme};
  }
  async function receive(event){

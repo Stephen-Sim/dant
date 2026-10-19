@@ -1,3 +1,5 @@
+import {sourceIndex,compactCss} from './source-fixtures.mjs';
+import {languageContext} from './language-context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -88,16 +90,16 @@ test('short clicks do not move the call and dispose removes all movement ownersh
 });
 
 test('main render reapplies the controller after DOM reconciliation and fixed styling covers the app',()=>{
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');
- assert.match(source,/import \{createFloatingCall\} from '\.\/floating-call\.js'/);const render=source.slice(source.indexOf('function render(){'),source.indexOf('function renderRail(){'));assert.ok(render.indexOf('reconcile(app,template.content)')>=0);assert.ok(render.indexOf('floatingCall.sync')>render.indexOf('resizeComposer()'),'floating call geometry is rebound after DOM and composer layout');
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=compactCss(fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8'));
+ assert.match(source,/import \{createFloatingCall\} from '\.\/floating-call\.js'/);const render=source.slice(sourceIndex(source,'function render(){'),sourceIndex(source,'function renderRail(){'));assert.ok(render.indexOf('reconcile(app,template.content)')>=0);assert.ok(render.indexOf('floatingCall.sync')>render.indexOf('resizeComposer()'),'floating call geometry is rebound after DOM and composer layout');
  assert.match(css,/\.call-view\.mini\{position:fixed;z-index:20;cursor:grab;touch-action:none;user-select:none\}/);assert.match(css,/\.call-view\.mini\[data-call-dragging\]\{cursor:grabbing\}/);
 });
 
 function parentOverlay(){
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function publishCallOverlay(){'),end=source.indexOf('function renderUnconfirmedMessage(){',start),updates=[],actions=[];
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=sourceIndex(source,'function publishCallOverlay(){'),end=sourceIndex(source,'function renderUnconfirmedMessage(){',start),updates=[],actions=[];
  const state={call:{id:'call-a',connectedAt:1000},settings:{language:'en'},messages:[{text:'private conversation'}],memory:'private memory'};
  const context={state,callId:'call-a',pc:{connectionState:'connected'},callStarting:false,callConnected:true,callChannel:{readyState:'open'},callStops:{pending:false},callDuration:{snapshot:{callId:'call-a',seconds:12,confirmed:true,running:true}},callMuted:false,stream:{getTracks(){throw Error('Overlay must not own media');}},document:{documentElement:{dataset:{theme:'dark'}}},language:()=>state.settings.language,unloading:false,nativeCallOverlay:{update:value=>updates.push(structuredClone(value))},action:async value=>{actions.push(value);if(value==='mute')context.callMuted=!context.callMuted;}};
- vm.createContext(context);vm.runInContext(source.slice(start,end),context);return {context,updates,actions};
+ vm.createContext(Object.assign(context,languageContext));vm.runInContext(source.slice(start,end),context);return {context,updates,actions};
 }
 
 test('native overlay publication contains only call display state and stops when the call ends',()=>{

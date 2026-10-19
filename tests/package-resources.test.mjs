@@ -30,6 +30,19 @@ test('standalone backend staging replaces its full tree and preserves the exe an
  stageReleaseResources(f.options);assert.deepEqual(tree(f.paths.backend),tree(f.paths.resources));assert.equal(fs.readFileSync(path.join(f.paths.release,'dant.exe'),'utf8'),'keep executable');assert.equal(fs.readFileSync(path.join(f.paths.release,'bundle/keep.txt'),'utf8'),'keep installer');assert.equal(fs.existsSync(path.join(f.paths.backend,'old-runtime.txt')),false);
 });
 
+test('nested environment files are omitted from both packaged and staged trees',t=>{
+ const f=fixture(t);
+ for(const name of ['src/config/.env','src/config/.env.production','node_modules/pkg/.Env','scripts/helper/.ENV.LOCAL','dist/.env.build'])write(f.root,name,'private-fixture-value');
+ write(f.root,'src/config/.environment.json','ordinary source filename');
+ prepareResources(f.options);
+ assert.ok(!tree(f.paths.resources).some(name=>/(?:^|\/)\.env(?:\.|$)/i.test(name)));
+ assert.equal(fs.readFileSync(path.join(f.paths.resources,'src/config/.environment.json'),'utf8'),'ordinary source filename');
+ write(f.paths.resources,'src/config/.env.staging','private-fixture-value');
+ stageReleaseResources(f.options);
+ assert.ok(!tree(f.paths.backend).some(name=>/(?:^|\/)\.env(?:\.|$)/i.test(name)));
+ assert.equal(fs.readFileSync(path.join(f.root,'src/config/.env'),'utf8'),'private-fixture-value');
+});
+
 test('source, build, node and package validation all precede cleanup of the previous generated resources',t=>{
  const f=fixture(t);prepareResources(f.options);const sentinel=write(f.paths.resources,'keep-before-validation.txt','previous build');
  for(const [name,change,restore]of [

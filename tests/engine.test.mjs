@@ -34,7 +34,7 @@ test('streamed output has a total bound and completion receipts track visible re
 });
 
 test('Chinese and English messages are supported and attachment-only input follows the selected language',async t=>{
- const {engine,store,worker}=setup(t);store.state.settings.language='en';await engine.thread();assert.match(worker.calls.at(-1).params.developerInstructions,/Support both Chinese and English/);assert.match(worker.calls.at(-1).params.developerInstructions,/ambiguous, use English/);assert.match(engine.input({text:''})[0].text,/Please inspect/);
+ const {engine,store,worker}=setup(t);store.state.settings.language='en';await engine.thread();assert.match(worker.calls.at(-1).params.developerInstructions,/Match the current user message language/);assert.match(worker.calls.at(-1).params.developerInstructions,/ambiguous, use English/);assert.match(engine.input({text:''})[0].text,/Please inspect/);
  store.state.settings.language='zh';engine.loaded=false;await engine.thread();assert.match(worker.calls.at(-1).params.developerInstructions,/ambiguous, use Simplified Chinese/);assert.match(engine.input({text:''})[0].text,/中文/);assert.equal(engine.input({text:'Please use English.'})[0].text,'Please use English.');assert.equal(engine.input({text:'请用中文。'})[0].text,'请用中文。');
 });
 

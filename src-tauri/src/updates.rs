@@ -5,7 +5,7 @@ use tauri::{Emitter,Manager};
 #[cfg(windows)] use std::os::windows::process::CommandExt;
 
 const FAILED:&str="The update could not be verified. Check for updates and try again.";
-const BLOCKED:&str="Installation is deferred. End the call, return computer control and wait for a live connection and completed setup.";
+const BLOCKED:&str="Installation could not confirm paused work and VM suspension. dant remains open; check Work computer and try again.";
 const MAX_INSTALLER:u64=512*1024*1024;
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -60,7 +60,7 @@ fn ready(asset:&Asset)->Ready{Ready{ready:true,package_id:asset.sha256.clone(),v
 fn token(value:&str)->bool{value.len()==64&&value.bytes().all(|v|v.is_ascii_hexdigit())}
 async fn controller_request(route:&str,token:&str,max:usize,method:reqwest::Method,body:Option<&str>)->Result<serde_json::Value,String>{
  if !self::token(token){return Err(FAILED.into())}
- let client=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(60)).build().map_err(|_|FAILED)?;let mut request=client.request(method,format!("http://127.0.0.1:4317/api/{route}")).header("X-Dant-Token",token);if let Some(body)=body{request=request.header("Content-Type","application/json").body(body.to_string());}let mut response=request.send().await.map_err(|_|FAILED)?;if !response.status().is_success(){return Err(FAILED.into())}let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|FAILED)?{if bytes.len()+chunk.len()>max{return Err(FAILED.into())}bytes.extend_from_slice(&chunk)}serde_json::from_slice(&bytes).map_err(|_|FAILED.into())
+ let timeout=if route.starts_with("desktop/"){150}else{60};let client=reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(timeout)).build().map_err(|_|FAILED)?;let mut request=client.request(method,format!("http://127.0.0.1:4317/api/{route}")).header("X-Dant-Token",token);if let Some(body)=body{request=request.header("Content-Type","application/json").body(body.to_string());}let mut response=request.send().await.map_err(|_|FAILED)?;if !response.status().is_success(){return Err(FAILED.into())}let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|FAILED)?{if bytes.len()+chunk.len()>max{return Err(FAILED.into())}bytes.extend_from_slice(&chunk)}serde_json::from_slice(&bytes).map_err(|_|FAILED.into())
 }
 async fn controller(route:&str,token:&str,max:usize)->Result<serde_json::Value,String>{controller_request(route,token,max,reqwest::Method::GET,None).await}
 fn stream_payload(input:&mut impl Read,output:&mut impl Write,asset:&Asset,mut report:impl FnMut(u64))->Result<(),String>{
@@ -86,7 +86,20 @@ pub async fn download_update(app:tauri::AppHandle,window:tauri::WebviewWindow,ch
  if let Err(error)=outcome{progress(&app,&asset,0,"failed");return Err(error)}state.packages.lock().map_err(|_|FAILED)?.insert(asset.sha256.clone(),asset.clone());progress(&app,&asset,asset.size,"ready");Ok(ready(&asset))
 }
 pub(crate) fn install_allowed(state:&serde_json::Value)->bool{
- state.get("mode").and_then(|v|v.as_str())==Some("vm-controller")&&state.pointer("/controller/status").and_then(|v|v.as_str())==Some("online")&&state.pointer("/controller/cached").and_then(|v|v.as_bool())==Some(false)&&state.pointer("/controller/authority").and_then(|v|v.as_str())==Some("vm")&&state.get("call").is_some_and(|v|v.is_null())&&state.get("takeover").and_then(|v|v.as_bool())==Some(false)&&state.pointer("/computer/status").and_then(|v|v.as_str())==Some("dant")&&state.pointer("/computer/sessionId").is_none_or(|v|v.is_null())&&state.pointer("/provisioning/running").and_then(|v|v.as_bool())==Some(false)&&state.pointer("/provisioning/status").and_then(|v|v.as_str()).is_some_and(|v|matches!(v,"idle"|"ready"|"failed"))
+ // This is admission to the Controller's pause-and-confirm transaction, not
+ // proof that execution has stopped. The authenticated backend lease performs
+ // that final check, including fresh VM reads and offline executor witnesses.
+ let status=state.pointer("/controller/status").and_then(|value|value.as_str());
+ let cached=state.pointer("/controller/cached").and_then(|value|value.as_bool());
+ let transport=match(status,cached){(Some("online"),Some(false))|(Some("offline"|"connecting"),Some(true))=>true,_=>false};
+ state.get("mode").and_then(|v|v.as_str())==Some("vm-controller")
+  && state.pointer("/controller/authority").and_then(|v|v.as_str())==Some("vm")
+  && state.pointer("/controller/vmConfigured").and_then(|v|v.as_bool()).is_some()
+  && transport
+  && state.pointer("/controller/desktopTransition").and_then(|v|v.as_str()).is_some_and(|v|matches!(v,"idle"|"paused"))
+  && state.pointer("/controller/serviceUpdateBusy").and_then(|v|v.as_bool())==Some(false)
+  && state.pointer("/provisioning/running").and_then(|v|v.as_bool())==Some(false)
+  && state.pointer("/provisioning/status").and_then(|v|v.as_str()).is_some_and(|v|matches!(v,"idle"|"ready"|"failed"))
 }
 #[derive(Serialize)]pub struct InstallResult{launched:bool}
 #[derive(Serialize)]pub struct Capabilities{download:bool,install:bool,reason:Option<&'static str>}
@@ -100,18 +113,23 @@ pub async fn install_update(app:tauri::AppHandle,window:tauri::WebviewWindow,pac
  if window.label()!="main"||cfg!(debug_assertions)||package_id.len()!=64{return Err(BLOCKED.into())}let state=app.state::<Updates>();let asset=state.packages.lock().map_err(|_|FAILED)?.get(&package_id).cloned().ok_or(FAILED)?;
  if !install_allowed(&controller("state",&token,16*1024*1024).await?){return Err(BLOCKED.into())}
  let controller_id={let state=app.state::<crate::Backend>();let mut locked=state.0.lock().map_err(|_|BLOCKED)?;let child=locked.as_mut().ok_or(BLOCKED)?;if child.try_wait().map_err(|_|BLOCKED)?.is_some(){return Err(BLOCKED.into())}child.id()};
- let root=cache(&app)?;let installer=package(&root,&asset)?;
+ let root=cache(&app)?;let installer=package(&root,&asset)?;verify_file(&installer,&asset)?;
  {let mut installing=state.installing.lock().map_err(|_|FAILED)?;if *installing{return Err("An update installation is already pending.".into())}*installing=true;}
- let handle=app.clone();let selected=asset.clone();let job=tauri::async_runtime::spawn_blocking(move||crate::update_helper::prepare(&root,&installer,&selected,controller_id)).await.map_err(|_|FAILED.to_string()).and_then(|v|v);
- let folder=match job{Ok(folder)=>folder,Err(error)=>{*state.installing.lock().map_err(|_|FAILED)?=false;return Err(error)}};
  let lease=controller_request("updates/install-lease",&token,4096,reqwest::Method::POST,Some("{}")).await;
- let lease_id=lease.as_ref().ok().and_then(|value|value.get("leaseId")).and_then(|value|value.as_str()).filter(|value|value.len()==36&&value.bytes().all(|byte|byte.is_ascii_hexdigit()||byte==b'-'));
- let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v|v.as_millis() as u64).unwrap_or(u64::MAX);let lease_fresh=lease.as_ref().ok().and_then(|value|value.get("expiresAt")).and_then(|value|value.as_u64()).is_some_and(|value|value>now.saturating_add(5000)&&value<=now.saturating_add(35000));
- let authorized=lease_id.is_some()&&lease_fresh&&owns_controller(&app)&&write_json(&folder.join("go.json"),&serde_json::json!({"authorized":true,"sha256":asset.sha256,"leaseId":lease_id,"expiresAt":lease.as_ref().ok().and_then(|value|value.get("expiresAt"))})).is_ok();
- if !authorized{let _=write_json(&folder.join("cancel.json"),&true);if let Some(lease_id)=lease_id{let _=controller_request(&format!("updates/install-lease/{lease_id}"),&token,4096,reqwest::Method::DELETE,None).await;}*state.installing.lock().map_err(|_|FAILED)?=false;return Err(BLOCKED.into())}
- // The helper already owns exact process handles. Normal Exit closes only our
- // local controller; it neither pauses VM work nor shuts down the VM service.
- std::thread::spawn(move||{std::thread::sleep(Duration::from_millis(150));handle.exit(0);});Ok(InstallResult{launched:true})
+ let lease_id=lease.as_ref().ok().and_then(|value|value.get("leaseId")).and_then(|value|value.as_str()).filter(|value|value.len()==36&&value.bytes().all(|byte|byte.is_ascii_hexdigit()||byte==b'-')).map(str::to_string);
+ let Some(lease_id)=lease_id else{*state.installing.lock().map_err(|_|FAILED)?=false;return Err(BLOCKED.into())};
+ let body=serde_json::json!({"reason":"install","leaseId":lease_id}).to_string();
+ let suspension=controller_request("desktop/exit",&token,4096,reqwest::Method::POST,Some(&body)).await;
+ let suspended=suspension.as_ref().is_ok_and(crate::lifecycle::confirmed)&&suspension.as_ref().ok().and_then(|value|value.get("leaseId")).and_then(|value|value.as_str())==Some(lease_id.as_str());
+ if !suspended{let _=controller_request("desktop/cancel-exit",&token,4096,reqwest::Method::POST,Some(&body)).await;let _=controller_request(&format!("updates/install-lease/{lease_id}"),&token,4096,reqwest::Method::DELETE,None).await;*state.installing.lock().map_err(|_|FAILED)?=false;return Err(BLOCKED.into())}
+ let handle=app.clone();let selected=asset.clone();let job=tauri::async_runtime::spawn_blocking(move||crate::update_helper::prepare(&root,&installer,&selected,controller_id)).await.map_err(|_|FAILED.to_string()).and_then(|v|v);
+ let folder=match job{Ok(folder)=>folder,Err(error)=>{let _=controller_request("desktop/cancel-exit",&token,4096,reqwest::Method::POST,Some(&body)).await;let _=controller_request(&format!("updates/install-lease/{lease_id}"),&token,4096,reqwest::Method::DELETE,None).await;*state.installing.lock().map_err(|_|FAILED)?=false;return Err(error)}};
+ let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v|v.as_millis() as u64).unwrap_or(u64::MAX);let lease_fresh=suspension.as_ref().ok().and_then(|value|value.get("expiresAt")).and_then(|value|value.as_u64()).is_some_and(|value|value>now.saturating_add(5000)&&value<=now.saturating_add(35000));
+ let authorized=lease_fresh&&owns_controller(&app)&&write_json(&folder.join("go.json"),&serde_json::json!({"authorized":true,"sha256":asset.sha256,"leaseId":lease_id,"expiresAt":suspension.as_ref().ok().and_then(|value|value.get("expiresAt"))})).is_ok();
+ if !authorized{let _=write_json(&folder.join("cancel.json"),&true);let _=controller_request("desktop/cancel-exit",&token,4096,reqwest::Method::POST,Some(&body)).await;let _=controller_request(&format!("updates/install-lease/{lease_id}"),&token,4096,reqwest::Method::DELETE,None).await;*state.installing.lock().map_err(|_|FAILED)?=false;return Err(BLOCKED.into())}
+ // The install lease already paused work and suspended the VM. The helper owns
+ // the exact process handles; do not issue a second suspend during handoff.
+ std::thread::spawn(move||{std::thread::sleep(Duration::from_millis(150));crate::lifecycle::prepared_update_exit(&handle);});Ok(InstallResult{launched:true})
 }
 
 #[cfg(test)]mod tests{
@@ -120,5 +138,8 @@ pub async fn install_update(app:tauri::AppHandle,window:tauri::WebviewWindow,pac
  #[test]fn official_asset_and_version_validation_rejects_redirect_injection_and_downgrades(){let a=asset();assert!(valid_asset(&a));for url in [a.url.clone()+"?token=x",a.url.replace("Stephen-Sim","other"),a.url.replace("https:","http:"),a.url.replace("github.com","github.com.evil")]{let mut bad=a.clone();bad.url=url;assert!(!valid_asset(&bad));}let mut bad=a.clone();bad.channel="stable".into();assert!(!valid_asset(&bad));bad=a.clone();bad.size=MAX_INSTALLER+1;assert!(!valid_asset(&bad));assert!(newer("0.5.0","0.5.0-beta.9"));assert!(newer("0.5.0-beta.10","0.5.0-beta.2"));assert!(!newer("0.4.6","0.4.7-beta.1"));for v in ["../0.5.0","01.0.0","0.5.0+build","0.5.0-beta.01","0.5"]{assert!(version(v).is_none());}}
  #[test]fn cached_payload_is_rehashed_and_truncation_tampering_and_links_are_rejected(){let dir=tempfile::tempdir().unwrap();let a=asset();let file=dir.path().join(&a.name);fs::write(&file,b"verified installer").unwrap();assert!(verify_file(&file,&a).is_ok());fs::write(&file,b"tampered installer").unwrap();assert!(verify_file(&file,&a).is_err());fs::write(&file,b"short").unwrap();assert!(verify_file(&file,&a).is_err());assert!(verify_file(dir.path(),&a).is_err());}
  #[test]fn streamed_installer_requires_exact_size_and_digest_before_a_payload_can_be_committed(){let a=asset();for bytes in [&b"verified installer"[..],&b"short"[..],&b"verified installerEXTRA"[..],&b"untrusted contents"[..]]{let mut input=std::io::Cursor::new(bytes);let mut output=Vec::new();let result=stream_payload(&mut input,&mut output,&a,|_|{});assert_eq!(result.is_ok(),bytes==b"verified installer");assert!(output.len()<=a.size as usize);}}
- #[test]fn installation_allows_real_vm_tasks_but_never_calls_takeover_cached_state_or_setup(){let state=serde_json::json!({"mode":"vm-controller","controller":{"status":"online","cached":false,"authority":"vm"},"call":null,"takeover":false,"computer":{"status":"dant","sessionId":null},"provisioning":{"status":"ready","running":false},"active":{"status":"running"},"queue":["keep"]});assert!(install_allowed(&state));for(path,value)in [("/call",serde_json::json!({"id":"call"})),("/takeover",serde_json::json!(true)),("/controller/cached",serde_json::json!(true)),("/controller/status",serde_json::json!("offline")),("/computer/status",serde_json::json!("acquiring")),("/provisioning/status",serde_json::json!("creating")),("/provisioning/running",serde_json::json!(true)),("/mode",serde_json::json!("vm-worker"))]{let mut changed=state.clone();*changed.pointer_mut(path).unwrap()=value;assert!(!install_allowed(&changed),"{path}");}}
+ fn controller_state()->serde_json::Value{serde_json::json!({"mode":"vm-controller","controller":{"status":"online","cached":false,"authority":"vm","vmConfigured":true,"desktopTransition":"idle","serviceUpdateBusy":false},"call":{"id":"call"},"takeover":true,"computer":{"status":"human","sessionId":"lease"},"provisioning":{"status":"ready","running":false},"active":{"status":"running"},"queue":["keep"]})}
+ #[test]fn installation_preflight_allows_confirmable_work_but_never_bypasses_controller_or_setup_boundaries(){let state=controller_state();assert!(install_allowed(&state));for(path,value)in [("/controller/cached",serde_json::json!(true)),("/controller/status",serde_json::json!("unknown")),("/controller/authority",serde_json::json!("cache")),("/controller/vmConfigured",serde_json::Value::Null),("/controller/desktopTransition",serde_json::json!("suspending")),("/controller/serviceUpdateBusy",serde_json::json!(true)),("/provisioning/status",serde_json::json!("creating")),("/provisioning/running",serde_json::json!(true)),("/mode",serde_json::json!("vm-worker"))]{let mut changed=state.clone();*changed.pointer_mut(path).unwrap()=value;assert!(!install_allowed(&changed),"{path}");}}
+ #[test]fn installation_without_a_vm_reaches_the_backend_lease_instead_of_requiring_a_vm_connection(){let mut state=controller_state();state["controller"]["vmConfigured"]=serde_json::json!(false);state["controller"]["status"]=serde_json::json!("offline");state["controller"]["cached"]=serde_json::json!(true);state["worker"]=serde_json::json!({"status":"offline"});state["active"]=serde_json::Value::Null;state["call"]=serde_json::Value::Null;state["queue"]=serde_json::json!([]);assert!(install_allowed(&state));}
+ #[test]fn stopped_executor_and_disconnected_vm_can_request_a_fresh_backend_pause_witness(){for worker in ["offline","connecting"]{let mut state=controller_state();state["worker"]=serde_json::json!({"status":worker});assert!(install_allowed(&state),"the backend, not stale executor metadata, must decide {worker}");}for status in ["offline","connecting"]{let mut state=controller_state();state["controller"]["status"]=serde_json::json!(status);state["controller"]["cached"]=serde_json::json!(true);assert!(install_allowed(&state));state["controller"]["authority"]=serde_json::json!("cache");assert!(!install_allowed(&state));}}
 }
