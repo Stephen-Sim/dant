@@ -107,47 +107,51 @@ fn main() {
             if tray::setup(app).is_err() {
                 eprintln!("The system tray is unavailable; closing dant will exit normally.");
             }
-            if transport::existing_controller() {
+            let backend_root = runtime_path(if cfg!(debug_assertions) {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources")
+            } else {
+                app.path().resource_dir()?.join("backend")
+            });
+            let source = transport::bundled_source(&backend_root)?;
+            if transport::existing_controller(&source)? {
                 app.manage(Backend(Mutex::new(None)));
                 notifications::start(app);
                 lifecycle::open_existing_controller(app.handle());
                 return Ok(());
             }
-            let backend_root = runtime_path(if cfg!(debug_assertions) {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .to_path_buf()
-            } else {
-                app.path().resource_dir()?.join("backend")
-            });
             let data = runtime_path(if let Some(value) = std::env::var_os("DANT_DATA") {
                 PathBuf::from(value)
             } else if cfg!(debug_assertions) {
-                backend_root.join("data")
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .join("data")
             } else {
                 app.path().app_data_dir()?.join("data")
             });
             std::fs::create_dir_all(&data)?;
-            let node = if cfg!(debug_assertions) {
-                std::path::PathBuf::from("node")
-            } else {
-                backend_root.join("node.exe")
-            };
-            let mut command = Command::new(node);
+            let core = backend_root.join("dant-core.exe");
+            let mut command = Command::new(core);
             let mut log = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(data.join("startup.log"))?;
             writeln!(log, "Starting dant backend in {}", backend_root.display())?;
             command
-                .arg("src/server.mts")
+                .arg("--role=controller")
+                .arg("--root")
+                .arg(&backend_root)
                 .current_dir(&backend_root)
                 .env("DANT_DATA", &data)
                 .env("DANT_MANAGED", "1")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::from(log));
+            if cfg!(debug_assertions) {
+                command
+                    .arg("--config-root")
+                    .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap());
+            }
             #[cfg(windows)]
             command.creation_flags(0x08000000);
             let mut child = command.spawn()?;

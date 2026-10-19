@@ -113,6 +113,9 @@ func (r *Reader) Retrieve(ctx context.Context, query PreparedQuery, scope Scope,
 				continue
 			}
 			text, matched := relevantExcerpt(document.text, document.normalized, query.Terms, min(remaining, ExcerptUnits))
+			if document.textUnits != nil {
+				text, matched = relevantExcerptUnits(document.textUnits, document.normalized, query.Terms, min(remaining, ExcerptUnits))
+			}
 			if !matched {
 				continue
 			}

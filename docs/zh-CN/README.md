@@ -33,15 +33,15 @@ Windows 上的 AI 数字伙伴，既能与你聊天，也能在自己的 Ubuntu 
 <details>
 <summary>从源码运行</summary>
 
-安装 Node.js 22.18+ LTS / 24+ 及上述依赖后：
+安装 Go 1.27.2、Node.js 22.18+ LTS / 24+ 及上述依赖。准备带版本信息的运行资源前，先提交已审查的源码：
 
 ```powershell
 npm ci
-npm run build
+npm run package:resources
 npm start
 ```
 
-打开 <http://127.0.0.1:4317>。构建桌面版还需要 Visual Studio C++ Build Tools 与 Windows SDK，然后运行 `scripts/setup-tools.ps1`、`scripts/build-desktop.ps1`。详见[开发与 CI](ci.md)、[代码规范](code-style.md)和[本地配置](configuration.md)。
+打开 <http://127.0.0.1:4317>。`npm start` 和 `npm run dev` 使用已校验的 Go 编译后端，重建方法见[运行支持](runtime-support.md)。构建桌面版还需要 Visual Studio C++ Build Tools 与 Windows SDK，然后运行 `scripts/setup-tools.ps1`、`scripts/build-desktop.ps1`。详见[开发与 CI](ci.md)、[代码规范](code-style.md)和[本地配置](configuration.md)。
 
 </details>
 

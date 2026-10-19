@@ -4,7 +4,7 @@
 
 dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括带作用域的记忆召回、SQLite 调度与本地加密备份；已发布的安装包可能仍是较早的实现。
 
-已确认的目标是 **Go Agent Core + Rust Tauri + TypeScript UI**。下文中的 Controller 与 Worker 当前仍运行于 Node.js。仓库已加入生成的 Go 契约和隔离的只读 Memory 影子运行时；它不是已打包的执行器，也不会注入模型上下文。[Go Core 迁移设计](go-core-migration.md)记录实现边界、测量与尚未完成的执行权切换。
+当前源码采用 **Go Agent Core + Rust Tauri + TypeScript UI**。独立的 Go Controller 与 Worker 角色替代生产 Node 后端。TypeScript 保留用于浏览器、构建工具和兼容性测试基准；只读 Memory 影子角色仅用于差分测试，不参与生产执行。本文描述源码，不代表新安装包已完成实机验收或发布。参见[运行支持](runtime-support.md)和[迁移与切换](go-core-migration.md)。
 
 ## 总体系统
 
@@ -13,7 +13,7 @@ flowchart TB
   subgraph Windows
     UI[TypeScript UI · Vite · DOM / CSS]
     Native[Tauri 2 / Rust<br/>窗口 · 托盘 · 通知 · 安装器]
-    Controller[Node.js Controller<br/>VM 生命周期 · 设置 · 离线缓存]
+    Controller[Go Controller<br/>VM 生命周期 · 设置 · 离线缓存]
     Backups[ControllerBackups<br/>本机调度 · 明确恢复确认]
     Vault[本机加密归档<br/>AES-GCM · Windows DPAPI]
     UI -->|桌面 IPC| Native
@@ -23,7 +23,7 @@ flowchart TB
     Backups --> Vault
   end
   subgraph Ubuntu 工作电脑
-    Worker[Worker API]
+    Worker[Go Worker API]
     Engine[Engine<br/>单执行入口 · 任务 / turn 所有权]
     Heartbeat[WorkContinuationSupervisor]
     Scheduler[Scheduler<br/>一次性 · cron · 优先级]
@@ -63,21 +63,21 @@ UI 展示状态并提交操作。Controller **不会创建 Engine，也不会在
 
 聊天先渲染最近 80 条消息，向上浏览时按批次追加旧消息。阅读历史期间固定首条边界，避免新消息挤掉当前位置；切换聊天或 VM 后重置窗口。回复、搜索和任务结果先展开准确的旧消息，再定位焦点。只有实际渲染的消息才可能标为已读。这减少 DOM 和 Markdown 的处理量，当前状态传输仍包含完整聊天。相同状态跳过重复渲染，净化后的 Markdown 使用有上限的缓存，时间随当前系统时区更新。后台 GET 请求独立执行，修改操作仍保留顺序及旧结果保护。
 
-| 组件           | 源码                                                                                  | 职责                                               |
-| -------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| 原生宿主       | `src-tauri/src/`                                                                      | 窗口、托盘、原生 IPC、通知、安全宿主集成、安装交接 |
-| 应用组装       | [`src/app/`](../../src/app/)                                                          | Controller/Worker 模式、API 与服务所有权           |
-| 运行时通信     | [`src/runtime/`](../../src/runtime/)                                                  | Codex 进程、JSON-RPC、事件校验与响应所有权         |
-| Agent 执行     | [`engine.mts`](../../src/work/engine.mts)                                             | 接纳输入、绑定确认的 turn、处理工具、保存结果      |
-| 任务连续性     | [`src/work/`](../../src/work/)                                                        | 计划、回复、暂停/取消、项目上下文与安全续作        |
-| Heartbeat      | [`work-continuation.mts`](../../src/work/work-continuation.mts)                       | 判断已结束执行但未完成的任务能否继续               |
-| 调度器         | [`scheduler.mts`](../../src/schedules/scheduler.mts)                                  | 执行时间、重复规则、优先级和派发回执               |
-| 记忆 / 对话    | [`src/conversation/`](../../src/conversation/)                                        | Store、共享参考上下文、SQLite 记忆与迁移           |
-| 电脑控制       | [`src/computer/`](../../src/computer/)、`vm/`                                         | VM 部署、SSH、截图、输入和控制权                   |
-| 宿主 / VM 适配 | [`src/platform/`](../../src/platform/)、[`providers/`](../../src/computer/providers/) | 宿主能力及提供商的检测/创建/生命周期命令           |
-| 本地备份       | [`src/backups/`](../../src/backups/)                                                  | Controller 加密归档、Worker 快照与明确的离线恢复   |
+| 组件           | 源码                                                                                                      | 职责                                                              |
+| -------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 原生宿主       | `src-tauri/src/`                                                                                          | 窗口、托盘、原生 IPC、通知、安全宿主集成、安装交接                |
+| 应用组装       | [`core/internal/app/`](../../core/internal/app/)                                                          | Worker API 与服务所有权，宿主组装位于 `core/internal/controller/` |
+| 运行时通信     | [`core/internal/runtime/`](../../core/internal/runtime/)                                                  | Codex 进程、JSON-RPC、事件校验与响应所有权                        |
+| Agent 执行     | [`Engine`](../../core/internal/work/engine.go)                                                            | 接纳输入、绑定确认的 turn、处理工具、保存结果                     |
+| 任务连续性     | [`core/internal/work/`](../../core/internal/work/)                                                        | 计划、回复、暂停/取消、项目上下文与安全续作                       |
+| Heartbeat      | [`Supervisor`](../../core/internal/work/supervisor.go)                                                    | 判断已结束执行但未完成的任务能否继续                              |
+| 调度器         | [`Scheduler`](../../core/internal/schedules/scheduler.go)                                                 | 执行时间、重复规则、优先级和派发回执                              |
+| 记忆 / 对话    | [`core/internal/memory/`](../../core/internal/memory/)                                                    | SQLite 记忆、召回与迁移，对话权威位于 `core/internal/store/`      |
+| 电脑控制       | [`core/internal/computer/`](../../core/internal/computer/)、`vm/`                                         | VM 部署、SSH、截图、输入和控制权                                  |
+| 宿主 / VM 适配 | [`core/internal/platform/`](../../core/internal/platform/)、[`providers/`](../../core/internal/computer/) | 宿主能力及提供商的检测/创建/生命周期命令                          |
+| 本地备份       | [`core/internal/backups/`](../../core/internal/backups/)                                                  | Controller 加密归档、Worker 快照与明确的离线恢复                  |
 
-运行时模块使用 Node 原生可擦除类型的 TypeScript（`.mts`），纯类型放在 `.ts`。前端使用 Vite、TypeScript 和 DOM/CSS。模块与测试目录遵循[代码规范](code-style.md)。当前是 npm 仓库，尚未改成 React 应用或 pnpm workspace monorepo。
+生产后端位于 `core/internal/`，通过 `application` 由小型 `core/cmd/dant-core` 入口组装。Controller 与 Worker 是编译后二进制的独立角色。前端使用 Vite、TypeScript 和 DOM/CSS；保留的 `src/` 模块提供共享契约、语言数据和测试基准，不进入后端部署。模块与测试归属遵循[代码规范](code-style.md)。
 
 ## Agent loop 与执行所有权
 
@@ -113,7 +113,7 @@ sequenceDiagram
   Engine-->>Input: 验证后的结果、失败或需要人类回复的问题
 ```
 
-`Engine.pump()` 选择排队任务，线程初始化恢复当前对话对应的 Codex 线程，`handle()` 分派有作用域的事件/工具，`complete()` 保存结果和附件。提前到达的事件有界保存，不能在有效 `turn/start` 确认之前证明执行归属。提交状态和任务状态是 [`states.mts`](../../src/contracts/states.mts) 中的不同状态域。
+Go Engine 选择排队任务，恢复当前对话对应的 Codex 线程，分派有作用域的事件和工具，并保存结果及附件。提前到达的事件有界保存，不能在有效 `turn/start` 确认之前证明执行归属。提交状态和任务状态是 [`states.mts`](../../src/contracts/states.mts) 中的不同状态域。
 
 持久 `workId` 可以跨 turn 保留。`task_plan` 记录真实步骤，`task_list` 和 `task_cancel` 使用已保存身份。回复任务时，普通聊天输入携带 `workId`、预期 turn 和对话 ID；执行中的回复只送给匹配所有者，已结束任务则带着保留的项目上下文，从同一入口重开。
 
@@ -167,7 +167,7 @@ flowchart LR
 
 续作在异步提交前保存认领，并再次核对准确的任务/turn。自动续作中的普通叙述与交付先缓冲，只有完成、失败或真实输入阻塞才合并发布结果。连续三轮没有进展会暂停任务；新的有效执行证据可以允许有限延长，重复观察和失败动作不算进展。延长上限不等于通用的模型工具步数或 token 预算。
 
-调度支持一次性时间点和按 IANA 时区计算的五字段 cron。错过重复任务最多补跑一次，再计算未来时间；同一调度不会与自身未完成任务重叠。[`ScheduleDatabase`](../../src/schedules/schedule-database.mts) 在 `~/dant/data/schedules/schedules.sqlite` 保存调度、创建请求删除记录和派发回执。旧 JSON 调度先备份、仅导入一次，之后旧快照不能复活已删除或已修改的任务。修订号比较并交换（CAS）防止编辑覆盖，调度/执行时间的唯一键保证跨实例只认领一次。
+调度支持一次性时间点和按 IANA 时区计算的五字段 cron。错过重复任务最多补跑一次，再计算未来时间；同一调度不会与自身未完成任务重叠。[`ScheduleDatabase`](../../core/internal/schedules/database.go) 在 `~/dant/data/schedules/schedules.sqlite` 保存调度、创建请求删除记录和派发回执。旧 JSON 调度先备份、仅导入一次，之后旧快照不能复活已删除或已修改的任务。修订号比较并交换（CAS）防止编辑覆盖，调度/执行时间的唯一键保证跨实例只认领一次。
 
 | 派发阶段       | 含义                                                       |
 | -------------- | ---------------------------------------------------------- |
@@ -182,7 +182,7 @@ flowchart LR
 
 ## Memory：存储、缓存与召回
 
-SQLite 管理持久记忆，不替代 Codex 原始对话，也不管理应用的所有记录。当前直接使用内置 `node:sqlite`，无需独立数据库服务。
+SQLite 管理持久记忆，不替代 Codex 原始对话，也不管理应用的所有记录。Go Memory 通过 `database/sql` 使用固定版本的纯 Go `modernc.org/sqlite`，不需要独立数据库服务或 CGO 运行库。
 
 | 记忆类型          | 当前实现                                       | 持久数据权威                             |
 | ----------------- | ---------------------------------------------- | ---------------------------------------- |
@@ -191,15 +191,15 @@ SQLite 管理持久记忆，不替代 Codex 原始对话，也不管理应用的
 | Semantic Memory   | 身份/工作参考笔记；已确认的事实与偏好          | `memory.sqlite`                          |
 | Procedural Memory | 托管 `SKILL.md` 及必要的配套文件               | 现有 Skills 存储 / Markdown              |
 
-历史名称 `working-memory.md` 保留为持久参考笔记的兼容标签，不代表完整的实时 Working Memory。助手共同身份来自 [`identity.mts`](../../src/conversation/identity.mts)，与用户参考记忆分开。记忆不能授权工具或启动任务。
+历史名称 `working-memory.md` 保留为持久参考笔记的兼容标签，不代表完整的实时 Working Memory。助手共同身份来自 [`identity.go`](../../core/internal/memory/identity.go)，与用户参考记忆分开。记忆不能授权工具或启动任务。
 
 ### 持久存储与缓存
 
-`~/dant/data/memory/dant/memory.sqlite` 包含 `notes`、`projects`、`memory_entries`、修订信息和 FTS5 索引。`MemoryStore` 是统一入口，[`memory-sqlite.mts`](../../src/conversation/memory-sqlite.mts) 负责事务，[`memory-markdown.mts`](../../src/conversation/memory-markdown.mts) 负责显式 Markdown 导入导出。
+`~/dant/data/memory/dant/memory.sqlite` 包含 `notes`、`projects`、`memory_entries`、修订信息和 FTS5 索引。Go `memory.Store` 是唯一生产入口，[`Store`](../../core/internal/memory/store.go) 负责事务，[`Markdown interchange`](../../core/internal/memory/store_notes.go) 负责显式 Markdown 导入导出。
 
 每次读取在同一 SQLite 读事务中检查持久 revision，再决定是否复用笔记、确认条目或项目缓存。表触发器在数据变化时增加 revision，其他连接的写入也能使缓存失效；本地写入主动失效缓存。返回记录使用副本，项目缓存有数量上限，短连接在每次事务后释放句柄。缓存不能成为另一份数据权威。
 
-数据库启用 schema 版本、外键检查、有界忙等待、`synchronous=FULL`，采用 **DELETE journal**。当前没有直接开启 WAL，因为声明支持的较早 Node/SQLite 基线需要兼容；切换应先约束 SQLite 版本并验证并发。参见 [Node SQLite](https://nodejs.org/api/sqlite.html) 和 [SQLite WAL](https://www.sqlite.org/wal.html)。
+数据库启用 schema 版本、外键检查、有界忙等待、`synchronous=FULL`，采用 **DELETE journal**。运行时切换保留 DELETE journal 的原磁盘与备份契约。启用 WAL 需要另外验证并发和恢复行为，参见 [SQLite WAL](https://www.sqlite.org/wal.html)。
 
 迁移先校验并备份旧 Markdown/项目 JSON，再导入。保留项目原 ID 和已有来源时间，不补造缺失时间。随后 SQLite 成为数据权威，修改 `.md` 快照不会静默覆盖数据库，导入导出需要显式调用。任务 JSON 可以保留历史项目快照，但回复任务时通过绑定的 SQLite adapter 读取当前上下文。迁移失败保留来源，并停止失败操作。
 
@@ -222,11 +222,11 @@ flowchart TB
   Results --> Input[在既有发送前附加到当前输入]
 ```
 
-`proposeEntry`、`confirmEntry`、`updateEntry` 和 `deleteEntry` 实现存储流程。条目保留来源类型、已知的对话/任务/消息引用、提供的置信度及真实创建/更新时间。候选和冲突条目不进入有效上下文或检索；冲突必须明确解决，编辑已确认条目后需要重新确认。疑似凭据会被拒绝，供模型使用的参考文本会清理和脱敏。这些控制不代表任意敏感资料都适合保存。
+`Store.Propose`、`Store.Confirm`、`Store.Update` 和 `Store.Delete` 实现存储流程。条目保留来源类型、已知的对话/任务/消息引用、提供的置信度及真实创建/更新时间。候选和冲突条目不进入有效上下文或检索；冲突必须明确解决，编辑已确认条目后需要重新确认。疑似凭据会被拒绝，供模型使用的参考文本会清理和脱敏。这些控制不代表任意敏感资料都适合保存。
 
-`search(query)` 继续提供显式、有界的关键词 API。自动 [`retrieve(query, scope)`](../../src/conversation/memory-search.mts) 规范化有界的当前查询，去掉常见填充词，再以 **OR** 组合字面关键词进行参数化 FTS5 检索。作用域过滤先于排序与数量限制：共享笔记和无作用域的已确认语义事实可用；带来源范围的事实必须匹配当前对话/任务，项目上下文还必须匹配选中的工作 ID。候选、冲突条目和其他项目不进入结果。支持中文关键词，不使用 embeddings 或向量检索。
+`search(query)` 继续提供显式、有界的关键词 API。自动 [`retrieve(query, scope)`](../../core/internal/memory/store_search.go) 规范化有界的当前查询，去掉常见填充词，再以 **OR** 组合字面关键词进行参数化 FTS5 检索。作用域过滤先于排序与数量限制：共享笔记和无作用域的已确认语义事实可用；带来源范围的事实必须匹配当前对话/任务，项目上下文还必须匹配选中的工作 ID。候选、冲突条目和其他项目不进入结果。支持中文关键词，不使用 embeddings 或向量检索。
 
-Agent 基础记忆上下文只包含安全的身份/工作笔记。`context()` 中最多 32 条确认条目的视图保留用于兼容/只读展示，不再整批注入每个 Agent prompt。[`agent-memory.mts`](../../src/conversation/agent-memory.mts) 为**当前已经准入的输入**附加最多六条有界、脱敏且带来源的参考。普通执行轮次、任务调整、自动续作、识别后的音频以及原生/API 通话文字，都在既有发送前读取最新记忆；API 语音任务委派沿用相同 Engine 输入路径。没有匹配时原输入保持不变。修订检查使修改、删除和冲突变化立即可见，不保留独立的召回结果缓存。
+Agent 基础记忆上下文只包含安全的身份/工作笔记。`context()` 中最多 32 条确认条目的视图保留用于兼容/只读展示，不再整批注入每个 Agent prompt。[`Store.AgentContext`](../../core/internal/memory/store_search.go) 为**当前已经准入的输入**附加最多六条有界、脱敏且带来源的参考。普通执行轮次、任务调整、自动续作、识别后的音频以及原生/API 通话文字，都在既有发送前读取最新记忆；API 语音任务委派沿用相同 Engine 输入路径。没有匹配时原输入保持不变。修订检查使修改、删除和冲突变化立即可见，不保留独立的召回结果缓存。
 
 召回不修改用户原消息，也不增加另一项推理请求、执行轮次或持久参考注入操作；它不能授权动作或恢复其他任务。Codex 旧历史不会被清除，参考标记明确限定当前输入，并在该输入中取代旧摘录。空闲 heartbeat 检查不检索记忆。记忆与人格页面提供上文所述、经校验的文档与条目管理；自动提取／整理尚未实现。兼容的 `memory_write` 仍直接编辑参考笔记。
 
@@ -234,13 +234,13 @@ Codex 管理模型线程、上下文窗口、压缩和提供商 token 统计。d
 
 ## 工具、鉴权与电脑控制权
 
-工具 schema 与 handler 支持桌面、计划、调度、凭据和 Skills，包括 `dant_desktop` MCP。网页、文件和记忆是参考数据，不是权限。运行时解码器负责校验未知磁盘/网络数据的实际使用字段，TypeScript 类型本身不能完成校验。
+工具 schema 与 handler 支持桌面、计划、调度、凭据和 Skills，包括 `dant_desktop` MCP。网页、文件和记忆是参考数据，不是权限。Go 与浏览器边界解码器负责校验未知磁盘/网络数据的实际使用字段，静态类型不能替代运行时校验。
 
 Controller 与 Worker 默认各自在本机绑定 `127.0.0.1:4317`，VM 桌面服务默认 `127.0.0.1:4320`。共享配置校验部署选项，开发 `.env` 可选，安装包有默认值。参见[配置](configuration.md)。
 
 API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。**Token 用于鉴权，不会加密 HTTP。** Controller/Worker 流量经 SSH 本地转发；模型/Telegram 使用各自的加密通信。API 不暴露到 VM 网卡。Token 和秘密不进入公开快照、日志或记忆；VM vault 与 Windows DPAPI 各自负责相应凭据。
 
-当前 Codex 在 VM 内使用 `approvalPolicy: 'never'` 和 `danger-full-access`。实际边界包括 VM、普通用户、受限文件接口、鉴权和桌面租约。**当前没有覆盖所有模型 shell 操作的独立通用 Policy Engine，也没有逐命令/逐删除审批。** Tauri capabilities 限制原生 bridge，不会限制 Node Worker 的全部权限。更强的工具策略与审批需要单独实现。
+当前 Codex 在 VM 内使用 `approvalPolicy: 'never'` 和 `danger-full-access`。实际边界包括 VM、普通用户、受限文件接口、鉴权和桌面租约。**当前没有覆盖所有模型 shell 操作的独立通用 Policy Engine，也没有逐命令/逐删除审批。** Tauri capabilities 限制原生 bridge，不会限制 Worker 的全部执行路径。更强的工具策略与审批需要单独实现。
 
 用户接管先预留控制权，中断准确 turn，确认停止后才授予 VM 控制租约。Python 工具与 UI 输入共用锁/租约，过期或不匹配的 session 不能输入；归还控制权不会重放暂停任务。这些控制不能保证杀死此前脱离的后台进程，也不能替代系统权限。
 
@@ -265,11 +265,11 @@ API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。*
 
 ## 本地备份与恢复
 
-[`ControllerBackups`](../../src/backups/controller-backups.mts) 负责本机备份配置、定期/连接触发及明确恢复确认，通过已鉴权的 Worker 通道获取空闲状态下的持久数据/工作区快照，再在 Controller 数据目录保存加密 `.dantbak` 归档。AES-256-GCM 密钥由 HostPlatform 秘密保护接口封装；Windows 实现 DPAPI，缺少提供商时拒绝明文保存。按来源绑定分别保留副本，默认每台工作电脑十份。
+[`backups.Manager`](../../core/internal/backups/manager.go) 负责本机备份配置、定期/连接触发及明确恢复确认，通过已鉴权的 Worker 通道获取空闲状态下的持久数据/工作区快照，再在 Controller 数据目录保存加密 `.dantbak` 归档。AES-256-GCM 密钥由 HostPlatform 秘密保护接口封装；Windows 实现 DPAPI，缺少提供商时拒绝明文保存。按来源绑定分别保留副本，默认每台工作电脑十份。
 
-Worker 导出在独立的 Node 工作线程中复制文件、生成 SQLite 快照、计算哈希并编码归档。可读流通过线程传输并施加背压，状态请求仍可响应。同一时间只允许一份导出进行暂存或传输。API 在捕获前确认执行空闲，并在返回成功前重新检查当前执行状态和期间发生的 Engine 变化。新工作可以继续执行，但会使尚未完成的捕获失效。断开连接、超时或关闭服务时，先关闭读取端并终止生产线程，再异步清理经过身份核验的私有暂存目录。
+Worker 使用 Go 执行可取消的文件复制、SQLite 快照、哈希与归档流传输，与状态请求独立运行。有界缓冲与 HTTP writer 提供背压。同一时间只允许一份导出暂存或传输。API 在捕获前确认执行空闲，并在成功前复核捕获的执行所有权；新的工作会使未完成快照失效。断开、超时或关闭时取消所属工作、关闭句柄，只清理经过身份核验的私有暂存目录。
 
-便携 `.dant` 文件采用独立、带版本的传输格式。[`PortableBackup`](../../src/backups/portable-backup.mts) 使用固定参数的 scrypt 从用户密码派生密钥，以 AES-256-GCM 保护归档和元数据。纯流式校验器检查路径、记录、文件哈希及计数，并过滤已知认证存储。导入先对完整的加密暂存文件完成认证和校验，再以目标电脑的本机密钥重新加密入库；不暂存明文归档，也不改变原本机备份。
+便携 `.dant` 文件采用独立、带版本的传输格式。[`backups.Portable`](../../core/internal/backups/portable.go) 使用固定参数的 scrypt 从用户密码派生密钥，以 AES-256-GCM 保护归档和元数据。纯流式校验器检查路径、记录、文件哈希及计数，并过滤已知认证存储。导入先对完整的加密暂存文件完成认证和校验，再以目标电脑的本机密钥重新加密入库；不暂存明文归档，也不改变原本机备份。
 
 首次引导先询问备份，再提供 VM 创建入口。导入在本机完成，无须连接 VM；恢复仍要求独立、绑定目标的预览与确认。Tauri 负责文件选择和有大小上限的流式传输，经过鉴权的本机 Controller API；浏览器使用同格式及较小的传输限额。因此可以在支持的前端、电脑和 VM 之间复制 dant，但不负责两份运行中副本的实时协调。未来 Google Drive 适配器可以存储相同的便携格式，本版没有接入 Drive。
 
@@ -281,11 +281,17 @@ Worker 对 data 目录中的 SQLite 使用 `VACUUM INTO` 与完整性检查。�
 
 ## 宿主平台与 VM Provider 能力
 
-[`HostPlatform`](../../src/platform/host-types.ts) 与 [`createHostPlatform`](../../src/platform/host-platform.mts) 现在已经实现宿主能力边界，描述平台身份、托管 VM/已有 SSH 支持、固定命令/配置访问，以及可选的秘密保护。该抽象不会把窗口/通知的原生职责从 Tauri 移出，也不会创建另一套任务执行器。
+[`platform.Host`](../../core/internal/platform/host.go) 与 [`platform.New`](../../core/internal/platform/host.go) 现在已经实现宿主能力边界，描述平台身份、托管 VM/已有 SSH 支持、固定命令/配置访问，以及可选的秘密保护。该抽象不会把窗口/通知的原生职责从 Tauri 移出，也不会创建另一套任务执行器。
 
-[`VmProviderRegistry`](../../src/computer/providers/provider-types.ts) 包含 Hyper-V、VMware 适配器，以及非托管 SSH 能力。[`createVmProviders`](../../src/computer/providers/vm-providers.mts) 提供检测、创建计划与固定生命周期命令；Provisioning 和 `VmLifecycle` 消费这些适配器，VM 所有权、静止确认与结果核验仍由既有生命周期服务负责。单独的 SSH 连接不提供已验证的虚拟机挂起/恢复能力。缺少能力时明确返回不可用，不会偷偷更换提供商或回退到宿主 shell 执行任务。
+[`computer.Providers`](../../core/internal/computer/providers.go) 包含 Hyper-V、VMware 适配器，以及非托管 SSH 能力。[`computer.NewProviders`](../../core/internal/computer/providers.go) 提供检测、创建计划与固定生命周期命令；Provisioning 和 `VmLifecycle` 消费这些适配器，VM 所有权、静止确认与结果核验仍由既有生命周期服务负责。单独的 SSH 连接不提供已验证的虚拟机挂起/恢复能力。缺少能力时明确返回不可用，不会偷偷更换提供商或回退到宿主 shell 执行任务。
 
 当前托管适配器仍要求 Windows。已识别 Unix 宿主的平台 ID 与 SSH 能力是扩展点，不代表已经支持 macOS/Linux 桌面发布。未来宿主还需要各自经过验证的生命周期、秘密保护、原生集成和发布适配器，并继续共享 Controller/Worker、Engine、记忆与调度；Ubuntu Worker 仍是执行权威。
+
+## 运行时更新与切换
+
+Controller 在部署前，按版本、源码提交、长度和 SHA-256 校验打包的 Linux 二进制与固定辅助文件清单。`vm/worker-install.py` 使用内核锁串行安装，通过当前维护协议阻止新准入，或确认受支持的旧路由后停止旧 Node 服务。它核实旧服务及所属 Codex 进程停止，创建并校验私有恢复归档，再使用 Go 二进制离线准备原数据。停止结果未知、数据库不兼容或备份缺失都会阻止激活。
+
+Worker 服务只启动经验证的 Go 程序。版本与源码证明匹配后，Controller 才把更新标为当前。失败会保留数据与恢复归档，不回退启动 Node。Go 数据根所有权锁可以排除另一 Go owner，但不能单凭该锁证明旧 Node 执行器已停止。完整边界见[迁移说明](go-core-migration.md)。
 
 ## 当前边界与后续工作
 
@@ -313,6 +319,6 @@ Worker 对 data 目录中的 SQLite 使用 `VACUUM INTO` 与完整性检查。�
 - 已有续作保护、停止控制、超时和有界证据延长；统一的每任务工具步数、执行时间和 token 预算仍需设计。
 - 已有带作用域的自动召回、候选存储与经校验的记忆编辑；embeddings 和自动 consolidation 仍为后续工作。
 - 已有 Windows Controller / Ubuntu Worker 生命周期，尚未实现通过 named pipes/Unix sockets 通信的跨平台独立用户服务。
-- 已有 TypeScript 合约与运行时校验；React、Zustand、Tailwind、Zod 和 pnpm monorepo 不是当前依赖。
+- 已有生成的 Go/TypeScript 状态契约与运行时校验；React、Zustand、Tailwind、Zod 和 pnpm monorepo 不是当前依赖。
 
 模块测试使用隔离 Store、注入时钟/通信和 fixture 执行器，验证所有权、持久化、不确定结果和恢复，不操作用户真实 VM 或账号。通过测试不能证明真实音频质量、通知送达或桌面任务成功。检查命令与验收记录见 [CI](ci.md)和[验证](verification.md)。

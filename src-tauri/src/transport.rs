@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::{
+    fs,
     io::{Read, Write},
     net::TcpStream,
+    path::Path,
     time::Duration,
 };
 
@@ -126,14 +128,98 @@ pub fn local_json(
     serde_json::from_str(body).ok()
 }
 
-pub fn existing_controller() -> bool {
-    local_json("/api/session", None, None)
-        .is_some_and(|value| value.get("product").and_then(|v| v.as_str()) == Some("dant"))
+const CORE_PROTOCOL_VERSION: u64 = 1;
+const RESOURCE_MANIFEST_BYTES: u64 = 64 * 1024;
+
+pub fn bundled_source(root: &Path) -> Result<String, &'static str> {
+    let path = root.join("resource-manifest.json");
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|_| "The Go core resource manifest is missing")?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > RESOURCE_MANIFEST_BYTES
+    {
+        return Err("The Go core resource manifest is invalid");
+    }
+    let bytes = fs::read(path).map_err(|_| "The Go core resource manifest could not be read")?;
+    if bytes.len() as u64 > RESOURCE_MANIFEST_BYTES {
+        return Err("The Go core resource manifest is invalid");
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "The Go core resource manifest is invalid")?;
+    let source = value
+        .get("sourceCommit")
+        .and_then(|value| value.as_str())
+        .ok_or("The Go core source is missing")?;
+    if source.len() != 40
+        || !source
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("The Go core source is invalid");
+    }
+    Ok(source.to_owned())
+}
+
+fn compatible_controller(value: &serde_json::Value, source: &str) -> bool {
+    value.get("product").and_then(|value| value.as_str()) == Some("dant")
+        && value.get("mode").and_then(|value| value.as_str()) == Some("controller")
+        && value.get("runtime").and_then(|value| value.as_str()) == Some("go")
+        && value.get("protocol").and_then(|value| value.as_u64()) == Some(CORE_PROTOCOL_VERSION)
+        && value.get("version").and_then(|value| value.as_str()) == Some(env!("CARGO_PKG_VERSION"))
+        && value.get("source").and_then(|value| value.as_str()) == Some(source)
+}
+
+pub fn existing_controller(source: &str) -> Result<bool, &'static str> {
+    if let Some(value) = local_json("/api/session", None, None) {
+        if compatible_controller(&value, source) {
+            return Ok(true);
+        }
+        return Err("A different dant service is running. Close the old dant application before starting this version.");
+    }
+    if TcpStream::connect_timeout(
+        &"127.0.0.1:4317".parse().unwrap(),
+        Duration::from_millis(400),
+    )
+    .is_ok()
+    {
+        return Err("The local service could not be identified. Close the application using port 4317 before starting dant.");
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_json_body, API_JSON_BODY_BYTES};
+    use super::{
+        compatible_controller, validate_json_body, API_JSON_BODY_BYTES, CORE_PROTOCOL_VERSION,
+    };
+
+    #[test]
+    fn controller_reuse_requires_the_same_go_build_and_role() {
+        let source = "a".repeat(40);
+        let session = serde_json::json!({
+            "product": "dant", "mode": "controller", "runtime": "go",
+            "protocol": CORE_PROTOCOL_VERSION, "version": env!("CARGO_PKG_VERSION"),
+            "source": source
+        });
+        assert!(compatible_controller(&session, &source));
+        for (key, value) in [
+            ("product", serde_json::json!("other")),
+            ("mode", serde_json::json!("worker")),
+            ("runtime", serde_json::json!("node")),
+            ("protocol", serde_json::json!(0)),
+            ("version", serde_json::json!("0.0.0")),
+            ("source", serde_json::json!("b".repeat(40))),
+        ] {
+            let mut changed = session.clone();
+            changed[key] = value;
+            assert!(!compatible_controller(&changed, &source), "{key}");
+        }
+        assert!(!compatible_controller(
+            &serde_json::json!({"product":"dant"}),
+            &source
+        ));
+    }
 
     #[test]
     fn json_body_accepts_absence_and_the_exact_byte_limit() {

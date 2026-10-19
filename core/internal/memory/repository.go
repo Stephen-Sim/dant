@@ -9,6 +9,7 @@ import (
 type repository struct {
 	db       *sql.DB
 	revision int64
+	live     bool
 }
 
 func newRepository(ctx context.Context, db *sql.DB, expectedRevision int64) (*repository, error) {
@@ -107,6 +108,7 @@ func (r *repository) search(ctx context.Context, tx *sql.Tx, expression string, 
 	}
 	return mapCandidates(rows)
 }
+
 func (r *repository) retrieve(ctx context.Context, tx *sql.Tx, expression string, scope Scope, limit int) ([]candidate, error) {
 	rows, err := tx.QueryContext(ctx, retrievalQuery, sql.Named("expression", expression), sql.Named("conversation", scope.ConversationID), sql.Named("work", scope.WorkID), sql.Named("limit", limit))
 	if err != nil {
@@ -114,6 +116,10 @@ func (r *repository) retrieve(ctx context.Context, tx *sql.Tx, expression string
 	}
 	return mapCandidates(rows)
 }
+
 func (r *repository) document(ctx context.Context, tx *sql.Tx, row candidate) (*document, error) {
+	if r.live {
+		return liveDocument(ctx, tx, row)
+	}
 	return mapDocument(tx.QueryRowContext(ctx, documentQuery, sql.Named("rowid", row.rowID)), row)
 }

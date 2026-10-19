@@ -33,15 +33,15 @@ Text tasks and default voice use your ChatGPT subscription allowance; voice avai
 <details>
 <summary>Run from source</summary>
 
-With Node.js 22.18+ LTS / 24+ and the prerequisites above:
+Install Go 1.27.2, Node.js 22.18+ LTS / 24+ and the prerequisites above. Commit reviewed source before preparing versioned runtime resources:
 
 ```powershell
 npm ci
-npm run build
+npm run package:resources
 npm start
 ```
 
-Open <http://127.0.0.1:4317>. To build the desktop app, install Visual Studio C++ Build Tools and Windows SDK, then run `scripts/setup-tools.ps1` and `scripts/build-desktop.ps1`. See [development and CI](docs/ci.md).
+Open <http://127.0.0.1:4317>. `npm start` and `npm run dev` use the verified compiled Go backend. See [runtime support](docs/runtime-support.md) for rebuilding it. To build the desktop app, install Visual Studio C++ Build Tools and Windows SDK, then run `scripts/setup-tools.ps1` and `scripts/build-desktop.ps1`. See [development and CI](docs/ci.md).
 
 </details>
 

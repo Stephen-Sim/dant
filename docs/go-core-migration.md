@@ -1,111 +1,81 @@
-# Go Core migration design
+# Go Core migration and cutover
 
 English · [Chinese](zh-CN/go-core-migration.md)
 
-**Status: foundation and isolated Memory shadow implementation in progress.** The packaged application still uses a TypeScript/Node.js Controller and Worker. The repository now contains a pinned Go module, generated cross-runtime state contracts, build checks and a read-only Memory shadow runtime. Shadow results do not enter model context or acquire execution ownership. [System architecture](architecture.md) remains the description of production behavior.
+The current source assembles **Go Agent Core + Rust Tauri + TypeScript UI**. Go owns the Controller and Linux Worker backend, including persistence, execution orchestration, memory, scheduling, calls, Telegram, files, Skills, security, VM deployment and backups. TypeScript remains the browser, build tools and compatibility-test reference. This is a source implementation statement, not a record of a published release or completed local installation acceptance.
 
-The target is **Go Agent Core + Rust Tauri + TypeScript UI**. This changes the language of dant's backend orchestration; Codex App Server continues to own model reasoning, tool iterations and its conversation. Go must not introduce a second LLM loop.
+Codex App Server still owns model reasoning, tool iterations and its persistent conversation. dant's Go Engine owns admission, durable work, acknowledgments, resource ownership and delivery. It does not implement another LLM loop. See [system architecture](architecture.md) and [runtime support](runtime-support.md).
 
-## Ownership
+## Runtime and package ownership
 
-| Component          | Target responsibility                                                                                                       | Existing boundary to preserve                                                |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| TypeScript UI      | Pages, interaction, rendering and validated requests                                                                        | No local execution or direct database access                                 |
-| Rust Tauri         | Window management, tray, notifications, native IPC, installer, system editor and OS integration                             | Native commands stay scoped to their existing window and validated transport |
-| Go Controller      | HostPlatform, VMProvider, SSH forwarding, lifecycle, deployment, updates, host preferences, local backups and offline views | Never construct an execution Engine or run agent tools on the host           |
-| Go Worker          | Authoritative conversation state, execution admission, task lifecycle, memory, scheduling, heartbeat and tool routing       | Linux VM, ordinary user, healthy desktop, one execution owner                |
-| Codex App Server   | Model reasoning, persistent model threads and tool iterations                                                               | Existing subprocess stdio JSON-RPC with acknowledged thread/turn identity    |
-| VM desktop helpers | Screenshot, input, file operations and human-control lease                                                                  | Preserve the Python bridge and existing authorization checks                 |
+| Owner                                                             | Production responsibility                                                                                         |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `core/cmd/dant-core`, `core/internal/application`                 | Validate process roles, assemble dependencies and own shutdown.                                                   |
+| `core/internal/controller`, `computer`, `platform`                | Host configuration, providers, SSH forwarding, deployment, lifecycle and offline views. No Engine on Windows.     |
+| `core/internal/app`, `work`, `runtime`                            | Authenticated Worker API, single execution admission, task continuity and the existing Codex RPC protocol.        |
+| `core/internal/store`, `history`                                  | Original conversation files, exact IDs, durable work, typed call-input history and read/delivery receipts.        |
+| `core/internal/memory`, `schedules`                               | SQLite ownership, revision-aware memory/FTS recall, recurrence and dispatch fences.                               |
+| `core/internal/voice`, `telegram`                                 | Existing call/media lifecycle, transcription, captions and paired messaging with no replay of unknown deliveries. |
+| `core/internal/files`, `skills`, `security`, `backups`, `updates` | Validated files, supporting Skill bytes, credentials, protected archives and update contracts.                    |
+| `src-tauri/src`, `ui`                                             | Native window/OS integration and TypeScript browser interaction.                                                  |
 
-Controller and Worker remain separate runtime roles, even if shipped from one Go module. An offline Worker must never cause the Controller to become an executor. HostPlatform and VMProvider remain explicit adapters; the Go migration alone does not implement macOS or Linux host support.
+Go feature tests sit beside each package. Fixed queries, transaction ownership and validated row mapping stay inside their owning repository. Entrypoints and HTTP adapters do not receive arbitrary SQL or open caller-selected database paths. Narrow interfaces belong to consumers; there is no generic repository or automatic ORM migration.
 
-The present implementation boundaries are [`src/app/`](../src/app/), [`src/work/`](../src/work/), [`src/runtime/`](../src/runtime/), [`src/conversation/`](../src/conversation/) and [`src/schedules/`](../src/schedules/). Migrate these responsibilities through narrow adapters; do not grow a new entrypoint containing all of them.
+Controller and Worker are distinct roles of the compiled executable. The Controller never starts a task Engine or executes agent work on the host. Host and provider abstractions retain Windows Hyper-V/VMware behavior; recognized Unix host capabilities are extension points, not a claim of macOS/Linux desktop release support.
 
-## Contracts before implementation
+## Stable contracts and data
 
-Use a single language-neutral schema source for dant-owned API DTOs, named state domains, errors, identity fields and protocol limits. Generate Go, TypeScript and relevant Rust types and validators, with a CI drift check. Keep existing wire values; generated types do not replace runtime validation. Keep the Codex protocol adapter separate and compatible with the pinned App Server version.
+`src/contracts/state-domains.json` generates typed Go states and frozen TypeScript domains. `core-protocol.json` supplies shared transport limits. `npm run check:contracts` rejects drift. Runtime decoders still validate consumed fields, including enum values, message/turn/conversation identity and absence versus explicit null or zero. Shared text helpers preserve ECMAScript trimming, UTF-16 budgets and supported legacy JSON text; Unicode golden fixtures compare normalization and case behavior with the reference implementation.
 
-The compatibility contract includes:
+Existing API routes, `X-Dant-Token`, origin/host validation, native IPC, `4317` application API, `4320` guest desktop bridge and authenticated SSH forwarding remain in place. Tokens authenticate local HTTP; SSH encrypts the host-to-VM channel. The Worker remains an ordinary user inside a graphical Linux VM. Changing language does not grant new permissions.
 
-- Current API routes, authentication, allowed origins, event streams and native IPC. Preserve the `4317` application API and `4320` desktop bridge defaults from [`protocol.json`](../src/config/protocol.json), existing size limits and SSH forwarding. A transport redesign is a separate change.
-- Exact conversation, work, message, thread, turn, call and connection-generation identity. Recheck captured identity before applying asynchronous results.
-- Missing, `null`, `false` and zero as distinct values where the current API distinguishes them. Go `omitempty` must not erase explicit clears; decode numbers through typed fields or exact JSON numbers, not unchecked `float64` maps.
-- Existing unknown outcomes and stable error codes. Lost acknowledgments cannot become automatic retries or successful receipts.
-- Named state domains with stable string values. Unknown external states fail validation or retain explicit uncertainty; they are never normalized into permission to execute.
+The runtime cutover preserves original locations and identities:
 
-Keep the existing local token/Origin checks, authenticated forwarding and credential-bridge scope. A Go subprocess used during migration should communicate through parent-controlled bounded stdio rather than introducing an unauthenticated port. Do not send tokens through command-line arguments or copy credentials into diagnostics, schemas or test fixtures.
+| Authority                     | Preserved contract                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `state.json`                  | Messages, durable work, submission/continuation receipts, timestamps, nullable values and supported legacy fields.        |
+| `memory/dant/memory.sqlite`   | Schema 1, notes, projects, entries, revision triggers, confirmation/conflict rules and FTS5.                              |
+| `schedules/schedules.sqlite`  | Saved jobs, creation-request tombstones, occurrence claims and prepared/materialized/held/handed-off receipts.            |
+| Files, Skills and credentials | Immutable attachment IDs, supporting files, private vault paths and protected envelopes.                                  |
+| Backups and Codex home        | Existing archive formats and source identities, with model authentication excluded where the backup contract requires it. |
 
-## Persistence compatibility
+The Go Memory Store is the only production writer after activation. It synchronizes stale FTS within its own SQLite transaction and checks revisions before cache reuse. Automatic recall filters conversation/work scope before ranking and limits, rechecks confirmed status and source, redacts references and enforces UTF-16 budgets. It attaches relevant memory to an already-admitted input; it cannot authorize work. Candidate/conflicted entries remain excluded until explicitly confirmed.
 
-Preserve `state.json`, attachment identities, Skills and supporting bytes, Codex home/thread data, backup manifests, credential envelopes and these databases:
+Scheduler SQLite claims and the JSON message fence remain separate durable writes. The exact message ID is materialized before a no-replay handoff receipt is committed. A lost enqueue acknowledgment does not create another dispatch. Recovery retains paused/unknown work and original IDs. The continuation Supervisor and Scheduler both use the same Engine admission owner; timers do not create a second executor.
 
-| Authority                    | Required compatibility                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `memory/dant/memory.sqlite`  | Schema version, notes, project keys, memory entries, revision triggers, FTS5 and confirmation/conflict rules |
-| `schedules/schedules.sqlite` | Jobs, creation-request tombstones, unique occurrence claims and dispatch receipts                            |
-| `state.json`                 | Messages, durable work, submission state, source identities, timestamps and legacy fields                    |
+SQLite uses pinned pure-Go `modernc.org/sqlite`, bounded busy waits, `synchronous=FULL` and DELETE journaling. The runtime-language migration does not change the schema or enable WAL. A later schema/journaling change requires its own backup and compatibility policy.
 
-Changing runtime language is not a reason to rename storage, generate replacement IDs or invent missing timestamps. Keep current revision comparisons, busy timeouts, `synchronous=FULL` and DELETE journaling until a separately tested migration changes them. Preserve exact revision-trigger definitions expected by the existing schema guards. The Go SQLite implementation must prove FTS5 support and the current Unicode/CJK search behavior on Windows and Linux; select and pin its driver only after those tests.
+## Old Node Worker to Go Worker
 
-**FTS retrieval currently has a write side effect.** [`memory-search.mts`](../src/conversation/memory-search.mts) rebuilds the search index when `search_revision` differs from `revision`. A read-only Go query cannot silently skip that work. The current Node owner must first synchronize the index and produce a consistent SQLite snapshot, or provide bounded immutable candidate records. A Go snapshot reader must require a matching search revision; a stale index is an explicit unavailable/deferred result, not an empty successful search. Do not copy a live database file without SQLite snapshot coordination.
+The installer owns this boundary because a Go-only mutex or data-root lock cannot establish that a legacy Node executor stopped.
 
-Keep the existing SQLite-plus-JSON scheduling boundary explicit: a SQLite claim serializes the exact-ID JSON patch, but those two files are not one atomic database transaction. The durable `handed-off` fence prevents replay; it does not prove execution succeeded.
+1. The Controller verifies version, source commit, fixed bundle paths, file lengths and hashes before uploading the Linux executable and helpers.
+2. `vm/worker-install.py` takes a kernel installation lock and records the installation phase. The current maintenance protocol blocks new admission; a positively identified legacy route uses its existing guard and stopped-process proof.
+3. The installer stops the old user service and verifies the service and owned Codex processes have ended. An unknown shutdown stops the cutover.
+4. It installs the verified Go executable and Go service definition, captures a private recovery archive, and validates that archive before offline `prepare-worker` opens or migrates existing data. Preparation does not start a model, schedules or Telegram dispatch.
+5. The new Worker takes exclusive data-root ownership before enabling its live services. Readiness must confirm the target version and source provenance before deployment is recorded as current.
 
-## Migration phases
+A failure preserves data, the private archive and an explicit unconfirmed installation receipt. It does not restart an old Node Worker against prepared data or replay an uncertain action. Recovery requires independent reconciliation and exclusive ownership. Restore likewise validates the archive first, pauses tasks/schedules, disables Telegram and uses the existing target-bound receipt protocol.
 
-1. **Establish the implementation foundation.** [AGENTS.md](../AGENTS.md) and [code style](code-style.md) define Go module ownership, tests and reproducible formatting. The module pins **Go 1.27.2**, verified on 19 October 2026 against the [official release history and support policy](https://go.dev/doc/devel/release). Existing TypeScript, Python and Rust checks remain enabled. Install this exact official compiler; checks disable automatic toolchain selection.
-2. **Shadow memory retrieval.** Keep Node as the only writer and executor. A Go helper reads an immutable, revision-bound snapshot or bounded candidates, and compares recall, scoping, ranking, redaction and text budgets against current outputs. Shadow results do not reach the model or trigger tools. After parity, connect this read path to Memory search and already-admitted input context through an adapter.
-3. **Transfer Memory ownership.** Route every memory mutation, project-context write and consolidation action to Go. Establish one writer before enabling Go writes. Preserve user revision conflicts, confirmation and explicit import/export; retain the Node adapter only as a client.
-4. **Transfer Worker execution ownership.** Implement Store, Scheduler, Heartbeat, Codex RPC and Engine admission behind compatibility tests. Activate their dispatch authority together. A shadow Scheduler or Engine may observe fixtures or snapshots, but must never claim jobs, create live Codex sessions or call tools.
-5. **Transfer Controller and packaging.** Preserve Windows provider behavior while moving its host orchestration to Go. Update Tauri sidecar launch, resource allowlists, deployment, service management, source fingerprints, versions and artifact provenance together. Remove old backend modules only after imports, deployment and rollback behavior are verified. Node remains a UI build dependency and may still be needed by user-authored tools; removing the backend runtime does not authorize deleting those tools.
+## Build, resources and development
 
-Keep each phase reviewable and independently releasable. Existing behavior remains authoritative until that phase's owner is deliberately switched.
+Go **1.27.2** is pinned in tooling and CI; automatic toolchain selection is disabled. Production binaries use `CGO_ENABLED=0`, `-trimpath` and explicit version/source build metadata. `buildCore` requires a clean committed tree, validates the expected CI commit, and checks it again after compilation. Dirty source cannot be labeled with an unrelated clean commit.
 
-## Go implementation boundaries and optimization
+`npm run package:resources` builds the TypeScript UI and prepares these verified resources:
 
-Go runtime entrypoints live under `core/cmd/`; feature packages live under `core/internal/`. Memory separates the retrieval policy, the SQLite repository, fixed parameterized queries, and validated row mapping. SQL scope predicates, confirmation rules and revision checks are security invariants, not environment settings. A generic CRUD repository or an ORM does not replace these feature-specific checks.
+- Root `dant-core.exe` for the Windows Controller.
+- `resources/core/dant-core-linux-amd64` and its fixed VM-helper bundle manifest.
+- The UI, fixed host/VM helpers, protocol JSON and license.
+- Build and complete resource manifests binding bytes to version, source commit and SHA-256.
 
-```text
-core/
-  cmd/dant-core/          Signal handling and process entry only
-  internal/
-    contracts/           Generated state vocabulary and transport limits
-    shadow/              Shadow role assembly, options and snapshot lifecycle
-    transport/           Bounded stdio framing, dispatch and cancellation
-    memory/              Retrieval policy, repository, queries and row mapping
-      stdio/             Memory request/response adapter
-scripts/core/            Pinned tooling, generation and shadow client
-tests/core/              TypeScript tooling tests and explicit parity runner
-```
+No backend TypeScript tree, `node_modules`, Node executable, `.env` or runtime data is packaged. The native host launches the compiled Go Controller and accepts only a matching runtime/version/source marker. There is no production Node fallback. Python desktop helpers and Codex App Server retain their separate roles.
 
-Go behavioral tests live beside their package. Interfaces belong to the consumer that needs a replaceable capability; for example, the Memory stdio adapter consumes only query operations and a snapshot guard. Domain packages do not import command entrypoints or transport adapters. Add Controller, Worker and provider packages when their responsibilities move, rather than creating empty generic layers in advance.
+After committing reviewed changes, run `npm run package:resources`, then `npm start` to launch the validated compiled Go backend. `npm run dev` uses the same prepared backend with Vite. The launcher does not silently rebuild dirty source or run `src/server.mts`. See [runtime support](runtime-support.md) for tools and [CI](ci.md) for gates.
 
-The first Memory slice uses `database/sql` with pinned pure-Go SQLite. FTS5 `MATCH`, `bm25`, immutable snapshots and exact revision behavior benefit from explicit SQL. GORM supports [raw SQL](https://gorm.io/docs/sql_builder.html), but introducing it here would still require these queries and a separate schema compatibility policy. No ORM or automatic schema migration is enabled. SQL statements use bound values; never interpolate a query, scope, identifier or sort order supplied by a caller.
+## Compatibility evidence and remaining acceptance
 
-`src/contracts/state-domains.json` generates the existing frozen TypeScript domains and typed Go states; `core-protocol.json` generates shared transport limits. `npm run check:contracts` rejects generated drift. API DTO generation and the execution-ownership fence remain later work; these foundation files do not imply that all Core contracts have migrated.
+The original read-only Memory shadow role remains an explicit test tool with bounded stdio framing, four workers, a bounded queue, cancellation, revision checks and no execution capability. The TypeScript owner builds sanitized fixture projections; the Go reader compares scope, ranking, nullable metadata, excerpts and scores. Shadow results never enter production context. Production recall uses the Go Store directly.
 
-The shadow runtime has only `ping`, `search` and `retrieve` requests over parent-owned stdio. Four workers and a queue of sixteen bound read concurrency. Deadlines, explicit cancellation, single-writer output, frame limits and bounded session identities prevent unlimited goroutine, queue or retained-ID growth. Cancellation stops waiting; it never authorizes replay. This runtime has no model connection, task admission, scheduler dispatch or HTTP listener.
+`npm run test:core:parity` retains the isolated reference comparison, including CJK, NFKC expansion, UTF-16 boundaries, source isolation and integral SQLite REAL timestamps. Other Go fixtures cover writes, conflicts, restart/dispatch phases, calls, unknown outcomes, backup recovery and transport cancellation. Retained TypeScript tests are compatibility oracles and browser/tooling tests, not a second live backend.
 
-The Node owner synchronizes FTS and captures sanitized reference projections inside one transaction. The independent snapshot preserves every indexed row for equivalent ranking and binds the search revision to its authority revision. Go reuses its process and read connections rather than spawning a process or copying a database per query. Original databases and raw note/project tables are not copied into the shadow snapshot. Query normalization and sensitive-value handling remain shared with the existing TypeScript implementation until their own parity migration.
-
-Use `npm run test:core:parity` for isolated cross-runtime fixtures and warm latency measurements. It compares identities, scope, ordering, excerpts, nullable metadata and scores, including CJK and UTF-16 boundaries. Node reads against its authoritative database and Go reads an immutable projection; timings include this architectural difference and are not a general language benchmark. Record startup, snapshot creation and warm request latency separately. Future optimizations require separate measurements for large file streaming/backpressure, Scheduler/Heartbeat I/O cancellation, process RSS and real UI interaction. Task state transitions and SQLite mutations keep a single owner even when independent I/O runs concurrently.
-
-## Execution cutover
-
-The Worker transition requires a process-level ownership fence shared by the old and new runtimes, in addition to the existing Engine's single-admission checks. Do not rely on an in-memory Go mutex or the API port alone to exclude an old executor.
-
-1. Block new chat, voice, schedule and heartbeat admission; retain durable queued work.
-2. Use the existing pause/update path and reconcile the active turn. Confirm the old executor and its Codex child have stopped before transferring ownership. An unknown stop blocks activation.
-3. Capture a validated backup and verify data/schema compatibility without modifying the backup or old runtime's files.
-4. Give the Go Worker exclusive ownership before starting its timers, gateway dispatch or Codex connection. Reconcile unfinished claims by their original IDs; retain paused and unknown states rather than resubmitting them.
-5. Verify version, capability and source provenance, authenticated state/events, memory and schedules before the Controller marks the new service ready.
-
-Rollback also requires exclusive ownership. Once an external action may have occurred, reconcile it before any fallback can execute; switching binaries is not permission to replay it. A schema change requiring conversion needs a separate backed-up migration and compatibility policy.
-
-## Verification and completion
-
-Use isolated, redacted golden fixtures and differential tests against the current implementation. Cover memory revision/cache changes, FTS staleness, Unicode recall, scope/redaction budgets, candidate confirmation and CRUD conflicts; schedule time zones/DST, catch-up, priority, crash phases and duplicate claims; and delayed RPC acknowledgment, stale connections, cancellation, takeover and unknown outcomes. Reuse the behavior represented by `tests/conversation/`, `tests/work/`, `tests/runtime/`, `tests/schedules/` and `tests/backups/`.
-
-Go tests must not start a real model, reconnect a user's VM, send Telegram messages or use the microphone. Validate mixed Controller/Worker versions, restart and backup recovery, Windows/Linux builds, native IPC and packaged provenance. Keep existing TypeScript, Python, Rust, formatting, coverage and release checks until their responsibilities have actually moved and replacement gates are verified.
-
-Completion means the packaged Go roles own their documented responsibilities, preserve existing data and demonstrate one execution owner through restart and recovery. Performance claims require measured startup, memory, state-transfer and interaction results; changing backend language does not by itself fix UI rendering latency.
+Run pinned formatting, `go vet`, all package tests and Linux race checks, together with strict TypeScript, existing coverage, Python VM helpers, Rust, version and release-integrity gates. Source-test success does not prove packaged native launch, real VM update/restore, live audio, Telegram delivery or desktop task success. Those require separately recorded acceptance with verified artifacts; no release or installation success is implied by this document.

@@ -4,12 +4,25 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readVersion, projectRoot } from './version.mts';
 import { resolveBuildPaths, assertStagingPath } from './build-paths.mts';
+import { validatePreparedResources } from '../package-resources.mts';
+import { sourceCommit } from '../core/build.mts';
+import { resolveGoToolchain, GO_VERSION } from '../core/go.mts';
+import {
+  CORE_WINDOWS,
+  CORE_LICENSE,
+  CORE_BUNDLE_MANIFEST,
+  CORE_BUILD_MANIFEST,
+  CORE_RESOURCE_MANIFEST,
+  VM_BUNDLE_FILES,
+  HOST_HELPERS,
+} from '../core/bundle.mts';
 
 if (process.platform !== 'win32' || process.arch !== 'x64')
   throw new Error('Windows x64 artifacts must be packaged on Windows x64.');
 const version = readVersion();
 const { release, output, resources, target, stagingPrefix } = resolveBuildPaths(projectRoot);
 const prefix = `dant_${version}_windows_x64`;
+const commit = sourceCommit(projectRoot);
 
 function requireFile(file: string): void {
   if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile())
@@ -57,33 +70,26 @@ async function describe(name: string): Promise<{ name: string; bytes: number; sh
 // keys, local caches, or an executable copied from a different operating system.
 const requiredFiles = [
   'LICENSE',
+  CORE_LICENSE,
   'package.json',
-  'src/server.mts',
-  'src/computer/hypervisors.mts',
   'dist/index.html',
-  'scripts/prepare-vm.ps1',
-  'scripts/create-vm.ps1',
-  'scripts/check-vm.ps1',
-  'scripts/prepare-vmware.ps1',
-  'scripts/create-vmware.ps1',
-  'scripts/vmware.py',
-  'scripts/seed.py',
-  'scripts/patch-image.py',
-  'scripts/vm-key.py',
-  'vm/bootstrap.sh',
-  'vm/guest.py',
-  'vm/desktop.py',
-  'node_modules/express/package.json',
+  CORE_WINDOWS,
+  CORE_RESOURCE_MANIFEST,
+  CORE_BUNDLE_MANIFEST,
+  'resources/core/' + CORE_BUILD_MANIFEST,
+  ...HOST_HELPERS,
+  ...VM_BUNDLE_FILES,
 ];
+validatePreparedResources(resources, version, commit);
 for (const name of requiredFiles) {
   requireFile(path.join(resources, name));
 }
-for (const name of ['data', '.cache', '.tools', '.env']) {
+for (const name of ['data', '.cache', '.tools', '.env', 'node.exe', 'node_modules']) {
   if (fs.existsSync(path.join(resources, name)))
     throw new Error(`Local-only directory or file unexpectedly included in backend: ${name}`);
 }
 requirePe(path.join(release, 'dant.exe'));
-requirePe(path.join(resources, 'node.exe'));
+requirePe(path.join(resources, CORE_WINDOWS));
 const nsis = path.join(release, 'bundle/nsis');
 const installer = `dant_${version}_x64-setup.exe`;
 // NSIS uses a 32-bit installer stub even when the installed application is x64.
@@ -98,6 +104,7 @@ const staging = fs.mkdtempSync(stagingPrefix);
 try {
   fs.copyFileSync(path.join(release, 'dant.exe'), path.join(staging, 'dant.exe'));
   fs.cpSync(resources, path.join(staging, 'backend'), { recursive: true });
+  validatePreparedResources(path.join(staging, 'backend'), version, commit);
   const tar = path.join(process.env.SystemRoot ?? 'C:/Windows', 'System32/tar.exe');
   run(tar, ['-a', '-c', '-f', path.join(output, zipName), '-C', staging, 'dant.exe', 'backend']);
   const entries = new Set(
@@ -105,11 +112,7 @@ try {
       .split(/\r?\n/)
       .map((name) => name.replaceAll('\\', '/')),
   );
-  for (const name of [
-    'dant.exe',
-    'backend/node.exe',
-    ...requiredFiles.map((name) => `backend/${name}`),
-  ]) {
+  for (const name of ['dant.exe', ...requiredFiles.map((name) => `backend/${name}`)]) {
     if (!entries.has(name)) throw new Error(`Portable ZIP is missing ${name}.`);
   }
 } finally {
@@ -122,7 +125,7 @@ const metadata = {
   schemaVersion: 1,
   product: 'dant',
   version,
-  commit: process.env.GITHUB_SHA ?? run('git', ['rev-parse', 'HEAD']),
+  commit,
   ref: process.env.GITHUB_REF ?? null,
   build: {
     runId: process.env.GITHUB_RUN_ID ?? null,
@@ -134,7 +137,10 @@ const metadata = {
   },
   platform: 'win32',
   arch: 'x64',
-  node: process.version,
+  runtime: 'go',
+  go: run(resolveGoToolchain(projectRoot).go, ['version']),
+  goVersion: GO_VERSION,
+  toolingNode: process.version,
   rust: run('rustc', ['--version']),
   unsigned: true,
   files,

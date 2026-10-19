@@ -5,8 +5,8 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "node src/server.mts",
-    "start": "node src/server.mts",
+    "dev": "node scripts/core/run.mts --dev",
+    "start": "node scripts/core/run.mts",
     "build": "vite build",
     "format": "npm run format:prettier && npm run format:rust && npm run format:go",
     "format:check": "npm run format:prettier:check && npm run format:rust:check && npm run format:go:check",
@@ -22,12 +22,14 @@
     "check:core": "node scripts/core/go.mts check",
     "generate:contracts": "node scripts/core/generate-contracts.mts",
     "check:contracts": "node scripts/core/generate-contracts.mts --check",
+    "build:core": "node scripts/core/build.mts",
+    "package:resources": "npm run build && node scripts/package-resources.mts",
     "test": "node scripts/ci/test.mts",
     "test:coverage": "node scripts/ci/coverage.mts",
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.ui.json --noEmit && tsc --project tsconfig.tests.json --noEmit",
     "check:states": "node scripts/ci/check-state-contracts.mts",
-    "desktop": "npm run build && node scripts/package-resources.mts && tauri dev",
-    "desktop:build": "npm run build && node scripts/package-resources.mts && tauri build && node scripts/package-resources.mts --stage-release"
+    "desktop": "tauri dev",
+    "desktop:build": "npm run package:resources && tauri build && node scripts/package-resources.mts --stage-release"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

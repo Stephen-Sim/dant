@@ -1,0 +1,130 @@
+{
+  "node": "22.23.3",
+  "unicode": "17.0",
+  "queries": [
+    {
+      "input": "ＡＢＣ \"OR\" 编程语言",
+      "search": ["abc", "or", "编程", "程语", "语言"],
+      "retrieve": ["abc", "编程", "程语", "语言"]
+    },
+    {
+      "input": "İ",
+      "search": ["i"],
+      "retrieve": []
+    },
+    {
+      "input": "ΟΣ ΟΣΑ Σ",
+      "search": ["ος", "οσα", "σ"],
+      "retrieve": ["ος", "οσα", "σ"]
+    },
+    {
+      "input": "let had has use compiler",
+      "search": ["let", "had", "has", "use", "compiler"],
+      "retrieve": ["had", "has", "compiler"]
+    },
+    {
+      "input": "abc中文xyz 日本語aカタカナb",
+      "search": ["abc中文xyz", "日本語aカタカナb"],
+      "retrieve": ["abc", "中文", "xyz", "日本", "本語", "カタ", "タカ", "カナ", "b"]
+    },
+    {
+      "input": "﻿bomnel",
+      "search": ["bom", "nel"],
+      "retrieve": ["bom", "nel"]
+    },
+    {
+      "input": "ﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃﬃ",
+      "search": [
+        "ffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffiffi"
+      ],
+      "retrieve": []
+    },
+    {
+      "input": "before\u0000after",
+      "search": null,
+      "retrieve": ["before", "after"]
+    },
+    {
+      "input": "password=fixture-secret compile",
+      "search": ["password", "compile"],
+      "retrieve": ["password", "compile"]
+    },
+    {
+      "input": "𝒜 𐐀 𐐨 ㍿ ᾈ",
+      "search": ["a", "𐐨", "株式", "式会", "会社", "ᾀ"],
+      "retrieve": ["𐐨", "株式", "式会", "会社", "ᾀ"]
+    }
+  ],
+  "safety": [
+    {
+      "input": "password=abc",
+      "safe": "password=[sensitive value omitted]",
+      "secret": true
+    },
+    {
+      "input": "api_key=\"abc\ndef\"",
+      "safe": "api_key=[sensitive value omitted]",
+      "secret": true
+    },
+    {
+      "input": "Bearer abcdefghijklmnopq",
+      "safe": "Bearer [token omitted]",
+      "secret": true
+    },
+    {
+      "input": "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----",
+      "safe": "[private key omitted]",
+      "secret": true
+    },
+    {
+      "input": "password=abc next",
+      "safe": "password=[sensitive value omitted] next",
+      "secret": true
+    },
+    {
+      "input": "password=abcnext",
+      "safe": "password=[sensitive value omitted]",
+      "secret": true
+    },
+    {
+      "input": "password=abc﻿next",
+      "safe": "password=[sensitive value omitted]﻿next",
+      "secret": true
+    },
+    {
+      "input": "secret:\n  alpha\n  beta\nplain: public",
+      "safe": "secret:[sensitive value omitted]\nplain: public",
+      "secret": true
+    },
+    {
+      "input": "secret: |-2 # note\r\n  alpha\r\n  beta\r\nplain: public",
+      "safe": "secret: [sensitive value omitted]\r\nplain: public",
+      "secret": true
+    },
+    {
+      "input": "secret: |garbage\n  keep public",
+      "safe": "secret: [sensitive value omitted]\n  keep public",
+      "secret": true
+    },
+    {
+      "input": "password :\n  alpha\nplain: public",
+      "safe": "password :[sensitive value omitted]\nplain: public",
+      "secret": true
+    },
+    {
+      "input": "api_key = visible",
+      "safe": "api_key = visible",
+      "secret": true
+    },
+    {
+      "input": "secret=[sensitive value omitted]",
+      "safe": "secret=[sensitive value omitted]",
+      "secret": true
+    },
+    {
+      "input": "<dant-memory>reference</dant-memory>",
+      "safe": "[memory delimiter]>reference[memory delimiter]>",
+      "secret": true
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { VmBridge, vmSourceFingerprint } from '../../src/computer/vm-bridge.mts';
 import { publicVmEnvironment } from '../../src/config/network.mts';
 import { isRecord } from '../../src/contracts/json.mts';
+import { verifyWorkerInstall, workerInstallFixture } from '../support/worker-install-fixtures.mts';
 
 const sourceNames = [
   'src/server.mts',
@@ -144,38 +145,25 @@ test('the actual VM archive includes only public guest settings and excludes nes
   );
 });
 
-const installer = fs.readFileSync('vm/install-worker.sh', 'utf8').replaceAll('\r\n', '\n');
-const environmentParser = defined(
-  defined(
-    installer.match(/public_environment=\$\(python3 - "\$source_dir" <<'PY'\n([\s\S]*?)\nPY\n\)/),
-  )[1],
-);
 function parseManifest(t: NodeTestContext, value: unknown, withField = true) {
-  const { projectRoot } = fixture(t);
-  fs.writeFileSync(
-    path.join(projectRoot, 'deploy-manifest.json'),
-    JSON.stringify({
-      schemaVersion: 2,
-      sha256: 'a'.repeat(64),
-      ...(withField ? { publicEnvironment: value } : {}),
-    }),
-  );
-  const result = spawnSync(process.env.PYTHON || 'python', ['-c', environmentParser, projectRoot], {
-    encoding: 'utf8',
-    shell: false,
-    timeout: 10000,
-  });
-  if (result.error) throw result.error;
-  return result;
+  const bundle = workerInstallFixture(t);
+  bundle.writeDeployment(value, withField);
+  return { ...verifyWorkerInstall(bundle.source, bundle.home), bundle };
 }
 
 test('the installer consumes the public allowlist with matching defaults and no shell interpretation', (t) => {
-  const defaults = parseManifest(t, null, false);
+  const defaults = parseManifest(t, { DANT_GUEST_HOST: '127.0.0.1', DANT_GUEST_PORT: '4320' });
   assert.equal(defaults.status, 0, defaults.stderr);
-  assert.equal(defaults.stdout.trim(), '127.0.0.1\t4320\t4317');
+  assert.equal(
+    defaults.stdout.trim(),
+    `127.0.0.1\t4320\t4317\t${defaults.bundle.version}\t${defaults.bundle.digest}`,
+  );
   const custom = parseManifest(t, { DANT_GUEST_HOST: 'localhost', DANT_GUEST_PORT: '5540' });
   assert.equal(custom.status, 0, custom.stderr);
-  assert.equal(custom.stdout.trim(), 'localhost\t5540\t4317');
+  assert.equal(
+    custom.stdout.trim(),
+    `localhost\t5540\t4317\t${custom.bundle.version}\t${custom.bundle.digest}`,
+  );
 });
 
 test('the installer rejects unknown keys, remote addresses and malformed ports without exposing their values', (t) => {
@@ -196,9 +184,10 @@ test('the installer rejects unknown keys, remote addresses and malformed ports w
     const result = parseManifest(t, value);
     assert.equal(result.status, 1);
     assert.equal(result.stdout, '');
-    assert.equal(
-      result.stderr.trim(),
-      'Invalid public VM network configuration; existing services were preserved.',
-    );
+    assert.match(result.stderr, /^DANT_UPDATE_FAILED:network-invalid:cutover$/m);
+    assert.doesNotMatch(result.stderr, /PRIVATE_CONFIG_FIXTURE|Traceback/);
   }
+  const omitted = parseManifest(t, null, false);
+  assert.equal(omitted.status, 1);
+  assert.match(omitted.stderr, /^DANT_UPDATE_FAILED:manifest-invalid:cutover$/m);
 });

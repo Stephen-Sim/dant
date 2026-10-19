@@ -37,6 +37,10 @@ Controller 负责配置与后台检查。设置页面只读取元数据、提交
 
 仅在已验证的普通 Firefox 配置目录中排除临时的宿主/PID `lock` 符号链接；Firefox 会在目标 VM 中重新生成它。捕获期间仍核对该链接的身份和目标。其他符号链接、硬链接和特殊文件会明确拒绝，不会跟随或静默遗漏。
 
+Go 服务所有权文件 `.dant-core-owner.lock` 属于运行状态，不参与捕获或便携导出；恢复也不会把该锁转移到新数据根目录。Linux 离线恢复、恢复核对和导出除了持有替换目录之外的持久内核恢复锁，还会取得 Go 所有权锁，因此另外运行的 Go Worker 会阻止这些操作。systemd 服务必须确认已经停止，且 cgroup 中没有剩余进程；停止结果未知时，不会替换数据。
+
+Go 实现保留原有本机和便携 AES-GCM 字节格式。短时运行的 `--role=backup-transform` 子进程只对独占创建的私有暂存文件建立文件映射，并使用标准库 AEAD 加密或认证；解密认证成功之后才提供明文读取。密钥通过有大小限制的 stdin 传递，不进入命令参数或日志；取消会终止并等待该子进程退出。这避免 Controller 分配与归档大小相当的 Go 堆内存。映射页仍会占用子进程驻留内存，捕获与导入/导出也需要私有临时磁盘空间，包括明文暂存；完成或失败后会清理暂存。隔离的 256 MiB 测试覆盖加密和解密两个方向，只记录子进程堆与驻留内存峰值；它验证内存边界，不承诺性能。
+
 ## 明确选择恢复
 
 首次使用时，dant 会先询问是否已有备份。有备份可以先导入，没有再创建工作电脑。导入不要求 VM 在线，也不会恢复或启动任务；之后连接或创建目标 VM，再预览导入的备份并恢复。
@@ -60,15 +64,15 @@ Controller 会先暂停工作并确认静止，再停止 `dant-worker.service`�
 
 ## 实现边界
 
-| 边界                     | 模块                                                                                                                                                                                             |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 界面与校验               | [`vm-backups.mts`](../../ui/settings/vm-backups.mts)、共享备份类型、枚举与限制                                                                                                                   |
-| 本机调度与确认           | [`controller-backups.mts`](../../src/backups/controller-backups.mts)                                                                                                                             |
-| 本机加密归档             | [`local-backup-vault.mts`](../../src/backups/local-backup-vault.mts)                                                                                                                             |
-| 便携格式与鉴权传输       | [`portable-backup.mts`](../../src/backups/portable-backup.mts)、[`portable-archive.mts`](../../src/backups/portable-archive.mts)、[`portable-routes.mts`](../../src/backups/portable-routes.mts) |
-| 首次引导与原生文件传输   | [`first-run.mts`](../../ui/onboarding/first-run.mts)、[`backup-transfer.mts`](../../ui/platform/backup-transfer.mts)、[`backup_transfer.rs`](../../src-tauri/src/backup_transfer.rs)             |
-| 鉴权导出 / 离线 SSH 恢复 | [`vm-backup-transport.mts`](../../src/backups/vm-backup-transport.mts)                                                                                                                           |
-| Worker 捕获、校验与恢复  | [`worker-archive.mts`](../../src/backups/worker-archive.mts)、[`worker-restore.mts`](../../src/backups/worker-restore.mts)、[`worker-state.mts`](../../src/backups/worker-state.mts)             |
+| 边界                     | 模块                                                                                                                                                                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 界面与校验               | [`vm-backups.mts`](../../ui/settings/vm-backups.mts)、共享备份类型、枚举与限制                                                                                                                                                                                       |
+| 本机调度与确认           | [`manager.go`](../../core/internal/backups/manager.go)                                                                                                                                                                                                               |
+| 本机加密归档             | [`vault.go`](../../core/internal/backups/vault.go)、[`transform.go`](../../core/internal/backups/transform.go)                                                                                                                                                       |
+| 便携格式与鉴权传输       | [`portable.go`](../../core/internal/backups/portable.go)、[`local_routes.go`](../../core/internal/controller/local_routes.go)                                                                                                                                        |
+| 首次引导与原生文件传输   | [`first-run.mts`](../../ui/onboarding/first-run.mts)、[`backup-transfer.mts`](../../ui/platform/backup-transfer.mts)、[`backup_transfer.rs`](../../src-tauri/src/backup_transfer.rs)                                                                                 |
+| 鉴权导出 / 离线 SSH 恢复 | [`vm_transport.go`](../../core/internal/backups/vm_transport.go)、[`worker_cli.go`](../../core/internal/backups/worker_cli.go)                                                                                                                                       |
+| Worker 捕获、校验与恢复  | [`worker_archive.go`](../../core/internal/backups/worker_archive.go)、[`archive.go`](../../core/internal/backups/archive.go)、[`worker_restore.go`](../../core/internal/backups/worker_restore.go)、[`worker_state.go`](../../core/internal/backups/worker_state.go) |
 
 Controller 提供 `GET /api/backups`、`PATCH /api/backups/settings`、`POST /api/backups/run`、`POST /api/backups/import`、`POST /api/backups/:id/export`、`POST /api/backups/:id/preview` 和 `POST /api/backups/:id/restore`，沿用本机 API 鉴权。Worker 的导出与回执接口仍通过已鉴权的 VM 通道访问。备份接口不会让 Windows Controller 成为 Agent 执行器。
 

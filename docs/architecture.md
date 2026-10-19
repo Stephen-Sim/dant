@@ -4,7 +4,7 @@ English · [Chinese](zh-CN/architecture.md)
 
 dant is a local-first desktop agent. Tauri 2 provides the Windows host, a Controller manages the work computer, and an Ubuntu Worker owns execution and conversation data. This document describes the current source, including scoped memory retrieval, SQLite scheduling and protected local backups; published installers may contain an earlier implementation.
 
-The adopted target is **Go Agent Core + Rust Tauri + TypeScript UI**. The Controller and Worker described below still run on Node.js. The repository includes generated Go contracts and an isolated read-only Memory shadow runtime; it is not the packaged executor and does not inject model context. [Go Core migration design](go-core-migration.md) records implementation boundaries, measurements and the remaining ownership cutover.
+The current source uses **Go Agent Core + Rust Tauri + TypeScript UI**. Separate Go Controller and Worker roles replace the production Node backend. TypeScript remains the browser implementation, build tooling and compatibility-test oracle. The isolated Memory shadow role remains available for differential tests, not production execution. This describes source behavior, not a claim that a new installer has passed live acceptance or been released. See [runtime support](runtime-support.md) and [migration and cutover](go-core-migration.md).
 
 ## Overall system
 
@@ -13,7 +13,7 @@ flowchart TB
   subgraph Windows
     UI[TypeScript UI · Vite · DOM / CSS]
     Native[Tauri 2 / Rust<br/>Window · tray · notifications · installer]
-    Controller[Node.js Controller<br/>VM lifecycle · preferences · offline cache]
+    Controller[Go Controller<br/>VM lifecycle · preferences · offline cache]
     Backups[ControllerBackups<br/>Local scheduling · explicit restore consent]
     Vault[Encrypted local archives<br/>AES-GCM · Windows DPAPI]
     UI -->|Desktop IPC| Native
@@ -23,7 +23,7 @@ flowchart TB
     Backups --> Vault
   end
   subgraph Ubuntu work computer
-    Worker[Worker API]
+    Worker[Go Worker API]
     Engine[Engine<br/>Single execution admission · task / turn ownership]
     Heartbeat[WorkContinuationSupervisor]
     Scheduler[Scheduler<br/>One-time · cron · priority]
@@ -63,21 +63,21 @@ Message Pin and Star actions update validated flags on the original saved messag
 
 Chat initially renders the latest 80 messages and prepends older batches on demand. Reading history pins its first visible boundary while new messages arrive; conversation or VM changes reset the window. Reply, search and task-result navigation reveal their exact retained message before focusing it. Only rendered messages can become read. This limits DOM and Markdown work; the current state transport still transfers the complete conversation. Unchanged state skips a render, sanitized Markdown has a bounded cache, and timestamps follow the current system time zone. Background GET requests run independently while mutations retain their ordering and stale-result fences.
 
-| Component             | Source                                                                          | Responsibility                                                                     |
-| --------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Native host           | `src-tauri/src/`                                                                | Window/tray, native IPC, notifications, secure host integration, installer handoff |
-| Application assembly  | [`src/app/`](../src/app/)                                                       | Controller/Worker modes, APIs and service ownership                                |
-| Runtime transport     | [`src/runtime/`](../src/runtime/)                                               | Codex process, JSON-RPC, validated events and response ownership                   |
-| Agent execution       | [`engine.mts`](../src/work/engine.mts)                                          | Admit input, bind acknowledged turns, handle tools, finalize results               |
-| Task continuity       | [`src/work/`](../src/work/)                                                     | Plans, replies, pause/cancel, retained projects and safe continuation              |
-| Heartbeat             | [`work-continuation.mts`](../src/work/work-continuation.mts)                    | Check whether an ended unfinished task can continue                                |
-| Scheduling            | [`scheduler.mts`](../src/schedules/scheduler.mts)                               | Due times, recurrence, priority and dispatch receipts                              |
-| Memory / conversation | [`src/conversation/`](../src/conversation/)                                     | Store, shared reference context, SQLite memory and migration                       |
-| Computer control      | [`src/computer/`](../src/computer/), `vm/`                                      | VM deployment, SSH, screenshots, input and control ownership                       |
-| Host / VM adapters    | [`src/platform/`](../src/platform/), [`providers/`](../src/computer/providers/) | Host capabilities and provider-specific detection/setup/lifecycle commands         |
-| Local backups         | [`src/backups/`](../src/backups/)                                               | Protected Controller archives, Worker snapshots and explicit offline recovery      |
+| Component             | Source                                                                                              | Responsibility                                                                             |
+| --------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Native host           | `src-tauri/src/`                                                                                    | Window/tray, native IPC, notifications, secure host integration, installer handoff         |
+| Application assembly  | [`core/internal/app/`](../core/internal/app/)                                                       | Worker APIs and service ownership, with host assembly in `core/internal/controller/`       |
+| Runtime transport     | [`core/internal/runtime/`](../core/internal/runtime/)                                               | Codex process, JSON-RPC, validated events and response ownership                           |
+| Agent execution       | [`Engine`](../core/internal/work/engine.go)                                                         | Admit input, bind acknowledged turns, handle tools, finalize results                       |
+| Task continuity       | [`core/internal/work/`](../core/internal/work/)                                                     | Plans, replies, pause/cancel, retained projects and safe continuation                      |
+| Heartbeat             | [`Supervisor`](../core/internal/work/supervisor.go)                                                 | Check whether an ended unfinished task can continue                                        |
+| Scheduling            | [`Scheduler`](../core/internal/schedules/scheduler.go)                                              | Due times, recurrence, priority and dispatch receipts                                      |
+| Memory / conversation | [`core/internal/memory/`](../core/internal/memory/)                                                 | SQLite memory, recall and migration, with conversation authority in `core/internal/store/` |
+| Computer control      | [`core/internal/computer/`](../core/internal/computer/), `vm/`                                      | VM deployment, SSH, screenshots, input and control ownership                               |
+| Host / VM adapters    | [`core/internal/platform/`](../core/internal/platform/), [`providers/`](../core/internal/computer/) | Host capabilities and provider-specific detection/setup/lifecycle commands                 |
+| Local backups         | [`core/internal/backups/`](../core/internal/backups/)                                               | Protected Controller archives, Worker snapshots and explicit offline recovery              |
 
-Runtime modules use native erasable TypeScript (`.mts`); shared types use `.ts`. The browser uses Vite, TypeScript and DOM/CSS. Feature folders and matching tests follow [code style](code-style.md). This is currently an npm repository, not a React application or pnpm workspace monorepo.
+Production backend packages live under `core/internal/`, assembled by the small `core/cmd/dant-core` entrypoint through `application`. Controller and Worker are distinct roles of the compiled binary. The browser uses Vite, TypeScript and DOM/CSS; retained `src/` modules provide shared contracts, locale data and test oracles, and are excluded from backend deployment. Feature ownership and tests follow [code style](code-style.md).
 
 ## Agent loop and execution ownership
 
@@ -113,7 +113,7 @@ sequenceDiagram
   Engine-->>Input: Verified result, failure or required human input
 ```
 
-`Engine.pump()` selects queued work, thread setup restores the matching conversation's Codex thread, `handle()` routes scoped events/tools, and `complete()` records the outcome and deliverables. Bounded early events cannot establish ownership before a valid `turn/start` acknowledgment. Submission and work states are separate domains in [`states.mts`](../src/contracts/states.mts).
+The Go Engine selects queued work, restores the matching conversation's Codex thread, routes scoped events/tools and records outcomes and deliverables. Bounded early events cannot establish ownership before a valid `turn/start` acknowledgment. Submission and work states are separate domains in [`states.mts`](../src/contracts/states.mts).
 
 A durable `workId` survives turns. `task_plan` records actual steps; `task_list` and `task_cancel` use saved identities. Task replies carry `workId`, expected turn and conversation through ordinary chat. Live replies steer only their matching owner; ended work reopens through the same admission path with retained project context.
 
@@ -167,7 +167,7 @@ Idle checks do not call the LLM. Paused, cancelled, waiting-for-user, review and
 
 Continuation saves its claim before asynchronous submission and rechecks the exact task/turn. Ordinary automatic narration and deliveries are buffered; only completion, failure or a real input blocker publishes a consolidated outcome. Three unchanged rounds pause a task. Qualifying fresh execution evidence permits bounded extensions; repeated observations and failed actions do not count as progress. This extension cap is not a general model tool-step or token budget.
 
-Schedules support one-time instants and five-field cron expressions in a saved IANA time zone. A missed recurring job catches up at most once, then advances to a future time; it cannot overlap its own unfinished work. [`ScheduleDatabase`](../src/schedules/schedule-database.mts) owns jobs, creation-request tombstones and dispatch receipts in `~/dant/data/schedules/schedules.sqlite`. Existing JSON schedules are backed up and imported once; later stale JSON cannot restore deleted or edited jobs. Revision compare-and-swap protects edits, and a unique schedule/occurrence key permits one durable claim across instances.
+Schedules support one-time instants and five-field cron expressions in a saved IANA time zone. A missed recurring job catches up at most once, then advances to a future time; it cannot overlap its own unfinished work. [`ScheduleDatabase`](../core/internal/schedules/database.go) owns jobs, creation-request tombstones and dispatch receipts in `~/dant/data/schedules/schedules.sqlite`. Existing JSON schedules are backed up and imported once; later stale JSON cannot restore deleted or edited jobs. Revision compare-and-swap protects edits, and a unique schedule/occurrence key permits one durable claim across instances.
 
 | Dispatch phase | Meaning                                                                                                    |
 | -------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -182,7 +182,7 @@ There is no separate 15-minute AI heartbeat that creates goals. Future proactive
 
 ## Memory: storage, cache and recall
 
-SQLite manages durable memory, not Codex's original conversation or every application record. This implementation uses built-in `node:sqlite`, without an independent database service.
+SQLite manages durable memory, not Codex's original conversation or every application record. The Go Memory package uses pinned pure-Go `modernc.org/sqlite` through `database/sql`, with no independent database service or CGO runtime.
 
 | Memory category | Current implementation                                                   | Durable authority                                 |
 | --------------- | ------------------------------------------------------------------------ | ------------------------------------------------- |
@@ -191,15 +191,15 @@ SQLite manages durable memory, not Codex's original conversation or every applic
 | Semantic        | Identity/working reference notes; confirmed facts/preferences            | `memory.sqlite`                                   |
 | Procedural      | Managed `SKILL.md` and required supporting files                         | Existing Skills storage / Markdown                |
 
-The historical `working-memory.md` name remains a compatibility label for durable reference notes, not all live Working Memory. Shared assistant personality comes from [`identity.mts`](../src/conversation/identity.mts), separately from user reference data. Memory cannot authorize tool calls or start work.
+The historical `working-memory.md` name remains a compatibility label for durable reference notes, not all live Working Memory. Shared assistant personality comes from [`identity.go`](../core/internal/memory/identity.go), separately from user reference data. Memory cannot authorize tool calls or start work.
 
 ### Durable storage and cache
 
-`~/dant/data/memory/dant/memory.sqlite` holds `notes`, `projects`, `memory_entries`, revision metadata and the FTS5 index. `MemoryStore` is the facade; [`memory-sqlite.mts`](../src/conversation/memory-sqlite.mts) owns transactions; [`memory-markdown.mts`](../src/conversation/memory-markdown.mts) owns explicit Markdown interchange.
+`~/dant/data/memory/dant/memory.sqlite` holds `notes`, `projects`, `memory_entries`, revision metadata and the FTS5 index. The Go `memory.Store` is the sole production facade; [`Store`](../core/internal/memory/store.go) owns transactions; [`Markdown interchange`](../core/internal/memory/store_notes.go) owns explicit Markdown interchange.
 
 Every read checks a durable revision inside the same SQLite read transaction before reusing cached notes, confirmed entries or project context. Table triggers advance the revision, including changes from other connections. Local writes invalidate the cache. Returned records are copies, project caching is bounded, and short-lived connections release handles after each transaction. The cache never becomes another source of truth.
 
-The database has schema versioning, foreign-key enforcement, a bounded busy timeout, `synchronous=FULL` and a **DELETE journal**. WAL is deliberately not enabled for the declared older Node/SQLite baseline; changing it requires a supported SQLite version and concurrency verification. See [Node SQLite](https://nodejs.org/api/sqlite.html) and [SQLite WAL](https://www.sqlite.org/wal.html).
+The database has schema versioning, foreign-key enforcement, a bounded busy timeout, `synchronous=FULL` and a **DELETE journal**. DELETE journaling preserves the existing on-disk and backup contract during the runtime cutover. Enabling WAL would require a separate concurrency and recovery change; see [SQLite WAL](https://www.sqlite.org/wal.html).
 
 Migration validates and backs up legacy Markdown/project JSON before import. Project IDs and available source timestamps survive; missing timestamps are not invented. SQLite then becomes authoritative. Editing a `.md` snapshot does not silently overwrite it: import/export is explicit. Task JSON may retain historical project snapshots, but task replies read current context through the bound SQLite adapter. Failed migration preserves its source and stops the failed operation.
 
@@ -222,11 +222,11 @@ flowchart TB
   Results --> Input[Append to current input before its existing wire send]
 ```
 
-`proposeEntry`, `confirmEntry`, `updateEntry` and `deleteEntry` implement the storage workflow. Entries retain source kind, available conversation/task/message references, supplied confidence and actual creation/update times. Candidates and conflicts stay out of effective context/search; conflicts require explicit resolution, and editing a confirmed entry requires confirmation again. Suspected credentials are rejected, and reference text is sanitized/redacted before model use. These controls do not make arbitrary sensitive material suitable for retention.
+`Store.Propose`, `Store.Confirm`, `Store.Update` and `Store.Delete` implement the storage workflow. Entries retain source kind, available conversation/task/message references, supplied confidence and actual creation/update times. Candidates and conflicts stay out of effective context/search; conflicts require explicit resolution, and editing a confirmed entry requires confirmation again. Suspected credentials are rejected, and reference text is sanitized/redacted before model use. These controls do not make arbitrary sensitive material suitable for retention.
 
-`search(query)` remains an explicit bounded keyword API. Automatic [`retrieve(query, scope)`](../src/conversation/memory-search.mts) normalizes a bounded current query, removes common filler terms and combines literal terms with **OR** in parameterized FTS5. Scope filtering precedes ranking and limits: shared notes and unscoped confirmed semantic facts are eligible; scoped facts require the matching conversation/work, and project context requires the selected work ID. Candidates, conflicts and other projects stay out. Chinese keyword matching is supported; there are no embeddings or vector searches.
+`search(query)` remains an explicit bounded keyword API. Automatic [`retrieve(query, scope)`](../core/internal/memory/store_search.go) normalizes a bounded current query, removes common filler terms and combines literal terms with **OR** in parameterized FTS5. Scope filtering precedes ranking and limits: shared notes and unscoped confirmed semantic facts are eligible; scoped facts require the matching conversation/work, and project context requires the selected work ID. Candidates, conflicts and other projects stay out. Chinese keyword matching is supported; there are no embeddings or vector searches.
 
-Agent base memory context contains the safe identity/working notes only. The at-most-32-confirmed-entry `context()` view remains for compatibility/read-only use, rather than blanket injection into every agent prompt. [`agent-memory.mts`](../src/conversation/agent-memory.mts) adds up to six bounded, redacted references with provenance to the **current already-admitted input**. Normal turns, steering, automatic continuation, recognized audio and native/API typed call input read fresh memory immediately before their existing wire send; API voice task handoffs use the same Engine input path. No match leaves the original input unchanged. Revision checks make edits, deletion and conflict changes visible without retaining a recalled-result cache.
+Agent base memory context contains the safe identity/working notes only. The at-most-32-confirmed-entry `context()` view remains for compatibility/read-only use, rather than blanket injection into every agent prompt. [`Store.AgentContext`](../core/internal/memory/store_search.go) adds up to six bounded, redacted references with provenance to the **current already-admitted input**. Normal turns, steering, automatic continuation, recognized audio and native/API typed call input read fresh memory immediately before their existing wire send; API voice task handoffs use the same Engine input path. No match leaves the original input unchanged. Revision checks make edits, deletion and conflict changes visible without retaining a recalled-result cache.
 
 Recall neither mutates the human message nor adds a separate inference request, execution turn or persistent reference-injection operation. It cannot authorize actions or resume other work. Old Codex history is not erased; the reference marks its current-input scope and supersedes earlier excerpts for that input. Idle heartbeat checks do not retrieve memory. Memory & personality exposes the validated document and entry management described above; automatic extraction/consolidation is not implemented. The compatible `memory_write` tool still edits reference notes directly.
 
@@ -234,13 +234,13 @@ Codex owns the model thread, context window, compaction and provider token accou
 
 ## Tools, authentication and computer ownership
 
-Tool schemas and handlers support desktop operations, plans, schedules, credentials and Skills, including `dant_desktop` MCP. Web pages, files and memory are reference data rather than permissions. Runtime decoders validate consumed fields from unknown disk/transport data; TypeScript types alone cannot do this.
+Tool schemas and handlers support desktop operations, plans, schedules, credentials and Skills, including `dant_desktop` MCP. Web pages, files and memory are reference data rather than permissions. Go and browser boundary decoders validate consumed fields from unknown disk/transport data; static types do not replace runtime validation.
 
 The Controller and Worker each default to their own `127.0.0.1:4317`; the guest desktop service defaults to `127.0.0.1:4320`. Shared configuration validates deployment options. Development `.env` is optional, and installers have defaults. See [configuration](configuration.md).
 
 API authentication uses `X-Dant-Token`, host/origin checks and a fixed native endpoint descriptor. **Tokens authenticate; they do not encrypt HTTP.** Controller/Worker traffic travels through SSH local forwarding; model/Telegram connections use their respective encrypted transports. The API is not exposed on the guest network adapter. Tokens and secrets stay out of public snapshots, logs and memory; VM vault and Windows DPAPI serve their separate credential roles.
 
-Current Codex sessions use `approvalPolicy: 'never'` and `danger-full-access` inside the VM. Actual boundaries include the VM, ordinary-user account, bounded file routes, authentication and desktop lease. **There is no independent general Policy Engine providing per-command/per-delete approval for all model shell actions.** Tauri capabilities constrain the native bridge, not the Node Worker. Stronger tool policies and approvals need a separate implementation.
+Current Codex sessions use `approvalPolicy: 'never'` and `danger-full-access` inside the VM. Actual boundaries include the VM, ordinary-user account, bounded file routes, authentication and desktop lease. **There is no independent general Policy Engine providing per-command/per-delete approval for all model shell actions.** Tauri capabilities constrain the native bridge, not all Worker execution paths. Stronger tool policies and approvals need a separate implementation.
 
 Human takeover reserves ownership, interrupts the exact turn and waits for a confirmed stop before granting a guest control lease. Python tools and UI input share the lock/lease. Expired or mismatched sessions cannot inject input; returning control does not replay paused work. These controls cannot guarantee termination of previously detached processes or replace OS permissions.
 
@@ -265,11 +265,11 @@ Live captions display only the current call's received, redacted **assistant** s
 
 ## Local backups and recovery
 
-[`ControllerBackups`](../src/backups/controller-backups.mts) owns local backup settings, periodic/connection triggers and explicit restore consent. It obtains idle persistent-data/workspace snapshots through the authenticated Worker transport, then retains encrypted `.dantbak` archives under the Controller data directory. AES-256-GCM keys are protected through the HostPlatform secret provider; Windows implements DPAPI, while a host without a provider refuses plaintext storage. Copies are retained per source binding, defaulting to ten per work computer.
+[`backups.Manager`](../core/internal/backups/manager.go) owns local backup settings, periodic/connection triggers and explicit restore consent. It obtains idle persistent-data/workspace snapshots through the authenticated Worker transport, then retains encrypted `.dantbak` archives under the Controller data directory. AES-256-GCM keys are protected through the HostPlatform secret provider; Windows implements DPAPI, while a host without a provider refuses plaintext storage. Copies are retained per source binding, defaulting to ten per work computer.
 
-Worker export performs file copying, SQLite snapshots, hashing and archive encoding in a dedicated Node worker thread. A transferred readable stream applies backpressure without blocking state requests. Only one export may stage or stream at a time. The API checks idle execution before capture and rechecks both current execution and any intervening Engine change before sending a successful response. New work may proceed; it invalidates an unfinished capture. Disconnect, timeout and service shutdown close the reader, terminate the producer, then remove only the identity-checked private staging container asynchronously.
+Worker export runs cancellable file copying, SQLite snapshots, hashing and archive streaming in Go, independently of state handlers. Bounded buffers and the HTTP writer apply backpressure. Only one export may stage or stream at a time. The API checks idle execution before capture and rechecks captured execution ownership before success. New work invalidates an unfinished capture. Disconnect, timeout and service shutdown cancel owned work, close handles and remove only the identity-checked private staging container.
 
-Portable `.dant` files are a separate, versioned transfer format. [`PortableBackup`](../src/backups/portable-backup.mts) derives a key from a user-supplied passphrase with fixed scrypt parameters and protects the archive and metadata with AES-256-GCM. A pure streaming validator checks paths, frames, file hashes and counts while removing known authentication stores. Import authenticates and validates the complete encrypted staging file before re-encrypting it into the destination's local vault. No plaintext archive is staged. The original local backup remains unchanged.
+Portable `.dant` files are a separate, versioned transfer format. [`backups.Portable`](../core/internal/backups/portable.go) derives a key from a user-supplied passphrase with fixed scrypt parameters and protects the archive and metadata with AES-256-GCM. A pure streaming validator checks paths, frames, file hashes and counts while removing known authentication stores. Import authenticates and validates the complete encrypted staging file before re-encrypting it into the destination's local vault. No plaintext archive is staged. The original local backup remains unchanged.
 
 The first-run UI asks about a backup before offering VM creation. Import is local and works without a connected VM; restoration remains a separate target-bound preview and confirmation. Tauri owns file pickers and bounded streaming file transfer through the authenticated loopback Controller API. The browser uses the same format with a smaller transfer limit. This permits copying a companion between supported frontends, computers and VMs. It does not coordinate two live copies. A future Google Drive adapter can store the same portable format; no Drive integration is implemented here.
 
@@ -281,11 +281,17 @@ An exact durable rejection proof can distinguish a validated non-application or 
 
 ## Host platform and VM provider capabilities
 
-[`HostPlatform`](../src/platform/host-types.ts) and [`createHostPlatform`](../src/platform/host-platform.mts) now provide an implemented host capability boundary: platform identity, managed-VM/existing-SSH support, fixed command/configuration access and optional protected-secret storage. This abstraction does not move native window/notification ownership out of Tauri or create another task executor.
+[`platform.Host`](../core/internal/platform/host.go) and [`platform.New`](../core/internal/platform/host.go) now provide an implemented host capability boundary: platform identity, managed-VM/existing-SSH support, fixed command/configuration access and optional protected-secret storage. This abstraction does not move native window/notification ownership out of Tauri or create another task executor.
 
-[`VmProviderRegistry`](../src/computer/providers/provider-types.ts) contains Hyper-V and VMware adapters plus an unmanaged SSH capability. [`createVmProviders`](../src/computer/providers/vm-providers.mts) supplies detection, setup plans and fixed lifecycle commands. Provisioning and `VmLifecycle` consume these adapters; VM ownership, quiescence and result confirmation remain with their existing lifecycle services. SSH alone supplies no verified hypervisor suspend/resume capability. Missing capabilities return an explicit unavailable result, with no provider or host-shell execution fallback.
+[`computer.Providers`](../core/internal/computer/providers.go) contains Hyper-V and VMware adapters plus an unmanaged SSH capability. [`computer.NewProviders`](../core/internal/computer/providers.go) supplies detection, setup plans and fixed lifecycle commands. Provisioning and `VmLifecycle` consume these adapters; VM ownership, quiescence and result confirmation remain with their existing lifecycle services. SSH alone supplies no verified hypervisor suspend/resume capability. Missing capabilities return an explicit unavailable result, with no provider or host-shell execution fallback.
 
 The current managed adapters still require Windows. Platform IDs and an SSH capability for recognized Unix hosts are extension points, not proof of supported macOS/Linux desktop releases. Future hosts need their own tested lifecycle, protected-secret, native integration and release adapters. They retain the same Controller/Worker split, Engine, memory and scheduler; the Ubuntu Worker remains the execution authority.
+
+## Runtime update and cutover
+
+The Controller validates the packaged Linux binary and fixed helper inventory against version, source commit, lengths and SHA-256 before deployment. `vm/worker-install.py` serializes installation with a kernel lock, blocks new admission through the current maintenance protocol, or confirms the supported legacy route before stopping an old Node service. It verifies that the prior service and owned Codex processes stopped, creates and validates a private recovery archive, then prepares existing data offline with the Go binary. An unknown stop, incompatible database or missing backup blocks activation.
+
+The Worker service starts only the verified Go executable. Readiness must match the target version and source proof before the Controller marks the update current. Failure preserves data and the recovery archive and does not restart a Node fallback. The Go data-root ownership lock excludes another Go owner but cannot itself prove that a legacy Node executor stopped. See [migration](go-core-migration.md) for the full ownership boundary.
 
 ## Current limits and next steps
 
@@ -313,6 +319,6 @@ The architecture reference informs boundaries; it does not mean its proposed fea
 - Continuation guards, stop controls, timeouts and bounded evidence extensions exist; unified per-task tool-step, elapsed-time and token budgets remain to be designed.
 - Scoped automatic retrieval, candidate storage and validated memory editing exist; embeddings and automatic consolidation remain future work.
 - Windows Controller / Ubuntu Worker lifecycle exists; a cross-platform independent user service with named pipes/Unix sockets is not implemented.
-- TypeScript contracts and runtime validators exist; React, Zustand, Tailwind, Zod and a pnpm monorepo are not current dependencies.
+- Generated Go/TypeScript state contracts and runtime validators exist; React, Zustand, Tailwind, Zod and a pnpm monorepo are not current dependencies.
 
 Feature tests use isolated stores, injected clocks/transports and fixture executors. They verify ownership, persistence, uncertainty and recovery without operating a user's VM or account. Passing them does not establish live audio quality, notification delivery or desktop task success. Commands and acceptance records belong in [CI](ci.md) and [verification](verification.md).

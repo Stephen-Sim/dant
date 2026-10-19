@@ -23,6 +23,7 @@ type candidate struct {
 
 type document struct {
 	text, normalized string
+	textUnits        []uint16
 	status           sql.NullString
 	source           *Source
 	confidence       sql.NullFloat64

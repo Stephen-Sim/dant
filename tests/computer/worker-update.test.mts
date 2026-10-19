@@ -38,39 +38,109 @@ const state = (value: unknown) => step('/api/state', value);
 const pause = () => step('/api/tasks/pause', { ok: true }, { method: 'POST', body: {} });
 const witness = () =>
   step('/api/connect', { ok: true }, { method: 'POST', body: { idleRecovery: true } });
+const GUARD_FIXTURE_CASE_TIMEOUT_MS = 10_000;
+const MAX_GUARD_FIXTURE_CASES = 32;
 const harness = String.raw`
-import io, json, sys, urllib.request
-fixture=json.loads(sys.argv[1]); source=sys.argv[2]; sys.argv=['-',fixture.get('mode','pause')]
-calls=[]; replies=list(fixture['replies'])
-def urlopen(request, timeout):
-    route=(request if isinstance(request,str) else request.full_url).removeprefix('http://127.0.0.1:4317')
-    body=None if isinstance(request,str) or request.data is None else json.loads(request.data)
-    method='GET' if body is None else 'POST'
-    calls.append({'route':route,'method':method,'body':body})
-    if not replies: raise RuntimeError('Unexpected network request')
-    reply=replies.pop(0)
-    if (route,method,body)!=(reply['route'],reply.get('method','GET'),reply.get('body')): raise RuntimeError('Unexpected request ownership')
-    if reply.get('error'): raise TimeoutError('PRIVATE RESPONSE MUST NOT BE EXPOSED')
-    return io.BytesIO(json.dumps(reply['value']).encode())
-urllib.request.urlopen=urlopen
-try:
-    exec(compile(source,'worker-update-check','exec'))
-finally:
-    print(json.dumps({'calls':calls,'remaining':len(replies)}))
+import contextlib, io, json, os, sys, threading, time, urllib.request
+fixtures=json.loads(sys.argv[1]); source=compile(sys.argv[2],'worker-update-check','exec')
+case_timeout=int(sys.argv[3])/1000
+results=[]
+def expired():
+    os.write(2,b'GUARD_FIXTURE_CASE_TIMEOUT\n')
+    os._exit(124)
+for fixture in fixtures:
+    sys.argv=['-',fixture.get('mode','pause')]
+    calls=[]; replies=list(fixture['replies'])
+    def urlopen(request, timeout):
+        if fixture.get('stallOnRequest'):
+            threading.Event().wait()
+        route=(request if isinstance(request,str) else request.full_url).removeprefix('http://127.0.0.1:4317')
+        body=None if isinstance(request,str) or request.data is None else json.loads(request.data)
+        method='GET' if body is None else 'POST'
+        calls.append({'route':route,'method':method,'body':body})
+        if not replies: raise RuntimeError('Unexpected network request')
+        reply=replies.pop(0)
+        if (route,method,body)!=(reply['route'],reply.get('method','GET'),reply.get('body')): raise RuntimeError('Unexpected request ownership')
+        if reply.get('error'): raise TimeoutError('PRIVATE RESPONSE MUST NOT BE EXPOSED')
+        return io.BytesIO(json.dumps(reply['value']).encode())
+    urllib.request.urlopen=urlopen
+    stdout,stderr=io.StringIO(),io.StringIO()
+    status=0
+    deadline=threading.Timer(case_timeout,expired)
+    deadline.daemon=True
+    started=time.monotonic()
+    deadline.start()
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                exec(source,{})
+            except SystemExit as error:
+                status=error.code
+        if time.monotonic()-started > case_timeout:
+            expired()
+    finally:
+        deadline.cancel()
+        deadline.join()
+    results.append({'status':status,'stdout':stdout.getvalue(),'stderr':stderr.getvalue(),
+                    'report':{'calls':calls,'remaining':len(replies)}})
+print(json.dumps(results))
 `;
-function run(replies: Reply[], { mode = 'pause' } = {}) {
+interface GuardFixture {
+  replies: Reply[];
+  mode?: string;
+  stallOnRequest?: boolean;
+}
+
+// Keep the same isolated HTTP replies and per-case exit codes, but amortize
+// Python startup for tables so parallel coverage cannot starve dozens of hosts.
+function runMany(fixtures: GuardFixture[]) {
+  assert.ok(fixtures.length > 0 && fixtures.length <= MAX_GUARD_FIXTURE_CASES);
   const result = spawnSync(
     process.env.PYTHON || 'python',
-    ['-c', harness, JSON.stringify({ mode, replies }), check],
-    { encoding: 'utf8', shell: false, timeout: 10000 },
+    ['-c', harness, JSON.stringify(fixtures), check, String(GUARD_FIXTURE_CASE_TIMEOUT_MS)],
+    {
+      encoding: 'utf8',
+      shell: false,
+      timeout: GUARD_FIXTURE_CASE_TIMEOUT_MS * fixtures.length,
+    },
   );
   if (result.error) throw result.error;
-  const parsed = observedRecord(JSON.parse(result.stdout));
-  return {
-    ...result,
-    report: { ...parsed, remaining: parsed.remaining, calls: observedRecords(parsed.calls) },
-  };
+  assert.equal(result.status, 0, result.stderr);
+  const reports = observedRecords(JSON.parse(result.stdout));
+  assert.equal(reports.length, fixtures.length);
+  return reports.map((parsed) => {
+    assert.ok(typeof parsed.status === 'number');
+    assert.ok(typeof parsed.stderr === 'string');
+    assert.ok(typeof parsed.stdout === 'string');
+    const report = observedRecord(parsed.report);
+    return {
+      status: parsed.status,
+      stderr: parsed.stderr,
+      stdout: parsed.stdout,
+      report: { remaining: report.remaining, calls: observedRecords(report.calls) },
+    };
+  });
 }
+
+function run(replies: Reply[], { mode = 'pause' } = {}) {
+  return defined(runMany([{ mode, replies }])[0]);
+}
+
+test('batched guard fixtures retain an individual deadline and cannot advance past a stalled request', () => {
+  const fixtures: GuardFixture[] = [
+    { replies: [session()], stallOnRequest: true },
+    { replies: [session(), state(idle())], mode: 'check' },
+  ];
+  const result = spawnSync(
+    process.env.PYTHON || 'python',
+    ['-c', harness, JSON.stringify(fixtures), check, '100'],
+    { encoding: 'utf8', shell: false, timeout: GUARD_FIXTURE_CASE_TIMEOUT_MS },
+  );
+  if (result.error) throw result.error;
+  assert.equal(result.status, 124);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr.trim(), 'GUARD_FIXTURE_CASE_TIMEOUT');
+});
 
 test('manual update pauses beta2 work twice and preserves its authoritative legacy idle witness', () => {
   const busy = {
@@ -212,7 +282,7 @@ test('explicit stopped-executor installation preserves accepted speech from an e
 
 test('an offline executor with queued, active, unknown or uncontrolled work is never recovered for installation', () => {
   const offline = { ...idle(), worker: { status: 'offline' } };
-  for (const current of [
+  const cases = [
     { ...offline, messages: undefined },
     { ...offline, workTasks: undefined },
     { ...offline, active: { turnId: 'active' } },
@@ -229,8 +299,10 @@ test('an offline executor with queued, active, unknown or uncontrolled work is n
     { ...offline, computer: { status: 'human', sessionId: 'lease' } },
     { ...offline, computer: { status: 'dant', pending: true } },
     { ...offline, acquiring: true },
-  ]) {
-    const result = run([session(), state(current)]);
+  ];
+  const results = runMany(cases.map((current) => ({ replies: [session(), state(current)] })));
+  for (const [index, current] of cases.entries()) {
+    const result = defined(results[index]);
     assert.equal(result.status, 1, JSON.stringify(current));
     assert.ok(result.report.calls.every((call) => call.method === 'GET'));
     assert.equal(result.report.remaining, 0);
@@ -239,24 +311,29 @@ test('an offline executor with queued, active, unknown or uncontrolled work is n
 
 test('fresh stopped-executor activity after either pause blocks recovery and installation', () => {
   const offline = { ...idle(), worker: { status: 'offline' } };
-  for (const current of [
+  const cases = [
     { ...offline, active: { turnId: 'new' } },
     { ...offline, queue: ['new'] },
     { ...offline, messages: [{ role: 'user', status: 'queued' }] },
     { ...offline, workTasks: [{ status: 'continuing' }] },
     { ...offline, messages: [{ role: 'user', status: 'unknown', submission: 'unknown' }] },
-  ])
-    for (const afterFirst of [true, false]) {
-      const result = run([
+  ].flatMap((current) => [true, false].map((afterFirst) => ({ current, afterFirst })));
+  const results = runMany(
+    cases.map(({ current, afterFirst }) => ({
+      replies: [
         session(),
         state(offline),
         pause(),
         ...(afterFirst ? [state(current)] : [state(offline), pause(), state(current)]),
-      ]);
-      assert.equal(result.status, 1, JSON.stringify({ current, afterFirst }));
-      assert.ok(result.report.calls.every((call) => call.route !== '/api/connect'));
-      assert.equal(result.report.remaining, 0);
-    }
+      ],
+    })),
+  );
+  for (const [index, { current, afterFirst }] of cases.entries()) {
+    const result = defined(results[index]);
+    assert.equal(result.status, 1, JSON.stringify({ current, afterFirst }));
+    assert.ok(result.report.calls.every((call) => call.route !== '/api/connect'));
+    assert.equal(result.report.remaining, 0);
+  }
 });
 
 test('explicit stopped-executor recovery must confirm online and never resends an unconfirmed witness', () => {
@@ -370,15 +447,16 @@ test('malformed state, human control and unconfirmed work fail before any mutati
     { ...idle(), workTasks: [{ continuation: { dispatch: { phase: 'submitting' } } }] },
     { ...idle(), workTasks: [{ continuation: { invalid: true } }] },
   ];
-  for (const snapshot of cases) {
-    const result = run([session(), state(snapshot)]);
+  const results = runMany(cases.map((snapshot) => ({ replies: [session(), state(snapshot)] })));
+  for (const [index, snapshot] of cases.entries()) {
+    const result = defined(results[index]);
     assert.equal(result.status, 1, JSON.stringify(snapshot));
     assert.ok(result.report.calls.every((call) => call.method === 'GET'));
   }
 });
 
 test('new activity or unresolved continuation after pause blocks replacement', () => {
-  for (const current of [
+  const cases = [
     { ...idle(), active: { turnId: 'new' } },
     { ...idle(), queue: ['new'] },
     { ...idle(), call: { id: 'new' } },
@@ -388,17 +466,23 @@ test('new activity or unresolved continuation after pause blocks replacement', (
       ...idle(),
       workTasks: [{ status: 'paused', continuation: { dispatch: { phase: 'acknowledged' } } }],
     },
-  ]) {
-    const result = run([
-      session(),
-      state(idle()),
-      pause(),
-      state(idle()),
-      pause(),
-      state(idle()),
-      witness(),
-      state(current),
-    ]);
+  ];
+  const results = runMany(
+    cases.map((current) => ({
+      replies: [
+        session(),
+        state(idle()),
+        pause(),
+        state(idle()),
+        pause(),
+        state(idle()),
+        witness(),
+        state(current),
+      ],
+    })),
+  );
+  for (const [index, current] of cases.entries()) {
+    const result = defined(results[index]);
     assert.equal(result.status, 1, JSON.stringify(current));
     assert.equal(result.report.remaining, 0);
   }
@@ -468,8 +552,8 @@ test('idle automatic check accepts paused or completed work without changing sav
 });
 
 test('passive checks defer saved runnable work between turns and only accept an explicitly ended user wait', () => {
-  for (const mode of ['check', 'final']) {
-    for (const record of ['running', 'queued', 'accepted', 'continuing', 'pausing', 'unknown']
+  const cases = ['check', 'final'].flatMap((mode) =>
+    ['running', 'queued', 'accepted', 'continuing', 'pausing', 'unknown']
       .map((status) => ({ status }))
       .concat(
         [
@@ -479,20 +563,30 @@ test('passive checks defer saved runnable work between turns and only accept an 
           { executionEndedAt: true },
           { executionEndedAt: '1' },
         ].map((extra) => ({ status: 'waiting_user', ...extra })),
-      )) {
-      const result = run([session(), state({ ...idle(), workTasks: [record] })], { mode });
-      assert.equal(result.status, 79, JSON.stringify({ mode, record }));
-      assert.match(
-        result.stderr,
-        new RegExp(
-          '^DANT_UPDATE_DEFERRED:work-still-active:' +
-            (mode === 'idle' ? 'rollback' : mode === 'final' ? 'final' : 'initial') +
-            '$',
-          'm',
-        ),
-      );
-      assert.ok(result.report.calls.every((call) => call.method === 'GET'));
-    }
+      )
+      .map((record) => ({ mode, record })),
+  );
+  const results = runMany(
+    cases.map(({ mode, record }) => ({
+      mode,
+      replies: [session(), state({ ...idle(), workTasks: [record] })],
+    })),
+  );
+  for (const [index, { mode, record }] of cases.entries()) {
+    const result = defined(results[index]);
+    assert.equal(result.status, 79, JSON.stringify({ mode, record }));
+    assert.match(
+      result.stderr,
+      new RegExp(
+        '^DANT_UPDATE_DEFERRED:work-still-active:' +
+          (mode === 'idle' ? 'rollback' : mode === 'final' ? 'final' : 'initial') +
+          '$',
+        'm',
+      ),
+    );
+    assert.ok(result.report.calls.every((call) => call.method === 'GET'));
+  }
+  for (const mode of ['check', 'final']) {
     const ended = run(
       [
         session(),
@@ -505,30 +599,37 @@ test('passive checks defer saved runnable work between turns and only accept an 
 });
 
 test('passive checks defer every unconfirmed executor status using GET only, including a post-pause offline race', () => {
-  for (const mode of ['check', 'final', 'idle'])
-    for (const worker of [
+  const cases = ['check', 'final', 'idle'].flatMap((mode) =>
+    [
       undefined,
       null,
       {},
       { status: 'offline' },
       { status: 'connecting' },
       { status: 'unknown' },
-    ]) {
-      const current = { ...idle(), worker },
-        result = run([session(), state(current)], { mode });
-      assert.equal(result.status, 79);
-      assert.match(result.stderr, /^DANT_WORK_ACTIVE$/m);
-      assert.match(
-        result.stderr,
-        new RegExp(
-          '^DANT_UPDATE_DEFERRED:executor-offline:' +
-            (mode === 'idle' ? 'rollback' : mode === 'final' ? 'final' : 'initial') +
-            '$',
-          'm',
-        ),
-      );
-      assert.ok(result.report.calls.every((call) => call.method === 'GET'));
-    }
+    ].map((worker) => ({ mode, worker })),
+  );
+  const results = runMany(
+    cases.map(({ mode, worker }) => ({
+      mode,
+      replies: [session(), state({ ...idle(), worker })],
+    })),
+  );
+  for (const [index, { mode }] of cases.entries()) {
+    const result = defined(results[index]);
+    assert.equal(result.status, 79);
+    assert.match(result.stderr, /^DANT_WORK_ACTIVE$/m);
+    assert.match(
+      result.stderr,
+      new RegExp(
+        '^DANT_UPDATE_DEFERRED:executor-offline:' +
+          (mode === 'idle' ? 'rollback' : mode === 'final' ? 'final' : 'initial') +
+          '$',
+        'm',
+      ),
+    );
+    assert.ok(result.report.calls.every((call) => call.method === 'GET'));
+  }
   const race = run([
     session(),
     state(idle()),
@@ -616,8 +717,9 @@ test('fixed guard reasons identify the failed stage without exposing private res
       'final',
     ],
   ];
-  for (const [replies, reason, stage] of cases) {
-    const result = run(replies);
+  const results = runMany(cases.map(([replies]) => ({ replies })));
+  for (const [index, [, reason, stage]] of cases.entries()) {
+    const result = defined(results[index]);
     assert.equal(result.status, 1);
     assert.match(
       result.stderr,
@@ -668,7 +770,7 @@ worker_active="$4"
 guest_active="$5"
 cd "$source_dir"
 prepare_transcription() { printf 'transcription\n' >> "$HOME/events"; }
-node() { printf 'node:%s\n' "$*" >> "$HOME/events"; }
+python3() { printf 'go-readiness:%s\n' "$*" >> "$HOME/events"; }
 systemctl() {
   printf 'systemctl:%s\n' "$*" >> "$HOME/events"
   if [[ "$*" == '--user is-active --quiet dant-worker.service' ]]; then [[ "$worker_active" == true ]];
@@ -725,278 +827,21 @@ test('a current manifest with only one running service still proceeds through in
     }
 });
 
-function deployment(
-  t: NodeTestContext,
-  {
-    failure = '',
-    rollbackBusy = false,
-    initialState = 'active',
-    becomeActive = false,
-    rollbackFailure = '',
-    guestHost = '127.0.0.1',
-    guestPort = '4320',
-  } = {},
-) {
-  const testRoot = path.resolve('.cache/tests');
-  fs.mkdirSync(testRoot, { recursive: true });
-  const root = fs.mkdtempSync(path.join(testRoot, 'worker-install-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const home = path.join(root, 'home'),
-    stage = path.join(home, 'dant/releases/source.fixture'),
-    old = path.join(home, 'dant/releases/source.old');
-  for (const name of [
-    stage,
-    old,
-    path.join(stage, 'vm'),
-    path.join(home, 'dant/vm'),
-    path.join(home, 'dant/data'),
-    path.join(home, '.config/systemd/user'),
-  ])
-    fs.mkdirSync(name, { recursive: true });
-  for (const name of [
-    'guest.py',
-    'desktop.py',
-    'control.py',
-    'voice_message.py',
-    'transcribe_audio.py',
-    'desktop_mcp.py',
-  ]) {
-    fs.writeFileSync(path.join(stage, 'vm', name), 'new ' + name);
-    fs.writeFileSync(path.join(home, 'dant/vm', name), 'old ' + name);
-  }
-  for (const name of ['dant-guest-local.service', 'dant-worker.service'])
-    fs.writeFileSync(path.join(home, '.config/systemd/user', name), 'old ' + name);
-  fs.writeFileSync(path.join(stage, 'deploy-manifest.json'), 'new-source');
-  fs.writeFileSync(path.join(home, 'dant/deployed-source.json'), 'old-source');
-  fs.writeFileSync(
-    path.join(home, 'dant/data/state.json'),
-    '{"tasks":[{"status":"paused"}],"messages":["preserved"]}',
-  );
-  // Model symlink metadata with plain files so the same transaction tests work
-  // on Windows without changing the host's symlink privilege or VM services.
-  fs.writeFileSync(path.join(home, 'dant/app'), shellPath(old));
-  const harness = String.raw`
-set -euo pipefail
-export HOME="$1"
-source_dir="$2"
-failure="$3"
-rollback_busy="$4"
-guest_host="$8"
-guest_port="$9"
-worker_port=4317
-printf '%s' "$5" > "$HOME/worker-active"
-become_active="$6"
-rollback_failure="$7"
-ln() {
-  if [[ "$rollback_failure" == link && "$3" == */app.restore ]]; then return 1; fi
-  printf '%s' "$2" > "$3"
-}
-cp() {
-  if [[ "$rollback_failure" == helper && "$2" == */rollback.*/vm/desktop.py || "$rollback_failure" == service && "$2" == */rollback.*/services/dant-worker.service ]]; then return 1; fi
-  command cp "$@"
-}
-readlink() { cat "$1"; }
-[() { if [[ "$1" == '-L' && "$2" == "$HOME/dant/app" ]]; then builtin [ -f "$2" ]; else builtin [ "$@"; fi; }
-check_idle_worker() {
-  local mode=check
-  if (( $# )); then mode="$1"; fi
-  if [[ "$become_active" == true && "$mode" == final ]]; then printf active > "$HOME/worker-active"; fi
-  worker_checked_state=$(worker_service_state) || return 1
-  printf 'check:%s\n' "$mode" >> "$HOME/events"
-  if [[ "$failure" == 'precheck' && "$mode" == 'final' ]]; then return 1; fi
-  if [[ "$rollback_busy" == 'true' && "$mode" == 'idle' ]]; then return 1; fi
-}
-systemctl() {
-  printf 'systemctl:%s\n' "$*" >> "$HOME/events"
-  if [[ "$2" == 'show' ]]; then cat "$HOME/worker-active"; return 0; fi
-  if [[ "$2" == 'stop' && "$3" == 'dant-worker.service' ]]; then
-    if [[ "$failure" == 'stop' ]]; then return 1; fi
-    printf inactive > "$HOME/worker-active"
-  fi
-  if [[ "$2" == 'restart' && "$3" == 'dant-worker.service' ]]; then
-    if [[ "$failure" == 'restart' && "$(cat "$HOME/dant/app")" == "$source_dir" ]]; then return 1; fi
-    printf active > "$HOME/worker-active"
-  fi
-  if [[ "$2" == 'start' && "$3" == 'dant-worker.service' ]]; then printf active > "$HOME/worker-active"; fi
-}
-loginctl() { if [[ "$1" == 'show-user' ]]; then echo yes; fi; }
-python3() { [[ "$failure" != 'readiness' ]]; }
-sleep() { :; }
-`;
-  const tail = script.slice(script.indexOf('# Preserve the old executable files/configuration'));
-  const serviceState = script.slice(
-    script.indexOf('worker_service_state() {'),
-    script.indexOf('check_idle_worker() {'),
-  );
-  const runFile = path.join(root, 'run-fixture.sh');
-  fs.writeFileSync(runFile, harness + '\n' + serviceState + '\n' + tail);
+// The Go cutover replaces the former Node rollback transaction. Its isolated
+// fixtures exercise stop/export/prepare/start failures and prohibit restarting
+// legacy Node against data that Go preparation may already have migrated.
+test('Go cutover validates provenance, proves shutdown and preserves failed migration outcomes', () => {
   const result = spawnSync(
-    bash,
-    [
-      '--noprofile',
-      '--norc',
-      shellPath(runFile),
-      shellPath(home),
-      shellPath(stage),
-      failure,
-      String(rollbackBusy),
-      initialState,
-      String(becomeActive),
-      rollbackFailure,
-      guestHost,
-      guestPort,
-    ],
+    process.env.PYTHON || 'python',
+    ['-m', 'unittest', 'discover', '-s', 'tests/vm', '-p', 'test_worker_install.py', '-v'],
     { encoding: 'utf8', shell: false, timeout: DEPLOYMENT_FIXTURE_TIMEOUT_MS },
   );
   if (result.error) throw result.error;
-  return {
-    ...result,
-    home,
-    stage,
-    old,
-    events: fs.existsSync(path.join(home, 'events'))
-      ? fs.readFileSync(path.join(home, 'events'), 'utf8')
-      : '',
-  };
-}
-
-test('installation switches a confirmed idle worker, preserves paused data and commits its manifest only after readiness', (t) => {
-  const result = deployment(t);
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(
-    fs.readFileSync(path.join(result.home, 'dant/app'), 'utf8'),
-    shellPath(result.stage),
-  );
-  assert.equal(
-    fs.readFileSync(path.join(result.home, 'dant/deployed-source.json'), 'utf8'),
-    'new-source',
-  );
-  assert.equal(
-    JSON.parse(fs.readFileSync(path.join(result.home, 'dant/data/state.json'), 'utf8')).tasks[0]
-      .status,
-    'paused',
-  );
-  assert.ok(
-    result.events.indexOf('check:final') <
-      result.events.indexOf('systemctl:--user stop dant-worker.service'),
-  );
-});
-
-test('both installed services receive the same validated guest endpoint while worker IPC remains fixed', (t) => {
-  const result = deployment(t, { guestHost: 'localhost', guestPort: '5540' });
-  assert.equal(result.status, 0, result.stderr);
-  for (const name of ['dant-guest-local.service', 'dant-worker.service']) {
-    const text = fs.readFileSync(path.join(result.home, '.config/systemd/user', name), 'utf8');
-    assert.match(text, /^Environment=DANT_GUEST_HOST=localhost$/m);
-    assert.match(text, /^Environment=DANT_GUEST_PORT=5540$/m);
-  }
+  assert.match(result.stderr, /test_cutover_orders_stop_backup_prepare_go_start_and_commit/);
   assert.match(
-    fs.readFileSync(path.join(result.home, '.config/systemd/user/dant-worker.service'), 'utf8'),
-    /^Environment=DANT_PORT=4317$/m,
+    result.stderr,
+    /test_failed_stop_backup_prepare_or_start_never_restarts_node_or_replays/,
   );
-});
-
-test('a failed new worker restores the previous app, helpers and services without rolling back authoritative data', async (t) => {
-  for (const failure of ['restart', 'readiness'])
-    await t.test(failure, (t) => {
-      const result = deployment(t, { failure });
-      assert.notEqual(result.status, 0);
-      assert.equal(
-        fs.readFileSync(path.join(result.home, 'dant/app'), 'utf8'),
-        shellPath(result.old),
-        result.stderr + '\n' + result.events,
-      );
-      assert.equal(
-        fs.readFileSync(path.join(result.home, 'dant/vm/desktop.py'), 'utf8'),
-        'old desktop.py',
-      );
-      assert.equal(
-        fs.readFileSync(path.join(result.home, '.config/systemd/user/dant-worker.service'), 'utf8'),
-        'old dant-worker.service',
-      );
-      assert.equal(
-        fs.readFileSync(path.join(result.home, 'dant/deployed-source.json'), 'utf8'),
-        'old-source',
-      );
-      assert.equal(
-        JSON.parse(fs.readFileSync(path.join(result.home, 'dant/data/state.json'), 'utf8'))
-          .messages[0],
-        'preserved',
-      );
-      assert.match(result.stderr, /previous service files were restored/);
-    });
-});
-
-test('failure to confirm idle state or service shutdown never switches the existing app', async (t) => {
-  for (const failure of ['precheck', 'stop'])
-    await t.test(failure, (t) => {
-      const result = deployment(t, { failure });
-      assert.notEqual(result.status, 0);
-      assert.equal(
-        fs.readFileSync(path.join(result.home, 'dant/app'), 'utf8'),
-        shellPath(result.old),
-      );
-      assert.equal(
-        fs.readFileSync(path.join(result.home, 'dant/vm/desktop.py'), 'utf8'),
-        'old desktop.py',
-      );
-      assert.equal(
-        fs.readFileSync(path.join(result.home, 'dant/deployed-source.json'), 'utf8'),
-        'old-source',
-      );
-      if (failure === 'precheck') assert.doesNotMatch(result.events, /stop dant-worker/);
-    });
-});
-
-test('a new worker with unconfirmed activity is left in place instead of being forcibly stopped for rollback', (t) => {
-  const result = deployment(t, { failure: 'readiness', rollbackBusy: true });
-  assert.notEqual(result.status, 0);
-  assert.equal(
-    fs.readFileSync(path.join(result.home, 'dant/app'), 'utf8'),
-    shellPath(result.stage),
-    result.stderr + '\n' + result.events,
-  );
-  assert.equal(result.events.split('stop dant-worker.service').length - 1, 1);
-  assert.match(result.stderr, /no executor was forcibly stopped/);
-  assert.equal(
-    fs.readFileSync(path.join(result.home, 'dant/deployed-source.json'), 'utf8'),
-    'old-source',
-  );
-});
-
-test('an old worker that became active during preparation is stopped after the fresh idle check', (t) => {
-  const result = deployment(t, { initialState: 'inactive', becomeActive: true });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.events, /check:final[\s\S]*systemctl:--user stop dant-worker.service/);
-});
-
-test('transitional or unknown systemd state never permits a live app replacement', async (t) => {
-  for (const initialState of ['activating', 'deactivating', 'reloading', 'unknown'])
-    await t.test(initialState, (t) => {
-      const result = deployment(t, { initialState });
-      assert.notEqual(result.status, 0);
-      assert.equal(
-        fs.readFileSync(path.join(result.home, 'dant/app'), 'utf8'),
-        shellPath(result.old),
-      );
-      assert.doesNotMatch(result.events, /stop dant-worker/);
-      assert.match(result.stderr, /changing state/);
-    });
-});
-
-test('incomplete rollback keeps the worker stopped and never reports a completed restoration', async (t) => {
-  for (const rollbackFailure of ['link', 'helper', 'service'])
-    await t.test(rollbackFailure, (t) => {
-      const result = deployment(t, { failure: 'restart', rollbackFailure });
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /could not be fully restored/);
-      assert.doesNotMatch(result.stderr, /previous service files were restored;/);
-      assert.doesNotMatch(result.events, /systemctl:--user start dant-worker.service/);
-      assert.equal(fs.readFileSync(path.join(result.home, 'worker-active'), 'utf8'), 'inactive');
-      assert.equal(
-        JSON.parse(fs.readFileSync(path.join(result.home, 'dant/data/state.json'), 'utf8'))
-          .messages[0],
-        'preserved',
-      );
-    });
+  assert.match(result.stderr, /test_cgroup_and_inherited_codex_owner_must_be_empty/);
 });

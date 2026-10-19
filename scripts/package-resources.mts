@@ -3,10 +3,25 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBuildPaths } from './ci/build-paths.mts';
 import { readVersion } from './ci/version.mts';
-import { assertNodeRuntime } from './ci/node-runtime.mts';
-import { spawnSync } from 'node:child_process';
-import type { NodeProbeRunner } from './ci/node-runtime.mts';
 import { errorCode, isRecord } from '../src/contracts/json.mts';
+import { buildCore, sourceCommit, type CoreBuildOptions } from './core/build.mts';
+import type { GoRunner } from './core/go.mts';
+import {
+  CORE_WINDOWS,
+  CORE_LINUX,
+  CORE_GUEST_BINARY,
+  CORE_LICENSE,
+  CORE_LICENSE_SOURCE,
+  CORE_BUILD_MANIFEST,
+  CORE_RESOURCE_MANIFEST,
+  CORE_BUNDLE_MANIFEST,
+  VM_BUNDLE_FILES,
+  HOST_HELPERS,
+  describeFile,
+  readManifest,
+  verifyFiles,
+  type BundleManifest,
+} from './core/bundle.mts';
 
 interface ReplaceOptions {
   renameSync?: typeof fs.renameSync;
@@ -16,17 +31,18 @@ interface ReplaceOptions {
 interface ResourceOptions extends ReplaceOptions {
   projectRoot?: string;
   env?: NodeJS.ProcessEnv;
+  runGit?: GoRunner;
 }
 interface PrepareResourceOptions extends ResourceOptions {
-  nodeExecutable?: string;
-  runNode?: NodeProbeRunner;
+  build?: typeof buildCore;
+  buildOptions?: Omit<CoreBuildOptions, 'root'>;
 }
 const PACKAGING_RENAME_ATTEMPTS = 6;
 const PACKAGING_RENAME_DELAY_MS = 25;
 
 const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const directories = ['src', 'dist', 'node_modules', 'scripts', 'vm'],
-  files = ['package.json', 'package-lock.json', 'LICENSE'];
+const directories = ['dist'],
+  files = ['package.json', 'LICENSE'];
 const retryCodes = new Set(['EPERM', 'EACCES', 'EBUSY']),
   pauseBuffer = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 const samePath = (left: string, right: string): boolean =>
@@ -59,7 +75,7 @@ function directory(target: string): void {
 function file(target: string): void {
   const stat = fs.lstatSync(target, { throwIfNoEntry: false });
   ordinaryAncestors(path.dirname(target));
-  if (!stat?.isFile() || stat.isSymbolicLink() || stat.size === 0)
+  if (!stat?.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size === 0)
     throw Error('Missing or unsafe required packaging file: ' + path.basename(target));
 }
 function project(root: string): string {
@@ -67,7 +83,13 @@ function project(root: string): string {
     throw Error('Packaging project root must be absolute.');
   root = path.resolve(root);
   directory(root);
-  for (const name of [...files, 'src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml'])
+  for (const name of [
+    ...files,
+    'package-lock.json',
+    'src-tauri/tauri.conf.json',
+    'src-tauri/Cargo.toml',
+    CORE_LICENSE_SOURCE,
+  ])
     file(path.join(root, name));
   const pkg: unknown = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
     lock: unknown = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
@@ -148,33 +170,142 @@ function replaceTree(
   }
   return destination;
 }
-const copyDirectory = (source: string, destination: string): void =>
-  fs.cpSync(source, destination, {
-    recursive: true,
-    filter: (entry) =>
-      !path
-        .relative(source, entry)
-        .split(path.sep)
-        .some(
-          (part) => part === '.cache' || part === '__pycache__' || /^\.env(?:\.|$)/i.test(part),
-        ),
-  });
+const omitted = (name: string) =>
+  name === '.cache' || name === '__pycache__' || /^\.env(?:\.|$)/i.test(name);
+function copyDirectory(source: string, destination: string): void {
+  directory(source);
+  fs.mkdirSync(destination, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (omitted(entry.name)) continue;
+    const from = path.join(source, entry.name),
+      to = path.join(destination, entry.name);
+    if (entry.isDirectory()) copyDirectory(from, to);
+    else {
+      file(from);
+      fs.copyFileSync(from, to);
+    }
+  }
+}
 function validateSources(root: string): void {
   for (const name of directories) directory(path.join(root, name));
-  for (const name of ['src/server.mts', 'dist/index.html', 'node_modules/express/package.json'])
+  for (const name of [
+    'dist/index.html',
+    ...HOST_HELPERS,
+    ...VM_BUNDLE_FILES.filter((name) => name !== CORE_GUEST_BINARY),
+  ])
     file(path.join(root, name));
 }
+
+const hostManifestPath = 'resources/core/' + CORE_BUILD_MANIFEST;
+function copyFile(root: string, staging: string, name: string): void {
+  const destination = path.join(staging, name);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(path.join(root, name), destination);
+}
+
+/** Stage validation accepts only compiled core, static UI and fixed VM helpers. */
+function resourceInventory(root: string): string[] {
+  const expected = new Set([
+    ...files,
+    CORE_WINDOWS,
+    CORE_LICENSE,
+    CORE_RESOURCE_MANIFEST,
+    CORE_BUNDLE_MANIFEST,
+    hostManifestPath,
+    ...HOST_HELPERS,
+    ...VM_BUNDLE_FILES,
+  ]);
+  const inventory: string[] = [];
+  const walk = (current: string) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const target = path.join(current, entry.name),
+        relative = path.relative(root, target).split(path.sep).join('/');
+      if (omitted(entry.name) || entry.isSymbolicLink())
+        throw Error('Prepared backend contains unexpected files.');
+      if (entry.isDirectory()) {
+        if (
+          relative !== 'dist' &&
+          !relative.startsWith('dist/') &&
+          ![...expected].some((name) => name.startsWith(relative + '/'))
+        )
+          throw Error('Prepared backend contains unexpected files.');
+        directory(target);
+        walk(target);
+      } else {
+        file(target);
+        if (!relative.startsWith('dist/') && !expected.has(relative))
+          throw Error('Prepared backend contains unexpected files.');
+        inventory.push(relative);
+      }
+    }
+  };
+  walk(root);
+  return inventory.sort();
+}
+
+export function validatePreparedResources(
+  root: string,
+  version: string,
+  source?: string,
+): BundleManifest {
+  const inventory = resourceInventory(root).filter((name) => name !== CORE_RESOURCE_MANIFEST);
+  const resourceManifest = readManifest(
+    path.join(root, CORE_RESOURCE_MANIFEST),
+    inventory,
+    version,
+    source,
+  );
+  verifyFiles(root, resourceManifest);
+  const bundle = readManifest(
+    path.join(root, CORE_BUNDLE_MANIFEST),
+    VM_BUNDLE_FILES,
+    version,
+    resourceManifest.sourceCommit,
+  );
+  verifyFiles(root, bundle);
+  const host = readManifest(
+    path.join(root, hostManifestPath),
+    [CORE_WINDOWS, CORE_LINUX],
+    version,
+    bundle.sourceCommit,
+  );
+  for (const expected of host.files) {
+    const actual = describeFile(
+      root,
+      expected.path === CORE_LINUX ? CORE_GUEST_BINARY : CORE_WINDOWS,
+    );
+    if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
+      throw Error('A prepared core binary does not match its build provenance.');
+  }
+  file(path.join(root, 'dist/index.html'));
+  file(path.join(root, CORE_LICENSE));
+  const pkg: unknown = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  if (!isRecord(pkg) || pkg.name !== 'dant' || pkg.version !== version)
+    throw Error('Prepared backend version does not match the current dant project.');
+  return bundle;
+}
+
 export function prepareResources({
   projectRoot = defaultRoot,
-  nodeExecutable = process.execPath,
-  runNode = spawnSync,
+  build = buildCore,
+  buildOptions = {},
+  runGit,
   env = process.env,
   ...replaceOptions
 }: PrepareResourceOptions = {}) {
   const root = project(projectRoot);
   validateSources(root);
-  file(nodeExecutable);
-  assertNodeRuntime(nodeExecutable, { run: runNode });
+  const git = runGit ?? buildOptions.runGit;
+  const version = readVersion(root, env),
+    commit = sourceCommit(root, { ...(git ? { runGit: git } : {}), env });
+  const built = build({ ...buildOptions, ...(git ? { runGit: git } : {}), root, env });
+  const manifest = readManifest(
+    path.join(built.directory, CORE_BUILD_MANIFEST),
+    [CORE_WINDOWS, CORE_LINUX],
+    version,
+    commit,
+  );
+  verifyFiles(built.directory, manifest);
   const { resources } = resolveBuildPaths(root, env);
   return replaceTree(
     root,
@@ -184,7 +315,40 @@ export function prepareResources({
       for (const name of directories)
         copyDirectory(path.join(root, name), path.join(staging, name));
       for (const name of files) fs.copyFileSync(path.join(root, name), path.join(staging, name));
-      fs.copyFileSync(nodeExecutable, path.join(staging, 'node.exe'));
+      fs.copyFileSync(path.join(root, CORE_LICENSE_SOURCE), path.join(staging, CORE_LICENSE));
+      for (const name of HOST_HELPERS) copyFile(root, staging, name);
+      for (const name of VM_BUNDLE_FILES) {
+        if (name === CORE_GUEST_BINARY) {
+          fs.mkdirSync(path.dirname(path.join(staging, name)), { recursive: true });
+          fs.copyFileSync(path.join(built.directory, CORE_LINUX), path.join(staging, name));
+        } else copyFile(root, staging, name);
+      }
+      fs.copyFileSync(path.join(built.directory, CORE_WINDOWS), path.join(staging, CORE_WINDOWS));
+      fs.copyFileSync(
+        path.join(built.directory, CORE_BUILD_MANIFEST),
+        path.join(staging, hostManifestPath),
+      );
+      const bundle: BundleManifest = {
+        schemaVersion: 1,
+        version,
+        sourceCommit: commit,
+        files: VM_BUNDLE_FILES.map((name) => describeFile(staging, name)),
+      };
+      fs.writeFileSync(
+        path.join(staging, CORE_BUNDLE_MANIFEST),
+        JSON.stringify(bundle, null, 2) + '\n',
+      );
+      const resourceManifest: BundleManifest = {
+        schemaVersion: 1,
+        version,
+        sourceCommit: commit,
+        files: resourceInventory(staging).map((name) => describeFile(staging, name)),
+      };
+      fs.writeFileSync(
+        path.join(staging, CORE_RESOURCE_MANIFEST),
+        JSON.stringify(resourceManifest, null, 2) + '\n',
+      );
+      validatePreparedResources(staging, version, commit);
     },
     replaceOptions,
   );
@@ -192,6 +356,7 @@ export function prepareResources({
 export function stageReleaseResources({
   projectRoot = defaultRoot,
   env = process.env,
+  runGit,
   ...replaceOptions
 }: ResourceOptions = {}) {
   const root = project(projectRoot),
@@ -199,23 +364,9 @@ export function stageReleaseResources({
   assertGeneratedPath(root, resources, env);
   directory(resources);
   validateSources(resources);
-  for (const name of [...files, 'node.exe']) file(path.join(resources, name));
-  const expected = new Set([...directories, ...files, 'node.exe']);
-  if (fs.readdirSync(resources).some((name) => !expected.has(name)))
-    throw Error(
-      'Prepared backend contains unexpected files. Prepare clean resources before staging.',
-    );
-  const sourcePackage: unknown = JSON.parse(
-      fs.readFileSync(path.join(resources, 'package.json'), 'utf8'),
-    ),
-    currentPackage: unknown = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  if (
-    !isRecord(sourcePackage) ||
-    !isRecord(currentPackage) ||
-    sourcePackage.name !== 'dant' ||
-    sourcePackage.version !== currentPackage.version
-  )
-    throw Error('Prepared backend version does not match the current dant project.');
+  const version = readVersion(root, env);
+  const commit = sourceCommit(root, { ...(runGit ? { runGit } : {}), env });
+  validatePreparedResources(resources, version, commit);
   if (inside(resources, backend) || inside(backend, resources) || samePath(resources, backend))
     throw Error('Generated backend and resources directories must not overlap.');
   return replaceTree(
@@ -223,10 +374,8 @@ export function stageReleaseResources({
     backend,
     env,
     (staging) => {
-      for (const name of directories)
-        copyDirectory(path.join(resources, name), path.join(staging, name));
-      for (const name of [...files, 'node.exe'])
-        fs.copyFileSync(path.join(resources, name), path.join(staging, name));
+      copyDirectory(resources, staging);
+      validatePreparedResources(staging, version);
     },
     replaceOptions,
   );

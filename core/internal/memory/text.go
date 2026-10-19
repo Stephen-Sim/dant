@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -10,6 +11,51 @@ import (
 // Text retains JavaScript UTF-16 slices, including a boundary that cuts a
 // surrogate pair. Converting those slices to a Go string would lose parity.
 type Text struct{ units []uint16 }
+
+// UnmarshalJSON retains escaped legacy UTF-16 text without turning a lone
+// surrogate into a different authored character.
+func (t *Text) UnmarshalJSON(data []byte) error {
+	if !json.Valid(data) || !utf8.Valid(data) || len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
+		return ErrInvalidMemory
+	}
+	result := []uint16{}
+	for cursor := 1; cursor < len(data)-1; {
+		if data[cursor] != '\\' {
+			r, width := utf8.DecodeRune(data[cursor:])
+			result = append(result, utf16.Encode([]rune{r})...)
+			cursor += width
+			continue
+		}
+		cursor++
+		escape := data[cursor]
+		cursor++
+		switch escape {
+		case 'u':
+			value, err := strconv.ParseUint(string(data[cursor:cursor+4]), 16, 16)
+			if err != nil {
+				return ErrInvalidMemory
+			}
+			result = append(result, uint16(value))
+			cursor += 4
+		case '"', '\\', '/':
+			result = append(result, uint16(escape))
+		case 'b':
+			result = append(result, '\b')
+		case 'f':
+			result = append(result, '\f')
+		case 'n':
+			result = append(result, '\n')
+		case 'r':
+			result = append(result, '\r')
+		case 't':
+			result = append(result, '\t')
+		default:
+			return ErrInvalidMemory
+		}
+	}
+	t.units = result
+	return nil
+}
 
 func (t Text) UTF16Length() int { return len(t.units) }
 
@@ -71,6 +117,10 @@ func containsUnits(text, term []uint16) bool {
 }
 
 func relevantExcerpt(text, normalized string, terms []string, maximum int) (Text, bool) {
+	return relevantExcerptUnits(units(text), normalized, terms, maximum)
+}
+
+func relevantExcerptUnits(content []uint16, normalized string, terms []string, maximum int) (Text, bool) {
 	positions := make([]int, 0, len(terms))
 	for _, term := range terms {
 		if position := strings.Index(normalized, term); position >= 0 {
@@ -101,7 +151,6 @@ func relevantExcerpt(text, normalized string, terms []string, maximum int) (Text
 			start = candidate
 		}
 	}
-	content := units(text)
 	if maximum <= 2 {
 		clipped := unitSlice(content, start, start+maximum)
 		return Text{units: clipped}, len(clipped) > 0

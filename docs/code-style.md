@@ -6,28 +6,27 @@ These conventions apply to new code and to code changed in this repository. [AGE
 
 ## Feature modules
 
-Group runtime modules by responsibility under `src/` and browser modules by feature under `ui/`. Use descriptive file names within each directory. Entry files assemble the application; transport, persistence, rendering, and domain logic belong in their owning modules. Shared contracts may be imported by multiple runtimes, but must not depend on their entrypoints.
+Group production backend packages under `core/internal/<feature>/` and browser modules under `ui/<feature>/`. Small `core/cmd/` entrypoints delegate role assembly to `application`; Controller assembly lives in `controller`, and Worker assembly in `app`. Domain logic, persistence, rendering and transport stay in their owning features.
 
-| Area                                                               | Responsibility                                                                    |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `src/app/`, `src/runtime/`                                         | Application assembly, Controller/Worker services, process and RPC boundaries.     |
-| `src/work/`, `src/conversation/`                                   | Task execution, continuity, plans, conversation and persisted state.              |
-| `src/computer/`, `src/files/`, `src/voice/`                        | VM/desktop operations, attachments and delivery, audio and calls.                 |
-| `src/telegram/`, `src/security/`, `src/skills/`, `src/schedules/`  | Their named integration or domain.                                                |
-| `src/config/`, `src/settings/`, `src/updates/`, `src/diagnostics/` | Validated environment configuration, preferences, releases, operational metadata. |
-| `src/i18n/`                                                        | Language registry, shared translation helpers, and locale catalogs.               |
-| `ui/chat/`, `ui/call/`, `ui/work/`, `ui/schedules/`, `ui/files/`   | Browser features and their renderers/controllers.                                 |
-| `ui/settings/`, `ui/platform/`, `ui/shared/`, `ui/i18n/`           | Settings UI, native adapters, shared browser primitives, browser localization.    |
+| Area                                                                                      | Responsibility                                                                                                                           |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/internal/controller`, `computer`, `platform`                                        | Host configuration, SSH, VM providers, lifecycle and deployment.                                                                         |
+| `core/internal/app`, `work`, `runtime`                                                    | Worker API, admission, task continuity and Codex process/RPC boundaries.                                                                 |
+| `core/internal/store`, `history`, `memory`, `schedules`                                   | Conversation authority, SQLite memory/recall and schedule dispatch.                                                                      |
+| `core/internal/voice`, `telegram`, `files`, `skills`, `security`, `backups`, `updates`    | Their named feature and its storage/transport boundaries.                                                                                |
+| `core/internal/config`, `contracts`, `i18n`, `settings`, `diagnostics`                    | Configuration, generated states, embedded language data, preferences and bounded operational metadata.                                   |
+| `ui/chat`, `call`, `work`, `schedules`, `files`, `settings`, `platform`, `shared`, `i18n` | Browser features, native adapters and shared browser primitives.                                                                         |
+| `src/contracts`, `src/i18n`, `scripts`, `tests`                                           | Shared schema/locale sources, TypeScript tooling and compatibility references. Retained backend TypeScript is not a production launcher. |
 
-The stable `src/server.mts` launcher and browser entry files may remain at the root of their source tree for existing launch and bundling contracts.
+Shared contracts must not import a browser, Controller or Worker entrypoint. A compiled Go role cannot fall back to `src/server.mts`; production resources exclude the backend TypeScript tree and Node runtime.
 
 The browser renders state and submits validated user actions. The Windows Controller owns host configuration, VM connections, and forwarding. The Ubuntu Worker owns the task Engine and persistent work. Tauri owns native Windows integration. Keep these boundaries intact when extracting or moving modules. See [architecture](architecture.md).
 
 A move includes every affected import, packaging allowlist, test fixture, coverage path, command, and documentation link. It must preserve saved data locations and public routes, or include an explicit migration. Avoid circular imports and a miscellaneous utilities directory that hides feature ownership.
 
-Tests mirror their feature: `tests/work/`, `tests/conversation/`, `tests/computer/`, and the other server modules; browser tests use `tests/ui/chat/`, `tests/ui/settings/`, and their matching UI modules. Shared fixtures live in `tests/support/`, compile-time contracts in `tests/types/`, and Python VM tests in `tests/vm/`. Both `npm test` and coverage use the same recursive discovery helper, so moving a test into a feature folder does not silently remove it from the suite. Focused Node runs use the complete test path, for example `node --test tests/work/task-cancel.test.mts`.
+Retained TypeScript compatibility tests mirror their reference feature: `tests/work/`, `tests/conversation/`, `tests/computer/`, and the other server modules; browser tests use `tests/ui/chat/`, `tests/ui/settings/`, and their matching UI modules. Shared fixtures live in `tests/support/`, compile-time contracts in `tests/types/`, and Python VM tests in `tests/vm/`. Both `npm test` and coverage use the same recursive discovery helper, so moving a test into a feature folder does not silently remove it from the suite. Focused Node runs use the complete test path, for example `node --test tests/work/task-cancel.test.mts`.
 
-Adopted Go core packages live under `core/internal/<feature>/`, with `*_test.go` beside the implementation. TypeScript tooling for that core belongs under `scripts/core/`, with Node tooling tests under `tests/core/`. Introducing a package does not switch the live application to a new runtime: migrations must preserve the existing Controller, Worker, browser and authenticated transport boundaries.
+Production Go core packages live under `core/internal/<feature>/`, with `*_test.go` beside the implementation. TypeScript tooling for that core belongs under `scripts/core/`, with Node tooling tests under `tests/core/`. Keep the Controller, Worker, browser and authenticated transport boundaries explicit; the Controller may never import execution assembly as an offline fallback.
 
 ## Formatting commands
 
@@ -50,7 +49,7 @@ Generated output, caches, installed dependencies, private runtime data, environm
 
 ## Configuration and constants
 
-Use the shared configuration module for environment options. Parse and validate each option there, supply a documented default, and pass the result to the owning module. Do not scatter `process.env` reads throughout feature code. `.env.example` documents non-secret examples and empty secret placeholders; real values belong in ignored local configuration or the existing secure credential facilities.
+Use the shared configuration module for environment options. Parse and validate each option there, supply a documented default, and pass the result to the owning module. Go reads selected environment values through `core/internal/config`; browser/tooling code uses its shared configuration adapters. Do not scatter `os.Getenv` or `process.env` reads throughout features. `.env.example` documents non-secret examples and empty secret placeholders; real values belong in ignored local configuration or the existing secure credential facilities.
 
 Protocol limits, accepted identifiers, security allowlists, and stable error codes are code constants. Keep them beside their feature or in a shared contract when multiple runtimes need exactly the same value. Do not make security invariants configurable merely to avoid a constant in source. No log or error may include secrets or unbounded process output.
 
@@ -62,13 +61,13 @@ Use the shared language registry and localization layer. Supported codes, native
 
 User messages, task names, project memory, files, and other user content remain as authored. Changing the interface language does not translate history or authorize new work.
 
-## Named states and TypeScript contracts
+## Named states and cross-runtime contracts
 
-Use the frozen runtime enums in `src/contracts/states.mts` for state values. Names use UpperCamelCase keys, such as `TaskStatus.Running`, `TaskPriority.Normal`, and `PlanStepStatus.InProgress`; their serialized values remain the existing strings. Do not replace persisted values with numeric ordinals or translated labels. Each domain has its own vocabulary: a task being paused does not prove that its executor stopped, and an unknown submission is not a failed action that may be repeated.
+TypeScript uses the frozen runtime enums in `src/contracts/states.mts`; Go uses the same schema's generated `core/internal/contracts` constants, such as `contracts.TaskStatusRunning`. Names use UpperCamelCase keys, such as `TaskStatus.Running`, `TaskPriority.Normal`, and `PlanStepStatus.InProgress`; their serialized values remain the existing strings. Do not replace persisted values with numeric ordinals or translated labels. Each domain has its own vocabulary: a task being paused does not prove that its executor stopped, and an unknown submission is not a failed action that may be repeated.
 
 `ChatTaskStatus` and `WorkStatus` deliberately differ. Chat task validation keeps its existing accepted states, while a durable work record can remain `continuing` between execution turns or `unknown` while its outcome is reconciled. Legacy display normalization stays at its existing compatibility boundary. Use `isEnumValue(domain, value)` when accepting an unknown value; reject or explicitly preserve uncertainty rather than inventing a safe state.
 
-`src/contracts/contracts.ts` defines shared boundary shapes; feature-specific types stay beside their owning modules. Browser code, Node application modules, tools, and Node tests use TypeScript; adopted Go core packages use Go's checked types. Runtime TypeScript modules use `.mts`; files containing only types use `.ts` and type-only imports. Generated browser bundles, vendor files, and JavaScript inside user-file fixtures retain their original formats.
+`src/contracts/contracts.ts` defines shared boundary shapes; feature-specific types stay beside their owning modules. Production backend packages use Go's checked types. Browser code, tools and retained Node compatibility tests use strict TypeScript. Node tooling/reference modules use `.mts`; files containing only types use `.ts` and type-only imports. Generated browser bundles, vendor files, and JavaScript inside user-file fixtures retain their original formats.
 
 `src/contracts/state-domains.json` owns the shared state vocabulary. `npm run generate:contracts` regenerates the TypeScript and Go contracts; `npm run check:contracts` verifies their exact generated contents, using the pinned formatters. Do not hand-maintain a second set of Go wire values or edit generated contracts separately. Go boundary validation must reject unknown states and retain the same task identities, legacy compatibility and explicit uncertainty semantics. Feature-specific Go types stay in their owning packages. Dependencies remain pinned in `core/go.mod` and `core/go.sum`; dependency changes must be deliberate and reviewed.
 
@@ -76,7 +75,7 @@ Keep persistence inside the owning feature's repository. Separate fixed paramete
 
 The pinned compiler runs with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `noEmit`. `npm run typecheck` checks three projects: Node entrypoints and tools, the Vite browser application, and all Node tests. Node uses `NodeNext` resolution; browser and mixed browser-test imports use `Bundler`, matching their package entrypoints. Declaration checking remains enabled. Compile fixtures include intentional invalid states that must remain type errors. `npm run check:states` rejects raw enum-value literals in the explicitly adopted Store, plan, continuation, scheduler, desktop lifecycle, and VM lifecycle modules. Each module lists its applicable domains, so unrelated brand names or external protocol fields are not mistaken for states. Extend that enforced list as other domains are migrated.
 
-Runtime TypeScript uses `.mts` with erasable types and native Node support. Supported Node versions are 22.18+ LTS or 24+; preflight and packaging execute a bounded probe for native TypeScript, built-in SQLite and a working FTS5 query. The VM installer checks the same capabilities before touching an existing runtime or service. An incompatible old VM runtime is preserved and reports `runtime-incompatible`; update that runtime through its maintenance process before reconnecting. Do not use unchecked `any`, suppression directives, or a mere extension rename as a migration. Remove the superseded implementation only after imports, packaging and behavior tests use its replacement. Vite transpiles TypeScript but does not type-check it, so retain the separate compiler gate.
+Node tooling/reference modules use `.mts` with erasable types on Node 22.18+ LTS or 24+. Development preflight still probes native TypeScript, built-in SQLite and FTS5 for the reference tests. This is not a production Worker prerequisite: the VM runs the verified Go executable and separately installed Codex/Python helpers. Do not use unchecked `any`, suppression directives or an extension rename as a migration. Remove superseded implementations only after imports, resources and meaningful replacement tests are verified; retain reference oracles deliberately. Vite transpiles TypeScript but does not type-check it, so keep the separate compiler gate.
 
 Treat disk JSON and transport results as `unknown` until the owning boundary validates their consumed fields. Preserve supported legacy omissions without inventing task identities, execution confirmations, or timestamps. Define injected services by the capabilities a consumer actually uses; do not require a concrete implementation's private fields or its event listener method's concrete return type.
 
@@ -85,6 +84,8 @@ For format-independent source fixtures, use `tests/support/source-fixtures.mts` 
 The DOM fixtures use only LinkeDOM's public `parseHTML` entrypoint. `tests/types/linkedom.d.ts` preserves that entrypoint's documented return contract and restricts its input to HTML strings. This isolates the upstream package's incompatible internal DOM class declarations without disabling declaration checks for the repository or its other dependencies.
 
 ## Go packages and interfaces
+
+Use blank lines to separate validation, ownership capture, I/O, commit and notification phases. Split large structs into named fields and logical groups. Avoid multi-statement one-line callbacks and long uninterrupted functions; `gofmt` aligns syntax but does not provide these readability boundaries.
 
 Keep each `core/internal/<feature>` package responsible for its own policy and data access. Small `cmd` entrypoints parse validated startup options, assemble dependencies and own process shutdown; they do not grow into query, mapping or protocol implementations. Prefer concrete types by default. Define a narrow interface where a consumer needs a replaceable boundary, using only the operations it actually consumes. Avoid provider-owned universal interfaces, generic `BaseRepository` layers and `common` or `utils` packages that mix unrelated features.
 

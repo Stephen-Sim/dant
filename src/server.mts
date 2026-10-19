@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startApplication } from './app/server.mts';
+import { runCoreDevelopment } from '../scripts/core/run.mts';
 
-// Stable entrypoint used by the desktop launcher, VM service and npm scripts.
+// Compatibility exports remain available to the isolated reference tests.
+// Executing this historical path starts the same verified compiled Go role.
 export { createApp, createWorkerApp, startApplication } from './app/server.mts';
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await startApplication();
+  process.exitCode = await runCoreDevelopment(process.argv.slice(2));
 }

@@ -1,4 +1,13 @@
-import { NODE_RUNTIME_ACK } from '../../scripts/ci/node-runtime.mts';
+import {
+  CORE_WINDOWS,
+  CORE_LINUX,
+  CORE_BUILD_MANIFEST,
+  VM_BUNDLE_FILES,
+  HOST_HELPERS,
+  CORE_GUEST_BINARY,
+  describeFile,
+  type BundleManifest,
+} from '../../scripts/core/bundle.mts';
 import type { TestContext as NodeTestContext } from 'node:test';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,19 +50,42 @@ function fixture(t: NodeTestContext) {
   write(root, 'src-tauri/tauri.conf.json', JSON.stringify({ version: '1.2.3' }));
   write(root, 'src-tauri/Cargo.toml', '[package]\nname="dant"\nversion="1.2.3"\n');
   write(root, 'LICENSE', 'MIT fixture');
+  write(root, 'core/internal/platform/timezones/GO-LICENSE.txt', 'Go Authors BSD license fixture');
   write(root, 'src/server.mts', 'export const current=true;');
   write(root, 'dist/index.html', '<script src="/assets/current.js"></script>');
   write(root, 'dist/assets/current.js', 'current build');
   write(root, 'node_modules/express/package.json', '{"name":"express"}');
   write(root, 'scripts/tool.mjs', 'tool');
   write(root, 'vm/desktop.py', 'desktop');
-  const nodeExecutable = write(root, 'fixture-node.exe', 'tiny fixture node executable'),
-    paths = resolveBuildPaths(root, {}),
+  for (const name of [
+    ...VM_BUNDLE_FILES.filter((name) => name !== CORE_GUEST_BINARY),
+    ...HOST_HELPERS,
+  ])
+    write(root, name, 'fixture helper ' + name);
+  const coreDirectory = path.join(root, '.cache/core/build');
+  const nodeExecutable = write(
+    coreDirectory,
+    CORE_WINDOWS,
+    'tiny fixture Go Controller executable',
+  );
+  write(coreDirectory, CORE_LINUX, 'tiny fixture Go Worker executable');
+  const sourceCommit = 'a'.repeat(40);
+  const manifest: BundleManifest = {
+    schemaVersion: 1,
+    version: '1.2.3',
+    sourceCommit,
+    files: [describeFile(coreDirectory, CORE_WINDOWS), describeFile(coreDirectory, CORE_LINUX)],
+  };
+  write(coreDirectory, CORE_BUILD_MANIFEST, JSON.stringify(manifest));
+  const paths = resolveBuildPaths(root, {}),
     options = {
       projectRoot: root,
-      nodeExecutable,
+      build: () => ({ directory: coreDirectory, manifest }),
+      runGit: (_executable: string, args: readonly string[]) => ({
+        status: 0,
+        stdout: args[0] === 'rev-parse' ? sourceCommit + '\n' : '',
+      }),
       env: {},
-      runNode: () => ({ status: 0, stdout: NODE_RUNTIME_ACK }),
     };
   return { root, nodeExecutable, paths, options };
 }
@@ -86,6 +118,10 @@ function link(t: NodeTestContext, target: string, destination: string) {
 test('fresh resources remove obsolete hashed assets and deleted source files without copying local data or caches', (t) => {
   const f = fixture(t);
   prepareResources(f.options);
+  assert.equal(
+    fs.readFileSync(path.join(f.paths.resources, 'GO-LICENSE.txt'), 'utf8'),
+    'Go Authors BSD license fixture',
+  );
   write(f.paths.resources, 'dist/assets/stale-old.js', 'stale');
   write(f.paths.resources, 'src/deleted.mjs', 'stale');
   write(f.paths.resources, 'unexpected-extra.txt', 'stale');
@@ -99,14 +135,17 @@ test('fresh resources remove obsolete hashed assets and deleted source files wit
   assert.equal(fs.existsSync(path.join(f.paths.resources, 'dist/assets/current.js')), false);
   assert.equal(fs.existsSync(path.join(f.paths.resources, 'dist/assets/stale-old.js')), false);
   assert.equal(fs.existsSync(path.join(f.paths.resources, 'src/deleted.mjs')), false);
+  assert.equal(fs.existsSync(path.join(f.paths.resources, 'src/server.mts')), false);
+  assert.equal(fs.existsSync(path.join(f.paths.resources, 'node.exe')), false);
+  assert.equal(fs.existsSync(path.join(f.paths.resources, 'node_modules')), false);
   assert.equal(fs.existsSync(path.join(f.paths.resources, 'unexpected-extra.txt')), false);
   assert.equal(
     fs.readFileSync(path.join(f.paths.resources, 'dist/assets/next.js'), 'utf8'),
     'next build',
   );
   assert.equal(
-    fs.readFileSync(path.join(f.paths.resources, 'node.exe'), 'utf8'),
-    'tiny fixture node executable',
+    fs.readFileSync(path.join(f.paths.resources, CORE_WINDOWS), 'utf8'),
+    'tiny fixture Go Controller executable',
   );
   assert.ok(
     !tree(f.paths.resources).some((name) => /data\/|private|\.cache|__pycache__|\.env/.test(name)),
@@ -145,11 +184,7 @@ test('nested environment files are omitted from both packaged and staged trees',
   write(f.root, 'src/config/.environment.json', 'ordinary source filename');
   prepareResources(f.options);
   assert.ok(!tree(f.paths.resources).some((name) => /(?:^|\/)\.env(?:\.|$)/i.test(name)));
-  assert.equal(
-    fs.readFileSync(path.join(f.paths.resources, 'src/config/.environment.json'), 'utf8'),
-    'ordinary source filename',
-  );
-  write(f.paths.resources, 'src/config/.env.staging', 'private-fixture-value');
+  assert.equal(fs.existsSync(path.join(f.paths.resources, 'src/config/.environment.json')), false);
   stageReleaseResources(f.options);
   assert.ok(!tree(f.paths.backend).some((name) => /(?:^|\/)\.env(?:\.|$)/i.test(name)));
   assert.equal(
@@ -158,7 +193,7 @@ test('nested environment files are omitted from both packaged and staged trees',
   );
 });
 
-test('source, build, node and package validation all precede cleanup of the previous generated resources', (t) => {
+test('source, frontend, compiled core and package validation all precede cleanup of previous resources', (t) => {
   const f = fixture(t);
   prepareResources(f.options);
   const sentinel = write(f.paths.resources, 'keep-before-validation.txt', 'previous build');
@@ -181,7 +216,7 @@ test('source, build, node and package validation all precede cleanup of the prev
       () => write(f.root, 'src-tauri/tauri.conf.json', '{"version":"1.2.3"}'),
     ],
     [
-      'missing node',
+      'missing Go Controller',
       () => fs.renameSync(f.nodeExecutable, f.nodeExecutable + '.away'),
       () => fs.renameSync(f.nodeExecutable + '.away', f.nodeExecutable),
     ],
@@ -203,17 +238,66 @@ test('stage validation rejects missing, mismatched or polluted resources before 
   prepareResources(f.options);
   stageReleaseResources(f.options);
   const sentinel = write(f.paths.backend, 'keep.txt', 'previous runtime');
-  fs.unlinkSync(path.join(f.paths.resources, 'node.exe'));
-  assert.throws(() => stageReleaseResources(f.options), /node.exe/);
+  fs.unlinkSync(path.join(f.paths.resources, CORE_WINDOWS));
+  assert.throws(() => stageReleaseResources(f.options));
   assert.equal(fs.readFileSync(sentinel, 'utf8'), 'previous runtime');
   prepareResources(f.options);
   write(f.paths.resources, 'package.json', '{"name":"dant","version":"0.0.1"}');
-  assert.throws(() => stageReleaseResources(f.options), /version does not match/);
+  assert.throws(() => stageReleaseResources(f.options), /version|verified manifest/);
   assert.equal(fs.readFileSync(sentinel, 'utf8'), 'previous runtime');
   prepareResources(f.options);
   write(f.paths.resources, 'data/private.txt', 'never staged');
   assert.throws(() => stageReleaseResources(f.options), /unexpected files/);
   assert.equal(fs.readFileSync(sentinel, 'utf8'), 'previous runtime');
+});
+
+test('resource hashes bind frontend and host helpers as well as both Go binaries', (t) => {
+  for (const name of [
+    CORE_WINDOWS,
+    CORE_GUEST_BINARY,
+    'scripts/vm-lifecycle.ps1',
+    'dist/assets/current.js',
+  ]) {
+    const f = fixture(t);
+    prepareResources(f.options);
+    stageReleaseResources(f.options);
+    const previous = write(
+      f.paths.backend,
+      'keep-before-validation.txt',
+      'verified previous runtime',
+    );
+    fs.appendFileSync(path.join(f.paths.resources, name), 'tampered');
+    assert.throws(() => stageReleaseResources(f.options), /verified manifest/);
+    assert.equal(fs.readFileSync(previous, 'utf8'), 'verified previous runtime');
+  }
+});
+
+test('dirty source or a different current source commit cannot stage previously prepared resources', (t) => {
+  const f = fixture(t);
+  prepareResources(f.options);
+  stageReleaseResources(f.options);
+  const previous = write(
+    f.paths.backend,
+    'keep-before-source-check.txt',
+    'verified previous runtime',
+  );
+  const dirty = {
+    ...f.options,
+    runGit: (_command: string, args: readonly string[]) => ({
+      status: 0,
+      stdout: args[0] === 'rev-parse' ? 'a'.repeat(40) : ' M maintained-source\n',
+    }),
+  };
+  assert.throws(() => stageReleaseResources(dirty), /clean source checkout/);
+  const changed = {
+    ...f.options,
+    runGit: (_command: string, args: readonly string[]) => ({
+      status: 0,
+      stdout: args[0] === 'rev-parse' ? 'b'.repeat(40) : '',
+    }),
+  };
+  assert.throws(() => stageReleaseResources(changed), /provenance does not match/);
+  assert.equal(fs.readFileSync(previous, 'utf8'), 'verified previous runtime');
 });
 
 test('cleanup guards accept only absolute exact generated directories inside the intended roots', (t) => {
@@ -290,8 +374,8 @@ test('custom Cargo targets receive a clean backend without changing the default 
     /must not overlap/,
   );
   assert.equal(
-    fs.readFileSync(path.join(f.paths.resources, 'node.exe'), 'utf8'),
-    'tiny fixture node executable',
+    fs.readFileSync(path.join(f.paths.resources, CORE_WINDOWS), 'utf8'),
+    'tiny fixture Go Controller executable',
   );
 });
 

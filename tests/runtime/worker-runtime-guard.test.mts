@@ -3,104 +3,81 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { sqliteProbeRunner, unavailableSqliteModules } from '../support/runtime-probe-fixtures.mts';
+import { verifyWorkerInstall, workerInstallFixture } from '../support/worker-install-fixtures.mts';
 
-const source = fs.readFileSync('vm/install-worker.sh', 'utf8').replaceAll('\r\n', '\n');
-const matchedProbe = source.match(/--input-type=module-typescript -e '([^']+)'/);
-const probe = matchedProbe?.[1];
-assert.ok(probe, 'The installer contains the fixed runtime probe.');
-const bash =
-  process.platform === 'win32'
-    ? path.join(process.env.ProgramFiles || 'C:/Program Files', 'Git/bin/bash.exe')
-    : 'bash';
-const shellPath = (value: string) =>
-  process.platform === 'win32'
-    ? value
-        .replaceAll('\\', '/')
-        .replace(/^([A-Za-z]):/, (_: string, drive: string) => '/' + drive.toLowerCase())
-    : value;
-
-test('the VM runtime probe executes erasable TypeScript and rejects disabled stripping or unsupported versions', () => {
-  const supported = spawnSync(process.execPath, ['--input-type=module-typescript', '-e', probe], {
-    encoding: 'utf8',
-    shell: false,
-    timeout: 10000,
-  });
-  if (supported.error) throw supported.error;
-  assert.equal(supported.status, 0, supported.stderr);
-  const disabled = spawnSync(
-    process.execPath,
-    ['--no-experimental-strip-types', '--input-type=module-typescript', '-e', probe],
-    { encoding: 'utf8', shell: false, timeout: 10000 },
-  );
-  if (disabled.error) throw disabled.error;
-  assert.notEqual(disabled.status, 0);
-  for (const version of ['20.20.0', '22.17.9', '23.0.0', '23.6.0']) {
-    const result = spawnSync(
-      process.execPath,
-      [
-        '--input-type=module-typescript',
-        '-e',
-        `Object.defineProperty(process.versions, 'node', {value:${JSON.stringify(version)}});${probe}`,
-      ],
-      { encoding: 'utf8', shell: false, timeout: 10000 },
-    );
-    if (result.error) throw result.error;
-    assert.notEqual(result.status, 0, version);
-  }
-});
-
-test('the fixed VM probe rejects missing SQLite, FTS5 and unconfirmed search results before deployment', () => {
-  for (const source of unavailableSqliteModules) {
-    const result = sqliteProbeRunner(source)(
-      process.execPath,
-      ['--input-type=module-typescript', '-e', probe],
-      { encoding: 'utf8', shell: false, timeout: 10000 },
-    );
-    if (result.error) throw result.error;
-    assert.notEqual(result.status, 0);
-    assert.equal(result.stdout, '');
-  }
-});
-
-test('an incompatible existing VM runtime fails before configuration, downloads or service changes and is never replaced', (t) => {
-  const testRoot = path.resolve('.cache/tests');
-  fs.mkdirSync(testRoot, { recursive: true });
-  const root = fs.mkdtempSync(path.join(testRoot, 'worker-runtime-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const home = path.join(root, 'home');
-  const stage = path.join(home, 'dant/releases/source.fixture');
-  const files = {
-    'dant/runtime/node/bin/node':
-      '#!/bin/bash\nprintf probe >> "$HOME/probe-events"\nprintf PRIVATE_RUNTIME_ERROR >&2\nexit 1\n',
+test('the Go bundle verifies exact build resources before executing its runtime or changing live state', (t) => {
+  const bundle = workerInstallFixture(t);
+  const saved = {
     'dant/data/state.json': '{"workTasks":[{"id":"saved","status":"paused"}]}',
     'dant/deployed-source.json': 'previous-source',
     'dant/app': 'previous-app',
     '.config/systemd/user/dant-worker.service': 'previous-worker-service',
-    '.config/systemd/user/dant-guest-local.service': 'previous-guest-service',
   };
-  fs.mkdirSync(stage, { recursive: true });
-  // Invalid source configuration must never be read by an incompatible runtime.
-  fs.writeFileSync(path.join(stage, 'deploy-manifest.json'), 'PRIVATE_INVALID_SOURCE');
-  for (const [name, bytes] of Object.entries(files)) {
-    const file = path.join(home, name);
+  for (const [name, bytes] of Object.entries(saved)) {
+    const file = path.join(bundle.home, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, bytes, { mode: 0o700 });
+    fs.writeFileSync(file, bytes);
   }
-  const prefix = source.slice(0, source.indexOf('mkdir -p "$HOME/dant/runtime"'));
-  const fixture = path.join(root, 'runtime-fixture.sh');
-  fs.writeFileSync(fixture, 'export HOME="$2"\nset -- "$1"\nid() { printf "1000\\n"; }\n' + prefix);
-  const result = spawnSync(
-    bash,
-    ['--noprofile', '--norc', shellPath(fixture), shellPath(stage), shellPath(home)],
-    { encoding: 'utf8', shell: false, timeout: 20000 },
+
+  // Verification authenticates this deliberately non-executable resource. The
+  // compiled role owns the ordinary-user, Linux VM, health and PNG probes.
+  const verified = verifyWorkerInstall(bundle.source, bundle.home);
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.equal(
+    verified.stdout.trim(),
+    `127.0.0.1\t4320\t4317\t${bundle.version}\t${bundle.digest}`,
   );
+  const binary = path.join(bundle.source, 'resources/core/dant-core-linux-amd64');
+  fs.writeFileSync(binary, 'PRIVATE_INCOMPATIBLE_RUNTIME');
+  const rejected = verifyWorkerInstall(bundle.source, bundle.home);
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.stdout, '');
+  assert.match(rejected.stderr, /^DANT_UPDATE_FAILED:bundle-changed:cutover$/m);
+  assert.doesNotMatch(rejected.stderr, /PRIVATE_INCOMPATIBLE_RUNTIME|Traceback/);
+
+  for (const [name, bytes] of Object.entries(saved)) {
+    assert.equal(fs.readFileSync(path.join(bundle.home, name), 'utf8'), bytes);
+  }
+  assert.equal(fs.existsSync(path.join(bundle.home, 'dant/install-attempt.json')), false);
+  assert.equal(fs.existsSync(path.join(bundle.home, 'dant/installation-backups')), false);
+});
+
+test('readiness rejects a legacy runtime or wrong Go role, protocol, source and version', () => {
+  const harness = String.raw`
+import importlib.util, io, json
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('worker_install', 'vm/worker-install.py')
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+target = {'version':'0.4.7-beta.12','commit':'a'*40,'port':4317}
+session = {'product':'dant','mode':'worker','runtime':'go','protocol':1,
+           'version':target['version'],'source':target['commit'],'token':'isolated-token'}
+variants = [session, {'product':'dant','mode':'worker','token':'isolated-token'}]
+variants += [dict(session, **changed) for changed in [
+    {'mode':'controller'}, {'runtime':'node'}, {'protocol':True}, {'protocol':2},
+    {'source':'b'*40}, {'version':'0.0.0'}]]
+results = []
+for current in variants:
+    calls = []
+    def opened(request, timeout):
+        calls.append('session' if isinstance(request, str) else 'version')
+        value = current if isinstance(request, str) else {'version':target['version']}
+        return io.BytesIO(json.dumps(value).encode())
+    class Opener:
+        open = staticmethod(opened)
+    with patch.object(installer, 'local_opener', return_value=Opener()):
+        results.append({'ready':installer.ready(target),'calls':calls})
+print(json.dumps(results))
+`;
+  const result = spawnSync(process.env.PYTHON || 'python', ['-c', harness], {
+    encoding: 'utf8',
+    shell: false,
+    timeout: 30_000,
+  });
   if (result.error) throw result.error;
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /^DANT_UPDATE_FAILED:runtime-incompatible:prepare$/m);
-  assert.doesNotMatch(result.stderr, /PRIVATE|Invalid public VM|Traceback/);
-  assert.equal(fs.readFileSync(path.join(home, 'probe-events'), 'utf8'), 'probe');
-  for (const [name, bytes] of Object.entries(files))
-    assert.equal(fs.readFileSync(path.join(home, name), 'utf8'), bytes);
-  assert.equal(fs.existsSync(path.join(home, 'dant/releases/source.fixture/rollback')), false);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), [
+    { ready: true, calls: ['session', 'version'] },
+    ...Array.from({ length: 7 }, () => ({ ready: false, calls: ['session'] })),
+  ]);
 });

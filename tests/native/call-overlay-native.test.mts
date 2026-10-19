@@ -544,7 +544,7 @@ test('child asset capabilities and CSP exclude general APIs, external pages, spe
   assert.match(rust, /visible\(false\)\s*\.focused\(false\)/);
   assert.match(rust, /work_area\(\)/);
   const overlaySetup = main.indexOf('call_overlay::setup(app)'),
-    existingController = main.indexOf('transport::existing_controller()');
+    existingController = main.indexOf('transport::existing_controller(&source)');
   assert.ok(overlaySetup >= 0);
   assert.ok(existingController >= 0);
   assert.ok(overlaySetup < existingController);

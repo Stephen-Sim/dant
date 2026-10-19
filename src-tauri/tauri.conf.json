@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:4318",
-    "beforeDevCommand": "npx vite --host 127.0.0.1 --port 4318"
+    "beforeDevCommand": "npm run package:resources && npx vite --host 127.0.0.1 --port 4318"
   },
   "app": {
     "windows": [
