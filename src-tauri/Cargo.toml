@@ -1,6 +1,6 @@
 [package]
 name = "dant"
-version = "0.4.7-beta.4"
+version = "0.4.7-beta.5"
 description = "A digital companion with its own computer"
 license = "MIT"
 authors = ["dant"]

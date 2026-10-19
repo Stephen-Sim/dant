@@ -34,8 +34,8 @@ export const VOICE_TOOLS=Object.freeze([
  defineTool('skill_get','Read a dant-managed skill before using or updating it.',{name:{type:'string',minLength:1,maxLength:64}},['name']),
  defineTool('skill_save','Create or update a reusable skill in the VM workspace. Never include credentials. Saving does not mean its helper scripts were tested.',{name:{type:'string',minLength:1,maxLength:64},description:{type:'string',minLength:1,maxLength:1000},instructions:{type:'string',minLength:1,maxLength:49152},enabled:{type:'boolean'},files:{type:'object',maxProperties:SKILL_SUPPORT_FILE_LIMIT,additionalProperties:{type:'string',maxLength:65536}}},['name','description','instructions']),
  defineTool('send_file','Deliver an existing completed file from the Ubuntu VM to the same chat.',{path:{type:'string',maxLength:4096,minLength:1}},['path']),
- defineTool('schedule_list','List saved one-time tasks, their IDs, intended timezones and state.'),
- defineTool('schedule_save','Create or manage a one-time scheduled task only when the human requests it. New tasks need text, an ISO time with explicit UTC offset and IANA timeZone; id updates, enabled:false pauses. Saving never executes it now or creates recurrence.',SCHEDULE_SAVE_SCHEMA),
+ defineTool('schedule_list','List saved one-time and recurring tasks, their IDs, intended timezones, cron expressions, priorities and state.'),
+ defineTool('schedule_save','Create or manage a scheduled task only when the human requests it. One-time tasks need an explicit ISO-offset at and IANA timeZone. Recurring tasks use a five-field cron expression and omit at. Priority high/normal/low orders waiting runs. Reuse id for updates; enabled:false pauses. Saving never executes work immediately.',SCHEDULE_SAVE_SCHEMA),
  defineTool('schedule_delete','Remove a requested scheduled task by id. Dispatched work is not stopped.',SCHEDULE_ID_SCHEMA,['id']),
  defineTool('end_call','End this voice call when the user asks to hang up.')
 ]);

@@ -14,7 +14,7 @@ const notification=(total=values(),last=values(30,5,5,2),threadId='thread',turnI
 const runtime={runtimeId:'runtime'};
 
 test('missing usage is unavailable while a reported zero remains a real zero',t=>{
- const {usage}=fixture(t);assert.deepEqual(usage.snapshot(),{recordedSince:null,subscription:{available:false,totals:null,lastResponse:null},apiVoice:{available:false,totals:null,lastResponse:null}});
+ const {usage}=fixture(t);assert.deepEqual(usage.snapshot(),{recordedSince:null,subscription:{available:false,totals:null,lastResponse:null},apiVoice:{available:false,totals:null,lastResponse:null},activity:{timeZone:'UTC',recordedSince:null,retainedFrom:'1968-11-28',days:[],unallocated:{subscription:null,apiVoice:null}}});
  assert.equal(usage.observeCodex(notification(values(0,0,0,0),values(0,0,0,0)),runtime),true);assert.equal(usage.snapshot().subscription.available,true);assert.deepEqual(usage.snapshot().subscription.totals,values(0,0,0,0));assert.equal(usage.snapshot().apiVoice.available,false);
 });
 

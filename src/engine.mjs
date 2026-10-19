@@ -21,6 +21,8 @@ import {TokenUsageStore} from './token-usage.mjs';
 import {TaskPlanBindingConflict} from './task-plan-conflict.mjs';
 import {createContinuationExecutionTracker} from './continuation-execution.mjs';
 import {workContinuationCheckpoint} from './work-continuation-state.mjs';
+import {enqueueWorkReply,workReplyRecord,workReplyInstructions} from './work-reply.mjs';
+import {orderScheduledQueue} from './schedule-recurrence.mjs';
 
 const tool=(name,description,properties,required=[])=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
 const string={type:'string'};
@@ -40,8 +42,8 @@ export const dynamicTools=[
  tool('skill_get','Read a managed skill and its supporting files before applying or improving it.',{name:{type:'string',maxLength:64}},['name']),
  tool('skill_save','Save a generalizable reusable skill with self-contained SKILL.md and scripts/references/assets. Include actual helper source, tests, licenses, package manifests and lockfiles under the skill directory; use relative paths, never external workspace helpers. Omit files to preserve existing files; supplying files replaces the entire supporting file map. Keep secrets in the credential vault. Validate helpers before claiming readiness.',{name:{type:'string',maxLength:64},description:{type:'string',maxLength:1000},instructions:{type:'string',maxLength:49152},files:{type:'object',additionalProperties:{type:'string',maxLength:65536},maxProperties:SKILL_SUPPORT_FILE_LIMIT},enabled:{type:'boolean'}},['name','description','instructions']),
  tool('create_voice_message','Create and deliver an actual spoken audio file in the same chat.',{text:string,voice:string},['text']),
- tool('schedule_list','List saved one-time tasks, their IDs, execution times and state. Listing does not execute them.',{}),
- tool('schedule_save','Create or update a one-time scheduled task only when requested. New tasks require text, an explicit ISO time with offset, and IANA timeZone. Supply id for changes; enabled:false pauses. Saving does not execute it now or create a recurring task.',SCHEDULE_SAVE_SCHEMA),
+ tool('schedule_list','List saved one-time or recurring tasks, their IDs, priorities, next execution times and state. Listing does not execute them.',{}),
+ tool('schedule_save','Create or update a scheduled task only when requested. One-time tasks require an explicit ISO time with offset; recurring tasks require a requested five-field cron expression. Supply an IANA timeZone and optional high, normal or low priority. Use an existing id for changes and enabled:false to pause. Saving never executes work immediately.',SCHEDULE_SAVE_SCHEMA),
  tool('schedule_delete','Remove a scheduled task only when requested. This does not stop work already dispatched.',SCHEDULE_ID_SCHEMA,['id']),
  tool('end_call','End the active voice call.',{})
 ];
@@ -80,6 +82,7 @@ export class Engine extends EventEmitter {
   const current=this.progress||this.nativeVoice?.progress;
   if(current?.workId)try{this.store.updateRegisteredWork(current.turnId,{status:current.status});}catch(error){this.emit('notice','Could not save task progress: '+error.message);}
   this.emit('change');
+  if(this.queue[0]?.workReply)queueMicrotask(()=>void this.pump());
  }
  get progress(){
   const active=this.active;if(!active)return null;
@@ -198,6 +201,7 @@ export class Engine extends EventEmitter {
  }
  enqueue(message,{interactive=false}={}){
   if(this.active?.messageIds.includes(message.id)||this.queue.some(item=>item.id===message.id)||this.pendingFollowups.has(message.id))return message;
+  if(message.workReply)return enqueueWorkReply.call(this,message);
   if(interactive&&this.task(message.id)===message&&message.role==='user'&&!message.workKind)this.safeUpdate(message.id,{workKind:'conversation'});
   if(interactive&&(message.unknownOutcome||['unknown','submitting'].includes(message.submission))){this.safeUpdate(message.id,{status:'paused',pauseReason:'submission-unknown'});this.change();return message;}
   if(this.takeover||this.acquiring){this.safeUpdate(message.id,{status:'paused',pauseReason:'human-control'});return message;}
@@ -492,6 +496,7 @@ export class Engine extends EventEmitter {
   const input=[{type:'text',text:message.text||(hasAudio?'Respond to the user\'s voice message below in the language they speak. The audio was recognized automatically; do not describe its file format or repeat a transcript unless asked.':this.store.state.settings.language==='en'?'Please inspect the attached files.':'请检查附件并用中文说明。'),text_elements:[]}];
   if(message.replyTo){const target=this.task(message.replyTo);if(target)input[0].text='Replying to: '+target.text+'\n\n'+input[0].text;}
   const stored=this.task(message.id);if(stored?.role==='user')input[0].text='Current user message ID for optional react_message: '+JSON.stringify(stored.id)+'. This identifies this message; it is not a request to react.\n\n'+input[0].text;
+  if(message.workReply){const record=this.store.state.workTasks.find(record=>record.id===message.workReply.workId);if(!record)throw Error('The selected task no longer exists.');input[0].text=workReplyInstructions(record,text=>this.redact(text))+input[0].text;}
   for(const attachment of message.attachments||[]){
    const source=attachment.guestPath||attachment.path;if(!source)throw Error('Attachment has no VM workspace path');
    if(attachment.type?.startsWith('audio/')){
@@ -504,11 +509,20 @@ export class Engine extends EventEmitter {
   return input;
  }
  wakeScheduledQueue(){
+  if(this.queue[0]?.workReply){void this.pump();return;}
   if(this.call||!this.queue[0]?.scheduled)return;
   const pending=[this.contextChain,...this.pendingFollowups.values(),...[...this.callReferences.values()].map(entry=>entry.promise)].filter(promise=>promise&&typeof promise.then==='function');
   void Promise.allSettled(pending).then(()=>{if(!this.call&&this.queue[0]?.scheduled)void this.pump();});
  }
  async pump(){
+  this.queue=orderScheduledQueue(this.queue);
+  if(this.queue[0]?.workReply&&!this.active&&!this.finishing&&!this.cancelling){
+   if(!this.canContinueRegisteredWork({workReply:this.queue[0].workReply}))return;
+   const message=this.queue.shift();
+   try{workReplyRecord(this,message.workReply);await this.continueRegisteredWork(message.workReply.workId,{expectedTurnId:message.workReply.turnId,message});}
+   catch(error){if(!['confirmed','unknown','submitting'].includes(message.submission))this.safeUpdate(message.id,{status:'failed',submission:'preparing',pauseReason:'work-reply-unavailable',error:'This task changed or could not accept its reply. Refresh Work progress before retrying.'});this.emit('notice','The selected task could not accept its reply. Refresh Work progress before retrying.');if(!this.active)queueMicrotask(()=>void this.pump());}
+   return;
+  }
   if(this.active||this.finishing||this.cancelling||this.takeover||this.acquiring||this.nativeVoice?.active||this.nativeVoice?.session?.background||this.call?.provider==='subscription'||this.worker.status!=='online'||!this.queue.length||hasUnconfirmedExecution.call(this,undefined,{includeMessages:false}))return;
   let index=0;
   if(this.queue[0].scheduled&&this.call){index=this.queue.findIndex(message=>!message.scheduled&&this.voiceTasks.get(message.id)?.callId===this.call.id);if(index<0)return;}
@@ -549,9 +563,9 @@ export class Engine extends EventEmitter {
   active.early.push({event,bytes});active.earlyBytes+=bytes;
   while(active.early.length>MAX_EARLY_EVENTS||active.earlyBytes>MAX_EARLY_BYTES){const dropped=active.early.shift();active.earlyBytes-=dropped.bytes;this.rejectEvent(dropped.event,'Too many pending turn notifications');if(!active.bufferWarning){active.bufferWarning=true;this.emit('notice','Early turn notifications exceeded the bounded buffer');}}
  }
- async steer(message,expectedTurnId,{followupEpoch}={}){
+ async steer(message,expectedTurnId,{followupEpoch,targeted=false}={}){
   if(this.task(message.id)===message&&message.role==='user'&&!message.workKind)this.safeUpdate(message.id,{workKind:'conversation'});
-  if(this.call?.provider==='subscription')throw Error('Send text through the current call to adjust its work');
+  if(this.call?.provider==='subscription'&&!targeted)throw Error('Send text through the current call to adjust its work');
   if(this.nativeVoice?.acceptsInteractiveChatInput||this.nativeVoice?.acceptsChatInput){if(expectedTurnId!==this.nativeVoice.active?.turnId)throw Error('The active turn changed; steering was not submitted');return this.nativeVoice.answerBackground(message,{interactive:true,expectedTurnId});}
   const active=this.active;
   if(!active||!active.startAcknowledged||active.voiceOutput&&!active.backgroundVoice){if(expectedTurnId!==undefined)throw Error('The active turn changed; steering was not submitted');this.enqueue(message);return {queued:true};}
@@ -559,6 +573,7 @@ export class Engine extends EventEmitter {
   const operation=active.steerChain.then(async()=>{
    let submitted=false;
    const assertCurrent=()=>{
+    if(targeted&&workReplyRecord(this,message.workReply).active!==active)throw Error('The selected task changed before its reply was submitted.');
     if(followupEpoch!==undefined&&followupEpoch!==this.followupEpoch)throw Object.assign(Error('The current task cannot accept steering'),{steerReason:'paused'});
     if(this.takeover||this.acquiring||active.stopRequested)throw Object.assign(Error('The current task cannot accept steering'),{steerReason:'paused'});
     if(active.steerUnconfirmed)throw Object.assign(Error('The previous task adjustment was not confirmed; pause the task before sending more instructions'),{steerReason:'submission-unknown'});

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {safeCompletionWork,taskPlanInput} from './task-progress.mjs';
-import {continuationTime,continuationId,continuationEligible,continuationUnconfirmed,safeWorkContinuation,restoreWorkContinuation,workContinuationCheckpoint,continuationDelay} from './work-continuation-state.mjs';
+import {continuationTime,continuationId,continuationEligible,continuationUnconfirmed,safeWorkContinuation,restoreWorkContinuation,workContinuationCheckpoint,continuationDelay,workReplyEligible} from './work-continuation-state.mjs';
 const renameRetryCodes=new Set(['EPERM','EACCES','EBUSY']);
 const pauseBuffer=new Int32Array(new SharedArrayBuffer(4));
 export const TASK_STATES=Object.freeze(['draft','accepted','queued','running','waiting_user','pausing','paused','failed','review','completed','cancelled']);
@@ -113,12 +113,12 @@ export class Store {
     try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;
   }
   commitWorkContinuation(index,record){const before=this.state.workTasks,next=[...before];next[index]=record;this.state.workTasks=next;try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;}
-  claimWorkContinuation(workId,{expectedTurnId,attemptId,at=Date.now(),runtimeId,threadId}={}){
+  claimWorkContinuation(workId,{expectedTurnId,attemptId,at=Date.now(),runtimeId,threadId,humanReply=false}={}){
     const index=this.state.workTasks.findIndex(record=>record.id===workId),previous=this.state.workTasks[index];
-    if(!continuationId(workId,128)||!continuationId(attemptId,128)||!continuationId(expectedTurnId)||!continuationTime(at)||typeof runtimeId!=='string'||!runtimeId.trim()||runtimeId.length>512||/[\x00-\x1f\x7f]/.test(runtimeId)||!continuationId(threadId)||previous?.turnId!==expectedTurnId||!continuationEligible(previous,{at})||this.state.workTasks.some(record=>record.continuation?.dispatch?.id===attemptId))throw continuationConflict();
+    if(!continuationId(workId,128)||!continuationId(attemptId,128)||!continuationId(expectedTurnId)||!continuationTime(at)||typeof runtimeId!=='string'||!runtimeId.trim()||runtimeId.length>512||/[\x00-\x1f\x7f]/.test(runtimeId)||!continuationId(threadId)||previous?.turnId!==expectedTurnId||!(humanReply===true?workReplyEligible(previous,{at}):continuationEligible(previous,{at}))||this.state.workTasks.some(record=>record.continuation?.dispatch?.id===attemptId))throw continuationConflict();
     const prior=previous.continuation?safeWorkContinuation(previous.continuation):null;if(prior?.attempts===Number.MAX_SAFE_INTEGER)throw continuationConflict();
-    const continuation={nextAt:prior?.nextAt??previous.executionEndedAt+5000,attempts:(prior?.attempts||0)+1,noProgressCount:prior?.noProgressCount||0,lastCheckpoint:prior?.lastCheckpoint||workContinuationCheckpoint(previous.plan),dispatch:{id:attemptId,fromTurnId:expectedTurnId,runtimeId,threadId,phase:'claimed',createdAt:at}};
-    return this.commitWorkContinuation(index,{...previous,continuation,updatedAt:at});
+    const continuation={nextAt:humanReply===true?at:prior?.nextAt??previous.executionEndedAt+5000,attempts:(prior?.attempts||0)+1,noProgressCount:humanReply===true?0:prior?.noProgressCount||0,lastCheckpoint:prior?.lastCheckpoint||workContinuationCheckpoint(previous.plan),dispatch:{id:attemptId,fromTurnId:expectedTurnId,runtimeId,threadId,phase:'claimed',createdAt:at}};
+    return this.commitWorkContinuation(index,{...previous,...(humanReply===true?{status:'continuing'}:{}),continuation,updatedAt:at});
   }
   continuationAttempt(workId,attemptId){
     const index=this.state.workTasks.findIndex(record=>record.id===workId),record=this.state.workTasks[index],state=record&&safeWorkContinuation(record.continuation);

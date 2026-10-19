@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {EventEmitter} from 'node:events';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {Store} from '../src/store.mjs';
 import {Scheduler} from '../src/scheduler.mjs';
 import {Engine,dynamicTools} from '../src/engine.mjs';
@@ -90,5 +90,90 @@ test('API voice schedule tools accept only their current confirmed call context 
 });
 
 test('native background schedule tools require their exact accepted turn and expose the same tools to API and text providers',async t=>{
- const f=fixture(t,{realEngine:true}),native=new NativeRealtimeVoice({worker:f.worker,engine:f.engine}),turn={turnId:'native-owned',done:false,explicitMessageIds:[],assistantIds:[]},session={id:'native-call',status:'connected',threadId:'thread',turns:new Map([[turn.turnId,turn]]),handoffs:new Map(),background:false};native.session=session;f.engine.call={id:session.id,provider:'subscription',status:'connected'};const saved=await native.tool(session,turn,'schedule_save',job());assert.equal(saved.saved,true);assert.equal((await native.tool(session,turn,'schedule_list',{})).items[0].id,saved.item.id);turn.done=true;await assert.rejects(native.tool(session,turn,'schedule_delete',{id:saved.item.id}),/no longer belongs/);for(const name of ['schedule_list','schedule_save','schedule_delete']){assert.ok(dynamicTools.find(tool=>tool.name===name));assert.ok(VOICE_TOOLS.find(tool=>tool.name===name));}assert.equal(f.store.state.schedules.length,1);assert.match(f.engine.instructions(),/one-time tasks only/);
+ const f=fixture(t,{realEngine:true}),native=new NativeRealtimeVoice({worker:f.worker,engine:f.engine}),turn={turnId:'native-owned',done:false,explicitMessageIds:[],assistantIds:[]},session={id:'native-call',status:'connected',threadId:'thread',turns:new Map([[turn.turnId,turn]]),handoffs:new Map(),background:false};native.session=session;f.engine.call={id:session.id,provider:'subscription',status:'connected'};const saved=await native.tool(session,turn,'schedule_save',job());assert.equal(saved.saved,true);assert.equal((await native.tool(session,turn,'schedule_list',{})).items[0].id,saved.item.id);turn.done=true;await assert.rejects(native.tool(session,turn,'schedule_delete',{id:saved.item.id}),/no longer belongs/);for(const name of ['schedule_list','schedule_save','schedule_delete']){assert.ok(dynamicTools.find(tool=>tool.name===name));assert.ok(VOICE_TOOLS.find(tool=>tool.name===name));}assert.equal(f.store.state.schedules.length,1);assert.match(f.engine.instructions(),/For a recurring task provide cron as five fields/);
+});
+
+const recurring=(extra={})=>({text:'Run the requested recurring check',cron:'0 9 * * *',...extra});
+function finishScheduled(f,message,status='review'){
+ f.engine.queue=f.engine.queue.filter(item=>item.id!==message.id);f.store.update(message.id,{status,submission:'confirmed'});
+}
+
+test('recurring schedules use settings timezone, retain cron and priority, and saving submits nothing',t=>{
+ const f=fixture(t);f.store.state.settings.timeZone='Asia/Kuala_Lumpur';
+ const saved=f.scheduler.save(recurring({priority:'high'}),{allowEpoch:false});assert.equal(saved.at,Date.parse(ISO));assert.equal(saved.timeZone,'Asia/Kuala_Lumpur');assert.equal(saved.cron,'0 9 * * *');assert.equal(saved.priority,'high');assert.equal(saved.status,'pending');assert.equal(saved.enabled,true);assert.equal(f.store.state.messages.length,0);assert.equal(f.enqueued.length,0);
+ const restored=new Store(f.dir);assert.equal(restored.state.schedules[0].cron,saved.cron);assert.equal(restored.state.schedules[0].priority,'high');
+ const before=structuredClone(f.store.state);
+ for(const args of [recurring({at:ISO}),recurring({cron:'@daily'}),recurring({cron:'0 0 31 2 *'}),recurring({priority:'urgent'}),recurring({timeZone:'Invalid/Zone'}),recurring({cron:undefined})])assert.throws(()=>f.scheduler.save(args,{allowEpoch:false}),error=>error.status===400);
+ assert.deepEqual(f.store.state,before);
+});
+
+test('recurring pause/resume and conversion preserve the ID without replaying missed paused occurrences',t=>{
+ const f=fixture(t),saved=f.scheduler.save(recurring({timeZone:'Asia/Kuala_Lumpur'}));
+ const paused=f.scheduler.save({id:saved.id,enabled:false});assert.equal(paused.status,'paused');assert.equal(paused.cron,saved.cron);
+ f.setNow(saved.at+8*86400000+1000);assert.deepEqual(f.scheduler.tick(),[]);
+ const resumed=f.scheduler.save({id:saved.id,enabled:true});assert.equal(resumed.id,saved.id);assert.ok(resumed.at>saved.at+8*86400000+1000);assert.equal(f.enqueued.length,0);
+ const changed=f.scheduler.save({id:saved.id,text:'Updated recurring instruction',priority:'low'});assert.equal(changed.cron,saved.cron);assert.equal(changed.at,resumed.at);assert.equal(changed.priority,'low');
+ assert.throws(()=>f.scheduler.save({id:saved.id,cron:null}),/future execution/);
+ const once=f.scheduler.save({id:saved.id,cron:null,at:resumed.at+1000});assert.equal(once.cron,null);assert.equal(once.id,saved.id);
+});
+
+test('offline missed recurring times dispatch once and advance directly beyond the actual current time',t=>{
+ const f=fixture(t),saved=f.scheduler.save(recurring({timeZone:'UTC'})),later=saved.at+35*86400000+1000;f.setNow(later);f.worker.status='offline';assert.deepEqual(f.scheduler.tick(),[]);
+ f.worker.status='online';const result=f.scheduler.tick();assert.equal(result.length,1);assert.equal(f.enqueued.length,1);assert.equal(result[0].status,'pending');assert.equal(result[0].enabled,true);assert.ok(result[0].at>later);assert.equal(result[0].lastRunAt,saved.at);assert.equal(f.store.state.messages[0].scheduleId,saved.id);assert.equal(f.store.state.messages[0].scheduledAt,saved.at);assert.deepEqual(f.scheduler.tick(),[]);
+});
+
+test('an unfinished recurring occurrence blocks later times even if its chat turn finished',t=>{
+ for(const status of ['running','continuing','waiting_user','paused','pausing','unknown']){
+  const f=fixture(t),saved=f.scheduler.save(recurring({cron:'* * * * *',timeZone:'UTC'}));f.setNow(saved.at+1);f.scheduler.tick();const message=f.store.state.messages[0];finishScheduled(f,message);f.store.update(message.id,{turnId:'original-turn'});
+  const work=f.store.registerWork({turnId:'original-turn',messageId:message.id,source:'chat',title:'Complete this scheduled run',plan:{steps:[{step:'Verify the result',status:'pending'}]}});f.store.updateRegisteredWork('original-turn',{status,executionEnded:true});
+  f.setNow(f.store.state.schedules[0].at+1);assert.deepEqual(f.scheduler.tick(),[],status);assert.equal(f.enqueued.length,1);assert.equal(f.scheduler.get(saved.id).id,saved.id);
+  f.store.updateRegisteredWork(work.turnId,{status:'review',executionEnded:true});assert.equal(f.scheduler.tick().length,1,status+' releases only after terminal registered work');assert.equal(f.enqueued.length,2);
+ }
+});
+
+test('recurring claims and messages are durable before enqueue and do not duplicate after restart',t=>{
+ const f=fixture(t),saved=f.scheduler.save(recurring({cron:'* * * * *',timeZone:'UTC'}));f.setNow(saved.at+1);let disk;
+ f.engine.enqueue=message=>{disk=JSON.parse(fs.readFileSync(f.store.file,'utf8'));f.enqueued.push(message);};f.scheduler.tick();assert.equal(disk.schedules[0].status,'pending');assert.ok(disk.schedules[0].at>saved.at+1);assert.equal(disk.schedules[0].messageId,disk.messages[0].id);
+ const restored=new Store(f.dir),again=[],next=new Scheduler({store:restored,engine:{worker:f.worker,queue:[],change(){},enqueue:message=>again.push(message)},worker:f.worker,now:()=>disk.schedules[0].at+60000});assert.equal(restored.state.messages[0].status,'paused');assert.deepEqual(next.tick(),[]);assert.equal(again.length,0);next.close();
+});
+
+test('known terminal receipts allow chat cleanup while an ambiguous missing current run remains blocked',t=>{
+ const f=fixture(t),saved=f.scheduler.save(recurring({cron:'* * * * *',timeZone:'UTC'}));f.setNow(saved.at+1);f.scheduler.tick();const first=f.store.state.messages[0];finishScheduled(f,first);assert.deepEqual(f.scheduler.tick(),[]);
+ let current=f.store.state.schedules[0];assert.equal(current.runHistory.find(run=>run.messageId===first.id).terminalStatus,'review');
+ f.store.state.messages=[];f.store.save();f.setNow(current.at+1);assert.equal(f.scheduler.tick().length,1,'verified prior message may be removed');
+ current=f.store.state.schedules[0];const second=f.store.state.messages[0];assert.equal(second.id,current.messageId);f.engine.queue=[];f.store.state.messages=[];f.store.save();f.setNow(current.at+60000);assert.deepEqual(f.scheduler.tick(),[],'missing latest claim has no terminal receipt');assert.equal(f.enqueued.length,2);
+});
+
+test('a terminal receipt does not hide a related registered task that later becomes unfinished',t=>{
+ const f=fixture(t),saved=f.scheduler.save(recurring({cron:'* * * * *',timeZone:'UTC'}));f.setNow(saved.at+1);f.scheduler.tick();const message=f.store.state.messages[0];finishScheduled(f,message);f.store.update(message.id,{turnId:'old-turn'});const work=f.store.registerWork({turnId:'old-turn',messageId:message.id,source:'chat',title:'Verify scheduled work',plan:{steps:[{step:'Verify result',status:'completed'}]}});f.store.updateRegisteredWork(work.turnId,{status:'review',executionEnded:true});f.scheduler.tick();
+ f.store.state.messages=[];f.store.registerWork({workId:work.id,turnId:'new-turn',messageId:message.id,source:'chat',title:'Recheck scheduled work',plan:{steps:[{step:'Recheck result',status:'pending'}]}});f.store.updateRegisteredWork('new-turn',{status:'waiting_user',executionEnded:true});f.setNow(f.store.state.schedules[0].at+1);assert.deepEqual(f.scheduler.tick(),[]);assert.equal(f.enqueued.length,1);
+});
+
+test('terminal receipts retain work and turn ownership when a scheduled run reused older human work',t=>{
+ const f=fixture(t),human=f.store.add({role:'user',text:'Original entrusted work',turnId:'human-turn',status:'review'}),work=f.store.registerWork({turnId:'human-turn',messageId:human.id,source:'chat',title:'Existing shared work',plan:{steps:[{step:'Verify result',status:'completed'}]}});f.store.updateRegisteredWork('human-turn',{status:'review',executionEnded:true});
+ const saved=f.scheduler.save(recurring({cron:'* * * * *',timeZone:'UTC'}));f.setNow(saved.at+1);f.scheduler.tick();const message=f.store.state.messages.find(message=>message.scheduleId===saved.id);finishScheduled(f,message);f.store.update(message.id,{turnId:'scheduled-turn',workId:work.id});
+ f.store.registerWork({workId:work.id,turnId:'scheduled-turn',messageId:message.id,source:'chat',title:'Existing shared work',plan:{steps:[{step:'Verify result',status:'completed'}]}});f.store.updateRegisteredWork('scheduled-turn',{status:'review',executionEnded:true});f.scheduler.tick();
+ const receipt=f.store.state.schedules[0].runHistory.find(run=>run.messageId===message.id);assert.equal(receipt.workId,work.id);assert.equal(receipt.turnId,'scheduled-turn');assert.equal(f.store.state.workTasks[0].messageId,human.id);
+ f.store.state.messages=f.store.state.messages.filter(item=>item.id!==message.id);f.store.registerWork({workId:work.id,turnId:'new-answer-turn',source:'chat',title:'Existing shared work',plan:{steps:[{step:'Wait for the requested account',status:'pending'}]}});f.store.updateRegisteredWork('new-answer-turn',{status:'waiting_user',executionEnded:true});f.setNow(f.store.state.schedules[0].at+1);assert.deepEqual(f.scheduler.tick(),[]);assert.equal(f.enqueued.length,1);
+});
+
+test('due scheduled runs are queued by priority without interrupting current work',t=>{
+ const f=fixture(t),at=NOW+1000;for(const priority of ['low','high','normal'])f.scheduler.save({text:priority,at,priority});const owner={messageId:'unrelated-current'};f.engine.active=owner;f.setNow(at+1);f.scheduler.tick();assert.deepEqual(f.enqueued.map(item=>item.message.text),['high','normal','low']);assert.deepEqual(f.enqueued.map(item=>item.message.progressPriority),['high','normal','low']);assert.equal(f.engine.active,owner);assert.equal(f.worker.calls.length,0);
+});
+
+test('priority edits atomically update queued occurrences but preserve a running owner',t=>{
+ const f=fixture(t),saved=f.scheduler.save(recurring({cron:'* * * * *',timeZone:'UTC',priority:'low'}));f.setNow(saved.at+1);f.scheduler.tick();const queued=f.store.state.messages[0];assert.equal(f.engine.queue[0],queued);
+ f.scheduler.save({id:saved.id,priority:'high'});assert.equal(queued.progressPriority,'high');assert.equal(new Store(f.dir).state.messages[0].progressPriority,'high');
+ const save=f.store.save;f.store.save=()=>{throw Error('Disk full');};assert.throws(()=>f.scheduler.save({id:saved.id,priority:'low'}),/Disk full/);assert.equal(queued.progressPriority,'high');assert.equal(f.scheduler.get(saved.id).priority,'high');f.store.save=save;
+ f.store.update(queued.id,{status:'running'});f.engine.active={messageId:queued.id};f.scheduler.save({id:saved.id,priority:'low'});assert.equal(queued.progressPriority,'high');assert.equal(f.engine.active.messageId,queued.id);assert.equal(f.worker.calls.length,0);
+});
+
+test('recurring creation receipts ignore derived next times and legacy one-time retry receipts remain valid',t=>{
+ const f=fixture(t),clientRequestId=randomUUID(),args=recurring({timeZone:'UTC',clientRequestId}),saved=f.scheduler.save(args);f.setNow(saved.at+3*86400000);assert.equal(f.scheduler.save(args).id,saved.id);assert.equal(f.store.state.schedules.length,1);assert.throws(()=>f.scheduler.save({...args,priority:'high'}),error=>error.status===409);
+ const legacy=fixture(t),oldArgs=job({clientRequestId:randomUUID()}),old=legacy.scheduler.save(oldArgs),raw=legacy.store.state.schedules[0];raw.creationFingerprint=createHash('sha256').update(JSON.stringify({text:old.text,at:old.at,timeZone:old.timeZone,enabled:true})).digest('hex');legacy.store.save();legacy.setNow(old.at+1000);assert.equal(legacy.scheduler.save({...oldArgs,cron:null,priority:'normal'}).id,old.id);assert.throws(()=>legacy.scheduler.save({...oldArgs,priority:'high'}),error=>error.status===409);
+});
+
+test('recurring write failures keep the original due time and never create a second ambiguous occurrence',t=>{
+ const f=fixture(t),saved=f.scheduler.save(recurring({cron:'* * * * *',timeZone:'UTC'})),before=structuredClone(f.store.state),save=f.store.save;f.setNow(saved.at+1);f.store.save=()=>{throw Error('Disk unavailable');};assert.throws(()=>f.scheduler.tick(),/Disk unavailable/);assert.deepEqual(f.store.state,before);assert.equal(f.enqueued.length,0);f.store.save=save;
+ f.engine.enqueue=()=>{throw Error('Queue unavailable');};assert.throws(()=>f.scheduler.tick(),/Queue unavailable/);assert.equal(f.store.state.messages.length,1);assert.ok(f.store.state.schedules[0].at>saved.at+1);f.setNow(f.store.state.schedules[0].at+60000);assert.deepEqual(f.scheduler.tick(),[]);assert.equal(f.store.state.messages.length,1);
 });

@@ -1,3 +1,4 @@
+import {createTaskReplyController} from '../ui/task-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,6 +8,7 @@ import {createAppearance,exportAppearance as serializeAppearance,importAppearanc
 import {telegramConnectionError,telegramDeliveryNotice} from '../ui/telegram-delivery.js';
 import {createSettingsNavigation} from '../ui/settings-navigation.js';
 import {renderUsageSettings} from '../ui/usage-settings.js';
+import {createUsageActivityController} from '../ui/usage-activity.js';
 import {reconcile} from '../ui/dom.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),css=fs.readFileSync(new URL('../ui/style.css',import.meta.url),'utf8');
@@ -18,8 +20,8 @@ function fixture(){
  localStorage:{getItem:key=>stored.get(key)||null,setItem:(key,value)=>stored.set(key,value)},render:()=>{},toast:message=>toasts.push(message),esc:value=>String(value??''),ico:()=>'',button:(action,icon,label)=>`<button data-action="${action}">${label}</button>`,formatTime:value=>new Date(value).toISOString(),
  api:async(route,options={})=>{requests.push({route,...options});if(route==='/state')return context.state;if(route==='/vm/profiles')return {current:null,candidates:[],requiresSelection:false};if(route==='/telegram')return {enabled:false,configured:false,connected:false,paired:false};return {ok:true};},
  };
- Object.assign(context,{telegramConnectionError,telegramDeliveryNotice,renderUsageSettings});context.post=(route,body={})=>context.api(route,{method:'POST',body});context.appearance=createAppearance({document,storage:context.localStorage,matchMedia:()=>null,save:body=>context.api('/settings',{method:'PATCH',body})});
- context.updateInstalling=false;vm.createContext(context);vm.runInContext([
+ Object.assign(context,{telegramConnectionError,telegramDeliveryNotice,renderUsageSettings});context.usageActivity=createUsageActivityController({document,onChange:()=>context.render()});context.post=(route,body={})=>context.api(route,{method:'POST',body});context.appearance=createAppearance({document,storage:context.localStorage,matchMedia:()=>null,save:body=>context.api('/settings',{method:'PATCH',body})});
+ context.updateInstalling=false;context.taskReplies??=createTaskReplyController({document:context.document,getModel:()=>({})});vm.createContext(context);vm.runInContext([
   section('const zh={','const subscriptionVoiceUnavailable='),
   section('const subscriptionVoiceUnavailable=','const esc='),
   section('const appearanceFields=','function renderVoiceSettings(settings){'),

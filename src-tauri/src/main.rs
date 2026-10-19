@@ -42,7 +42,7 @@ fn main(){
  .manage(tray::BackgroundTray::default())
  .manage(updates::Updates::default())
  .on_window_event(|window,event|{if !tray::on_window_event(window,event){call_overlay::on_window_event(window,event);}})
- .invoke_handler(tauri::generate_handler![transport::api_request,speech::speech_start,speech::speech_stop,downloads::save_attachment,call_overlay::call_overlay_update,call_overlay::call_overlay_get,call_overlay::call_overlay_action,call_overlay::call_overlay_drag,tray::tray_status_update,text_editor::editor_preferences,text_editor::choose_text_editor,text_editor::reset_text_editor,text_editor::open_attachment_in_editor,updates::download_update,updates::install_update,updates::update_capabilities])
+ .invoke_handler(tauri::generate_handler![transport::api_request,speech::speech_start,speech::speech_stop,downloads::save_attachment,call_overlay::call_overlay_update,call_overlay::call_overlay_get,call_overlay::call_overlay_action,call_overlay::call_overlay_drag,tray::tray_status_update,text_editor::editor_preferences,text_editor::installed_text_editors,text_editor::select_text_editor,text_editor::choose_text_editor,text_editor::reset_text_editor,text_editor::open_attachment_in_editor,updates::download_update,updates::install_update,updates::update_capabilities])
  .setup(|app|{
    call_overlay::setup(app);
    if tray::setup(app).is_err(){eprintln!("The system tray is unavailable; closing dant will exit normally.");}

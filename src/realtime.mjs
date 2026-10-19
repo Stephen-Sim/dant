@@ -85,8 +85,15 @@ export class NativeRealtimeVoice extends EventEmitter {
  }
  get acceptsChatInput(){const turn=this.backgroundInputTurn();return Boolean(turn?.awaitingChatInput||turn?.planWaitingForUser);}
  get acceptsInteractiveChatInput(){return Boolean(this.backgroundInputTurn());}
- answerBackground(message,{interactive=false,expectedTurnId}={}){
-  const s=this.session,turn=this.backgroundInputTurn(s),prior=s?.backgroundInputs?.get(message?.id);
+ answerBackground(message,{interactive=false,expectedTurnId,targeted=false}={}){
+  const s=this.session;
+  const selected=()=>{
+   if(!targeted)return this.backgroundInputTurn(s);
+   const turn=s?.turns?.get(expectedTurnId);
+   if(this.session!==s||!s||s.unknown||s.submitting||s.pausing||s.stopping||s.closed&&!s.background||this.worker.status!=='online'||this.engine.takeover||this.engine.acquiring||this.pendingHandoffs(s)||!turn||turn.done||turn.pauseRequested||turn.finalized||turn.workRecord?.id!==message?.workReply?.workId||message.workReply.turnId!==expectedTurnId||this.engine.store.state.conversationId!==message?.workReply?.conversationId||[...s.turns.values()].some(other=>other!==turn&&!other.done))return null;
+   return turn;
+  };
+  const turn=selected(),prior=s?.backgroundInputs?.get(message?.id);
   if(prior){if(expectedTurnId!==undefined&&prior.turnId!==expectedTurnId)return Promise.reject(Object.assign(Error('The active turn changed; steering was not submitted'),{submission:'not-submitted'}));return prior.promise;}
   const failBefore=reason=>{if(!['submitting','unknown','confirmed','rejected'].includes(message?.submission)&&!message?.unknownOutcome)this.engine.safeUpdate(message?.id,{status:'failed',submission:'preparing',pauseReason:'voice-task-unavailable',error:reason});return Promise.reject(Object.assign(Error(reason),{submission:'not-submitted'}));};
   if(typeof message?.id!=='string'||typeof message.text!=='string'||!message.text.trim()||message.attachments?.length)return failBefore('A background reply requires nonempty text without attachments');
@@ -97,7 +104,7 @@ export class NativeRealtimeVoice extends EventEmitter {
   // turn a follow-up into a new task, or attach it to a different native turn.
   turn.pendingSubmissions++;const operation=s.messageChain.then(async()=>{let submitted=false;
    try{
-    await s.eventChain;this.workSession(s);if(this.backgroundInputTurn(s)!==turn||s.turns.get(turn.turnId)!==turn)throw Error('The active background turn changed; steering was not submitted');
+    await s.eventChain;this.workSession(s);if(selected()!==turn||s.turns.get(turn.turnId)!==turn)throw Error('The active background turn changed; steering was not submitted');
     if(!interactive&&!turn.awaitingChatInput&&!turn.planWaitingForUser)throw Error('The background task is no longer awaiting input');
     const input=this.engine.input(message);this.engine.updateWork(message.id,{status:'running',submission:'submitting',parentTaskId:turn.messageId||null});submitted=true;
     const waitRevision=turn.planWaitRevision;await within(this.worker.request('turn/steer',{threadId:s.threadId,expectedTurnId:turn.turnId,input}),this.connectTimeoutMs,'The background reply was not acknowledged');this.workSession(s);

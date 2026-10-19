@@ -3,6 +3,8 @@ set -euo pipefail
 umask 077
 source_dir=$(realpath "$1")
 case "$source_dir" in "$HOME"/dant/releases/source.*) ;; *) echo 'Invalid worker source directory' >&2; exit 1;; esac
+update_running_work=false
+case "${2:-}" in '') ;; --update-running-work) update_running_work=true ;; *) echo 'Invalid worker update option' >&2; exit 1;; esac
 test "$(id -u)" -ne 0 || { echo 'Run the worker deployment as its ordinary VM user.' >&2; exit 1; }
 mkdir -p "$HOME/dant/runtime" "$HOME/dant/data" "$HOME/dant/workspaces" "$HOME/dant/vm" "$HOME/.config/systemd/user"
 
@@ -33,16 +35,91 @@ prepare_transcription() {
     echo 'Local audio recognition is unavailable; existing chat and calls remain available.' >&2
   fi
 }
+worker_service_state() {
+  local service_state
+  service_state=$(systemctl --user show dant-worker.service --property=ActiveState --value) || { echo 'The VM service state could not be confirmed; its files were preserved.' >&2; return 1; }
+  case "$service_state" in active|inactive|failed) printf '%s\n' "$service_state" ;; *) echo 'The VM service is changing state. Its files were preserved; reconnect after it settles.' >&2; return 1 ;; esac
+}
 check_idle_worker() {
-if systemctl --user is-active --quiet dant-worker.service; then
-  python3 - <<'PY'
+worker_checked_state=$(worker_service_state) || return 1
+if [ "$worker_checked_state" = active ]; then
+  python3 - "${1:-check}" <<'PY'
 import json, sys, urllib.request
 base = 'http://127.0.0.1:4317'
-session = json.load(urllib.request.urlopen(base + '/api/session', timeout=3))
-state = json.load(urllib.request.urlopen(urllib.request.Request(base + '/api/state', headers={'X-Dant-Token': session['token']}), timeout=3))
-if state.get('active') or state.get('call') or state.get('queue') or state.get('takeover'):
-    print('DANT_WORK_ACTIVE: service update deferred; current VM work was preserved', file=sys.stderr)
-    sys.exit(79)
+manual = sys.argv[1] == 'pause'
+idle_witness = sys.argv[1] == 'idle'
+try:
+    session = json.load(urllib.request.urlopen(base + '/api/session', timeout=3))
+    token = session['token']
+    if not isinstance(token, str) or not token:
+        raise ValueError('Invalid session')
+    def request(route, data=None):
+        headers = {'X-Dant-Token': token}
+        if data is not None:
+            headers['Content-Type'] = 'application/json'
+        req = urllib.request.Request(base + route, data=None if data is None else json.dumps(data).encode(), headers=headers)
+        return json.load(urllib.request.urlopen(req, timeout=60 if data is not None else 3))
+    def snapshot():
+        state = request('/api/state')
+        if not isinstance(state, dict) or not all(key in state for key in ('active', 'queue', 'call', 'takeover')) or not isinstance(state['queue'], list) or not isinstance(state['takeover'], bool) or state['active'] is not None and not isinstance(state['active'], dict) or state['call'] is not None and not isinstance(state['call'], dict):
+            raise ValueError('Invalid worker state')
+        if not isinstance(state.get('messages', []), list) or not isinstance(state.get('workTasks', []), list):
+            raise ValueError('Invalid work records')
+        computer = state.get('computer')
+        if not isinstance(computer, dict) or computer.get('status') not in ('dant', 'human', 'taking-over'):
+            raise ValueError('Invalid computer control state')
+        if computer['status'] != 'dant' or computer.get('sessionId') or computer.get('pending') or computer.get('acquiring') or state.get('acquiring'):
+            if not manual and not idle_witness:
+                print('DANT_WORK_ACTIVE: service update deferred; current VM work was preserved', file=sys.stderr)
+                sys.exit(79)
+            raise ValueError('Computer control is not idle')
+        if (manual or idle_witness) and (not isinstance(state.get('worker'), dict) or state['worker'].get('status') != 'online'):
+            raise ValueError('Executor state is not confirmed online')
+        return state
+    def unresolved(state, final=False):
+        for entry in state.get('messages', []) + state.get('workTasks', []):
+            if not isinstance(entry, dict):
+                return True
+            if entry.get('status') not in ('completed', 'cancelled') and (entry.get('unknownOutcome') is True or entry.get('submission') in ('unknown', 'submitting') or entry.get('status') == 'unknown'):
+                return True
+            continuation = entry.get('continuation') or {}
+            if not isinstance(continuation, dict) or continuation.get('invalid') or continuation.get('dispatch') and (final or continuation['dispatch'].get('phase') in ('unknown', 'submitting')):
+                return True
+        return False
+    state = snapshot()
+    if manual:
+        if state['takeover'] or unresolved(state):
+            raise ValueError('Current work cannot be confirmed')
+        call_id = state['call'].get('id') if state['call'] else None
+        if state['call'] and (not isinstance(call_id, str) or not call_id or len(call_id) > 256):
+            raise ValueError('Invalid call owner')
+        if request('/api/tasks/pause', {}).get('ok') is not True:
+            raise ValueError('Pause not confirmed')
+        state = snapshot()
+        if state['call']:
+            if not call_id or state['call'].get('id') != call_id:
+                raise ValueError('Call owner changed')
+            if request('/api/call/stop', {'callId': call_id}).get('stopped') is not True:
+                raise ValueError('Call stop not confirmed')
+        # Older workers mark the just-ended active task continuing only after
+        # their first pause. This confirmed second operation pauses that record
+        # too, preventing its supervisor from starting another turn mid-update.
+        if request('/api/tasks/pause', {}).get('ok') is not True:
+            raise ValueError('Saved task pause not confirmed')
+    if manual or idle_witness:
+        # The existing endpoint also checks pending handoffs, queue submissions,
+        # finalization and computer leases that are absent from older snapshots.
+        if request('/api/connect', {'idleRecovery': True}).get('ok') is not True:
+            raise ValueError('Worker idle check not confirmed')
+        state = snapshot()
+    if state['active'] or state['call'] or state['queue'] or state['takeover'] or unresolved(state, final=True) or manual and any(entry.get('status') == 'continuing' for entry in state.get('workTasks', [])):
+        if manual:
+            raise ValueError('Worker did not stop')
+        print('DANT_WORK_ACTIVE: service update deferred; current VM work was preserved', file=sys.stderr)
+        sys.exit(79)
+except Exception:
+    print('VM update could not confirm that work stopped. The existing service and saved tasks were preserved; no action was resent.', file=sys.stderr)
+    sys.exit(1)
 PY
 fi
 }
@@ -54,23 +131,87 @@ if [ -f "$HOME/dant/deployed-source.json" ] && \
   echo 'The current VM worker is already deployed; running work was preserved.'
   exit 0
 fi
-check_idle_worker
+if [ -e "$HOME/dant/app" ] && [ ! -L "$HOME/dant/app" ]; then
+  echo 'An existing non-symlink app directory was preserved; deployment requires manual review.' >&2
+  exit 1
+fi
+if ! "$update_running_work"; then check_idle_worker; fi
 npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 bash vm/install-speech.sh
 prepare_transcription
 # Dependency downloads leave the old worker running. Check again immediately
 # before changing the live app or restarting services, preserving newly begun work.
-check_idle_worker
+if "$update_running_work"; then check_idle_worker pause; else check_idle_worker; fi
 
 # Only an untouched VM data directory can import a host archive. The original
 # Windows files are backed up before upload and are never removed by migration.
 node vm/migrate-state.mjs "$source_dir/migration" "$HOME/dant/data"
 
-if [ -e "$HOME/dant/app" ] && [ ! -L "$HOME/dant/app" ]; then
-  echo 'An existing non-symlink app directory was preserved; deployment requires manual review.' >&2
-  exit 1
+# Preserve the old executable files/configuration separately from authoritative
+# data. A failed new service restores these files, never old chat/task records.
+rollback_dir=$(mktemp -d "$source_dir/rollback.XXXXXX")
+old_app=''
+if [ -L "$HOME/dant/app" ]; then old_app=$(readlink "$HOME/dant/app"); fi
+worker_was_active=false
+initial_worker_state=$(worker_service_state)
+if [ "$initial_worker_state" = active ]; then worker_was_active=true; fi
+worker_stopped=false
+app_switched=false
+deployment_committed=false
+vm_files=(guest.py desktop.py control.py voice_message.py transcribe_audio.py desktop_mcp.py)
+service_files=(dant-guest-local.service dant-worker.service)
+mkdir "$rollback_dir/vm" "$rollback_dir/services"
+for name in "${vm_files[@]}"; do if [ -f "$HOME/dant/vm/$name" ]; then cp -p "$HOME/dant/vm/$name" "$rollback_dir/vm/$name"; fi; done
+for name in "${service_files[@]}"; do if [ -f "$HOME/.config/systemd/user/$name" ]; then cp -p "$HOME/.config/systemd/user/$name" "$rollback_dir/services/$name"; fi; done
+rollback_update() {
+  update_status=$?
+  trap - EXIT
+  if ! "$deployment_committed" && { "$app_switched" || "$worker_stopped"; }; then
+    set +e
+    if "$app_switched"; then
+      if ! check_idle_worker idle; then
+        echo 'The VM update failed, but the new service could not confirm a safe rollback. Service files and saved work were left in place; no executor was forcibly stopped.' >&2
+        exit "$update_status"
+      fi
+      if ! systemctl --user stop dant-worker.service; then
+        echo 'The VM update failed and service shutdown was not confirmed. Saved work and service files were left in place.' >&2
+        exit "$update_status"
+      fi
+      rollback_restored=true
+      if [ -n "$old_app" ]; then
+        if ! ln -s "$old_app" "$rollback_dir/app.restore" || ! mv -Tf "$rollback_dir/app.restore" "$HOME/dant/app"; then rollback_restored=false; fi
+      elif ! rm -f "$HOME/dant/app"; then rollback_restored=false
+      fi
+      for name in "${vm_files[@]}"; do
+        if [ -f "$rollback_dir/vm/$name" ]; then cp -p "$rollback_dir/vm/$name" "$HOME/dant/vm/$name" || rollback_restored=false; else rm -f "$HOME/dant/vm/$name" || rollback_restored=false; fi
+      done
+      for name in "${service_files[@]}"; do
+        if [ -f "$rollback_dir/services/$name" ]; then cp -p "$rollback_dir/services/$name" "$HOME/.config/systemd/user/$name" || rollback_restored=false; else rm -f "$HOME/.config/systemd/user/$name" || rollback_restored=false; fi
+      done
+      if ! "$rollback_restored" || ! systemctl --user daemon-reload; then
+        echo 'The VM update failed and previous service files could not be fully restored. The worker remains stopped; saved data was preserved.' >&2
+        exit "$update_status"
+      fi
+    fi
+    if "$worker_was_active" && { ! systemctl --user restart dant-guest-local.service || ! systemctl --user start dant-worker.service; }; then
+      echo 'The VM update failed. Previous service files were restored, but restarting the old service was not confirmed. Saved data was preserved.' >&2
+      exit "$update_status"
+    fi
+    echo 'The VM update failed. The previous service files were restored; saved tasks remain paused.' >&2
+  fi
+  exit "$update_status"
+}
+trap rollback_update EXIT
+# Recheck after migration/backups and stop the confirmed idle old service before
+# replacing its app. No unconfirmed running executor is forcibly terminated.
+check_idle_worker
+if [ "$worker_checked_state" = active ] || [ "$worker_checked_state" = failed ] || [ -f "$HOME/.config/systemd/user/dant-worker.service" ]; then
+  systemctl --user stop dant-worker.service
+  worker_stopped=true
 fi
-ln -sfn "$source_dir" "$HOME/dant/app"
+ln -s "$source_dir" "$rollback_dir/app.next"
+mv -Tf "$rollback_dir/app.next" "$HOME/dant/app"
+app_switched=true
 install -m 700 "$source_dir/vm/guest.py" "$source_dir/vm/desktop.py" "$source_dir/vm/control.py" "$source_dir/vm/voice_message.py" "$source_dir/vm/transcribe_audio.py" "$source_dir/vm/desktop_mcp.py" "$HOME/dant/vm/"
 cat > "$HOME/.config/systemd/user/dant-guest-local.service" <<EOF
 [Unit]
@@ -124,7 +265,9 @@ systemctl --user restart dant-guest-local.service
 systemctl --user restart dant-worker.service
 for attempt in $(seq 1 60); do
   if python3 -c 'import json,urllib.request; r=json.load(urllib.request.urlopen("http://127.0.0.1:4317/api/session",timeout=2)); assert r.get("token")' 2>/dev/null; then
-    install -m 600 "$source_dir/deploy-manifest.json" "$HOME/dant/deployed-source.json"
+    install -m 600 "$source_dir/deploy-manifest.json" "$rollback_dir/deploy-manifest.next"
+    mv -f "$rollback_dir/deploy-manifest.next" "$HOME/dant/deployed-source.json"
+    deployment_committed=true
     echo 'dant authoritative VM service is ready on 127.0.0.1:4317'
     exit 0
   fi

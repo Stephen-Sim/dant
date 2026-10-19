@@ -1,3 +1,4 @@
+import {createTaskReplyController} from '../ui/task-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -46,7 +47,7 @@ test('an empty composer must clear a stale restart draft successfully before ins
 });
 
 function mainFixture(){
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function updateInstallState(){'),end=source.indexOf('function toast(',start),calls=[],current=state(),input={value:'Current composer text'},context={state:current,eventConnected:true,pc:null,callStarting:false,callStops:{pending:false},recording:null,recordStarting:false,dictating:false,recordDraft:null,sending:false,uploading:0,messageSubmissions:{unknown:null},document:{querySelector:()=>input},composerDraft:'older render text',replyTo:ids[1],attachments:draft().attachments,updateInstalling:false,restoringUpdateDraft:false,unloading:false,render(){},updateDraftScope,updateDraft:{save:async(...args)=>{calls.push(args);return ids[0];},discard:id=>calls.push(['discard',id]),take:async()=>null}};vm.createContext(context);vm.runInContext(source.slice(start,end),context);return {source,context,calls,input};
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),start=source.indexOf('function updateInstallState(){'),end=source.indexOf('function toast(',start),calls=[],current=state(),input={value:'Current composer text'},context={state:current,eventConnected:true,pc:null,callStarting:false,callStops:{pending:false},recording:null,recordStarting:false,dictating:false,recordDraft:null,sending:false,uploading:0,messageSubmissions:{unknown:null},document:{querySelector:()=>input},composerDraft:'older render text',replyTo:ids[1],attachments:draft().attachments,updateInstalling:false,restoringUpdateDraft:false,unloading:false,render(){},updateDraftScope,updateDraft:{save:async(...args)=>{calls.push(args);return ids[0];},discard:id=>calls.push(['discard',id]),take:async()=>null}};context.taskReplies??=createTaskReplyController({document:context.document,getModel:()=>({})});vm.createContext(context);vm.runInContext(source.slice(start,end),context);return {source,context,calls,input};
 }
 
 test('main maps actual controller state and every call/media/input guard without treating VM work as an install blocker',()=>{
@@ -74,4 +75,13 @@ test('a call awaiting speech cleanup cannot start after installation admission i
 
 test('main restores once only into an empty matching draft and keeps new user input untouched',async()=>{
  const f=mainFixture(),c=f.context;f.input.value='';c.composerDraft='';c.replyTo=null;c.attachments=[];c.updateDraft.take=async()=>({text:'Recovered text',replyTo:ids[1],attachments:[]});await c.restoreUpdateDraft();assert.equal(f.input.value,'Recovered text');assert.equal(c.replyTo,ids[1]);f.input.value='New user input';await c.restoreUpdateDraft();assert.equal(f.input.value,'New user input');
+});
+
+test('update drafts preserve an explicit task target without rebinding it to the latest task',async()=>{
+ const f=fixture(),current=state(),workReply={workId:'work-a',turnId:'turn-a',conversationId:current.conversationId};await f.helper.save(current,{...draft(),workReply});assert.deepEqual((await f.helper.take(current)).workReply,workReply);
+ const empty={text:'',replyTo:null,attachments:[],workReply};await f.helper.save(current,empty);assert.deepEqual(await f.helper.take(current),empty,'a selected task is itself part of the unsent draft');
+ for(const invalid of [{...workReply,turnId:'bad turn'},{...workReply,extra:'private'},null])await assert.rejects(f.helper.save(current,{...draft(),workReply:invalid}),/draft could not be saved/);
+ const main=mainFixture(),c=main.context;c.taskReplies.restore(workReply);await c.saveUpdateDraft();assert.deepEqual(callsTarget(main),workReply);
+ function callsTarget(app){return app.calls[0][1].workReply;}
+ const recovered=mainFixture();recovered.input.value='';recovered.context.composerDraft='';recovered.context.replyTo=null;recovered.context.attachments=[];recovered.context.updateDraft.take=async()=>({text:'I finished verification',replyTo:null,attachments:[],workReply});await recovered.context.restoreUpdateDraft();assert.deepEqual(recovered.context.taskReplies.target,workReply);assert.equal(recovered.input.value,'I finished verification');assert.throws(()=>recovered.context.taskReplies.prepare(),/Update the work computer/,'restoring a stale target cannot silently downgrade its text to ordinary chat');
 });

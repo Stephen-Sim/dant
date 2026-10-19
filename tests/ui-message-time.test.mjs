@@ -1,3 +1,4 @@
+import {createTaskReplyController} from '../ui/task-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,7 +15,7 @@ const at=Date.parse('2026-10-17T12:15:00Z');
 function fixture(language='en',theme='light'){
  const {document}=parseHTML('<html><body><main id="app"></main></body></html>'),state={settings:{language},messages:[]};document.documentElement.dataset.theme=theme;
  const c={canPreviewFile,state,document,formatCallDuration,defaultReactions,fallbackLanguage:language,emojiFor:null,speakingId:null,recording:null,recordStarting:false,speechBlocked:()=>false,unknownTask:()=>false,md:value=>String(value),fileURL:file=>'/files/'+file.id,ico:name=>`<svg data-icon="${name}"></svg>`,errorText:value=>String(value)};
- c.chatHistory=createChatHistory({getState:()=>state,document,icon:c.ico});vm.createContext(c);vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('function unreadAssistant(','function revealMessage(){')+'\n'+part('function formatTime(','function renderComputer(){'),c);
+ c.chatHistory=createChatHistory({getState:()=>state,document,icon:c.ico});c.taskReplies??=createTaskReplyController({document:c.document,getModel:()=>({})});vm.createContext(c);vm.runInContext(part('const zh={','const subscriptionVoiceUnavailable=')+'\n'+part('const esc=','const iconCache=')+'\n'+part('function unreadAssistant(','function revealMessage(){')+'\n'+part('function formatTime(','function renderComputer(){'),c);
  return {c,state,document,render(){const template=document.createElement('template');template.innerHTML=c.renderMessages();reconcile(document.querySelector('#app'),template.content);}};
 }
 

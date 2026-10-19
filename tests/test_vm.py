@@ -681,8 +681,10 @@ class VoiceAndMCPTests(unittest.TestCase):
         names = {tool['name']: tool for tool in desktop_mcp.TOOLS}
         self.assertEqual(names['schedule_save']['inputSchema']['properties']['at']['type'], 'string')
         self.assertIn('timeZone', names['schedule_save']['inputSchema']['properties'])
+        self.assertEqual(names['schedule_save']['inputSchema']['properties']['cron']['type'], ['string', 'null'])
+        self.assertEqual(names['schedule_save']['inputSchema']['properties']['priority']['enum'], ['high', 'normal', 'low'])
         with tempfile.TemporaryDirectory() as folder, patch.object(desktop_mcp, 'credential_bridge', return_value={'saved': True}) as bridge:
-            for name, args in [('schedule_list', {}), ('schedule_save', {'text': 'A requested future check', 'at': '2026-10-18T09:00:00+08:00', 'timeZone': 'Asia/Kuala_Lumpur'}), ('schedule_delete', {'id': 'saved-job'})]:
+            for name, args in [('schedule_list', {}), ('schedule_save', {'text': 'A requested future check', 'at': '2026-10-18T09:00:00+08:00', 'timeZone': 'Asia/Kuala_Lumpur'}), ('schedule_save', {'text': 'A requested daily check', 'cron': '0 9 * * *', 'priority': 'high', 'timeZone': 'Asia/Kuala_Lumpur'}), ('schedule_delete', {'id': 'saved-job'})]:
                 response = desktop_mcp.invoke(name, args, folder)
                 self.assertEqual(response['structuredContent'], {'scheduleResult': {'saved': True}})
                 bridge.assert_called_with(name, args)

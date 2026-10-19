@@ -2,7 +2,13 @@
 
 English · [简体中文](zh-CN/verification.md)
 
-Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
+Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
+
+## 0.4.7-beta.5 source verification
+
+This candidate adds replies addressed to an exact retained task, repeating schedules with saved time zones and priority, dated token activity, clearer connection and waiting states, explicit Reconnect service upgrades, an installed-editor application menu and the revised memory refresh control. Isolated regressions cover stale task identities, unknown delivery, retained drafts, repeated schedule claims, missed occurrences, DST, queue ordering, unavailable service capabilities, rollback, private native application discovery and preference recovery. A read-only live audit confirmed that the reported overnight task was waiting for human verification; that audit did not resume it or alter its state.
+
+The final source passed **1,800 JavaScript tests**, with zero failures or skips and **99.22% line, 92.03% branch and 92.72% function coverage**. All coverage gates, **74 Python tests**, **34 Windows Rust tests**, **10 release/version/coverage gate tests**, the frontend production build and **112 local documentation links** passed. Browser previews using synthetic data verified the usage chart, schedule and task-reply controls, application menu and memory refresh layout. No real editor was launched or local preference changed during these checks. These source and preview results do not claim installation, live task execution or release artifact acceptance; tag CI and asset verification are separate steps.
 
 ## 0.4.7-beta.4 source verification
 

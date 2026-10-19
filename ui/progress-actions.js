@@ -6,9 +6,12 @@ Object.assign(copy.en,{cancelTitle:'Cancel this task?',cancelHint:'Stop this tas
 Object.assign(copy.zh,{cancelTitle:'取消这项任务？',cancelHint:'停止这项任务，并在最近的任务中保留“已取消”记录。聊天和结果会保留。',keepWorking:'保留任务',confirmCancel:'确认取消任务',cancelled:'任务已取消',unconfirmed:'尚未确认任务已取消，请检查当前状态后再操作。'});
 Object.assign(copy.en,{paused:'Task paused',pausing:'Waiting for the task to pause safely.',resumed:'Task will continue when the executor is free.',pauseUnconfirmed:'Pause is not confirmed. Check the current task status before trying again.',resumeUnconfirmed:'Resume is not confirmed. Check the current task status before trying again.'});
 Object.assign(copy.zh,{paused:'任务已暂停',pausing:'正在等待任务安全暂停。',resumed:'执行器空闲时会继续这项任务。',pauseUnconfirmed:'尚未确认任务已暂停，请检查当前状态后再操作。',resumeUnconfirmed:'尚未确认任务已继续，请检查当前状态后再操作。'});
+Object.assign(copy.en,{serviceUpdateNeeded:'The work computer service needs an update. Open Settings → Work computer and choose Reconnect, then try again.'});
+Object.assign(copy.zh,{serviceUpdateNeeded:'工作电脑服务需要更新，请打开设置 → 工作电脑，点击刷新连接后再试。'});
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const kinds=new Set(['task','work','completion']),priorities=new Set(['high','normal','low']);
 const identity=item=>item.registered||item.work?{id:item.id,kind:'work'}:item.voice?{id:item.id,kind:'completion'}:{id:item.message?.id,kind:'task'};
+const missingServiceRoute=error=>error?.status===404&&error.message==='Request failed (404)'&&!error.unknownOutcome;
 export function createProgressActions({getModel,request,render,toast,getLanguage=()=> 'en',formatError=error=>error.message,document=globalThis.document,isPending=()=>false}={}){
  let confirmation=null,busy=false,epoch=0;
  const labels=()=>copy[getLanguage()==='zh'?'zh':'en'];
@@ -38,14 +41,14 @@ export function createProgressActions({getModel,request,render,toast,getLanguage
   if(!findCancellation(target)?.canPause){toast(labels().changed);return;}
   const result=await mutate(target.id,'/tasks/'+encodeURIComponent(target.id)+'/pause',{kind:target.kind,turnId:target.turnId,...(target.callId?{callId:target.callId}:{})});
   if(result.ok)toast(result.value?.paused===true?labels().paused:result.value?.pausing===true?labels().pausing:labels().pauseUnconfirmed);
-  else toast(formatError(result.error)||labels().failed);
+  else toast(missingServiceRoute(result.error)?labels().serviceUpdateNeeded:formatError(result.error)||labels().failed);
  }
  async function resumeTask(target){
   if(!validTarget(target)||target.kind!=='work'||!ready(target.id))return;
   if(!findResumption(target)?.canResume){toast(labels().changed);return;}
   const result=await mutate(target.id,'/tasks/'+encodeURIComponent(target.id)+'/resume',{kind:'work',turnId:target.turnId});
   if(result.ok)toast(result.value?.resumed===true?labels().resumed:labels().resumeUnconfirmed);
-  else toast(formatError(result.error)||labels().failed);
+  else toast(missingServiceRoute(result.error)?labels().serviceUpdateNeeded:formatError(result.error)||labels().failed);
  }
  async function mutate(id,route,body){
   busy=true;render();

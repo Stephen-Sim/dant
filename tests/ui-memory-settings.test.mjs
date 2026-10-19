@@ -27,3 +27,12 @@ test('memory revisions refresh a visible page and leaving it ignores late failur
  const f=fixture();f.ui.setVisible(true);await tick();f.state.memory='Updated snapshot';f.request=async()=>value('one','Updated durable notes');f.ui.setVisible(true);await tick();assert.match(f.document.body.textContent,/Updated durable notes/);
  let reject;f.request=()=>new Promise((resolve,no)=>reject=no);const pending=f.ui.load();f.ui.setVisible(false);reject(Error('PRIVATE_TRANSPORT_BODY'));await pending;f.render();assert.doesNotMatch(f.document.body.textContent,/PRIVATE_TRANSPORT_BODY/);
 });
+
+test('refresh keeps the current notes visible, announces loading and ignores repeated activation until the read finishes',async()=>{
+ const f=fixture();f.ui.setVisible(true);await tick();let finish;f.request=()=>new Promise(resolve=>finish=resolve);
+ const read=f.document.querySelector('[data-memory-refresh]').onclick(),busy=f.document.querySelector('[data-memory-refresh]');
+ assert.equal(busy.disabled,true);assert.equal(busy.getAttribute('aria-busy'),'true');assert.match(busy.textContent,/Refreshing/);assert.ok(busy.querySelector('svg[aria-hidden="true"]'));
+ assert.match(f.document.querySelector('[role="status"]').textContent,/Reading current memory/);assert.match(f.document.querySelector('[data-memory-references]').textContent,/Actual durable notes/);
+ busy.onclick();assert.equal(f.calls.length,2);finish(value('one','Refreshed notes'));await read;
+ assert.equal(f.document.querySelector('[data-memory-refresh]').disabled,false);assert.equal(f.document.querySelector('[data-memory-refresh]').getAttribute('aria-busy'),'false');assert.equal(f.document.querySelector('[role="status"]').hidden,true);assert.match(f.document.querySelector('[data-memory-references]').textContent,/Refreshed notes/);f.ui.dispose();
+});

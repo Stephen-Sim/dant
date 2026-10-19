@@ -16,14 +16,23 @@ export class VmBridge extends EventEmitter {
   super();this.dataDir=dataDir;this.projectRoot=projectRoot;this.spawnProcess=spawnProcess;this.fetchImpl=fetchImpl;this.WebSocketImpl=WebSocketImpl;this.cacheMs=cacheMs;this.status='offline';this.error=null;this.closed=false;this.generation=0;
  }
  binding(){return readVmBinding(this.dataDir);}
- async connect({deploy=true}={}){
-  if(this.closed)throw Error('VM bridge is closed');if(this.connecting)return this.connecting;
-  const pending=this.open(deploy).finally(()=>{if(this.connecting===pending)this.connecting=null;});this.connecting=pending;return pending;
+ async connect({deploy=true,updateRunningWork=false}={}){
+  if(this.closed)throw Error('VM bridge is closed');
+  updateRunningWork=updateRunningWork===true;
+  if(this.connecting){
+   if(!updateRunningWork||this.connectingUpdatesWork)return this.connecting;
+   if(this.manualConnectionPending)return this.manualConnectionPending;
+   const generation=this.generation;
+   const pending=this.connecting.catch(()=>{}).then(()=>{if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');return this.connect({deploy,updateRunningWork:true});}).finally(()=>{if(this.manualConnectionPending===pending)this.manualConnectionPending=null;});
+   this.manualConnectionPending=pending;return pending;
+  }
+  this.connectingUpdatesWork=updateRunningWork;
+  const pending=this.open(deploy,{updateRunningWork}).finally(()=>{if(this.connecting===pending){this.connecting=null;this.connectingUpdatesWork=false;}});this.connecting=pending;return pending;
  }
- async open(deploy){
+ async open(deploy,{updateRunningWork=false}={}){
   const reconnectDesired=this.reconnectDesired;this.disconnect();this.reconnectDesired=reconnectDesired;const generation=this.generation;this.status='connecting';this.error=null;this.emit('change');
   try{
-   const vm=this.binding();if(deploy)try{await this.prepare(vm);}catch(error){if(!error.updateDeferred)throw error;this.emit('event',{type:'notice',data:{message:'The VM is still working. Its service update was deferred until work has stopped.'}});}if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');
+   const vm=this.binding();if(deploy)try{await this.prepare(vm,{updateRunningWork});}catch(error){if(!error.updateDeferred||updateRunningWork)throw error;this.emit('event',{type:'notice',data:{message:'The VM is still working. Its service update was deferred until work has stopped.'}});}if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');
    this.port=await freePort();if(this.closed||generation!==this.generation)throw Error('VM connection cancelled');const child=this.spawnProcess('ssh',[...sshArgs(vm),'-N','-L',`127.0.0.1:${this.port}:127.0.0.1:4317`,'-o','ExitOnForwardFailure=yes',`${vm.user}@${vm.host}`],{shell:false,windowsHide:true,stdio:['ignore','ignore','pipe']});this.child=child;
    child.stderr?.on('data',()=>{});child.once('error',()=>this.failed(generation,'Could not start the SSH connection.'));child.once('close',()=>this.failed(generation,'The VM connection was lost. Cached conversation remains available.'));
    let session;const deadline=Date.now()+30000;
@@ -56,9 +65,18 @@ export class VmBridge extends EventEmitter {
   try{return await this.fetchImpl(`http://127.0.0.1:${this.port}${route}`,{...options,method,headers:{...options.headers,'X-Dant-Token':this.token},signal:options.signal||AbortSignal.timeout(60000)});}
   catch{throw Object.assign(Error(method==='GET'?'The VM request failed. Cached conversation remains available.':'The VM connection ended before the result was confirmed. This action was not resent; reconnect and check its state before retrying.'),{status:502,unknownOutcome:method!=='GET'});}
  }
- async prepare(vm=this.binding()){
-  if(this.preparing)return this.preparing;
-  const task=this.deploy(vm).finally(()=>{if(this.preparing===task)this.preparing=null;});this.preparing=task;return task;
+ async prepare(vm=this.binding(),{updateRunningWork=false}={}){
+  if(this.closed)throw Error('VM bridge is closed');
+  updateRunningWork=updateRunningWork===true;
+  if(this.preparing){
+   if(!updateRunningWork||this.preparingUpdatesWork)return this.preparing;
+   if(this.manualPreparationPending)return this.manualPreparationPending;
+   const generation=this.generation,identity=value=>JSON.stringify([value.host,value.user,value.port,value.keyPath,value.knownHosts]),binding=identity(vm);
+   const task=this.preparing.catch(()=>{}).then(()=>{if(this.closed||generation!==this.generation||identity(this.binding())!==binding)throw Error('VM preparation cancelled because its connection changed');return this.prepare(vm,{updateRunningWork:true});}).finally(()=>{if(this.manualPreparationPending===task)this.manualPreparationPending=null;});
+   this.manualPreparationPending=task;return task;
+  }
+  this.preparingUpdatesWork=updateRunningWork;
+  const task=this.deploy(vm,{updateRunningWork}).finally(()=>{if(this.preparing===task){this.preparing=null;this.preparingUpdatesWork=false;}});this.preparing=task;return task;
  }
  run(command,args,{input,timeoutMs=10*60*1000}={}){
   return new Promise((resolve,reject)=>{let output='',settled=false;const child=this.spawnProcess(command,args,{cwd:this.projectRoot,shell:false,windowsHide:true,stdio:['pipe','pipe','pipe']});const timer=setTimeout(()=>{child.kill();finish(Error('VM preparation timed out. Existing VM files have been preserved.'));},timeoutMs);
@@ -67,7 +85,7 @@ export class VmBridge extends EventEmitter {
    if(input)fs.createReadStream(input).on('error',error=>{child.kill();finish(error);}).pipe(child.stdin);else child.stdin?.end();
   });
  }
- async deploy(vm){
+ async deploy(vm,{updateRunningWork=false}={}){
   fs.mkdirSync(this.dataDir,{recursive:true});const temporary=fs.mkdtempSync(path.join(this.dataDir,'deploy-'));const archive=path.join(temporary,'source.tar');
   try{
    const allowlist=['src','dist','LICENSE','package.json','package-lock.json','vm/install-worker.sh','vm/install-speech.sh','vm/install-transcription.sh','vm/transcription-requirements.txt','vm/migrate-state.mjs','vm/start-codex.sh','vm/guest.py','vm/desktop.py','vm/control.py','vm/voice_message.py','vm/transcribe_audio.py','vm/desktop_mcp.py'];
@@ -86,7 +104,7 @@ export class VmBridge extends EventEmitter {
     await this.run(tar,['-rf',archive,'-C',temporary,'migration']);
    }
    // No keys, CODEX_HOME, node_modules, Windows runtime, or personal caches enter the archive.
-   const command='umask 077; set -e; mkdir -p "$HOME/dant/releases"; stage=$(mktemp -d "$HOME/dant/releases/source.XXXXXX"); tar -xf - -C "$stage"; bash "$stage/vm/install-worker.sh" "$stage"';
+   const command='umask 077; set -e; mkdir -p "$HOME/dant/releases"; stage=$(mktemp -d "$HOME/dant/releases/source.XXXXXX"); tar -xf - -C "$stage"; bash "$stage/vm/install-worker.sh" "$stage"'+(updateRunningWork===true?' --update-running-work':'');
    await this.run('ssh',[...sshArgs(vm),`${vm.user}@${vm.host}`,command],{input:archive});
    if(migration)fs.writeFileSync(receipt,JSON.stringify({...migration,host:vm.host,completedAt:new Date().toISOString()},null,2));
   }finally{const relative=path.relative(this.dataDir,temporary);if(relative&&!relative.startsWith('..')&&!path.isAbsolute(relative)&&path.basename(temporary).startsWith('deploy-'))fs.rmSync(temporary,{recursive:true,force:true});}

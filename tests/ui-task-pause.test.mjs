@@ -56,6 +56,16 @@ test('failed pause stays unknown and a queued resume response never claims task 
  const resumed=setup({status:'paused'});await resumed.document.querySelector('[data-task-work-resume]').onclick();assert.match(resumed.toasts.at(-1),/executor is free/);assert.equal(resumed.state.active,null);
 });
 
+test('an old service pause or resume route gives update guidance without pausing other work or retrying',async()=>{
+ for(const language of ['en','zh'])for(const status of ['running','paused']){
+  const app=setup({language,status,request:()=>{throw Object.assign(Error('Request failed (404)'),{status:404});}}),before=structuredClone(app.state),selector=status==='running'?'[data-task-pause]':'[data-task-work-resume]';
+  await app.document.querySelector(selector).onclick();assert.equal(app.calls.length,1);assert.deepEqual(app.state,before);assert.match(app.toasts.at(-1),language==='en'?/service needs an update.*Reconnect/:/服务需要更新.*刷新连接/);assert.equal(app.calls.some(([,route])=>route==='/tasks/pause'),false);
+ }
+ for(const error of [Object.assign(Error('The task pause could not be confirmed. Check its current status.'),{status:404}),Object.assign(Error('Request failed (404)'),{status:404,unknownOutcome:true})]){
+  const app=setup({request:()=>{throw error;}});await app.document.querySelector('[data-task-pause]').onclick();assert.deepEqual(app.toasts,[error.message]);assert.equal(app.calls.length,1);
+ }
+});
+
 test('registered paused history has a work-ID Resume while preserving supplied warnings and explicit unknown safeguards',()=>{
  const app=setup({status:'paused'}),model=app.getModel(),item=model.recent[0];let document=parseHTML(renderWorkTaskHistory(item,model.labels,{actions:'<button data-existing-action>View earlier result</button>'})).document;assert.ok(document.querySelector('[data-existing-action]'));assert.equal(document.querySelector('[data-task-work-resume]').disabled,false);
  app.state.messages[0].submission='unknown';const unknown=app.getModel();document=parseHTML(renderWorkTaskHistory(unknown.recent[0],unknown.labels,{actions:'<p class="unknown-outcome">Check before retry</p><button data-task-unknown="old-message">Confirm repeat</button>'})).document;assert.equal(document.querySelector('[data-task-work-resume]').disabled,true);assert.ok(document.querySelector('[data-task-unknown]'));assert.match(document.querySelector('.unknown-outcome').textContent,/Check before retry/);

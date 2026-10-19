@@ -80,7 +80,7 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   const finish=updateLease.enter();let failed;
   try{
   try{const discovery=profiles.autoImport();if(discovery.requiresSelection)throw Object.assign(Error(discovery.error),{status:409});readVmBinding(dataDir);profileError=null;}catch(error){profileError=error.message;throw error;}
-  await bridge.connect();
+  await bridge.connect({updateRunningWork:recoverExecutor});
   await syncPreferences({retry:true});
   // Reopening SSH after startup or a transport failure must preserve an executor
   // intentionally stopped by voice safety. Only the explicit Reconnect action
@@ -136,6 +136,19 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   let failed;
   try{
    const route=new URL(req.originalUrl,'http://localhost');route.searchParams.delete('token');
+   if(req.method==='POST'&&route.pathname==='/api/messages'&&Object.hasOwn(req.body??{},'workReply')){
+    const scope=JSON.stringify([bridge.generation??null,binding()]);
+    if(bridge.status!=='online')throw Object.assign(Error('Reconnect before replying to this task.'),{status:409});
+    const current=await bridge.refresh(true);
+    if(closing||bridge.status!=='online'||scope!==JSON.stringify([bridge.generation??null,binding()])||current?.capabilities?.workReply!==true)throw Object.assign(Error('Update the work computer service before replying to a task.'),{status:409,code:'service_update_required'});
+   }
+   const scheduleId=/^\/api\/schedules\/([^/]+)$/.exec(route.pathname)?.[1],knownSchedule=scheduleId?cached.schedules?.find(item=>item.id===decodeURIComponent(scheduleId)):null;
+   if(['POST','PATCH','DELETE'].includes(req.method)&&/^\/api\/schedules(?:\/[^/]+)?$/.test(route.pathname)&&(['cron','priority'].some(key=>Object.hasOwn(req.body??{},key))||knownSchedule?.cron||knownSchedule?.priority&&knownSchedule.priority!=='normal')){
+    const scope=JSON.stringify([bridge.generation??null,binding()]);
+    if(bridge.status!=='online')throw Object.assign(Error('Reconnect before changing this scheduled task.'),{status:409});
+    const current=await bridge.refresh(true);
+    if(closing||bridge.status!=='online'||scope!==JSON.stringify([bridge.generation??null,binding()])||current?.capabilities?.recurringSchedules!==true)throw Object.assign(Error('Update the work computer service before using recurring schedules and priorities.'),{status:409,code:'service_update_required'});
+   }
    const headers={};if(req.headers['content-type'])headers['Content-Type']=req.headers['content-type'];
    const options={method:req.method,headers};
    if(!['GET','HEAD'].includes(req.method)){if(req.is('application/json'))options.body=JSON.stringify(req.body??{});else{options.body=req;options.duplex='half';}}
@@ -145,7 +158,7 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   }catch(error){failed=error;next(error);}finally{req.updateInstallDone?.(failed);}
  });
  app.use(express.static(path.join(projectRoot,'dist')));
- app.use((error,req,res,next)=>{req.updateInstallDone?.(error);if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(error.unknownOutcome?{unknownOutcome:true}: {})});});
+ app.use((error,req,res,next)=>{req.updateInstallDone?.(error);if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(typeof error.code==='string'&&/^[a-z_]{1,64}$/.test(error.code)?{code:error.code}:{}),...(error.unknownOutcome?{unknownOutcome:true}: {})});});
  let closePromise;
  return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;preferenceSync?.abort.abort();preferenceSync=null;updateLease.close();updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
 }

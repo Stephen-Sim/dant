@@ -29,6 +29,17 @@ test('the private VM credential and skill tool bridge cannot be proxied through 
  const response=await fetch(base+'/api/internal/credentials',{method:'POST',headers,body:JSON.stringify({tool:'credential_get',arguments:{id:'target'}})});assert.equal(response.status,403);assert.equal(bridge.requests.length,0);
 });
 
+test('task replies and recurring schedule fields require a fresh explicit worker capability before forwarding',async t=>{
+ const dir=temporary(t),bridge=new FakeBridge();bridge.status='online';bridge.cached={worker:{status:'online'},capabilities:{},settings:{language:'zh'},schedules:[{id:'saved',cron:'0 9 * * *',priority:'high'}]};fs.writeFileSync(path.join(dir,'state-cache.json'),JSON.stringify(bridge.cached));const {base,headers}=await listen(t,dir,bridge);const target={workId:'work',turnId:'turn',conversationId:'conversation'};
+ for(const [route,method,body]of [['/api/messages','POST',{text:'Done',workReply:target}],['/api/schedules','POST',{text:'Daily',cron:'0 9 * * *',priority:'high'}],['/api/schedules/saved','PATCH',{priority:'low'}],['/api/schedules/saved','PATCH',{enabled:true}],['/api/schedules/saved','DELETE',{}]]){
+  const before=bridge.requests.length,response=await fetch(base+route,{method,headers,body:JSON.stringify(body)});assert.equal(response.status,409);assert.equal((await response.json()).code,'service_update_required');assert.equal(bridge.requests.length,before);
+ }
+ bridge.cached.capabilities={workReply:true,recurringSchedules:true};let refreshes=0;bridge.refresh=async force=>{assert.equal(force,true);refreshes++;return bridge.cached;};
+ for(const [route,body]of [['/api/messages',{text:'Done',workReply:target}],['/api/schedules',{text:'Daily',cron:'0 9 * * *',priority:'high'}]]){const response=await fetch(base+route,{method:'POST',headers,body:JSON.stringify(body)});assert.equal(response.status,200);assert.deepEqual(JSON.parse(bridge.requests.at(-1).body),body);}
+ assert.equal(refreshes,2);bridge.cached.capabilities={};const ordinary=await fetch(base+'/api/messages',{method:'POST',headers,body:'{"text":"Ordinary chat"}'});assert.equal(ordinary.status,200,'ordinary chat remains compatible with older workers');
+ bridge.cached.capabilities={workReply:true};bridge.refresh=async()=>{bridge.generation=(bridge.generation||0)+1;return bridge.cached;};const before=bridge.requests.length,changed=await fetch(base+'/api/messages',{method:'POST',headers,body:JSON.stringify({text:'Done',workReply:target})});assert.equal(changed.status,409);assert.equal(bridge.requests.length,before,'a connection change during the capability check cannot forward a task reply');
+});
+
 test('language changes persist offline and synchronize the VM default on reconnect',async t=>{
  const dir=temporary(t),{app,base,headers,bridge}=await listen(t,dir);
  let response=await fetch(base+'/api/settings',{method:'PATCH',headers,body:JSON.stringify({language:'en'})});assert.equal(response.ok,true);assert.equal(app.snapshot().settings.language,'en');assert.equal(bridge.requests.length,0);assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'controller.json'))).language,'en');
@@ -249,6 +260,14 @@ test('automatic Controller startup and provisioning reconnect preserve a deliber
  const provisioning=new FakeProvisioning(),{app,bridge}=await recoveryFixture(t,idleRecoveryState(),{provisioningFactory:()=>provisioning});
  await app.start();assert.equal(bridge.connections,1);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().worker.status,'offline');
  provisioning.emit('change',{status:'ready',running:false});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));assert.equal(bridge.connections,2);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().worker.status,'offline');assert.equal(app.snapshot().messages[0].status,'paused');
+});
+
+test('only the explicit Reconnect action authorizes updating running VM work',async t=>{
+ const state=idleRecoveryState();state.worker.status='online';const provisioning=new FakeProvisioning(),{app,bridge,base,headers}=await recoveryFixture(t,state,{provisioningFactory:()=>provisioning}),modes=[];
+ const original=bridge.connect.bind(bridge);bridge.connect=async options=>{modes.push(options.updateRunningWork);return original(options);};
+ await app.start();assert.deepEqual(modes,[false]);
+ const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);assert.deepEqual(modes,[false,true]);assert.equal(bridge.requests.length,0,'the controller does not independently pause or replay tasks');
+ provisioning.emit('change',{status:'ready',running:false});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(modes,[false,true,false]);
 });
 
 test('explicit executor recovery is blocked by fresh active work, queues, calls, leases or handover state',async t=>{

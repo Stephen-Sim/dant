@@ -15,3 +15,9 @@ Before an update restart, dant saves the current unsent chat text, reply and upl
 **View update** opens the release page for its notes and manual installer or portable downloads. Manual installation still requires exiting dant through the tray menu. If an installer cannot be verified or the current application layout does not support automatic installation, use the release page instead.
 
 A failed or rate-limited request shows a retry message rather than claiming the application is current. A failed or incomplete download cannot be installed.
+
+## Work computer updates in 0.4.7-beta.5
+
+The desktop installer preserves the running VM service. In **0.4.7-beta.5**, explicitly choosing **Settings → Work computer → Reconnect** also updates that service when its packaged source has changed. Dependencies are prepared first; the existing worker then confirms a global pause, saves its task records and ends any current call before the service is replaced. This uses the global pause operation supported by older workers, so it does not depend on their having the newer per-task Pause endpoint. Paused work remains available for explicit resume.
+
+Opening the application or recovering a lost network connection preserves busy work. Reconnecting with unchanged deployed source also leaves it running. An unconfirmed pause, control lease or execution prevents replacement. Failed activation restores the old runtime only when no new work has begun; chat, memory, skills and task records are not rolled back. A missing per-task Pause/Resume route displays service-update guidance and never silently pauses unrelated tasks.

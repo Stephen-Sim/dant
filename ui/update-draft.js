@@ -4,6 +4,8 @@ const plain=value=>value&&typeof value==='object'&&!Array.isArray(value)&&Object
 const keys=(value,allowed)=>plain(value)&&Object.keys(value).every(key=>allowed.includes(key));
 const size=value=>new TextEncoder().encode(value).length;
 const failure=()=>Error('Your message draft could not be saved. Keep the app open and try again.');
+const targetId=(value,max)=>typeof value==='string'&&value.length>0&&value.length<=max&&!/[\x00-\x20\x7f]/.test(value);
+function workReply(value){if(!keys(value,['workId','turnId','conversationId'])||!targetId(value.workId,128)||!targetId(value.turnId,256)||!targetId(value.conversationId,128))throw failure();return {workId:value.workId,turnId:value.turnId,conversationId:value.conversationId};}
 const defaultStorage=()=>{try{return globalThis.localStorage;}catch{return null;}};
 export function updateDraftScope(state){
  if(state?.mode!=='vm-controller'||state.controller?.status!=='online'||state.controller.cached===true||!uuid(state.conversationId))return null;
@@ -17,14 +19,14 @@ function payload(value){
   if(!plain(file)||!uuid(file.id)||ids.has(file.id)||typeof file.name!=='string'||!file.name||file.name.length>240||/[\x00-\x1f\x7f]/.test(file.name)||typeof file.type!=='string'||file.type.length>120||!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(file.type)||!Number.isSafeInteger(file.size)||file.size<0||file.size>10*1024*1024)throw failure();
   ids.add(file.id);return {id:file.id,name:file.name,type:file.type,size:file.size};
  });
- return {text:value.text,replyTo:value.replyTo,attachments};
+ return {text:value.text,replyTo:value.replyTo,attachments,...(value.workReply!==undefined?{workReply:workReply(value.workReply)}:{})};
 }
 export function createUpdateDraft({storage=defaultStorage(),now=Date.now,crypto=globalThis.crypto}={}){
  const digest=async scope=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(scope)))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
  let taking=null;
  function remove(expected){try{if(!storage||expected!==undefined&&storage.getItem(KEY)!==expected)return false;storage.removeItem(KEY);return storage.getItem(KEY)===null;}catch{return false;}}
  async function save(state,draft){
-  const value=payload(draft);if(!value.text&&!value.replyTo&&!value.attachments.length){if(!remove())throw failure();return null;}
+  const value=payload(draft);if(!value.text&&!value.replyTo&&!value.attachments.length&&!value.workReply){if(!remove())throw failure();return null;}
   const scope=updateDraftScope(state),at=now();if(!scope||!Number.isSafeInteger(at)||at<=0||!storage)throw failure();
   try{const receipt=crypto.randomUUID(),record={version:1,receipt,savedAt:at,scope:await digest(scope),...value},encoded=JSON.stringify(record);if(size(encoded)>MAX_BYTES)throw failure();storage.setItem(KEY,encoded);if(storage.getItem(KEY)!==encoded)throw failure();return receipt;}catch{remove();throw failure();}
  }
@@ -38,7 +40,7 @@ export function createUpdateDraft({storage=defaultStorage(),now=Date.now,crypto=
   try{
    if(raw.length>MAX_BYTES||size(raw)>MAX_BYTES)throw failure();
    const record=JSON.parse(raw),at=now();
-   if(!keys(record,['version','receipt','savedAt','scope','text','replyTo','attachments'])||record.version!==1||!uuid(record.receipt)||typeof record.scope!=='string'||!/^[a-f0-9]{64}$/.test(record.scope)||!Number.isSafeInteger(record.savedAt)||record.savedAt<=0||!Number.isSafeInteger(at)||at<record.savedAt||at-record.savedAt>TTL||!record.attachments.every(file=>keys(file,['id','name','type','size'])))throw failure();
+   if(!keys(record,['version','receipt','savedAt','scope','text','replyTo','attachments','workReply'])||record.version!==1||!uuid(record.receipt)||typeof record.scope!=='string'||!/^[a-f0-9]{64}$/.test(record.scope)||!Number.isSafeInteger(record.savedAt)||record.savedAt<=0||!Number.isSafeInteger(at)||at<record.savedAt||at-record.savedAt>TTL||!record.attachments.every(file=>keys(file,['id','name','type','size'])))throw failure();
    const value=payload(record);if(occupied||record.scope!==await digest(scope)){remove(raw);return null;}
    if(!remove(raw))return null;
    if(value.replyTo&&!state.messages?.some(message=>message.id===value.replyTo))value.replyTo=null;

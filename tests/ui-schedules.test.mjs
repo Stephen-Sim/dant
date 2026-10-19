@@ -7,8 +7,8 @@ import {createSchedules} from '../ui/schedules.js';
 const now=Date.parse('2026-10-18T00:00:00Z');
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 const item=(id,status='pending',extra={})=>({id,status,enabled:status==='pending',text:'Task '+id,at:now+86400000,timeZone:'Asia/Kuala_Lumpur',...extra});
-function fixture({items=[],online=true,language='en',zone='Asia/Kuala_Lumpur'}={}){
- const {document,Event}=parseHTML('<main id="app"></main>'),app=document.querySelector('#app'),calls=[],toasts=[],backend=structuredClone(items),state={conversationId:'conversation',settings:{language,vm:{host:'vm-one',user:'dant',port:22}},worker:{status:online?'online':'offline'},controller:{status:online?'online':'offline',cached:false},schedules:structuredClone(items)};
+function fixture({items=[],online=true,language='en',zone='Asia/Kuala_Lumpur',recurring=false}={}){
+ const {document,Event}=parseHTML('<main id="app"></main>'),app=document.querySelector('#app'),calls=[],toasts=[],backend=structuredClone(items),state={conversationId:'conversation',capabilities:{recurringSchedules:recurring},settings:{language,vm:{host:'vm-one',user:'dant',port:22}},worker:{status:online?'online':'offline'},controller:{status:online?'online':'offline',cached:false},schedules:structuredClone(items)};
  let ui,wait=null,fail=null,after=null,connected=true,id=0;
  function render(){const template=document.createElement('template');template.innerHTML=ui.renderPage();for(const textarea of template.content.querySelectorAll('textarea')){const decoder=document.createElement('div');decoder.innerHTML=textarea.textContent;textarea.textContent=decoder.textContent;}reconcile(app,template.content);ui.bind();}
  async function request(route,options={}){
@@ -26,7 +26,7 @@ function fixture({items=[],online=true,language='en',zone='Asia/Kuala_Lumpur'}={
   if(after)await after(route,options,result);return result;
  }
  ui=createSchedules({getState:()=>state,request,render,document,toast:message=>toasts.push(message),connected:()=>connected,now:()=>now,timeZone:()=>zone,getID:()=>`00000000-0000-4000-8000-${String(++id).padStart(12,'0')}`});render();
- return {ui,document,state,backend,calls,toasts,render,set wait(value){wait=value;},set fail(value){fail=value;},set after(value){after=value;},set connected(value){connected=value;},node:selector=>document.querySelector(selector),async click(selector){const node=document.querySelector(selector);assert.ok(node,'Missing '+selector);await node.onclick?.({preventDefault(){}});},input(name,value){const node=document.querySelector(`[name="${name}"]`);assert.ok(node,'Missing input '+name);node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));return node;},async submit(){const form=document.querySelector('[data-schedule-editor]');assert.ok(form);await form.onsubmit({preventDefault(){}});}};
+ return {ui,document,state,backend,calls,toasts,render,set wait(value){wait=value;},set fail(value){fail=value;},set after(value){after=value;},set connected(value){connected=value;},node:selector=>document.querySelector(selector),async click(selector){const node=document.querySelector(selector);assert.ok(node,'Missing '+selector);await node.onclick?.({preventDefault(){}});},input(name,value){const node=document.querySelector(`[name="${name}"]`);assert.ok(node,'Missing input '+name);node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));return node;},select(name,value){const node=document.querySelector(`select[name="${name}"]`);assert.ok(node,'Missing select '+name);for(const option of node.querySelectorAll('option')){if(option.value===value)option.setAttribute('selected','');else option.removeAttribute('selected');}node.dispatchEvent(new Event('input',{bubbles:true}));node.onchange?.();return node;},async submit(){const form=document.querySelector('[data-schedule-editor]');assert.ok(form);await form.onsubmit({preventDefault(){}});}};
 }
 async function draft(f,text='Check the project',at='2026-10-19T09:30'){await f.click('[data-schedule-add]');f.input('text',text);f.input('at',at);}
 
@@ -91,4 +91,61 @@ test('a stale save acknowledgement does not refresh, close the new editor, or sh
 
 test('definite mutation failures retain the draft and cancellation clears only local form state',async()=>{
  const f=fixture({items:[item('one')]});await f.click('[data-schedule-edit]');f.input('text','Keep this edit');f.fail=()=>true;await f.submit();assert.equal(f.node('[name="text"]').value,'Keep this edit');assert.equal(f.backend[0].text,'Task one');assert.equal(f.calls.length,1);await f.click('[data-schedule-cancel]');assert.equal(f.node('[data-schedule-editor]'),null);assert.equal(f.calls.length,1);
+});
+
+test('daily and weekly schedules send only cron plus priority and let the service calculate the next run',async()=>{
+ for(const language of ['en','zh']){
+  const f=fixture({recurring:true,language});await draft(f,'Repeat safely');f.select('repeat','daily');f.input('time','08:30');f.select('priority','high');assert.equal(f.node('[name="at"]'),null);assert.match(f.node('.schedule-next-run').textContent,language==='en'?/calculated/:/计算/);await f.submit();
+  assert.deepEqual(f.calls[0].body,{text:'Repeat safely',timeZone:'Asia/Kuala_Lumpur',cron:'30 8 * * *',priority:'high',clientRequestId:'00000000-0000-4000-8000-000000000001'});assert.match(f.node('.schedule-card-meta').textContent,language==='en'?/Every day · 08:30/:/每天 · 08:30/);assert.equal(f.node('[data-schedule-priority]').dataset.schedulePriority,'high');assert.match(f.node('.schedule-card-date').textContent,language==='en'?/Next run/:/下次执行/);
+  await draft(f,'Weekly work');f.select('repeat','weekly');f.input('time','18:45');f.select('weekday','0');f.select('priority','low');await f.submit();const body=f.calls.filter(call=>call.method==='POST').at(-1).body;assert.equal(body.cron,'45 18 * * 0');assert.equal(body.priority,'low');assert.equal(Object.hasOwn(body,'at'),false);
+ }
+});
+
+test('editing recurring schedules preserves their exact cron and original zone until rule controls are changed',async()=>{
+ for(const cron of ['00   09 * * *','0 9 * * 7','*/15 9-17 * JAN,MAR MON-FRI']){
+  const original=item('repeat','pending',{cron,priority:'low',timeZone:'America/New_York'}),f=fixture({recurring:true,items:[original]});await f.click('[data-schedule-edit]');assert.match(f.node('.schedule-next-run').textContent,/Next run/);f.input('text','Keep the original rule');await f.submit();assert.deepEqual(f.calls[0].body,{text:'Keep the original rule',timeZone:'America/New_York',cron,priority:'low'});assert.equal(Object.hasOwn(f.calls[0].body,'at'),false);
+ }
+ const f=fixture({recurring:true,items:[item('repeat','pending',{cron:'00   09 * * *',priority:'normal'})]});await f.click('[data-schedule-edit]');f.input('time','09:15');await f.submit();assert.equal(f.calls[0].body.cron,'15 9 * * *');
+});
+
+test('custom cron has a five-field explanation, accepts supported syntax and safely rejects malformed rules',async()=>{
+ for(const language of ['en','zh']){
+  const f=fixture({recurring:true,language});await draft(f);f.select('repeat','custom');assert.ok(f.node('#schedule-cron-help'));assert.match(f.node('#schedule-cron-help').textContent,language==='en'?/minute.*hour.*day of month.*month.*day of week/:/分钟.*小时.*日期.*月份.*星期/);
+  for(const cron of ['@daily','0 0 9 * * *','60 9 * * *','*/0 * * * *','*/61 * * * *','5/2 * * * *','0 25 * * *','0 9 * BAD *','0 9 * * MON#2','0 9 * * <script>','0 9\n* * *']){f.input('cron',cron);await f.submit();assert.equal(f.calls.length,0,cron);assert.match(f.node('.error').textContent,language==='en'?/five-field/:/五字段/);assert.equal(f.node('[name="text"]').value,'Check the project');}
+  f.input('cron','*/15 9-17 * JAN,MAR MON-FRI');await f.submit();assert.equal(f.calls[0].body.cron,'*/15 9-17 * JAN,MAR MON-FRI');assert.equal(f.document.querySelector('script'),null);
+ }
+});
+
+test('switching recurring and one-time modes never sends at and cron as competing time sources',async()=>{
+ const f=fixture({recurring:true,items:[item('repeat','pending',{cron:'0 9 * * *',priority:'high'})]});await f.click('[data-schedule-edit]');f.select('repeat','once');f.input('at','2026-10-20T11:00');await f.submit();assert.deepEqual(f.calls[0].body,{text:'Task repeat',at:Date.parse('2026-10-20T03:00:00Z'),timeZone:'Asia/Kuala_Lumpur',cron:null,priority:'high'});
+ const g=fixture({recurring:true});await draft(g);g.select('repeat','daily');g.input('time','10:00');await g.submit();assert.equal(g.calls[0].body.cron,'0 10 * * *');assert.equal(Object.hasOwn(g.calls[0].body,'at'),false);
+});
+
+test('an expired paused recurring schedule resumes its original rule without asking for another date',async()=>{
+ const f=fixture({recurring:true,items:[item('repeat','paused',{at:now-86400000,cron:'0 9 * * *',priority:'high'})]});await f.click('[data-schedule-filter="paused"]');await f.click('[data-schedule-toggle]');assert.deepEqual(f.calls[0],{route:'/schedules/repeat',method:'PATCH',body:{enabled:true}});assert.equal(f.node('[data-schedule-editor]'),null);assert.equal(f.backend[0].cron,'0 9 * * *');assert.equal(f.backend[0].priority,'high');
+});
+
+test('lost recurring create acknowledgements retain the original ID, cron and priority before applying edited rules',async()=>{
+ const f=fixture({recurring:true});await draft(f,'Original recurring work');f.select('repeat','weekly');f.input('time','09:30');f.select('weekday','1');f.select('priority','high');let lost=true;f.after=(route,options)=>{if(options.method==='POST'&&lost){lost=false;throw Error('Lost acknowledgement');}};await f.submit();assert.equal(f.backend.length,1);assert.ok(f.node('[data-schedule-editor]'));f.select('repeat','custom');f.input('cron','0 10 * * 1-5');f.select('priority','low');f.input('text','Edited recurring work');await f.submit();
+ const posts=f.calls.filter(call=>call.method==='POST');assert.equal(posts.length,2);assert.deepEqual(posts[0].body,posts[1].body);assert.equal(posts[0].body.cron,'30 9 * * 1');assert.equal(posts[0].body.priority,'high');assert.equal(f.backend.length,1);assert.equal(f.backend[0].cron,'0 10 * * 1-5');assert.equal(f.backend[0].priority,'low');assert.equal(f.backend[0].text,'Edited recurring work');assert.equal(f.calls.filter(call=>call.method==='PATCH').length,1);
+});
+
+test('old work services keep legacy one-time payloads and cannot silently downgrade recurrence or priority',async()=>{
+ for(const language of ['en','zh']){
+  const f=fixture({language});await draft(f);assert.equal(f.node('[name="priority"]').disabled,true);assert.equal(f.node('[name="repeat"] option[value="daily"]').hasAttribute('disabled'),true);assert.match(f.node('.schedule-capability-notice').textContent,language==='en'?/Update the work computer/:/更新工作电脑服务/);f.select('repeat','daily');await f.submit();assert.equal(f.calls.length,0);assert.match(f.node('.error').textContent,language==='en'?/Update/:/更新/);
+  const g=fixture({language});await draft(g);g.select('priority','high');await g.submit();assert.equal(g.calls.length,0);
+  const h=fixture({language,items:[item('repeat','pending',{cron:'0 9 * * *',priority:'high'})]});for(const action of ['edit','toggle','remove']){assert.equal(h.node(`[data-schedule-${action}]`).disabled,true);await h.click(`[data-schedule-${action}]`);}assert.equal(h.calls.length,0);
+ }
+ const f=fixture({recurring:true});await draft(f);f.select('repeat','daily');let lost=true;f.after=(route,options)=>{if(options.method==='POST'&&lost){lost=false;throw Error('lost');}};await f.submit();f.state.capabilities.recurringSchedules=false;f.render();f.select('repeat','once');await f.submit();assert.equal(f.calls.filter(call=>call.method==='POST').length,1);assert.equal(f.backend.length,1);assert.match(f.node('.error').textContent,/Update/);
+});
+
+test('recurrence drafts preserve live rule and priority controls across state updates and invalid times do not dispatch',async()=>{
+ const f=fixture({recurring:true,items:[item('other')]});await draft(f,'Retain recurring draft');f.select('repeat','weekly');f.input('time','16:25');f.select('weekday','4');f.select('priority','high');f.state.schedules.push(item('streamed'));f.render();assert.equal(f.node('[name="repeat"]').value,'weekly');assert.equal(f.node('[name="time"]').value,'16:25');assert.equal(f.node('[name="weekday"]').value,'4');assert.equal(f.node('[name="priority"]').value,'high');await f.click('[data-schedules-refresh]');assert.equal(f.node('[name="time"]').value,'16:25');f.input('time','25:99');await f.submit();assert.equal(f.calls.filter(call=>call.method==='POST').length,0);assert.match(f.node('.error').textContent,/valid time/);assert.equal(f.node('[name="text"]').value,'Retain recurring draft');
+});
+
+test('a fresh service capability rejection keeps the repeating draft and gives single-language update guidance',async()=>{
+ for(const language of ['en','zh']){
+  const f=fixture({recurring:true,language});await draft(f,'Keep my recurring instructions');f.select('repeat','weekly');f.input('time','15:20');f.select('weekday','3');f.select('priority','high');f.wait=()=>{throw Object.assign(Error('private transport details'),{code:'service_update_required'});};await f.submit();
+  assert.equal(f.backend.length,0);assert.equal(f.node('[name="text"]').value,'Keep my recurring instructions');assert.equal(f.node('[name="repeat"]').value,'weekly');assert.equal(f.node('[name="time"]').value,'15:20');assert.equal(f.node('[name="priority"]').value,'high');assert.match(f.node('.error').textContent,language==='en'?/Update the work computer/:/更新工作电脑服务/);assert.doesNotMatch(f.document.toString(),/private transport details/);
+ }
 });

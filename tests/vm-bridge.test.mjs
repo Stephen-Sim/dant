@@ -87,6 +87,24 @@ test('concurrent connects share one preparation and one SSH process', async t =>
   assert.strictEqual(one, two); assert.equal(calls.length, 1); assert.equal(bridge.connecting, null);
 });
 
+test('manual reconnect waits for an automatic connection and then performs its own authorized deployment once', async t => {
+ const {bridge,calls}=fixture(t),gate=deferred(),options=[];
+ bridge.prepare=async (_vm,value)=>{options.push(value);if(options.length===1)await gate.promise;};
+ const automatic=bridge.connect(),manual=bridge.connect({updateRunningWork:true}),secondClick=bridge.connect({updateRunningWork:true});
+ assert.deepEqual(options,[{updateRunningWork:false}]);gate.resolve();
+ await Promise.all([automatic,manual,secondClick]);
+ assert.deepEqual(options,[{updateRunningWork:false},{updateRunningWork:true}]);assert.equal(calls.length,2);assert.equal(bridge.manualConnectionPending,null);
+});
+
+test('disconnect cancels a queued explicit update instead of deploying after the user leaves', async t => {
+ const {bridge,calls}=fixture(t),gate=deferred(),options=[];
+ bridge.prepare=async (_vm,value)=>{options.push(value);await gate.promise;};
+ const automatic=bridge.connect(),manual=bridge.connect({updateRunningWork:true});bridge.disconnect();gate.resolve();
+ const results=await Promise.allSettled([automatic,manual]);
+ assert.ok(results.every(result=>result.status==='rejected'&&/cancelled/.test(result.reason.message)));
+ assert.deepEqual(options,[{updateRunningWork:false}]);assert.equal(calls.length,0);
+});
+
 test('preparation failure preserves cached history and never opens an SSH tunnel', async t => {
   const {bridge, calls} = fixture(t); bridge.cached = {messages:[{id:'retained'}]};
   bridge.prepare = async () => { throw Error('VM package is incomplete'); };
@@ -101,6 +119,21 @@ test('a busy VM defers deployment but still connects to its existing service', a
   bridge.on('event', event => events.push(event)); await bridge.connect();
   assert.equal(bridge.status, 'online'); assert.equal(calls.length, 1);
   assert.equal(events[0].type, 'notice'); assert.match(events[0].data.message, /deferred/);
+});
+
+test('only explicit reconnect carries permission to pause running work into preparation', async t => {
+  const {bridge} = fixture(t), options = [];
+  bridge.prepare = async (_vm, value) => { options.push(value); };
+  await bridge.connect(); await bridge.connect({updateRunningWork:'true'}); await bridge.connect({updateRunningWork:true});
+  assert.deepEqual(options, [{updateRunningWork:false}, {updateRunningWork:false}, {updateRunningWork:true}]);
+});
+
+test('explicit reconnect reports a refused update instead of silently connecting to an old worker', async t => {
+  const {bridge,calls} = fixture(t), events = [];
+  bridge.prepare = async () => { throw Object.assign(Error('DANT_WORK_ACTIVE'), {updateDeferred:true}); };
+  bridge.on('event', event => events.push(event));
+  await assert.rejects(bridge.connect({updateRunningWork:true}), /DANT_WORK_ACTIVE/);
+  assert.equal(bridge.status,'offline'); assert.equal(calls.length,0); assert.deepEqual(events,[]);
 });
 
 test('disconnect during preparation cancels the pending connection without starting SSH', async t => {
@@ -238,6 +271,32 @@ test('prepare merges concurrent deployment and resets its latch after failure', 
   bridge.deploy = async () => { deployments++; }; await bridge.prepare(); assert.equal(deployments, 2);
 });
 
+test('prepare forwards an exact explicit update option to deployment', async t => {
+  const {bridge}=fixture(t),options=[];
+  bridge.deploy=async (_vm,value)=>{options.push(value);};
+  await bridge.prepare(); await bridge.prepare(bridge.binding(),{updateRunningWork:'true'}); await bridge.prepare(bridge.binding(),{updateRunningWork:true});
+  assert.deepEqual(options,[{updateRunningWork:false},{updateRunningWork:false},{updateRunningWork:true}]);
+});
+
+test('an explicit preparation waits for automatic preparation and is not merged into its defer result', async t => {
+ const {bridge}=fixture(t),gate=deferred(),options=[];
+ bridge.deploy=async (_vm,value)=>{options.push(value);if(options.length===1){await gate.promise;throw Object.assign(Error('busy'),{updateDeferred:true});}};
+ const automatic=bridge.prepare(),manual=bridge.prepare(bridge.binding(),{updateRunningWork:true}),repeat=bridge.prepare(bridge.binding(),{updateRunningWork:true});
+ gate.resolve();const results=await Promise.allSettled([automatic,manual,repeat]);
+ assert.equal(results[0].status,'rejected');assert.ok(results.slice(1).every(result=>result.status==='fulfilled'));
+ assert.deepEqual(options,[{updateRunningWork:false},{updateRunningWork:true}]);assert.equal(bridge.manualPreparationPending,null);
+});
+
+test('queued explicit preparation is cancelled on close, disconnect or VM profile changes', async t => {
+ for(const action of ['close','disconnect','binding'])await t.test(action,async t=>{
+  const {bridge}=fixture(t),gate=deferred();let deployments=0;
+  bridge.deploy=async()=>{deployments++;await gate.promise;};
+  const automatic=bridge.prepare(),manual=bridge.prepare(bridge.binding(),{updateRunningWork:true});
+  if(action==='binding')bridge.binding=()=>({host:'192.0.2.99',user:'dant'});else bridge[action]();
+  gate.resolve();await automatic;await assert.rejects(manual,/connection changed/);assert.equal(deployments,1);
+ });
+});
+
 test('preparation subprocess streams bounded output and stdin without a shell', async t => {
   const {bridge, calls, children, dataDir} = fixture(t), input = path.join(dataDir, 'archive');
   fs.writeFileSync(input, 'archive bytes'); const pending = bridge.run('fixture-tar', ['--safe'], {input});
@@ -276,6 +335,14 @@ function archiveRecorder(bridge, onInstall=()=>{}) {
   };
   return {calls, migrations, manifests};
 }
+
+test('the remote installation receives a fixed update flag only for an explicitly authorized reconnect', async t => {
+  const {bridge,projectRoot}=fixture(t);resources(projectRoot);const {calls}=archiveRecorder(bridge);
+  await bridge.deploy(bridge.binding()); await bridge.deploy(bridge.binding(),{updateRunningWork:'--anything'}); await bridge.deploy(bridge.binding(),{updateRunningWork:true});
+  const commands=calls.filter(call=>call.command==='ssh').map(call=>call.args.at(-1));
+  assert.ok(commands.slice(0,2).every(command=>command.endsWith('"$stage"')));
+  assert.ok(commands[2].endsWith('"$stage" --update-running-work'));
+});
 test('deployment uses a source allowlist, preserves host data and migrates only once after confirmation', async t => {
   const {bridge, dataDir, projectRoot} = fixture(t); resources(projectRoot);
   const original = JSON.stringify({messages:[{id:'history', text:'retain this'}], settings:{vm:{host:'old', keyPath:'private path'}, language:'en'}});
