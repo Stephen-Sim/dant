@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const CORE_SOURCE_FINGERPRINT_VERSION = 2;
+export const CORE_SOURCE_FINGERPRINT_VERSION = 3;
 export const CORE_PARITY_SOURCE_FILES = Object.freeze([
   'tests/core/memory-parity.mts',
   'scripts/core/source-fingerprint.mts',
@@ -71,7 +71,7 @@ export function fingerprintCoreSources(root: string): CoreSourceFingerprint {
       resolved,
       'core',
       files,
-      (name) => name.endsWith('.go') || name === 'go.mod' || name === 'go.sum',
+      (name) => /\.(?:go|json|txt)$/.test(name) || name === 'go.mod' || name === 'go.sum',
     );
     collectSources(resolved, 'src', files, (name) => /\.(?:mts|ts|json)$/.test(name));
     requireSource(files.includes('core/go.mod') && files.includes('core/go.sum'));

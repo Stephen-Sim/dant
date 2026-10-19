@@ -535,12 +535,13 @@ const (
 	SubmissionStatusSubmitting   SubmissionStatus = "submitting"
 	SubmissionStatusConfirmed    SubmissionStatus = "confirmed"
 	SubmissionStatusUnknown      SubmissionStatus = "unknown"
+	SubmissionStatusRejected     SubmissionStatus = "rejected"
 	SubmissionStatusNotSubmitted SubmissionStatus = "not-submitted"
 )
 
 func (value SubmissionStatus) Valid() bool {
 	switch value {
-	case SubmissionStatusPreparing, SubmissionStatusSubmitting, SubmissionStatusConfirmed, SubmissionStatusUnknown, SubmissionStatusNotSubmitted:
+	case SubmissionStatusPreparing, SubmissionStatusSubmitting, SubmissionStatusConfirmed, SubmissionStatusUnknown, SubmissionStatusRejected, SubmissionStatusNotSubmitted:
 		return true
 	default:
 		return false
@@ -557,6 +558,39 @@ func (value *SubmissionStatus) UnmarshalJSON(data []byte) error {
 func (value SubmissionStatus) MarshalJSON() ([]byte, error) {
 	if !value.Valid() {
 		return nil, errors.New("invalid SubmissionStatus")
+	}
+	return json.Marshal(string(value))
+}
+
+type LiveContextStatus string
+
+const (
+	LiveContextStatusSubmitted  LiveContextStatus = "submitted"
+	LiveContextStatusCancelled  LiveContextStatus = "cancelled"
+	LiveContextStatusFailed     LiveContextStatus = "failed"
+	LiveContextStatusUnknown    LiveContextStatus = "unknown"
+	LiveContextStatusSuperseded LiveContextStatus = "superseded"
+)
+
+func (value LiveContextStatus) Valid() bool {
+	switch value {
+	case LiveContextStatusSubmitted, LiveContextStatusCancelled, LiveContextStatusFailed, LiveContextStatusUnknown, LiveContextStatusSuperseded:
+		return true
+	default:
+		return false
+	}
+}
+func (value *LiveContextStatus) UnmarshalJSON(data []byte) error {
+	var wire string
+	if err := json.Unmarshal(data, &wire); err != nil || !LiveContextStatus(wire).Valid() {
+		return errors.New("invalid LiveContextStatus")
+	}
+	*value = LiveContextStatus(wire)
+	return nil
+}
+func (value LiveContextStatus) MarshalJSON() ([]byte, error) {
+	if !value.Valid() {
+		return nil, errors.New("invalid LiveContextStatus")
 	}
 	return json.Marshal(string(value))
 }
@@ -697,6 +731,41 @@ func (value *UpdateDownloadStatus) UnmarshalJSON(data []byte) error {
 func (value UpdateDownloadStatus) MarshalJSON() ([]byte, error) {
 	if !value.Valid() {
 		return nil, errors.New("invalid UpdateDownloadStatus")
+	}
+	return json.Marshal(string(value))
+}
+
+type VoiceCallStatus string
+
+const (
+	VoiceCallStatusConnecting      VoiceCallStatus = "connecting"
+	VoiceCallStatusNegotiating     VoiceCallStatus = "negotiating"
+	VoiceCallStatusConnected       VoiceCallStatus = "connected"
+	VoiceCallStatusActive          VoiceCallStatus = "active"
+	VoiceCallStatusStopping        VoiceCallStatus = "stopping"
+	VoiceCallStatusBackground      VoiceCallStatus = "background"
+	VoiceCallStatusStopUnconfirmed VoiceCallStatus = "stop-unconfirmed"
+)
+
+func (value VoiceCallStatus) Valid() bool {
+	switch value {
+	case VoiceCallStatusConnecting, VoiceCallStatusNegotiating, VoiceCallStatusConnected, VoiceCallStatusActive, VoiceCallStatusStopping, VoiceCallStatusBackground, VoiceCallStatusStopUnconfirmed:
+		return true
+	default:
+		return false
+	}
+}
+func (value *VoiceCallStatus) UnmarshalJSON(data []byte) error {
+	var wire string
+	if err := json.Unmarshal(data, &wire); err != nil || !VoiceCallStatus(wire).Valid() {
+		return errors.New("invalid VoiceCallStatus")
+	}
+	*value = VoiceCallStatus(wire)
+	return nil
+}
+func (value VoiceCallStatus) MarshalJSON() ([]byte, error) {
+	if !value.Valid() {
+		return nil, errors.New("invalid VoiceCallStatus")
 	}
 	return json.Marshal(string(value))
 }

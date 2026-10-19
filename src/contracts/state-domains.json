@@ -112,7 +112,15 @@
       "Submitting": "submitting",
       "Confirmed": "confirmed",
       "Unknown": "unknown",
+      "Rejected": "rejected",
       "NotSubmitted": "not-submitted"
+    },
+    "LiveContextStatus": {
+      "Submitted": "submitted",
+      "Cancelled": "cancelled",
+      "Failed": "failed",
+      "Unknown": "unknown",
+      "Superseded": "superseded"
     },
     "TaskPriority": {
       "High": "high",
@@ -149,6 +157,15 @@
       "Ready": "ready",
       "Installing": "installing",
       "DownloadFailed": "downloadFailed"
+    },
+    "VoiceCallStatus": {
+      "Connecting": "connecting",
+      "Negotiating": "negotiating",
+      "Connected": "connected",
+      "Active": "active",
+      "Stopping": "stopping",
+      "Background": "background",
+      "StopUnconfirmed": "stop-unconfirmed"
     },
     "VmPowerState": {
       "Running": "running",

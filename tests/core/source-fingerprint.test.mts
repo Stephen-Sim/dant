@@ -31,10 +31,10 @@ test('source fingerprints are deterministic and include nested Go sources and fi
     const original = fingerprintCoreSources(f.root);
     assert.match(original.digest, /^[0-9a-f]{64}$/);
     assert.equal(original.algorithm, 'sha256');
-    assert.equal(original.version, 2);
+    assert.equal(original.version, 3);
     assert.equal(original.files, CORE_PARITY_SOURCE_FILES.length + 6);
     assert.deepEqual(fingerprintCoreSources(f.root), original);
-    f.write('core/ignored.txt', 'not a maintained Go input');
+    f.write('core/ignored.bin', 'not a maintained Go input');
     assert.deepEqual(fingerprintCoreSources(f.root), original);
     f.write('core/internal/memory/reader.go', 'package memory\n// changed\n');
     assert.notEqual(fingerprintCoreSources(f.root).digest, original.digest);
@@ -42,6 +42,26 @@ test('source fingerprints are deterministic and include nested Go sources and fi
     assert.deepEqual(fingerprintCoreSources(f.root), original);
     f.write('scripts/core/shadow-client.mts', 'changed client');
     assert.notEqual(fingerprintCoreSources(f.root).digest, original.digest);
+  } finally {
+    f.close();
+  }
+});
+
+test('Go embedded text and JSON assets participate in source provenance', () => {
+  const f = fixture();
+  try {
+    const original = fingerprintCoreSources(f.root);
+    f.write('core/internal/history/data/reactions.txt', 'fixture reactions\n');
+    const textAsset = fingerprintCoreSources(f.root);
+    assert.equal(textAsset.files, original.files + 1);
+    assert.notEqual(textAsset.digest, original.digest);
+    f.write('core/internal/history/data/reactions.txt', 'changed reactions\n');
+    assert.notEqual(fingerprintCoreSources(f.root).digest, textAsset.digest);
+    f.write('core/internal/i18n/language-registry.json', '[{"code":"fixture"}]\n');
+    const jsonAsset = fingerprintCoreSources(f.root);
+    assert.equal(jsonAsset.files, original.files + 2);
+    f.write('core/internal/i18n/language-registry.json', '[{"code":"changed"}]\n');
+    assert.notEqual(fingerprintCoreSources(f.root).digest, jsonAsset.digest);
   } finally {
     f.close();
   }

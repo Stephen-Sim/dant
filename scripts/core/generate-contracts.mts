@@ -187,6 +187,10 @@ export async function generateContracts(root: string, check: boolean): Promise<v
     ],
     ['core/internal/contracts/states.go', formatted.stdout],
     ['core/internal/contracts/core_protocol.go', formattedProtocol.stdout],
+    [
+      'core/internal/config/assets/protocol.json',
+      await fs.readFile(path.join(root, 'src/config/protocol.json'), 'utf8'),
+    ],
   ] as const;
   for (const [relative, contents] of outputs) {
     const destination = path.join(root, relative);

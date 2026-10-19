@@ -148,9 +148,19 @@ export const SubmissionStatus = Object.freeze({
   Submitting: 'submitting',
   Confirmed: 'confirmed',
   Unknown: 'unknown',
+  Rejected: 'rejected',
   NotSubmitted: 'not-submitted',
 } as const);
 export type SubmissionStatusValue = (typeof SubmissionStatus)[keyof typeof SubmissionStatus];
+
+export const LiveContextStatus = Object.freeze({
+  Submitted: 'submitted',
+  Cancelled: 'cancelled',
+  Failed: 'failed',
+  Unknown: 'unknown',
+  Superseded: 'superseded',
+} as const);
+export type LiveContextStatusValue = (typeof LiveContextStatus)[keyof typeof LiveContextStatus];
 
 export const TaskPriority = Object.freeze({
   High: 'high',
@@ -196,6 +206,17 @@ export const UpdateDownloadStatus = Object.freeze({
 } as const);
 export type UpdateDownloadStatusValue =
   (typeof UpdateDownloadStatus)[keyof typeof UpdateDownloadStatus];
+
+export const VoiceCallStatus = Object.freeze({
+  Connecting: 'connecting',
+  Negotiating: 'negotiating',
+  Connected: 'connected',
+  Active: 'active',
+  Stopping: 'stopping',
+  Background: 'background',
+  StopUnconfirmed: 'stop-unconfirmed',
+} as const);
+export type VoiceCallStatusValue = (typeof VoiceCallStatus)[keyof typeof VoiceCallStatus];
 
 export const VmPowerState = Object.freeze({
   Running: 'running',
