@@ -56,7 +56,7 @@ interface DetailRecord {
   plan?: unknown;
   projectContext?: unknown;
   unknownOutcome?: unknown;
-  submission?: string;
+  submission?: string | null;
   continuation?: { invalid?: unknown; dispatch?: { phase?: unknown } };
 }
 interface DetailState {

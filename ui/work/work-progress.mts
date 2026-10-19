@@ -228,7 +228,9 @@ const compareProgress = (a: ProgressItem, b: ProgressItem) =>
   priorityOrder[a.progressPriority] - priorityOrder[b.progressPriority] ||
   Number(a.progressCompleted) - Number(b.progressCompleted) ||
   (b.time || 0) - (a.time || 0);
-const unconfirmed = (value: { unknownOutcome?: unknown; submission?: string } | null | undefined) =>
+const unconfirmed = (
+  value: { unknownOutcome?: unknown; submission?: string | null } | null | undefined,
+) =>
   value?.unknownOutcome === true ||
   value?.submission === SubmissionStatus.Unknown ||
   value?.submission === SubmissionStatus.Submitting;

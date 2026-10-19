@@ -85,7 +85,7 @@ export function renderUsageSettings({
           ),
         )
       : tr.missing;
-  const metrics = (values: UsageCounters | undefined, kind: string) =>
+  const metrics = (values: UsageCounters | null | undefined, kind: string) =>
     `<div class="usage-metrics" data-usage-${kind}>${fields
       .filter((field) => kind !== 'api' || field !== 'reasoningOutputTokens')
       .map(

@@ -38,9 +38,9 @@ export interface TelegramStatus {
   delivery?: {
     failed: number;
     unknown: number;
-    lastIssue?: { status: string; reason?: string; at?: number } | null;
+    lastIssue?: { status: string; reason?: string; at?: number | null } | null;
   };
-  sync?: TelegramSync;
+  sync?: Partial<TelegramSync>;
 }
 export interface TelegramPairing {
   code: string;
@@ -51,7 +51,7 @@ export interface TelegramPairing {
 export interface RealtimeStatus {
   provider?: string;
   available?: boolean;
-  key?: { configured?: boolean; source?: string };
+  key?: { configured?: boolean; source?: string | null };
   subscription?: { available?: boolean };
   api?: { available?: boolean };
 }
@@ -71,7 +71,7 @@ export interface ControllerState extends UiConnection {
 export interface VmProvider {
   id: string;
   available: boolean;
-  reason?: string;
+  reason?: string | null;
 }
 export interface VmProviderInfo {
   provider?: string | null;
@@ -82,9 +82,9 @@ export interface ProvisioningState {
   running?: boolean;
   provider?: string | null;
   stage?: string;
-  connection?: VmSettings;
+  connection?: VmSettings | null;
   availableProviders?: VmProvider[];
-  error?: string;
+  error?: string | null;
 }
 export interface AppState extends UiState {
   messages: NonNullable<UiState['messages']>;

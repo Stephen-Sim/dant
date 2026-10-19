@@ -146,18 +146,18 @@ const message = objectOf<ChatMessage>({
   ),
   replyTo: optional(nullable(string)),
   reactions: optional(strings),
-  assistantReaction: optional(string),
+  assistantReaction: optional(nullable(string)),
   receivedAt: optional(number),
-  executorConfirmedAt: optional(number),
+  executorConfirmedAt: optional(nullable(number)),
   visibleAttachmentIds: optional(strings),
   seconds: optional(number),
   error: unknownValue,
   unknownOutcome: optional(boolean),
-  submission: optional(string),
+  submission: optional(nullable(string)),
   progressPriority: optional(priority),
   progressCompleted: optional(boolean),
   progressDismissed: optional(boolean),
-  progressDismissedAt: optional(number),
+  progressDismissedAt: optional(nullable(number)),
   workReply: optional(replyTarget),
 });
 const workRecord = objectOf<UiWorkRecord>({
@@ -177,16 +177,16 @@ const workRecord = objectOf<UiWorkRecord>({
     isEnumValue(SubmissionStatus, value),
   ),
   continuation: optional(continuation),
-  messageId: optional(string),
+  messageId: optional(nullable(string)),
   provisional: optional(boolean),
-  progressDismissedAt: optional(number),
-  pauseReason: optional(string),
+  progressDismissedAt: optional(nullable(number)),
+  pauseReason: optional(nullable(string)),
   projectContext: unknownValue,
 });
 const completion = objectOf<UiCompletion>({
   id: optional(string),
   turnId: string,
-  taskId: optional(string),
+  taskId: optional(nullable(string)),
   messageIds: optional(strings),
   at: optional(number),
   work: optional(
@@ -198,9 +198,9 @@ const completion = objectOf<UiCompletion>({
     }),
   ),
   progressPriority: optional(priority),
-  progressDismissedAt: optional(number),
+  progressDismissedAt: optional(nullable(number)),
   unknownOutcome: optional(boolean),
-  submission: optional(string),
+  submission: optional(nullable(string)),
   status: optional((value): value is NonNullable<UiCompletion['status']> =>
     isEnumValue(ChatTaskStatus, value),
   ),
@@ -282,9 +282,11 @@ const settings = objectOf<AppSettings>({
   ),
 });
 const telegramSync = objectOf<NonNullable<TelegramStatus['sync']>>({
-  forwardMode: (value): value is 'unread' | 'all' => value === 'unread' || value === 'all',
-  combineReplies: boolean,
-  readState: (value): value is 'independent' => value === 'independent',
+  forwardMode: optional(
+    (value): value is 'unread' | 'all' => value === 'unread' || value === 'all',
+  ),
+  combineReplies: optional(boolean),
+  readState: optional((value): value is 'independent' => value === 'independent'),
 });
 const identifier = (value: unknown): value is string | number => string(value) || number(value);
 export const telegram = objectOf<TelegramStatus>({
@@ -310,10 +312,10 @@ export const telegram = objectOf<TelegramStatus>({
       unknown: number,
       lastIssue: optional(
         nullable(
-          objectOf<{ status: string; reason?: string; at?: number }>({
+          objectOf<{ status: string; reason?: string; at?: number | null }>({
             status: string,
             reason: optional(string),
-            at: optional(number),
+            at: optional(nullable(number)),
           }),
         ),
       ),
@@ -327,7 +329,7 @@ const serviceUpdate = (value: unknown): value is UiServiceUpdate =>
   typeof value.confirmed === 'boolean' &&
   typeof value.targetVersion === 'string' &&
   (typeof value.runningVersion === 'string' || value.runningVersion === null) &&
-  typeof value.reason === 'string';
+  (typeof value.reason === 'string' || value.reason === null);
 const connection = (value: unknown): value is WorkerState['status'] =>
   isEnumValue(ConnectionStatus, value);
 const worker = objectOf<WorkerState>({
@@ -351,9 +353,9 @@ const worker = objectOf<WorkerState>({
       provider: optional(string),
       available: optional(boolean),
       key: optional(
-        objectOf<{ configured?: boolean; source?: string }>({
+        objectOf<{ configured?: boolean; source?: string | null }>({
           configured: optional(boolean),
-          source: optional(string),
+          source: optional(nullable(string)),
         }),
       ),
       subscription: optional(objectOf<{ available?: boolean }>({ available: optional(boolean) })),
@@ -369,7 +371,11 @@ const controller = objectOf<ControllerState>({
   updatesPaused: optional(boolean),
   serviceUpdateBusy: optional(boolean),
 });
-const provider = objectOf<VmProvider>({ id: string, available: boolean, reason: optional(string) });
+const provider = objectOf<VmProvider>({
+  id: string,
+  available: boolean,
+  reason: optional(nullable(string)),
+});
 export const providerInfo = objectOf<VmProviderInfo>({
   provider: optional(nullable(string)),
   availableProviders: arrayOf(provider),
@@ -379,9 +385,9 @@ export const provisioning = objectOf<ProvisioningState>({
   running: optional(boolean),
   provider: optional(nullable(string)),
   stage: optional(string),
-  connection: optional(vmSettings),
+  connection: optional(nullable(vmSettings)),
   availableProviders: optional(arrayOf(provider)),
-  error: optional(string),
+  error: optional(nullable(string)),
 });
 const counters = objectOf<UsageCounters>({
   inputTokens: optional(nullable(number)),
@@ -391,13 +397,13 @@ const counters = objectOf<UsageCounters>({
   totalTokens: optional(nullable(number)),
   at: optional(number),
 });
-const usageSource = objectOf<{
-  available?: boolean;
-  totals?: UsageCounters;
-  lastResponse?: UsageCounters;
-}>({ available: optional(boolean), totals: optional(counters), lastResponse: optional(counters) });
+const usageSource = objectOf<NonNullable<UsageSnapshot['subscription']>>({
+  available: optional(boolean),
+  totals: optional(nullable(counters)),
+  lastResponse: optional(nullable(counters)),
+});
 const usage = objectOf<UsageSnapshot>({
-  recordedSince: optional(number),
+  recordedSince: optional(nullable(number)),
   subscription: optional(usageSource),
   apiVoice: optional(usageSource),
   activity: optional(

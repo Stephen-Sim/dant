@@ -33,7 +33,7 @@ export interface ProgressMessage {
   receipt?: { readAt?: number | null };
   visibleAt?: number | null;
   unknownOutcome?: unknown;
-  submission?: string;
+  submission?: string | null;
   progressPriority?: unknown;
   progressCompleted?: boolean;
   progressDismissedAt?: unknown;
@@ -58,7 +58,7 @@ export interface ProgressRecord {
   executionEndedAt?: unknown;
   plan?: ProgressPlan | null;
   unknownOutcome?: unknown;
-  submission?: string;
+  submission?: string | null;
   progressPriority?: unknown;
   progressDismissedAt?: unknown;
   continuation?: {
@@ -70,7 +70,7 @@ export interface ProgressRecord {
     dispatch?: { id?: string; threadId?: string; phase?: unknown };
   };
   provisional?: boolean;
-  pauseReason?: string;
+  pauseReason?: string | null;
 }
 export interface ProgressActive {
   messageId?: string | null;
@@ -93,13 +93,13 @@ export interface ProgressActive {
 export interface ProgressCompletion {
   id?: string;
   turnId: string;
-  taskId?: string;
+  taskId?: string | null;
   messageIds?: string[];
   at?: unknown;
   work?: { source?: string; status?: unknown; updatedAt?: unknown };
   status?: unknown;
   unknownOutcome?: unknown;
-  submission?: string;
+  submission?: string | null;
   progressPriority?: unknown;
   progressDismissedAt?: unknown;
 }
@@ -148,7 +148,7 @@ const message = objectOf<ProgressMessage>({
   visibleAt: optional(nullable(number)),
   receipt: optional(objectOf<{ readAt?: number | null }>({ readAt: optional(nullable(number)) })),
   unknownOutcome: unknownValue,
-  submission: optional(string),
+  submission: optional(nullable(string)),
   progressPriority: unknownValue,
   progressCompleted: optional(boolean),
   progressDismissedAt: unknownValue,
@@ -194,12 +194,12 @@ const record = objectOf<ProgressRecord>({
   executionEndedAt: unknownValue,
   plan: optional(nullable(plan)),
   unknownOutcome: unknownValue,
-  submission: optional(string),
+  submission: optional(nullable(string)),
   progressPriority: unknownValue,
   progressDismissedAt: unknownValue,
   continuation: optional(continuation),
   provisional: optional(boolean),
-  pauseReason: optional(string),
+  pauseReason: optional(nullable(string)),
 });
 const active = objectOf<ProgressActive>({
   messageId: optional(nullable(string)),
@@ -222,7 +222,7 @@ const active = objectOf<ProgressActive>({
 const completion = objectOf<ProgressCompletion>({
   id: optional(string),
   turnId: string,
-  taskId: optional(string),
+  taskId: optional(nullable(string)),
   messageIds: optional(strings),
   at: unknownValue,
   work: optional(
@@ -234,7 +234,7 @@ const completion = objectOf<ProgressCompletion>({
   ),
   status: unknownValue,
   unknownOutcome: unknownValue,
-  submission: optional(string),
+  submission: optional(nullable(string)),
   progressPriority: unknownValue,
   progressDismissedAt: unknownValue,
 });

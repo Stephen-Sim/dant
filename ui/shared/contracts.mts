@@ -76,18 +76,18 @@ export interface ChatMessage {
   receipt?: MessageReceipt;
   replyTo?: string | null;
   reactions?: string[];
-  assistantReaction?: string;
+  assistantReaction?: string | null;
   receivedAt?: number;
-  executorConfirmedAt?: number;
+  executorConfirmedAt?: number | null;
   visibleAttachmentIds?: string[];
   seconds?: number;
   error?: unknown;
   unknownOutcome?: boolean;
-  submission?: string;
+  submission?: string | null;
   progressPriority?: TaskPriorityValue;
   progressCompleted?: boolean;
   progressDismissed?: boolean;
-  progressDismissedAt?: number;
+  progressDismissedAt?: number | null;
   workReply?: WorkReplyTarget;
 }
 export interface VmSettings {
@@ -109,9 +109,17 @@ export type TokenField =
   'inputTokens' | 'cachedInputTokens' | 'outputTokens' | 'reasoningOutputTokens' | 'totalTokens';
 export type UsageCounters = Partial<Record<TokenField, number | null>> & { at?: number };
 export interface UsageSnapshot {
-  recordedSince?: number;
-  subscription?: { available?: boolean; totals?: UsageCounters; lastResponse?: UsageCounters };
-  apiVoice?: { available?: boolean; totals?: UsageCounters; lastResponse?: UsageCounters };
+  recordedSince?: number | null;
+  subscription?: {
+    available?: boolean;
+    totals?: UsageCounters | null;
+    lastResponse?: UsageCounters | null;
+  };
+  apiVoice?: {
+    available?: boolean;
+    totals?: UsageCounters | null;
+    lastResponse?: UsageCounters | null;
+  };
   activity?: {
     timeZone?: string;
     days?: ({ date: string } & Partial<Record<UsageProvider, UsageCounters | null>>)[];
@@ -123,7 +131,7 @@ export interface UiServiceUpdate {
   confirmed: boolean;
   targetVersion: string;
   runningVersion: string | null;
-  reason: string;
+  reason: string | null;
 }
 export interface UiConnection {
   status?: string;
@@ -153,23 +161,23 @@ export interface UiWorkRecord extends Partial<Omit<WorkRecord, 'status' | 'plan'
         steps?: NonNullable<WorkRecord['plan']>['steps'];
       })
     | null;
-  messageId?: string;
+  messageId?: string | null;
   provisional?: boolean;
-  progressDismissedAt?: number;
-  pauseReason?: string;
+  progressDismissedAt?: number | null;
+  pauseReason?: string | null;
   projectContext?: unknown;
 }
 export interface UiCompletion {
   id?: string;
   turnId: string;
-  taskId?: string;
+  taskId?: string | null;
   messageIds?: string[];
   at?: number;
   work?: { source: 'voice' | 'chat'; status: TaskStatusValue; updatedAt?: number };
   progressPriority?: TaskPriorityValue;
-  progressDismissedAt?: number;
+  progressDismissedAt?: number | null;
   unknownOutcome?: boolean;
-  submission?: string;
+  submission?: string | null;
   status?: TaskStatusValue;
 }
 export interface UiState {

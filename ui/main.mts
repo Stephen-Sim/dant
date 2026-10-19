@@ -1952,7 +1952,7 @@ function telegramForwarding(status = currentTelegram()) {
   const sync = status?.sync,
     supported =
       sync &&
-      ['unread', 'all'].includes(sync.forwardMode) &&
+      (sync.forwardMode === 'unread' || sync.forwardMode === 'all') &&
       typeof sync.combineReplies === 'boolean' &&
       sync.readState === 'independent';
   return {
