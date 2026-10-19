@@ -3390,7 +3390,8 @@ async function action(a: string) {
     return;
   }
   if (a === 'progress') {
-    openProgress();
+    if (progressPanel.visible) progressPanel.close();
+    else openProgress();
     return;
   }
   if (a === 'use-existing') {

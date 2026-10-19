@@ -6992,6 +6992,9 @@ textarea:disabled {
   align-items: center;
   gap: 5px;
 }
+.call-log > .message-actions {
+  order: -1;
+}
 .call-log:hover > .message-actions,
 .call-log:focus-within > .message-actions {
   opacity: 1;

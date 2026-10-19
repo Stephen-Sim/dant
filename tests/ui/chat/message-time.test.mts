@@ -255,6 +255,47 @@ test('day and long-gap separators remain visible alongside the call duration', (
   assert.ok(f.document.querySelector<HTMLButtonElement>('[data-key="time-tomorrow"]'));
 });
 
+test('call history menus stay beside the capsule without occupying its inline-end edge', () => {
+  const rules = new Map<string, Map<string, string>>();
+  postcss
+    .parse(fs.readFileSync(new URL('../../../ui/style.css', import.meta.url), 'utf8'))
+    .walkRules((rule) => {
+      let values = rules.get(rule.selector);
+      if (!values) rules.set(rule.selector, (values = new Map()));
+      rule.walkDecls((declaration) => {
+        values.set(declaration.prop, declaration.value);
+      });
+    });
+  for (const [language, direction] of [
+    ['en', 'ltr'],
+    ['ar', 'rtl'],
+  ]) {
+    const f = fixture(language);
+    f.document.documentElement.setAttribute('dir', defined(direction));
+    f.state.messages = [{ id: 'call-exact', kind: 'call', seconds: 75, time: at }];
+    f.render();
+    const call = defined(f.document.querySelector('.call-log')),
+      capsule = defined(call.querySelector(':scope > span')),
+      toolbar = defined(call.querySelector(':scope > .message-actions')),
+      menu = defined(toolbar.querySelector<HTMLButtonElement>('[data-message-more]'));
+    assert.match(capsule.textContent, /1:15/);
+    assert.equal(capsule.querySelector('button'), null);
+    assert.equal(toolbar.getAttribute('role'), 'toolbar');
+    assert.equal(menu.dataset.messageMore, 'call-exact');
+    assert.equal(menu.getAttribute('aria-haspopup'), 'menu');
+    assert.ok(menu.getAttribute('aria-label'));
+    // Both directions use the same inline-end alignment. An invisible menu
+    // must precede the capsule in flex order rather than reserve its edge.
+    assert.equal(rules.get('.call-log')?.get('justify-content'), 'flex-end');
+    assert.ok(
+      Number(rules.get('.call-log > .message-actions')?.get('order') ?? 0) <
+        Number(rules.get('.call-log > span')?.get('order') ?? 0),
+    );
+    assert.equal(rules.get('.call-log > .message-actions')?.has('left'), false);
+    assert.equal(rules.get('.call-log > .message-actions')?.has('right'), false);
+  }
+});
+
 test('missing and invalid times remain blank without fabricating a current or epoch timestamp', () => {
   const f = fixture();
   f.state.messages = [undefined, null, '', '   ', false, NaN, Infinity, 'not-a-date', {}, []].map(

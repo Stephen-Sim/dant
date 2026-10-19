@@ -11,9 +11,14 @@ import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { sourceDeclaration, compactCss } from '../../support/source-fixtures.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';
-import { workProgress, renderWorkEntry } from '../../../ui/work/work-progress.mts';
+import {
+  workProgress,
+  renderWorkEntry,
+  renderWorkSummary,
+} from '../../../ui/work/work-progress.mts';
+import { TaskStatus } from '../../../src/contracts/states.mts';
 import { createCallSubtitles } from '../../../ui/call/call-subtitles.mts';
-import type { CallState } from '../../../ui/shared/contracts.mts';
+import type { CallState, UiActiveTask } from '../../../ui/shared/contracts.mts';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8');
 function fixture() {
@@ -25,8 +30,8 @@ function fixture() {
       messages: [],
       settings: { language: 'en' },
       worker: { status: 'online' },
-      active: null,
-      queue: [],
+      active: null as UiActiveTask | null,
+      queue: [] as string[],
       call: null as CallState | null,
     },
     c = uiEntrypointFixture({
@@ -134,7 +139,9 @@ function fixture() {
       };
     });
     document.querySelectorAll<HTMLButtonElement>('[data-action="progress"]').forEach((node) => {
-      node.onclick = () => c.openProgress();
+      node.onclick = () => {
+        void c.action('progress');
+      };
     });
     defined(c.progressPanel).bind();
   };
@@ -261,6 +268,54 @@ test('legacy progress opens use the dock and ordinary dialogs still render and c
   assert.equal(f.document.querySelector('[aria-modal="true"]'), null);
   assert.ok(f.document.querySelector('[data-progress-panel]'));
   assert.ok(f.document.querySelector('.computer-panel'));
+});
+
+test('the Working bar and header toggle the same dock without changing active work, queue, draft or chat scroll', () => {
+  const f = fixture();
+  const active: UiActiveTask = {
+    messageId: 'task-fixture',
+    turnId: 'turn-fixture',
+    source: 'chat',
+    status: TaskStatus.Running,
+  };
+  f.c.state.active = active;
+  f.c.state.queue = ['queued-fixture'];
+  const renderChat = f.c.renderChat;
+  f.c.renderChat = () =>
+    renderWorkSummary(workProgress(f.c.state, { language: 'en', connected: true })) + renderChat();
+  let requests = 0;
+  f.c.api = f.c.post = async () => {
+    requests++;
+    throw Error('A dock toggle must not submit work');
+  };
+  f.c.render();
+  const summary = defined(f.document.querySelector<HTMLButtonElement>('.work-summary'));
+  const header = defined(f.document.querySelector<HTMLButtonElement>('.header-work'));
+  const messages = defined(f.document.querySelector<HTMLElement>('#messages'));
+  const composer = defined(f.document.querySelector<HTMLTextAreaElement>('#composer'));
+  const computer = f.document.querySelector('.computer-panel');
+  composer.value = 'Keep this unsent draft';
+  messages.scrollTop = 180;
+  summary.focus();
+  summary.click();
+  assert.equal(defined(f.c.progressPanel).visible, true);
+  assert.equal(summary.getAttribute('aria-expanded'), 'true');
+  summary.click();
+  assert.equal(defined(f.c.progressPanel).visible, false);
+  assert.equal(summary.getAttribute('aria-expanded'), 'false');
+  assert.equal(f.focused, summary);
+  header.click();
+  assert.equal(defined(f.c.progressPanel).visible, true);
+  header.click();
+  assert.equal(defined(f.c.progressPanel).visible, false);
+  assert.equal(f.c.state.active, active);
+  assert.deepEqual(f.c.state.queue, ['queued-fixture']);
+  assert.equal(requests, 0);
+  assert.equal(f.document.querySelector('#messages'), messages);
+  assert.equal(f.document.querySelector('#composer'), composer);
+  assert.equal(f.document.querySelector('.computer-panel'), computer);
+  assert.equal(composer.value, 'Keep this unsent draft');
+  assert.equal(messages.scrollTop, 180);
 });
 
 test('header keyboard order is call, work progress, computer and details; responsive dock styles never overlay chat', () => {
