@@ -1,6 +1,6 @@
 # 诊断日志与保留期限
 
-[English](../diagnostics.md) · 简体中文
+[English](../diagnostics.md) · Chinese
 
 dant 在 Windows Controller 和 Ubuntu Worker 上分别记录结构化诊断。内容包括连接和任务状态、超时类别、通话关闭原因、标识符、计数和耗时；不包含对话正文、截图像素、文件内容、请求头或凭据值。
 

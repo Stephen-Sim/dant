@@ -1,6 +1,6 @@
 # CI and Windows builds
 
-English · [简体中文](zh-CN/ci.md)
+English · [Chinese](zh-CN/ci.md)
 
 Cross-platform checks and Windows packaging are separate, following the division of responsibilities in [Codex workflows](https://github.com/openai/codex/blob/main/.github/workflows/README.md). Both workflows run on pushes to every branch, pull requests, and manual dispatch. `master` is the default branch. Tag builds are not cancelled by later runs.
 

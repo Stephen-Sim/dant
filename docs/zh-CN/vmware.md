@@ -1,6 +1,6 @@
 # VMware Workstation
 
-[English](../vmware.md) · 简体中文
+[English](../vmware.md) · Chinese
 
 dant 可以复用 Windows 上已安装的 VMware Workstation，自动创建 Ubuntu 工作电脑。这与通过 SSH 连接已有 Ubuntu VM 是两条路径：导入已有配置不会创建磁盘、转换 VM 或更改虚拟化软件。
 

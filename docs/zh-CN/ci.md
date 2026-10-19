@@ -1,6 +1,6 @@
 # CI 与 Windows 构建
 
-[English](../ci.md) · 简体中文
+[English](../ci.md) · Chinese
 
 参考 [Codex 的工作流分工](https://github.com/openai/codex/blob/main/.github/workflows/README.md)，本项目将跨平台检查与 Windows 打包分开。两个工作流都响应所有分支的 push、pull request 和手动运行，默认分支为 `master`。标签构建不会被后续运行取消。
 

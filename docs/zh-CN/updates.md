@@ -1,6 +1,6 @@
 # 版本与更新
 
-[English](../updates.md) · 简体中文
+[English](../updates.md) · Chinese
 
 打开**设置 → 关于 dant**，可查看当前应用版本；VM 断开时仍能显示版本号。
 

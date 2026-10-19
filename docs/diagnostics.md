@@ -1,6 +1,6 @@
 # Diagnostics and log retention
 
-English · [简体中文](zh-CN/diagnostics.md)
+English · [Chinese](zh-CN/diagnostics.md)
 
 dant records structured diagnostics separately on the Windows Controller and Ubuntu Worker. Logs contain connection and task state changes, timeout categories, call shutdown reasons, identifiers, counts and timings. Conversation text, screenshot pixels, file contents, request headers and credential values are not included.
 

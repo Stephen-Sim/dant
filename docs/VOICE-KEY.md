@@ -1,6 +1,6 @@
 # Optional voice API key
 
-English · [简体中文](zh-CN/VOICE-KEY.md)
+English · [Chinese](zh-CN/VOICE-KEY.md)
 
 This document describes dant's optional, separate API voice channel. Default calls use ChatGPT sign-in, Codex Realtime V3, and WebRTC without a separate API key, subject to the subscription allowance. A real signed-in account passed silent WebRTC connection tests; that does not establish microphone or speaker acceptance. See the official [voice documentation](https://learn.chatgpt.com/docs/features/voice) and [usage documentation](https://learn.chatgpt.com/docs/pricing).
 

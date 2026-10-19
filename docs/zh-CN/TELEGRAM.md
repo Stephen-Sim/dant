@@ -1,6 +1,6 @@
 # Telegram 接入
 
-[English](../TELEGRAM.md) · 简体中文
+[English](../TELEGRAM.md) · Chinese
 
 Telegram 网关在 Ubuntu VM 内运行，与桌面共用持续对话和串行任务引擎，默认关闭。VM 在线时，关闭 Windows 窗口后仍能收消息。VM 需要能访问 Telegram 的 HTTPS 接口，不需要开放公网入站端口。
 

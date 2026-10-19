@@ -1,6 +1,6 @@
 # Windows / VM 验证记录
 
-[English](../verification.md) · 简体中文
+[English](../verification.md) · Chinese
 
 日期：2026-10-19，Asia/Kuala_Lumpur。此记录区分自动协议测试和真实设备测试，不把模拟执行器结果当作真实语音验收。下面的历史检查点保留当时的结果及部署状态。
 

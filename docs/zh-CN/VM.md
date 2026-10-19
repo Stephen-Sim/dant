@@ -1,6 +1,6 @@
 # Windows VM 初始化与排障
 
-[English](../VM.md) · 简体中文
+[English](../VM.md) · Chinese
 
 dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Node 服务通过 stdio 启动，桌面桥只供 VM 内访问。新建虚拟机默认 4 个 CPU、6 GB 内存、40 GB 磁盘；Hyper-V 使用 Default Switch，VMware Workstation 使用 NAT。两者采用相同的 Worker 边界和 SSH 连接。
 

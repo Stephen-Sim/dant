@@ -1,6 +1,6 @@
 # Version and updates
 
-English · [简体中文](zh-CN/updates.md)
+English · [Chinese](zh-CN/updates.md)
 
 Open **Settings → About dant** to see the current application version. The version remains visible when the VM is disconnected.
 

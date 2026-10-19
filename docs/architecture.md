@@ -1,6 +1,6 @@
 # dant Windows architecture
 
-English · [简体中文](zh-CN/architecture.md)
+English · [Chinese](zh-CN/architecture.md)
 
 This implementation follows the supplied Mac/UTM architecture and 15 reference screens. Windows substitutes Hyper-V, AMD64 Ubuntu, OpenSSH, and a native desktop host while preserving responsibility boundaries.
 
