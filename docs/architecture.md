@@ -87,11 +87,11 @@ sequenceDiagram
   participant Tool as Tool / VM desktop
   Input->>Engine: Authorized input with stable identity
   Engine->>Store: Save input and queued state
-  Engine->>Engine: Acquire execution slot; prepare attachments / context
+  Engine->>Engine: Acquire execution slot, prepare attachments / context
   Engine->>Memory: Retrieve scoped references for this input
   Memory-->>Engine: Bounded redacted excerpts
   Engine->>Store: Save submission intent
-  Engine->>Codex: thread/start or resume; turn/start
+  Engine->>Codex: thread/start or resume, turn/start
   Codex-->>Engine: Actual threadId / turnId acknowledgment
   Engine->>Store: Bind the acknowledged owner
   loop Reason, act and observe
@@ -114,7 +114,7 @@ A durable `workId` survives turns. `task_plan` records actual steps; `task_list`
 ```mermaid
 stateDiagram-v2
   [*] --> running: Execution acknowledged
-  running --> continuing: Turn ended; work unfinished
+  running --> continuing: Turn ended, work unfinished
   continuing --> running: Safe continuation acknowledged
   running --> waiting_user: Actual input blocker
   waiting_user --> running: Explicit matching human reply
@@ -144,7 +144,7 @@ flowchart LR
   Guard --> Claim[Persist continuation claim]
   Claim --> Reconcile[Confirm previous execution ended]
   Reconcile -->|Confirmed| Continue[Continue same work through Engine]
-  Reconcile -->|Unknown / blocked| Preserve[Preserve state; do not replay]
+  Reconcile -->|Unknown / blocked| Preserve[Preserve state, do not replay]
 ```
 
 | Mechanism                  | Timing                                                      | Behavior                                                    |

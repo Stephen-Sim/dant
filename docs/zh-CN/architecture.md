@@ -87,11 +87,11 @@ sequenceDiagram
   participant Tool as 工具 / VM 桌面
   Input->>Engine: 带稳定身份的已授权输入
   Engine->>Store: 保存输入与排队状态
-  Engine->>Engine: 获取执行名额；准备附件与上下文
+  Engine->>Engine: 获取执行名额，准备附件与上下文
   Engine->>Memory: 按当前输入的作用域召回参考
   Memory-->>Engine: 有界脱敏摘录
   Engine->>Store: 保存提交意图
-  Engine->>Codex: thread/start 或 resume；turn/start
+  Engine->>Codex: thread/start 或 resume，turn/start
   Codex-->>Engine: 确认真实 threadId / turnId
   Engine->>Store: 绑定准确的执行所有者
   loop 推理、执行、观察
@@ -144,7 +144,7 @@ flowchart LR
   Guard --> Claim[持久化续作认领]
   Claim --> Reconcile[确认前一轮执行已结束]
   Reconcile -->|已确认| Continue[通过 Engine 继续同一任务]
-  Reconcile -->|不确定 / 受阻| Preserve[保留状态；不重放]
+  Reconcile -->|不确定 / 受阻| Preserve[保留状态，不重放]
 ```
 
 | 机制                  | 时机                               | 行为                                 |
