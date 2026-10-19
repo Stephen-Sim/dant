@@ -3,6 +3,7 @@ import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { BACKUP_MAX_FILES } from '../../src/backups/backup-constants.mts';
 import {
   renamePrivateStagingDirectorySync,
   STAGING_RENAME_ATTEMPTS,
@@ -25,6 +26,25 @@ function fixture(t: TestContext) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return { root, sourceGroup, targetGroup, sourceParent, targetParent, source, destination };
 }
+function freezeDirectoryMetadata(t: TestContext, root: string) {
+  const original = fs.lstatSync,
+    observed = new Map<string, fs.Stats | fs.BigIntStats>();
+  t.mock.method(fs, 'lstatSync', (...args: Parameters<typeof fs.lstatSync>) => {
+    const value = original(...args),
+      file = args[0];
+    if (
+      typeof file !== 'string' ||
+      (file !== root && !file.startsWith(root + path.sep)) ||
+      !value?.isDirectory()
+    )
+      return value;
+    const previous = observed.get(file);
+    if (previous) return previous;
+    observed.set(file, value);
+    return value;
+  });
+  return observed;
+}
 
 test('private stage moves retry bounded Windows sharing failures while retaining bytes and checking offline on every attempt', (t) => {
   for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
@@ -44,7 +64,7 @@ test('private stage moves retry bounded Windows sharing failures while retaining
       pause: (delay) => waits.push(delay),
     });
     assert.equal(attempts, 3);
-    assert.equal(guards, attempts);
+    assert.equal(guards, attempts * 2);
     assert.deepEqual(waits, [STAGING_RENAME_DELAY_MS, STAGING_RENAME_DELAY_MS * 2]);
     assert.equal(fs.existsSync(f.source), false);
     assert.equal(
@@ -52,6 +72,63 @@ test('private stage moves retry bounded Windows sharing failures while retaining
       'Retained staged bytes',
     );
   }
+});
+
+test('a staged tree change is rejected even when every directory stat stays unchanged, including changes inside the first failed rename', (t) => {
+  for (const phase of ['rename', 'pause'] as const)
+    for (const change of [
+      'root-add',
+      'nested-add',
+      'nested-delete',
+      'nested-replace',
+      'nested-edit',
+    ] as const) {
+      const f = fixture(t),
+        nested = path.join(f.source, 'nested'),
+        retained = path.join(nested, 'retained.txt'),
+        failure = Object.assign(Error('Original isolated sharing failure'), { code: 'EPERM' });
+      fs.mkdirSync(nested);
+      fs.writeFileSync(retained, 'Original nested bytes');
+      const frozen = freezeDirectoryMetadata(t, f.source);
+      let attempts = 0,
+        changed = false;
+      function changeTree() {
+        changed = true;
+        if (change === 'root-add') fs.writeFileSync(path.join(f.source, 'new.txt'), 'New entry');
+        if (change === 'nested-add')
+          fs.writeFileSync(path.join(nested, 'new.txt'), 'New nested entry');
+        if (change === 'nested-delete') fs.unlinkSync(retained);
+        if (change === 'nested-replace') {
+          fs.renameSync(retained, retained + '.retired');
+          fs.writeFileSync(retained, 'Replacement nested bytes');
+        }
+        if (change === 'nested-edit') fs.appendFileSync(retained, ' Appended bytes');
+        // Model filesystems where directory metadata gives no witness of this change.
+        assert.equal(fs.lstatSync(f.source, { bigint: true }), frozen.get(f.source));
+        assert.equal(fs.lstatSync(nested, { bigint: true }), frozen.get(nested));
+      }
+      assert.throws(
+        () =>
+          renamePrivateStagingDirectorySync(f.source, f.destination, {
+            platform: 'win32',
+            assertOffline() {},
+            renameSync() {
+              attempts++;
+              if (phase === 'rename') changeTree();
+              throw failure;
+            },
+            pause() {
+              if (phase === 'pause') changeTree();
+            },
+          }),
+        (error) => error === failure,
+        phase + ':' + change,
+      );
+      assert.equal(changed, true);
+      assert.equal(attempts, 1, phase + ':' + change);
+      assert.equal(fs.existsSync(f.destination), false);
+      t.mock.restoreAll();
+    }
 });
 
 test('exhaustion preserves the last actual error and other platforms or error codes attempt only once', (t) => {
@@ -205,7 +282,7 @@ test('a newly online service stops a pending retry while the first move remains 
       renamePrivateStagingDirectorySync(f.source, f.destination, {
         platform: 'win32',
         assertOffline() {
-          if (++guards > 1) throw offlineFailure;
+          if (++guards > 2) throw offlineFailure;
         },
         renameSync() {
           attempts++;
@@ -216,6 +293,30 @@ test('a newly online service stops a pending retry while the first move remains 
     (error) => error === offlineFailure,
   );
   assert.equal(attempts, 1);
+  assert.equal(fs.existsSync(f.source), true);
+  assert.equal(fs.existsSync(f.destination), false);
+});
+
+test('going online during the initial tree scan prevents the first move', (t) => {
+  const f = fixture(t),
+    original = fs.opendirSync,
+    offlineFailure = Error('Isolated offline confirmation lost during scan');
+  let online = false;
+  t.mock.method(fs, 'opendirSync', (...args: Parameters<typeof fs.opendirSync>) => {
+    online = true;
+    return original(...args);
+  });
+  assert.throws(
+    () =>
+      renamePrivateStagingDirectorySync(f.source, f.destination, {
+        platform: 'win32',
+        assertOffline() {
+          if (online) throw offlineFailure;
+        },
+        renameSync: () => assert.fail('The service must remain offline after scanning'),
+      }),
+    (error) => error === offlineFailure,
+  );
   assert.equal(fs.existsSync(f.source), true);
   assert.equal(fs.existsSync(f.destination), false);
 });
@@ -279,4 +380,92 @@ test('unsafe initial directories, paths, ancestors and occupied targets cannot r
         }),
       { code: 'ERR_RESTORE_STAGE_CHANGED' },
     );
+});
+
+test('Windows staging inventories reject nested links, hardlinked files and special entries before a move', (t) => {
+  for (const kind of ['directory-link', 'hardlink', 'special'] as const) {
+    const f = fixture(t),
+      nested = path.join(f.source, 'nested');
+    fs.mkdirSync(nested);
+    if (kind === 'directory-link')
+      fs.symlinkSync(
+        f.targetParent,
+        path.join(nested, 'linked'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+    if (kind === 'hardlink')
+      fs.linkSync(path.join(f.source, 'retained.txt'), path.join(nested, 'linked.txt'));
+    if (kind === 'special') {
+      const special = path.join(nested, 'special'),
+        original = fs.lstatSync;
+      fs.writeFileSync(special, 'Isolated placeholder');
+      t.mock.method(fs, 'lstatSync', (...args: Parameters<typeof fs.lstatSync>) => {
+        const value = original(...args);
+        if (args[0] !== special || !value) return value;
+        return new Proxy(value, {
+          get(target, key, receiver) {
+            if (key === 'isFile') return () => false;
+            return Reflect.get(target, key, receiver);
+          },
+        });
+      });
+    }
+    assert.throws(
+      () =>
+        renamePrivateStagingDirectorySync(f.source, f.destination, {
+          platform: 'win32',
+          assertOffline() {},
+          renameSync: () => assert.fail('A linked or special tree entry must not reach rename'),
+        }),
+      { code: 'ERR_RESTORE_STAGE_CHANGED' },
+      kind,
+    );
+    t.mock.restoreAll();
+  }
+});
+
+test('Windows inventory streams a bounded number of entries and closes the directory on rejection', (t) => {
+  const f = fixture(t),
+    original = fs.lstatSync,
+    ordinaryFile = original(path.join(f.source, 'retained.txt'), { bigint: true });
+  let reads = 0,
+    closed = false;
+  t.mock.method(fs, 'opendirSync', () => ({
+    readSync() {
+      return { name: 'entry-' + ++reads };
+    },
+    closeSync() {
+      closed = true;
+    },
+  }));
+  t.mock.method(fs, 'lstatSync', (...args: Parameters<typeof fs.lstatSync>) => {
+    const file = args[0];
+    if (typeof file === 'string' && path.dirname(file) === f.source) return ordinaryFile;
+    return original(...args);
+  });
+  assert.throws(
+    () =>
+      renamePrivateStagingDirectorySync(f.source, f.destination, {
+        platform: 'win32',
+        assertOffline() {},
+        renameSync: () => assert.fail('An over-limit tree must not reach rename'),
+      }),
+    { code: 'ERR_RESTORE_STAGE_CHANGED' },
+  );
+  assert.equal(reads, BACKUP_MAX_FILES + 2);
+  assert.equal(closed, true);
+});
+
+test('a non-Windows move does not enumerate the staging tree', (t) => {
+  const f = fixture(t);
+  t.mock.method(fs, 'opendirSync', () => assert.fail('A non-retrying move needs no tree scan'));
+  renamePrivateStagingDirectorySync(f.source, f.destination, {
+    platform: 'linux',
+    assertOffline() {},
+  });
+  assert.equal(fs.existsSync(f.source), false);
+  assert.equal(
+    fs.readFileSync(path.join(f.destination, 'retained.txt'), 'utf8'),
+    'Retained staged bytes',
+  );
 });

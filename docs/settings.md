@@ -90,6 +90,8 @@ In **General → Text editor**, keep Windows Notepad or choose an installed supp
 
 Reusable skills use their own sidebar page rather than a settings category. It includes **Import skill** with a preview and **Download ZIP** on each managed card. See [credentials and skills](credentials-and-skills.md).
 
+From **0.4.7-beta.12**, external editor copies use `dant-text-editor` under the current user's temporary directory, so packaged Windows editors can access them independently of app-cache views. Existing AppData copies are left untouched. dant's cleanup preserves modified copies, but Windows can clear temporary files; use the editor's **Save As** to keep an edited document permanently.
+
 ## Telegram forwarding
 
 In **Settings → Telegram → Message forwarding**, choose **Unread replies only (recommended)** or **All replies**. Unread-only avoids forwarding replies already read in dant; All also forwards those read replies. Read/unread status remains independent between dant and Telegram. **Combine consecutive replies**, enabled by default, groups consecutive text replies into fewer Telegram messages; attachments are delivered separately. These controls save automatically without replacing the bot token, changing the pairing or restarting Telegram polling. These controls require the matching work computer service. In **0.4.7-beta.7**, the service updates automatically when connected and idle; **Settings → Work computer** shows pending, updating, confirmed and failed states.

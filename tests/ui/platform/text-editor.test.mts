@@ -500,6 +500,8 @@ test('native editor opens only safe cached text with a fixed Notepad or picked e
   assert.match(source, /Command::new\(crate::runtime_path\(executable\.to_path_buf\(\)\)\)/);
   assert.match(source, /command\s*\.arg\(target\)/);
   assert.match(source, /editor_command\(&executable, &target\)\s*\.spawn\(\)/);
+  assert.match(source, /editor_cache_root\(std::env::temp_dir\(\)\)/);
+  assert.doesNotMatch(source, /app_cache_dir\(/);
   assert.doesNotMatch(source, /cmd\s*\/c|powershell|opener\(\)|open_path|shell_execute/i);
   assert.match(source, /join\("System32"\)\s*\.join\("notepad.exe"\)/);
   assert.match(source, /text_payload\(&bytes/);

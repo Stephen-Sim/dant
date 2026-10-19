@@ -6,10 +6,14 @@ import {
   ATOMIC_RENAME_DELAY_MS,
   pauseAtomicRename,
 } from '../files/atomic-file-rename.mts';
+import { archivePath } from './archive-stream.mts';
+import { BACKUP_MAX_FILES } from './backup-constants.mts';
 
 const RETRYABLE_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 export const STAGING_RENAME_ATTEMPTS = ATOMIC_RENAME_ATTEMPTS;
 export const STAGING_RENAME_DELAY_MS = ATOMIC_RENAME_DELAY_MS;
+// The archive's entries, the decoded data root and its generated restore receipt.
+const STAGING_TREE_ENTRY_LIMIT = BACKUP_MAX_FILES + 2;
 
 interface DirectoryIdentity {
   path: string;
@@ -17,6 +21,16 @@ interface DirectoryIdentity {
   ino: bigint;
 }
 interface SourceIdentity extends DirectoryIdentity {
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}
+interface TreeEntryIdentity {
+  directory: boolean;
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mode: bigint;
+  nlink: bigint;
   mtimeNs: bigint;
   ctimeNs: bigint;
 }
@@ -53,6 +67,82 @@ function overlaps(parent: string, child: string) {
     relative === '' ||
     (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))
   );
+}
+function treeEntry(stat: fs.BigIntStats): TreeEntryIdentity {
+  const directory = stat.isDirectory();
+  if (
+    stat.isSymbolicLink() ||
+    (!directory && !stat.isFile()) ||
+    stat.nlink < 1n ||
+    (!directory && stat.nlink !== 1n)
+  )
+    throw unsafe();
+  return {
+    directory,
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mode: stat.mode,
+    nlink: stat.nlink,
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+  };
+}
+function sameEntry(left: TreeEntryIdentity, right: TreeEntryIdentity): boolean {
+  return (
+    left.directory === right.directory &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+/** Metadata only: directory timestamps alone do not prove an unchanged Windows tree. */
+function treeInventory(root: string): Map<string, TreeEntryIdentity> {
+  const entries = new Map<string, TreeEntryIdentity>([['', treeEntry(directory(root))]]),
+    pending = [''];
+  while (pending.length) {
+    const relative = pending.pop();
+    if (relative === undefined) throw unsafe();
+    const current = path.join(root, relative),
+      expected = entries.get(relative);
+    if (!expected || !sameEntry(expected, treeEntry(directory(current)))) throw unsafe();
+    const handle = fs.opendirSync(current);
+    try {
+      for (let child = handle.readSync(); child; child = handle.readSync()) {
+        const childPath = relative ? relative + '/' + child.name : child.name;
+        if (
+          !archivePath(childPath) ||
+          entries.has(childPath) ||
+          entries.size >= STAGING_TREE_ENTRY_LIMIT
+        )
+          throw unsafe();
+        const entry = treeEntry(fs.lstatSync(path.join(root, childPath), { bigint: true }));
+        entries.set(childPath, entry);
+        if (entry.directory) pending.push(childPath);
+      }
+    } finally {
+      handle.closeSync();
+    }
+    if (!sameEntry(expected, treeEntry(directory(current)))) throw unsafe();
+  }
+  return entries;
+}
+function sameTree(root: string, baseline: ReadonlyMap<string, TreeEntryIdentity>): boolean {
+  try {
+    const current = treeInventory(root);
+    if (current.size !== baseline.size) return false;
+    for (const [file, expected] of baseline) {
+      const actual = current.get(file);
+      if (!actual || !sameEntry(expected, actual)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** A local move of validated private staging only; never use for live roots or rollback. */
@@ -104,10 +194,17 @@ export function renamePrivateStagingDirectorySync(
       return false;
     }
   }
-  let failure: unknown;
+  let failure: unknown, baseline: ReadonlyMap<string, TreeEntryIdentity> | undefined;
   for (let attempt = 0; attempt < STAGING_RENAME_ATTEMPTS; attempt++) {
     assertOffline();
     if (!unchanged()) throw attempt ? failure : unsafe();
+    if (platform === 'win32') {
+      // Capture before the first attempt: a failed rename may itself have changed the source.
+      if (!baseline) baseline = treeInventory(from);
+      else if (!sameTree(from, baseline)) throw failure;
+      if (!unchanged()) throw attempt ? failure : unsafe();
+      assertOffline();
+    }
     try {
       renameSync(from, to);
       return;

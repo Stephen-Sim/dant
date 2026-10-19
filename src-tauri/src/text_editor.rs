@@ -11,6 +11,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_BYTES: usize = 10 * 1024 * 1024;
+const EDITOR_CACHE_DIRECTORY: &str = "dant-text-editor";
 const FAILED: &str = "The text editor operation could not be completed. Check the file, connection and chosen editor.";
 struct EditorSpec {
     id: &'static str,
@@ -762,6 +763,11 @@ fn safe_name(name: &str) -> String {
     }
     value
 }
+fn editor_cache_root(temporary: PathBuf) -> PathBuf {
+    // Packaged Windows editors can observe a different AppData view. Exchange
+    // files through the user's shared temporary directory, outside app caches.
+    crate::runtime_path(temporary).join(EDITOR_CACHE_DIRECTORY)
+}
 fn cache_copy(root: &Path, id: &str, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     if !valid_id(id) || bytes.len() > MAX_BYTES {
         return Err(FAILED.into());
@@ -954,8 +960,7 @@ pub async fn open_attachment_in_editor(
     tauri::async_runtime::spawn_blocking(move || {
         let preference = read_preference(&preferences_path(&app)?)?;
         let executable = resolve_preference(&preference, &detected_editors())?;
-        let root = crate::runtime_path(app.path().app_cache_dir().map_err(|_| FAILED)?)
-            .join("text-editor");
+        let root = editor_cache_root(std::env::temp_dir());
         expire_cache(&root);
         let target = cache_copy(&root, &file_id, &file_name, &bytes)?;
         editor_command(&executable, &target)
@@ -1242,6 +1247,33 @@ mod tests {
         assert_eq!(fs::read(next).unwrap(), b"{\"ok\":true}");
         assert!(cache_copy(&root, "../outside", "result.json", b"x").is_err());
         assert!(cache_copy(&root, id, "result.json", &vec![0; MAX_BYTES + 1]).is_err());
+    }
+    #[test]
+    fn shared_temporary_cache_keeps_old_appdata_edits_and_reuses_exact_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let id = "10b72b2a-346f-48c0-a243-1cb22871d91d";
+        let legacy_root = directory
+            .path()
+            .join("AppData/Local/com.dant.desktop/text-editor");
+        let legacy = cache_copy(&legacy_root, id, "notes.md", b"original").unwrap();
+        fs::write(&legacy, b"user's existing edit").unwrap();
+        let temporary = directory.path().join("shared temporary");
+        let root = editor_cache_root(temporary.clone());
+        assert_eq!(root, temporary.join(EDITOR_CACHE_DIRECTORY));
+        assert!(!root.starts_with(&legacy_root));
+        let copied = cache_copy(&root, id, "notes.md", b"original").unwrap();
+        assert_eq!(fs::read(&copied).unwrap(), b"original");
+        assert_eq!(
+            cache_copy(&root, id, "notes.md", b"original").unwrap(),
+            copied
+        );
+        fs::write(&copied, b"new user edit").unwrap();
+        let next = cache_copy(&root, id, "notes.md", b"original").unwrap();
+        assert_ne!(next, copied);
+        expire_cache(&root);
+        assert_eq!(fs::read(next).unwrap(), b"original");
+        assert_eq!(fs::read(copied).unwrap(), b"new user edit");
+        assert_eq!(fs::read(legacy).unwrap(), b"user's existing edit");
     }
     #[test]
     fn preferences_are_atomic_and_return_only_the_editor_basename() {
