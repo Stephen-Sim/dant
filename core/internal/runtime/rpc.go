@@ -9,7 +9,6 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
@@ -21,17 +20,20 @@ type rpcResult struct {
 	object contracts.RawObject
 	err    error
 }
+
 type pendingRequest struct {
-	result chan rpcResult
-	sent   *atomic.Bool
+	result       chan rpcResult
+	transmission *rpcTransmission
 }
+
 type writeFrame struct {
-	ctx    context.Context
-	guard  func() error
-	data   []byte
-	result chan error
-	sent   *atomic.Bool
+	ctx          context.Context
+	guard        func() error
+	data         []byte
+	result       chan error
+	transmission *rpcTransmission
 }
+
 type RPC struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -102,7 +104,10 @@ func (value *RPC) fail(cause error) {
 	}
 	value.closed = true
 	for key, pending := range value.pending {
-		pending.result <- rpcResult{err: &OperationError{Cause: cause, UnknownOutcome: pending.sent.Load()}}
+		pending.result <- rpcResult{err: &OperationError{
+			Cause:          cause,
+			UnknownOutcome: pending.transmission.abandon(),
+		}}
 		delete(value.pending, key)
 	}
 	for channel := range value.events {
@@ -193,6 +198,7 @@ func (value *RPC) write() {
 			return
 		case frame := <-value.writes:
 			if err := frame.ctx.Err(); err != nil {
+				frame.transmission.abandon()
 				frame.result <- err
 				continue
 			}
@@ -201,11 +207,23 @@ func (value *RPC) write() {
 			}
 			if frame.guard != nil {
 				if err := frame.guard(); err != nil {
+					frame.transmission.abandon()
 					frame.result <- err
 					continue
 				}
 			}
-			frame.sent.Store(true)
+			if err := frame.ctx.Err(); err != nil {
+				frame.transmission.abandon()
+				frame.result <- err
+				continue
+			}
+			value.mu.Lock()
+			started := !value.closed && value.ctx.Err() == nil && frame.transmission.begin()
+			value.mu.Unlock()
+			if !started {
+				frame.result <- ErrDisconnected
+				continue
+			}
 			count, err := value.input.Write(frame.data)
 			if err != nil || count != len(frame.data) {
 				frame.result <- ErrDisconnected
@@ -249,9 +267,6 @@ func (value *RPC) read() {
 		}
 		value.mu.Lock()
 		pending := value.pending[id.key]
-		if pending != nil {
-			delete(value.pending, id.key)
-		}
 		value.mu.Unlock()
 		if pending == nil {
 			continue
@@ -259,23 +274,60 @@ func (value *RPC) read() {
 		if errorRaw, exists := object["error"]; exists && !bytes.Equal(bytes.TrimSpace(errorRaw), []byte("null")) {
 			provider, err := contracts.DecodeObject(errorRaw, MaxRPCFrameBytes)
 			if err != nil || !validRPCError(provider) {
-				pending.result <- rpcResult{err: &OperationError{Cause: ErrInvalidProtocol, UnknownOutcome: true}}
+				value.settle(id.key, pending, rpcResult{err: &OperationError{
+					Cause:          ErrInvalidProtocol,
+					UnknownOutcome: true,
+				}})
 				value.fail(ErrInvalidProtocol)
 				return
 			}
 			var message string
 			_ = json.Unmarshal(provider["message"], &message)
-			pending.result <- rpcResult{err: &OperationError{Cause: ErrRequestFailed, Code: provider["code"], Message: message, Data: provider["data"]}}
+			value.settle(id.key, pending, rpcResult{err: &OperationError{
+				Cause:   ErrRequestFailed,
+				Code:    provider["code"],
+				Message: message,
+				Data:    provider["data"],
+			}})
 			continue
 		}
 		result, err := ReadRPCResult(object["result"])
 		if err != nil {
-			pending.result <- rpcResult{err: &OperationError{Cause: ErrInvalidProtocol, UnknownOutcome: true}}
+			value.settle(id.key, pending, rpcResult{err: &OperationError{Cause: ErrInvalidProtocol, UnknownOutcome: true}})
 			continue
 		}
-		pending.result <- rpcResult{object: result}
+		value.settle(id.key, pending, rpcResult{object: result})
 	}
 	value.fail(ErrDisconnected)
+}
+
+func (value *RPC) settle(key string, pending *pendingRequest, result rpcResult) {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	if value.pending[key] != pending {
+		return
+	}
+	pending.result <- result
+	delete(value.pending, key)
+}
+
+// A validated correlated response wins over a later transport closure. Both
+// settlement and fallback retire the same pending identity under the mutex.
+func (value *RPC) requestFailure(key string, pending *pendingRequest, cause error) (rpcResult, bool) {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	select {
+	case result := <-pending.result:
+		return result, true
+	default:
+	}
+	if value.pending[key] == pending {
+		delete(value.pending, key)
+	}
+	return rpcResult{err: &OperationError{
+		Cause:          cause,
+		UnknownOutcome: pending.transmission.abandon(),
+	}}, false
 }
 
 func validMethod(method string) bool {
@@ -285,7 +337,7 @@ func validMethod(method string) bool {
 func (value *RPC) queue(
 	ctx context.Context,
 	object contracts.RawObject,
-	sent *atomic.Bool,
+	transmission *rpcTransmission,
 	guard func() error) (<-chan error, error) {
 	raw, err := json.Marshal(object)
 	if err != nil || len(raw) > MaxRPCFrameBytes {
@@ -293,7 +345,13 @@ func (value *RPC) queue(
 	}
 	raw = append(raw, '\n')
 	ack := make(chan error, 1)
-	frame := writeFrame{ctx: ctx, guard: guard, data: raw, result: ack, sent: sent}
+	frame := writeFrame{
+		ctx:          ctx,
+		guard:        guard,
+		data:         raw,
+		result:       ack,
+		transmission: transmission,
+	}
 	select {
 	case <-value.ctx.Done():
 		return nil, ErrDisconnected
@@ -325,8 +383,9 @@ func (value *RPC) RequestGuarded(
 	}
 	requestContext, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
-	sent := new(atomic.Bool)
-	pending := &pendingRequest{result: make(chan rpcResult, 1), sent: sent}
+	transmission := new(rpcTransmission)
+	defer transmission.abandon()
+	pending := &pendingRequest{result: make(chan rpcResult, 1), transmission: transmission}
 	value.mu.Lock()
 	if value.closed {
 		value.mu.Unlock()
@@ -353,9 +412,10 @@ func (value *RPC) RequestGuarded(
 	if err != nil {
 		return nil, ErrInvalidProtocol
 	}
-	ack, err := value.queue(requestContext, contracts.RawObject{"id": idRaw, "method": methodRaw, "params": paramsRaw}, sent, guard)
+	ack, err := value.queue(requestContext, contracts.RawObject{"id": idRaw, "method": methodRaw, "params": paramsRaw}, transmission, guard)
 	if err != nil {
-		return nil, &OperationError{Cause: err, UnknownOutcome: sent.Load()}
+		result, _ := value.requestFailure(id.key, pending, err)
+		return result.object, result.err
 	}
 	for {
 		select {
@@ -363,17 +423,23 @@ func (value *RPC) RequestGuarded(
 			return result.object, result.err
 		case err := <-ack:
 			if err != nil {
-				return nil, &OperationError{Cause: err, UnknownOutcome: sent.Load()}
+				result, _ := value.requestFailure(id.key, pending, err)
+				return result.object, result.err
 			}
 			ack = nil
 		case <-requestContext.Done():
 			if ctx.Err() == nil && errors.Is(requestContext.Err(), context.DeadlineExceeded) {
-				value.fail(ErrRequestTimeout)
-				return nil, &OperationError{Cause: ErrRequestTimeout, UnknownOutcome: sent.Load()}
+				result, settled := value.requestFailure(id.key, pending, ErrRequestTimeout)
+				if !settled {
+					value.fail(ErrRequestTimeout)
+				}
+				return result.object, result.err
 			}
-			return nil, &OperationError{Cause: requestContext.Err(), UnknownOutcome: sent.Load()}
+			result, _ := value.requestFailure(id.key, pending, requestContext.Err())
+			return result.object, result.err
 		case <-value.ctx.Done():
-			return nil, &OperationError{Cause: ErrDisconnected, UnknownOutcome: sent.Load()}
+			result, _ := value.requestFailure(id.key, pending, ErrDisconnected)
+			return result.object, result.err
 		}
 	}
 }
@@ -383,7 +449,9 @@ func (value *RPC) Reply(ctx context.Context, id RPCID, result json.RawMessage) e
 		return ErrInvalidProtocol
 	}
 	idRaw, _ := json.Marshal(id)
-	ack, err := value.queue(ctx, contracts.RawObject{"id": idRaw, "result": result}, new(atomic.Bool), nil)
+	transmission := new(rpcTransmission)
+	defer transmission.abandon()
+	ack, err := value.queue(ctx, contracts.RawObject{"id": idRaw, "result": result}, transmission, nil)
 	if err != nil {
 		return err
 	}
@@ -406,7 +474,9 @@ func (value *RPC) ReplyError(ctx context.Context, id RPCID, code int, message st
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}{code, message})
-	ack, err := value.queue(ctx, contracts.RawObject{"id": idRaw, "error": errorRaw}, new(atomic.Bool), nil)
+	transmission := new(rpcTransmission)
+	defer transmission.abandon()
+	ack, err := value.queue(ctx, contracts.RawObject{"id": idRaw, "error": errorRaw}, transmission, nil)
 	if err != nil {
 		return err
 	}
@@ -432,7 +502,9 @@ func (value *RPC) Notify(ctx context.Context, method string, params contracts.Ra
 	if err != nil {
 		return ErrInvalidProtocol
 	}
-	ack, err := value.queue(ctx, contracts.RawObject{"method": methodRaw, "params": paramsRaw}, new(atomic.Bool), nil)
+	transmission := new(rpcTransmission)
+	defer transmission.abandon()
+	ack, err := value.queue(ctx, contracts.RawObject{"method": methodRaw, "params": paramsRaw}, transmission, nil)
 	if err != nil {
 		return err
 	}
