@@ -10,7 +10,7 @@ TypeScript coverage must reach at least 90% of lines, 80% of branches, and 80% o
 
 `CI` runs on Ubuntu 24.04 and Windows 2025 with Node.js 22.18+ and Python 3.12. It installs locked npm dependencies, runs TypeScript unit tests and coverage checks, tests Python VM helpers, and builds the frontend. `pycdlib==1.14.0` and OpenSSH are required so seed-image and SSH-key tests cannot silently disappear when tools are missing. Windows DPAPI tests use temporary test keys; Linux explicitly skips Windows-only checks.
 
-The strict compiler checks Node sources, browser sources, and tests as separate projects. Node tests are grouped by module under `tests/`; UI tests mirror `ui/`, shared fixtures live in `tests/support/`, and Python VM tests live in `tests/vm/`. Unit tests and coverage use the same recursive discovery helper and a shared limit of four isolated test processes to bound desktop and CI resource usage.
+All maintained application, browser, tool and Node-test modules use TypeScript. The strict compiler checks Node sources, browser sources, and tests as separate projects. Node tests are grouped by module under `tests/`; UI tests mirror `ui/`, shared fixtures live in `tests/support/`, and Python VM tests live in `tests/vm/`. Unit tests and coverage use the same recursive discovery helper and a shared limit of four isolated test processes to bound desktop and CI resource usage.
 
 Bash and PowerShell files are parsed without creating a VM or requesting administrator access. Tests do not use real model accounts, open microphones, or contact a configured Telegram bot. Telegram tests inject a simulated Bot API and verify owner pairing, authorization, deduplication, attachment bounds, delivery results, and shutdown.
 
@@ -50,4 +50,4 @@ pwsh -File scripts/ci/check-powershell.ps1
 npm run build
 ```
 
-Preflight requires the pinned pycdlib version, OpenSSH Client, and Git Bash on Windows. GitHub-hosted runners supply the base tools; a missing prerequisite fails explicitly. Coverage reports describe unit-test execution, not real-device acceptance. See [verification](verification.md).
+Preflight requires Node.js 22.18+ LTS or 24+ with native TypeScript, built-in SQLite and FTS5, plus the pinned pycdlib version, OpenSSH Client, and Git Bash on Windows. A bounded in-memory FTS5 query verifies actual runtime capabilities; a version string alone is insufficient. Packaging and VM deployment use the same runtime gate. GitHub-hosted runners supply the base tools; a missing prerequisite fails explicitly. Coverage reports describe unit-test execution, not real-device acceptance. See [verification](verification.md).

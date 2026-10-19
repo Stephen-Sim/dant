@@ -24,6 +24,8 @@ dant checks the bundled work computer service when connecting after installation
 
 The bundled service requires Node.js 22.18+ LTS or 24+ with native TypeScript, built-in SQLite and FTS5 support. Preflight, packaging and VM deployment verify these capabilities with a bounded in-memory database query. If Reconnect reports `runtime-incompatible`, dant preserves the existing VM runtime and service. Update that Node runtime through the VM’s maintenance process, then reconnect.
 
+In **0.4.7-beta.8**, the Worker imports legacy memory and schedules once, with backups, into `memory/dant/memory.sqlite` and `schedules/schedules.sqlite` under the Worker data directory. Chat messages and durable work remain in `state.json`. Keep these databases with data backups; changing application versions does not reverse their migrations. A recovered schedule dispatch preserves its exact message identity and remains paused or uncertain rather than being sent again.
+
 ## Work computer updates in 0.4.7-beta.5
 
 The desktop installer preserves the running VM service. In **0.4.7-beta.5**, explicitly choosing **Settings → Work computer → Reconnect** also updates that service when its packaged source has changed. Dependencies are prepared first; the existing worker then confirms a global pause, saves its task records and ends any current call before the service is replaced. This uses the global pause operation supported by older workers, so it does not depend on their having the newer per-task Pause endpoint. Paused work remains available for explicit resume.

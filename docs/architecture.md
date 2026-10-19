@@ -241,6 +241,14 @@ Closing the main window hides dant to the tray when tray initialization succeede
 
 Calls separate media and task identities: normal hangup can leave accepted work running; uncertain shutdown does not prove work stopped. The floating call window forwards scoped controls without another microphone/executor. Telegram shares the Store and Engine, with stable input IDs, pairing and durable outbound receipts. Neither creates another runtime. See [voice](VOICE-KEY.md), [shared context](context.md) and [Telegram](TELEGRAM.md).
 
+## Cross-platform boundaries (planned, not implemented)
+
+The current source has partial platform isolation. `VmProvider` identifies provider choices, while lifecycle behavior still uses provider-specific branches. A unified `HostPlatform` capability interface and a common `VMProvider` lifecycle interface remain planned. The Windows desktop and Linux VM Worker do not establish macOS/Linux desktop support.
+
+`HostPlatform` would own host notifications, protected credentials, process control, paths, installation and updates. `VMProvider` would own detection, creation, connection, suspension, resumption and verification of the managed VM's ownership/identity. Existing Windows code covers Hyper-V and VMware lifecycle operations plus unmanaged SSH connections; an SSH connection alone supplies no verified hypervisor suspension capability.
+
+Future macOS/Linux adapters would share the Controller, Worker, Engine, MemoryStore and Scheduler. They must preserve the single agent loop and VM-only execution boundary. An unavailable capability must return an explicit unavailable result; adapters must not silently switch providers or run agent tasks in a host shell. These interfaces and desktop release targets require implementation and validation before cross-platform publication.
+
 ## Current limits and next steps
 
 The following decisions guide further work. They preserve the existing execution architecture rather than introducing another agent runtime.

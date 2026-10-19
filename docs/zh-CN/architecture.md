@@ -241,6 +241,14 @@ API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。*
 
 通话媒体与任务身份分开：正常挂断可以保留已接纳任务，关闭结果不明不能证明任务已停。浮动通话窗口只转发限定控制，不拥有另一套麦克风/执行器。Telegram 共享 Store 和 Engine，使用稳定输入 ID、配对和持久发送回执，不会另建运行时。参见[语音](VOICE-KEY.md)、[共享上下文](context.md)与 [Telegram](TELEGRAM.md)。
 
+## 跨平台边界（规划，尚未实现）
+
+当前源码已做部分平台隔离。`VmProvider` 表示提供商选择，生命周期行为仍按提供商分支处理；统一的 `HostPlatform` 能力接口和 `VMProvider` 生命周期接口仍属于规划。Windows 桌面与 Linux VM Worker 的存在，不代表已支持 macOS/Linux 桌面。
+
+`HostPlatform` 计划负责宿主通知、受保护凭据、进程控制、路径、安装与更新；`VMProvider` 计划负责检测、创建、连接、挂起、恢复，以及受管理 VM 的所有权/身份确认。现有 Windows 代码提供 Hyper-V、VMware 生命周期操作与非托管 SSH 连接；单独的 SSH 连接不提供已验证的虚拟机挂起能力。
+
+未来 macOS/Linux 适配器共享 Controller、Worker、Engine、MemoryStore 和 Scheduler，保留单一 Agent loop 及只在 VM 执行任务的边界。缺少能力时必须明确返回不可用，不得静默切换提供商，也不得改用宿主 shell 执行 Agent 任务。相关接口和桌面发布目标仍需实现与验证，不能据此声称已经可以跨平台发布。
+
 ## 当前边界与后续工作
 
 以下决策指导后续实现，保留现有执行架构，不再增加一套 Agent 运行时。

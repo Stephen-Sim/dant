@@ -18,8 +18,10 @@ DPAPI depends on the Windows user and profile. After changing accounts, migratin
 
 ## Server integration
 
-```js
-import { VoiceKeyStore } from './secrets.mjs';
+From a server module under `src/app/`:
+
+```ts
+import { VoiceKeyStore } from '../security/secrets.mts';
 
 const voiceKeys = new VoiceKeyStore(dataDir);
 voiceKeys.status(); // {configured, source, storage}

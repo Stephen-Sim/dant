@@ -16,8 +16,10 @@ DPAPI 依赖当前 Windows 用户身份和用户配置文件。换账号、迁�
 
 ## 服务端接入
 
-```js
-import { VoiceKeyStore } from './secrets.mjs';
+在 `src/app/` 下的服务模块中：
+
+```ts
+import { VoiceKeyStore } from '../security/secrets.mts';
 
 const voiceKeys = new VoiceKeyStore(dataDir);
 voiceKeys.status(); // {configured, source, storage}

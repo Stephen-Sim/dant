@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { observedRecord } from '../support/service-fixtures.mts';
 
 const helper = fileURLToPath(new URL('../../scripts/vm-lifecycle.ps1', import.meta.url));
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
@@ -153,31 +154,57 @@ class DantFixtureVmrun { static int Main(string[] args) {
  if(args[2]=="start") {File.WriteAllText(file,"running");return 0;} return 4;
 } }
 '@
+$Error.Clear()
 $paused = & ${literal(helper)} -Action suspend -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} | ConvertFrom-Json
+$pausedError = if (!$paused.ok -and $Error.Count) {
+  # Only synthetic fixture operations run here; production results stay bounded
+  # and do not expose process output, SSH details or credentials.
+  $failure = $Error[0]
+  $detail = $failure.FullyQualifiedErrorId + ': ' + $failure.Exception.Message
+  $detail.Substring(0, [Math]::Min(512, $detail.Length))
+} else { '' }
+$Error.Clear()
 $resumed = & ${literal(helper)} -Action resume -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} -ExpectedVmId ${vmId} | ConvertFrom-Json
-@{paused=$paused;resumed=$resumed}|ConvertTo-Json -Compress
+$resumedError = if (!$resumed.ok -and $Error.Count) {
+  $failure = $Error[0]
+  $detail = $failure.FullyQualifiedErrorId + ': ' + $failure.Exception.Message
+  $detail.Substring(0, [Math]::Min(512, $detail.Length))
+} else { '' }
+@{paused=$paused;resumed=$resumed;pausedError=$pausedError;resumedError=$resumedError}|ConvertTo-Json -Compress
 `,
     );
-    const result = JSON.parse(
-      execFileSync(
-        'powershell.exe',
-        [
-          '-NoLogo',
-          '-NoProfile',
-          '-NonInteractive',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-File',
-          wrapper,
-        ],
-        { encoding: 'utf8', windowsHide: true, timeout: 20000 },
+    const result = observedRecord(
+      JSON.parse(
+        execFileSync(
+          'powershell.exe',
+          [
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            wrapper,
+          ],
+          { encoding: 'utf8', windowsHide: true, timeout: 20000 },
+        ),
       ),
     );
-    assert.equal(result.paused.ok, true);
-    assert.equal(result.paused.state, 'suspended');
-    assert.equal(result.paused.changed, true);
-    assert.equal(result.resumed.ok, true);
-    assert.equal(result.resumed.state, 'running');
-    assert.equal(result.resumed.changed, true);
+    const paused = observedRecord(result.paused),
+      resumed = observedRecord(result.resumed);
+    assert.equal(
+      paused.ok,
+      true,
+      JSON.stringify({ reply: paused, fixtureError: result.pausedError }),
+    );
+    assert.equal(paused.state, 'suspended');
+    assert.equal(paused.changed, true);
+    assert.equal(
+      resumed.ok,
+      true,
+      JSON.stringify({ reply: resumed, fixtureError: result.resumedError }),
+    );
+    assert.equal(resumed.state, 'running');
+    assert.equal(resumed.changed, true);
   },
 );

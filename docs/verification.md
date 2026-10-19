@@ -4,11 +4,11 @@ English · [Chinese](zh-CN/verification.md)
 
 Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
-## Automatic memory recall and SQLite scheduling source verification
+## 0.4.7-beta.8 candidate source verification
 
 The current source adds scoped SQLite/FTS5 recall to admitted agent inputs and migrates schedules to SQLite with backed-up legacy import, revision checks and durable dispatch fences. Isolated regressions cover task/conversation isolation, fresh edits and deletion, bounded reference-only excerpts, voice input acknowledgments, competing processes and recovery across the SQLite/JSON boundary. Unconfirmed execution is not automatically replayed.
 
-Verification passed **2,120 Node tests**, with zero failures or skips and **97.70% line, 90.59% branch and 93.02% function coverage**. Strict Node/UI/test type checks, state contracts, formatting, **78 Python VM-helper tests**, **11 CI-helper tests**, prerequisite/syntax/version checks and the frontend build also passed. Rust behavior was unchanged. These checks used isolated fixtures; they did not deploy a VM service, run a real model or publish an installer. The source version remains `0.4.7-beta.7`.
+Verification passed **2,120 Node tests**, with zero failures or skips and **97.70% line, 90.59% branch and 93.02% function coverage**. Strict Node/UI/test type checks, state contracts, formatting, **78 Python VM-helper tests**, **11 CI-helper tests**, prerequisite/syntax/version checks and the frontend build also passed. Rust behavior was unchanged. These local results describe source commit `15f4c75`, before the release version bump. They used isolated fixtures without deploying a VM service, running a real model or publishing an installer. Tag-specific CI, packaged assets and installation acceptance must be verified separately for the release.
 
 ## 0.4.7-beta.7 source verification
 

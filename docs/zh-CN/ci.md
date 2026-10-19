@@ -8,7 +8,7 @@
 
 `Windows build` 在 Windows 2025 上先执行同样的 Node/Python 检查，再使用 Rust 1.99.1 和 `cargo --locked` 构建 Tauri NSIS 安装包。Rust 缓存仅保存依赖和编译中间文件，不缓存用户数据、VM 镜像或打包输出。没有平台签名密钥也可以构建，当前产物未签名。
 
-严格编译分别检查 Node 源码、浏览器源码与全部 Node 测试。测试按模块放入 `tests/<module>/`，UI 测试对应 `ui/`，共享夹具位于 `tests/support/`，Python VM 测试位于 `tests/vm/`。普通测试与覆盖率共用递归发现逻辑和最多四个隔离测试进程，限制桌面与 CI 资源占用。
+所有维护的应用、浏览器、工具和 Node 测试模块均使用 TypeScript。严格编译分别检查 Node 源码、浏览器源码与全部 Node 测试。测试按模块放入 `tests/<module>/`，UI 测试对应 `ui/`，共享夹具位于 `tests/support/`，Python VM 测试位于 `tests/vm/`。普通测试与覆盖率共用递归发现逻辑和最多四个隔离测试进程，限制桌面与 CI 资源占用。
 
 两个工作流都执行格式、严格 TypeScript 类型及已接入状态域的检查。Windows 打包 job 自己执行这些门禁，标签不能依赖另一个 `CI` 工作流中尚未确认的结果就生成发布草稿。
 
@@ -40,7 +40,7 @@ pwsh -File scripts/ci/check-powershell.ps1
 npm run build
 ```
 
-预检要求 Python 已安装上述 pycdlib 版本，Windows 已安装 OpenSSH Client 与 Git Bash。GitHub 托管的 runner 已提供这些基础工具；预检会在环境不符时明确失败。
+预检要求 Node.js 22.18+ LTS 或 24+，支持原生 TypeScript、内置 SQLite 和 FTS5，并要求 Python 已安装上述 pycdlib 版本、Windows 已安装 OpenSSH Client 与 Git Bash。有时限的内存 FTS5 查询会验证实际运行能力，不能只检查版本字符串；打包与 VM 部署使用同一运行时门禁。GitHub 托管的 runner 已提供这些基础工具，环境不符时会明确失败。
 
 覆盖率报告保存在 `.cache/coverage/`，包含测试全文、LCOV、JSON 和 Markdown 汇总，CI 上传两种平台的报告。覆盖率门禁同时检查全局比例、关键新增模块和缺失的模块；浏览器入口通过渲染及事件测试另行验证。模拟 Bot API 不使用真实 Telegram Token，也不向真实账号发消息。单元覆盖率不能代替真实设备验收。
 
