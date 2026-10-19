@@ -22,6 +22,21 @@ test('task and call diagnostics log transitions once without reading message tex
  store.state.messages=[];observe();store.state.messages=[{id:'new',role:'user',status:'paused'}];observe();assert.equal(entries.at(-1).status,'paused');
 });
 
+test('normal call startup is connecting while unknown provider states remain bounded',()=>{
+ const entries=[],logger={log:(event,metadata)=>entries.push({event,...metadata})},store={state:{messages:[]}},engine={call:null},observe=observeTasks(logger,store,engine);
+ engine.call={id:'call',provider:'subscription',status:'connecting'};observe();observe();
+ engine.call.status='negotiating';observe();engine.call.status='connected';observe();
+ engine.call.status='private unexpected status';observe();engine.call.provider='private-provider';engine.call.status='starting';observe();
+ assert.deepEqual(entries.map(entry=>entry.status),['connecting','negotiating','connected','unknown','starting']);assert.equal(entries.at(-1).provider,'unknown');assert.doesNotMatch(JSON.stringify(entries),/private/);
+});
+
+test('task action diagnostics distinguish registered task routes without retaining IDs or reference queries',()=>{
+ for(const action of ['accept','pause','resume','cancel','priority','dismiss','context'])assert.equal(diagnosticRoute('/api/tasks/private-task-id/'+action+'?turnId=private-turn&conversationId=private-conversation&token=private-token'),'/api/tasks/:id/'+action);
+ for(const action of ['pause','resume','clear-completed'])assert.equal(diagnosticRoute('/api/tasks/'+action+'?token=private-token'),'/api/tasks/'+action);
+ assert.equal(diagnosticRoute('/api/messages/private-message/output-link/resolve?token=private-token'),'/api/messages/:id/output-link/resolve');
+ for(const route of ['/api/tasks/private-task/private-action','/api/tasks/private-task/context/extra','/api/tasks/private-task/contextual'])assert.equal(diagnosticRoute(route),'/api/:unknown');
+});
+
 test('an HTTP response closed before finish logs one metadata-only client abort and detaches both listeners',()=>{
  const entries=[],logger={log:(event,metadata)=>entries.push({event,...metadata})};let now=100;const middleware=observeHttp(logger,{now:()=>now}),res=new EventEmitter();res.statusCode=200;
  middleware({originalUrl:'/api/files/private-filename?token=private-query',method:'GET',body:{text:'private-body'},headers:{authorization:'private-header'}},res,()=>{});now=10421.4;res.emit('close');res.emit('finish');res.emit('close');

@@ -39,7 +39,7 @@ const assistants=f=>f.store.state.messages.filter(message=>message.role==='assis
 const unread=f=>f.store.state.completions.filter(item=>!item.readAt).length;
 async function telegram(t,f){
  const calls=[],fetchImpl=async(url,options={})=>{const method=new URL(url).pathname.split('/').at(-1);calls.push({method,body:options.body});return new Response(JSON.stringify({ok:true,result:method==='getMe'?{id:123456,is_bot:true,username:'quiet_test_bot'}:method==='getWebhookInfo'?{url:''}:{message_id:calls.length}}),{headers:{'Content-Type':'application/json'}});};
- const gateway=new TelegramGateway({dataDir:f.dir,store:f.store,engine:f.engine,attachments:f.attachments,fetchImpl,autoPoll:false});t.after(()=>gateway.close());await gateway.configure({token:'123456:abcdefghijklmnopqrstuvwxyz_123456789',enabled:true});const {code}=await gateway.pair();await gateway.receive({update_id:1,message:{message_id:1,chat:{id:11,type:'private'},from:{id:11,is_bot:false},text:'/start '+code}});await gateway.flush();calls.length=0;return {gateway,calls};
+ const gateway=new TelegramGateway({dataDir:f.dir,store:f.store,engine:f.engine,attachments:f.attachments,fetchImpl,autoPoll:false,mirrorGraceMs:0});t.after(()=>gateway.close());await gateway.configure({token:'123456:abcdefghijklmnopqrstuvwxyz_123456789',enabled:true});const {code}=await gateway.pair();await gateway.receive({update_id:1,message:{message_id:1,chat:{id:11,type:'private'},from:{id:11,is_bot:false},text:'/start '+code}});await gateway.flush();calls.length=0;return {gateway,calls};
 }
 
 test('two actual unfinished automatic rounds stay silent, then the same work completes once with held files',async t=>{

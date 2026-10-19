@@ -57,3 +57,12 @@ test('preview updates follow chat edits and deletion without reading or acknowle
  snapshot.messages[0].text='Updated answer.';hub.observe(snapshot);assert.equal(hub.pending()[0].body,'Updated answer.');snapshot.messages=[];hub.observe(snapshot);assert.equal(hub.pending()[0].body,'');assert.equal(hub.state.records.result.readAt,undefined);assert.equal(hub.state.records.result.deliveredAt,undefined);
  hub.configure(false);assert.deepEqual(hub.pending(),[]);
 });
+
+test('streaming and quiet task updates never create alerts, while an unread delivery is eligible only once',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dant-notify-stream-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));let now=1000;const hub=new NotificationHub(dir,{now:()=>now});hub.configure(true);
+ const snapshot={conversationId:'chat',completions:[],messages:[{id:'stream',role:'assistant',status:'streaming',text:'Working'}],active:{status:'running'},workTasks:[{id:'work',status:'continuing'}]};
+ for(let count=0;count<5;count++){now+=4000;snapshot.messages[0].text+='.';hub.observe(snapshot);assert.deepEqual(hub.pending(),[]);}
+ snapshot.messages[0].status='completed';snapshot.messages[0].text='The verified result is ready.';snapshot.completions.push({id:'finished',at:now,messageIds:['stream']});hub.observe(snapshot);assert.deepEqual(hub.pending(),[]);now+=3001;assert.deepEqual(hub.pending().map(item=>item.id),['finished']);hub.acknowledge('finished');
+ for(let count=0;count<5;count++){now+=4000;snapshot.workTasks[0].updatedAt=now;hub.observe(snapshot);assert.deepEqual(hub.pending(),[]);}
+ hub.configure(false);snapshot.messages.push({id:'question',role:'assistant',status:'completed',text:'Which result should I use?'});snapshot.completions.push({id:'needs-input',at:++now,messageIds:['question']});hub.observe(snapshot);now+=5000;assert.deepEqual(hub.pending(),[],'the same notification preference disables both banner and sound eligibility');
+});

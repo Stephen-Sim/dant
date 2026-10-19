@@ -689,13 +689,15 @@ export class Engine extends EventEmitter {
  }
  registerTaskPlan(args,context){
   const {task,isCurrent}=this.taskPlanScope(context),safe=taskPlanInput(args,{redact:text=>this.redact(text)});if(!isCurrent())throw Error('The task plan no longer belongs to active work.');
+  if(safe.workId&&this.store.state.workTasks.some(record=>record.id===safe.workId&&['review','completed','cancelled','failed'].includes(record.status)))throw Object.assign(Error('Reply to this ended task explicitly to reopen it.'),{code:'work_reply_required'});
   if(task.continuation&&safe.workId!==task.continuation.workId)throw new TaskPlanBindingConflict(task.continuation.workId);
   const waiting=safe.status===undefined?task.planWaitingForUser===true:safe.status==='waiting_user';
   if(waiting&&safe.status===undefined)taskPlanInput({...args,status:'waiting_user'},{redact:text=>this.redact(text)});
   const record=this.store.registerWork({turnId:task.turnId,messageId:this.task(task.messageId)?.role==='user'?task.messageId:null,source:this.active===task?(task.voiceOutput?'voice':'chat'):task.source==='chat'?'chat':'voice',...safe,startedAt:task.workProgress?.startedAt,status:task.credentialWaits||task.awaitingChatInput||waiting?'waiting_user':'running'});
   task.planWaitingForUser=waiting;task.planWaitRevision=(task.planWaitRevision||0)+1;task.workRecord=record;this.markWorkMessages(task);this.change();return {saved:true,workId:record.id,turnId:record.turnId,title:record.title,plan:record.plan,status:record.status};
  }
- markWorkMessages(task){for(const id of new Set([task.messageId,...(task.messageIds||[]),...(task.explicitMessageIds||[])].filter(Boolean))){const message=this.task(id);if(message?.role==='user'&&message.workKind)this.safeUpdate(id,{workKind:'task',...(task.workRecord?{workId:task.workRecord.id}:{})});}}
+ markWorkMessages(task){for(const id of new Set([task.messageId,...(task.messageIds||[]),...(task.explicitMessageIds||[])].filter(Boolean))){const message=this.task(id);if(message?.role==='user'&&message.workKind)this.safeUpdate(id,{workKind:'task',...(task.workRecord?{workId:task.workRecord.id}:{})});}this.refreshTaskContext(task);}
+ refreshTaskContext(task){if(!task.workRecord)return;try{task.workRecord=this.store.refreshProjectContext(task.workRecord.id,{redact:text=>this.redact(text),messageIds:[task.messageId,...(task.messageIds||[]),...(task.explicitMessageIds||[]),...(task.assistantIds||[])].filter(Boolean)})||task.workRecord;}catch{this.emit('notice','The latest task context could not be saved.');}}
  observeRegisteredExecution(task){
   task.workObserved=true;
   if(!task.workRecord){
@@ -727,7 +729,7 @@ export class Engine extends EventEmitter {
    try{return this.store.settleWorkContinuation(task.continuation.workId,task.continuation.attemptId,{status:status==='cancelled'?'cancelled':'paused',submitted:task.startSubmitted===true});}catch(error){this.emit('notice','Could not save unconfirmed task continuation: '+error.message);return null;}
   }
   if(task.workObserved&&!task.workRecord)this.observeRegisteredExecution(task);
-  try{return this.store.updateRegisteredWork(task.turnId,{status:registeredWorkFinalStatus(task,status),executionEnded:true,executionObserved:task.continuationExecutionObserved===true});}catch(error){this.emit('notice','Could not save final task progress: '+error.message);return null;}
+  try{const record=this.store.updateRegisteredWork(task.turnId,{status:registeredWorkFinalStatus(task,status),executionEnded:true,executionObserved:task.continuationExecutionObserved===true});if(record){task.workRecord=record;this.refreshTaskContext(task);}return task.workRecord||record;}catch(error){this.emit('notice','Could not save final task progress: '+error.message);return null;}
  }
  scheduleTool(name,args,context){
   if(!this.scheduler)throw Error('Scheduled tasks are unavailable.');

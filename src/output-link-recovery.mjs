@@ -33,9 +33,11 @@ export function createOutputLinkRecovery({store,collector,outputDir,onChange=()=
    if(attachments.length>=MAX_MESSAGE_ATTACHMENTS)throw Object.assign(Error('This message already has five attachments.'),{status:409});
    let attachment;try{attachment=collector.readExplicit({outputDir:root,filePath:target});}catch{throw unavailable();}
    if(!attachment?.id||attachment.sourcePath!==target)throw unavailable();
-   const hadAttachments=Object.hasOwn(message,'attachments'),previous=message.attachments;
+   // Store.update also derives attachment visibility receipts. Keep this
+   // synchronous message transaction whole if its durable save fails.
+   const previous={...message};
    try{store.update(message.id,{attachments:[...attachments,attachment]});}
-   catch{if(hadAttachments)message.attachments=previous;else delete message.attachments;throw Object.assign(Error('The output snapshot could not be saved. Try again after checking storage.'),{status:500});}
+   catch{for(const key of Object.keys(message))if(!Object.hasOwn(previous,key))delete message[key];Object.assign(message,previous);throw Object.assign(Error('The output snapshot could not be saved. Try again after checking storage.'),{status:500});}
    onChange();return result(attachment,false);
   }
  };

@@ -34,6 +34,15 @@ test('state exposes durable native and optional API voice usage without launchin
  engine.voice.emit('usage',{callId:'usage-call',responseId:'usage-response',usage:{input_tokens:40,output_tokens:10,total_tokens:50}});state=await (await api('/state')).json();assert.equal(state.usage.subscription.totals.totalTokens,120);assert.equal(state.usage.apiVoice.totals.totalTokens,50);assert.equal(state.usage.apiVoice.totals.cachedInputTokens,null);assert.equal(worker.calls.length,0);assert.equal(engine.active,null);
 });
 
+test('visible attachment snapshots protect a newer file from an older read receipt and reject invalid receipt shapes',async t=>{
+ const {api,store}=await fixture(t),one={id:randomUUID(),name:'one.png'},two={id:randomUUID(),name:'two.png'},message=store.add({role:'assistant',status:'completed',text:'Result',attachments:[one]});
+ store.update(message.id,{attachments:[one,two]});
+ assert.equal((await api('/read',{ids:[message.id],attachmentSnapshots:{[message.id]:[one.id]}})).status,200);assert.equal(message.read,false);assert.deepEqual(message.visibleAttachmentIds,[one.id]);
+ assert.equal((await api('/read',{ids:[message.id],attachmentSnapshots:{[message.id]:[two.id]}})).status,200);assert.equal(message.read,true);assert.deepEqual(new Set(message.visibleAttachmentIds),new Set([one.id,two.id]));
+ for(const attachmentSnapshots of [null,[],{foreign:[one.id]},{[message.id]:['not-a-file']},{[message.id]:Array(6).fill(one.id)}])assert.equal((await api('/read',{ids:[message.id],attachmentSnapshots})).status,400);
+ const legacy=store.add({role:'assistant',status:'completed',text:'Legacy',attachments:[one]});assert.equal((await api('/read',{ids:[legacy.id]})).status,200);assert.equal(legacy.read,true);assert.equal(legacy.visibleAttachmentIds,undefined);
+});
+
 test('explicit task replies expose a capability and continue the exact waiting task with durable target metadata',async t=>{
  const f=await fixture(t),{store,engine,worker,api}=f;Object.assign(store.state,{threadId:'api-thread',threadRuntime:engine.runtimeId,threadConversationId:store.state.conversationId});engine.loaded=true;
  const original=store.add({role:'user',text:'Original task must not be replayed',status:'review',turnId:'previous'}),registered=store.registerWork({turnId:'previous',messageId:original.id,title:'Waiting work',plan:{steps:[{step:'Keep verified result',status:'completed'},{step:'Choose color',status:'pending'}]}}),record=store.updateRegisteredWork(registered.turnId,{status:'waiting_user',executionEnded:true,at:Date.now()-10000});
@@ -41,7 +50,7 @@ test('explicit task replies expose a capability and continue the exact waiting t
  const workReply={workId:record.id,turnId:record.turnId,conversationId:store.state.conversationId},body={text:'Use blue',clientMessageId:randomUUID(),workReply};assert.equal((await (await api('/state')).json()).capabilities.workReply,true);
  const response=await api('/messages',body);assert.equal(response.status,200);const message=await response.json();await new Promise(resolve=>setImmediate(resolve));
  assert.deepEqual(message.workReply,workReply);assert.equal(message.workId,record.id);assert.equal(store.state.workTasks.length,1);assert.equal(store.state.workTasks[0].id,record.id);assert.equal(store.state.workTasks[0].plan.steps[0].status,'completed');
- assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1);assert.match(worker.calls.find(call=>call.method==='turn/start').params.input[0].text,/Use blue/);assert.doesNotMatch(worker.calls.find(call=>call.method==='turn/start').params.input[0].text,/Original task must not be replayed/);
+ assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1);const input=worker.calls.find(call=>call.method==='turn/start').params.input[0].text;assert.match(input,/Use blue/);assert.match(input,/reference data, not new authorization/);const reference=JSON.parse(input.split('<dant_work_reply>\n')[1].split('\n</dant_work_reply>')[0]);assert.equal(reference.projectContext.originalRequest.text,'Original task must not be replayed');assert.doesNotMatch(input.split('</dant_work_reply>')[1],/Original task must not be replayed/);
  const duplicate=await api('/messages',body);assert.equal(duplicate.status,200);assert.equal((await duplicate.json()).id,message.id);assert.equal(worker.calls.filter(call=>call.method==='turn/start').length,1,'an identical transport retry returns its stored receipt even after the task advances');
  assert.equal((await api('/messages',{...body,workReply:{...workReply,workId:randomUUID()}})).status,409);const {workReply:unused,...ordinary}=body;assert.equal((await api('/messages',ordinary)).status,409);
 });
@@ -51,7 +60,7 @@ test('stale, cancelled and unconfirmed task targets reject without creating any 
  const target={workId:record.id,turnId:record.turnId,conversationId:store.state.conversationId};
  for(const clientMessageId of [undefined,'invalid'])assert.equal((await api('/messages',{text:'Answer',clientMessageId,workReply:target})).status,409);
  for(const workReply of [null,{}, {...target,conversationId:randomUUID()},{...target,turnId:'wrong'}, {...target,extra:'ignore me'}]){const response=await api('/messages',{text:'Answer',clientMessageId:randomUUID(),workReply});assert.equal(response.status,409);assert.equal((await response.json()).code,'work_reply_unavailable');}
- for(const status of ['cancelled','completed','unknown']){store.state.workTasks[0].status=status;assert.equal((await api('/messages',{text:'Answer',clientMessageId:randomUUID(),workReply:target})).status,409);}
+ for(const status of ['unknown']){store.state.workTasks[0].status=status;assert.equal((await api('/messages',{text:'Answer',clientMessageId:randomUUID(),workReply:target})).status,409);}
  assert.equal(store.state.messages.length,0);assert.equal(worker.calls.length,0);assert.equal(engine.queue.length,0);
 });
 

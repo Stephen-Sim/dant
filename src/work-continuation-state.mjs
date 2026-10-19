@@ -39,8 +39,8 @@ export function continuationEligible(record,{at=Date.now()}={}){
 }
 /** An explicit new human answer may wake an ended task, never an uncertain dispatch. */
 export function workReplyEligible(record,{at=Date.now()}={}){
- if(!record||!['continuing','waiting_user','paused'].includes(record.status)||record.continuation?.dispatch||continuationUnconfirmed(record))return false;
- try{const candidate={...record,status:'continuing',continuation:{nextAt:at,attempts:0,noProgressCount:0,lastCheckpoint:workContinuationCheckpoint(record.plan)}};return continuationEligible(candidate,{at});}catch{return false;}
+ if(!record||!['continuing','waiting_user','paused','failed','review','completed','cancelled'].includes(record.status)||record.continuation?.dispatch||continuationUnconfirmed(record))return false;
+ try{const plan=record.plan&&{...record.plan,steps:record.plan.steps.map((step,index)=>index===0&&record.plan.steps.every(item=>item.status==='completed')?{...step,status:'pending'}:step)},candidate={...record,plan,status:'continuing',continuation:{nextAt:at,attempts:0,noProgressCount:0,lastCheckpoint:workContinuationCheckpoint(record.plan)}};return continuationEligible(candidate,{at});}catch{return false;}
 }
 export function restoreWorkContinuation(record,raw){
  const state=safeWorkContinuation(raw),dispatch=state?.dispatch,owner=dispatch?.turnId||dispatch?.fromTurnId;

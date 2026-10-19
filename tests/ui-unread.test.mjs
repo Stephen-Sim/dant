@@ -60,7 +60,7 @@ test('durable unread UI counts only completed unseen assistant messages, in both
 });
 
 test('only foreground visible bubbles receive a receipt after a continuous viewport dwell',()=>{
- const f=fixture();f.c.updateRead();f.advance(449);assert.equal(f.requests.length,0);f.advance(1);assert.deepEqual(f.requests,[{route:'/read',body:{ids:['a']}}]);f.advance(1000);f.c.updateRead();f.advance(500);assert.equal(f.requests.length,1,'pending acknowledgements are not submitted repeatedly');assert.equal(f.c.state.messages[0].read,false,'the request itself does not fabricate a durable read flag');
+ const f=fixture();f.c.updateRead();f.advance(449);assert.equal(f.requests.length,0);f.advance(1);assert.deepEqual(f.requests,[{route:'/read',body:{ids:['a'],attachmentSnapshots:{a:[]}}}]);f.advance(1000);f.c.updateRead();f.advance(500);assert.equal(f.requests.length,1,'pending acknowledgements are not submitted repeatedly');assert.equal(f.c.state.messages[0].read,false,'the request itself does not fabricate a durable read flag');
  f.c.state.messages[0].read=true;f.c.updateRead();assert.equal(f.timers.size,0);
 });
 
@@ -81,5 +81,21 @@ test('jump to first unread scrolls and focuses the bubble without bypassing visi
 });
 
 test('failed read receipts preserve unread state and retry only after another visibility check',async()=>{
- const f=fixture();f.fail=true;f.c.updateRead();f.advance(450);await settle();assert.equal(f.requests.length,1);assert.equal(f.c.unreadMessages().length,1);f.c.readVisibility.visible=false;f.advance(1000);f.advance(500);assert.equal(f.requests.length,1);f.fail=false;f.c.readVisibility.visible=true;f.c.updateRead();f.advance(450);assert.equal(f.requests.length,2);assert.deepEqual(f.requests.at(-1),{route:'/read',body:{ids:['a']}});
+ const f=fixture();f.fail=true;f.c.updateRead();f.advance(450);await settle();assert.equal(f.requests.length,1);assert.equal(f.c.unreadMessages().length,1);f.c.readVisibility.visible=false;f.advance(1000);f.advance(500);assert.equal(f.requests.length,1);f.fail=false;f.c.readVisibility.visible=true;f.c.updateRead();f.advance(450);assert.equal(f.requests.length,2);assert.deepEqual(f.requests.at(-1),{route:'/read',body:{ids:['a'],attachmentSnapshots:{a:[]}}});
+});
+
+test('new attachments restart the viewport dwell and read receipts contain only the observed attachment revision',()=>{
+ const f=fixture(),first='10000000-0000-4000-8000-000000000001',second='10000000-0000-4000-8000-000000000002';
+ Object.assign(f.c.state.messages[0],{visibleAt:10,visibleAttachmentIds:[],attachments:[{id:first}]});assert.equal(f.c.unreadMessages().length,1,'new unseen attachments override an older text receipt');
+ f.c.updateRead();f.advance(300);f.c.state.messages[0].attachments.push({id:second});f.c.updateRead();f.advance(449);assert.equal(f.requests.length,0);f.advance(1);
+ assert.deepEqual(f.requests,[{route:'/read',body:{ids:['a'],attachmentSnapshots:{a:[first,second]}}}]);
+});
+
+test('an in-flight receipt cannot prevent a later attachment from receiving its own visibility check',async()=>{
+ const f=fixture(),pending=deferred(),first='10000000-0000-4000-8000-000000000001',second='10000000-0000-4000-8000-000000000002';
+ Object.assign(f.c.state.messages[0],{attachments:[{id:first}],visibleAttachmentIds:[]});f.c.post=(route,body)=>{f.requests.push({route,body:structuredClone(body)});return pending.promise;};
+ f.c.updateRead();f.advance(450);assert.deepEqual(f.requests[0].body.attachmentSnapshots,{a:[first]});
+ Object.assign(f.c.state.messages[0],{read:false,visibleAt:20,visibleAttachmentIds:[first],attachments:[{id:first},{id:second}]});f.c.updateRead();f.advance(500);assert.equal(f.requests.length,1);
+ pending.resolve({ok:true});await settle();f.advance(450);assert.equal(f.requests.length,2);assert.deepEqual(f.requests[1].body.attachmentSnapshots,{a:[first,second]});
+ f.c.state.messages[0].read=true;await settle();f.c.updateRead();
 });

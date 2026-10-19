@@ -15,9 +15,9 @@ function setup({language='en',ongoing,registered=true,ephemeral=false,request}={
  return {document,state,actions,getModel,render,calls,toasts};
 }
 
-test('current X and Cancel current work both require confirmation and retain exact cancelled history without touching call media',async()=>{
- for(const language of ['en','zh'])for(const selector of ['.progress-cancel','.current-work-cancel']){
-  const app=setup({language}),beforeCall=structuredClone(app.state.call);await app.document.querySelector(selector).onclick();
+test('the compact registered current X requires confirmation and retains exact cancelled history without touching call media',async()=>{
+ for(const language of ['en','zh']){
+  const app=setup({language}),beforeCall=structuredClone(app.state.call);assert.equal(app.document.querySelectorAll('[data-task-cancel]').length,1);await app.document.querySelector('.progress-cancel').onclick();
   assert.equal(app.calls.length,0);assert.match(app.document.querySelector('[role=alertdialog]').textContent,language==='en'?/Recent tasks as Cancelled/:/最近的任务.*已取消/);assert.equal(app.document.querySelector('project'),null);
   await app.document.querySelector('[data-progress-task-cancel-confirm]').onclick();
   assert.deepEqual(app.calls,[['work','/tasks/work/cancel',{kind:'work',turnId:'turn',callId:'owner-call'}]]);assert.equal(app.document.querySelector('.current-work'),null);assert.equal(app.getModel().ongoing.length,0);assert.equal(app.getModel().recent[0].status,'cancelled');assert.equal(app.getModel().completedCount,0);assert.deepEqual(app.state.call,beforeCall);assert.equal(app.state.messages.length,1);assert.equal(app.state.workTasks.length,1);
@@ -32,9 +32,9 @@ test('inactive ongoing work cancels into recent history while a historical task 
  }
 });
 
-test('cancellation targets the actual task, preparation message or ephemeral native turn',async()=>{
+test('legacy bottom cancellation targets the actual task, preparation message or ephemeral native turn',async()=>{
  for(const entry of [{registered:false,expected:{kind:'task',turnId:'turn',callId:'owner-call'},id:'message'},{registered:false,ephemeral:true,expected:{kind:'active',turnId:'turn',callId:'owner-call'},id:'current'},{registered:false,preparing:true,expected:{kind:'task',turnId:null,callId:'owner-call'},id:'message'}]){
-  const app=setup(entry);if(entry.preparing){app.state.active.turnId=null;delete app.state.messages[0].turnId;app.render();}await app.document.querySelector('[data-task-cancel]').onclick();await app.document.querySelector('[data-progress-task-cancel-confirm]').onclick();assert.deepEqual(app.calls,[[entry.id,'/tasks/'+entry.id+'/cancel',entry.expected]]);
+  const app=setup(entry);if(entry.preparing){app.state.active.turnId=null;delete app.state.messages[0].turnId;app.render();}assert.equal(app.document.querySelectorAll('[data-task-cancel]').length,2);await app.document.querySelector('.current-work-cancel').onclick();await app.document.querySelector('[data-progress-task-cancel-confirm]').onclick();assert.deepEqual(app.calls,[[entry.id,'/tasks/'+entry.id+'/cancel',entry.expected]]);
  }
 });
 
@@ -66,6 +66,6 @@ test('a historical dismiss confirmation cannot hide a task that became ongoing',
 });
 
 test('main uses task-scoped progress cancellation controls and refreshes failed cancellation without replay',async()=>{
- const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),renderStart=source.indexOf('function renderProgress(){'),renderEnd=source.indexOf('function renderModal(){',renderStart),progress=source.slice(renderStart,renderEnd);assert.doesNotMatch(progress,/data-action="stop"/);assert.match(progress,/renderActiveWork\(model,\{pending:busy\}\)/);
+ const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8'),renderStart=source.indexOf('function renderProgress(){'),renderEnd=source.indexOf('function renderModal(){',renderStart),progress=source.slice(renderStart,renderEnd);assert.doesNotMatch(progress,/data-action="stop"/);assert.match(progress,/renderActiveWork\(model,\{pending:busy,planOpen:workDisclosures\.isOpen\(active\.id\)\}\)/);
  const start=source.indexOf('async function taskRequest('),end=source.indexOf('function resumeTask(',start),requests=[],reads=[],context={state:null,pendingActions:new Set(),render(){},post:async(...args)=>{requests.push(args);throw Error('Unconfirmed');},api:async route=>{reads.push(route);return {active:{turnId:'turn',status:'unknown'}};}};vm.createContext(context);vm.runInContext(source.slice(start,end),context);await assert.rejects(context.taskRequest('work','/tasks/work/cancel',{kind:'work',turnId:'turn'}),/Unconfirmed/);assert.equal(requests.length,1);assert.deepEqual(reads,['/state']);assert.equal(context.state.active.status,'unknown');assert.equal(context.pendingActions.size,0);
 });

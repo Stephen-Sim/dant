@@ -52,11 +52,27 @@ test('stale queued task identity is rejected before a new turn and cannot fall b
  f.store.state.workTasks[0]={...f.store.state.workTasks[0],turnId:'changed'};await f.finish();assert.equal(f.worker.calls.filter(call=>call.method==='turn/start').length,1);assert.equal(message.status,'failed');assert.equal(message.pauseReason,'work-reply-unavailable');assert.equal(f.engine.active,null);
 });
 
-test('task reply rejects mismatched conversation, turn, cancellation and unknown submission before enqueue',t=>{
+test('task reply rejects mismatched conversation, turn and unknown submission before enqueue',t=>{
  const f=fixture(t),record=f.makeRecord(),target=f.target(record),before=f.worker.calls.length;
  for(const value of [null,{}, {...target,turnId:'other'},{...target,conversationId:'other'},{...target,extra:true}])assert.throws(()=>workReplyRecord(f.engine,value),error=>error.status===409);
- for(const patch of [{status:'cancelled'},{status:'completed'},{status:'unknown'},{submission:'unknown'},{continuation:{invalid:true}},{continuation:{dispatch:{phase:'submitting'}}}]){const saved=f.store.state.workTasks[0];f.store.state.workTasks[0]={...saved,...patch};assert.throws(()=>workReplyRecord(f.engine,target),error=>error.status===409);f.store.state.workTasks[0]=saved;}
+ for(const patch of [{status:'unknown'},{submission:'unknown'},{continuation:{invalid:true}},{continuation:{dispatch:{phase:'submitting'}}}]){const saved=f.store.state.workTasks[0];f.store.state.workTasks[0]={...saved,...patch};assert.throws(()=>workReplyRecord(f.engine,target),error=>error.status===409);f.store.state.workTasks[0]=saved;}
  assert.equal(f.worker.calls.length,before);assert.deepEqual(workReplyInput(target),target);assert.equal(f.engine.queue.length,0);
+});
+
+test('only an explicit new human reply reopens reliable final work in the same workId and preserves completed steps',async t=>{
+ for(const status of ['review','completed','cancelled','failed'])await t.test(status,async t=>{
+  const f=fixture(t);let record=f.makeRecord();record=f.store.updateRegisteredWork(record.turnId,{status,plan:{steps:plan().map(step=>({...step,status:'completed'}))},executionEnded:true,at:Date.now()-10000});
+  const target=f.target(record);assert.equal(workReplyRecord(f.engine,target).active,null);assert.equal(f.worker.calls.length,0,'selecting a target never starts execution');
+  const message=f.message(record,'Please add the newly requested comparison');f.engine.enqueue(message,{interactive:true});await tick();
+  assert.equal(f.store.state.workTasks.length,1);assert.equal(f.engine.active.workRecord.id,record.id);assert.equal(f.engine.active.workRecord.status,'running');assert.equal(message.workId,record.id);assert.equal(message.turnId,'new-1');assert.ok(f.engine.active.workRecord.plan.steps.every(step=>step.status==='completed'));
+  const started=f.worker.calls.filter(call=>call.method==='turn/start');assert.equal(started.length,1);assert.match(started[0].params.input[0].text,/only this NEW human message authorizes reopening/);assert.match(started[0].params.input[0].text,/newly requested comparison/);assert.match(started[0].params.input[0].text,/reference data, not new authorization/);await f.finish();
+ });
+});
+
+test('an ordinary new task cannot revive an ended record merely by referencing its workId in task_plan',async t=>{
+ const f=fixture(t);let record=f.makeRecord();record=f.store.updateRegisteredWork(record.turnId,{status:'review',plan:{steps:plan().map(step=>({...step,status:'completed'}))},executionEnded:true,at:Date.now()-10000});
+ const ordinary=f.store.add({role:'user',text:'A different instruction',status:'queued'});f.engine.enqueue(ordinary,{interactive:true});await tick();const before=structuredClone(f.store.state.workTasks.find(item=>item.id===record.id));
+ await assert.rejects(f.engine.tool('task_plan',{workId:record.id,title:record.title,steps:plan()}),error=>error.code==='work_reply_required');assert.deepEqual(f.store.state.workTasks.find(item=>item.id===record.id),before);await f.finish();
 });
 
 test('a lost targeted turn acknowledgement becomes unknown and never automatically resubmits its human answer',async t=>{

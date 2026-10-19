@@ -56,19 +56,21 @@ async function responseBytes(response,limit){
 
 /** A disabled-by-default VM gateway. Only this private file contains the bot token. */
 export class TelegramGateway extends EventEmitter{
- constructor({dataDir,store,engine,attachments,fetchImpl=fetch,now=Date.now,delay=sleep,autoPoll=true,pollTimeout=25,retryBaseMs=1000,renameSync=fs.renameSync,platform=process.platform,pause=ms=>Atomics.wait(pauseBuffer,0,0,ms)}={}){
+ constructor({dataDir,store,engine,attachments,fetchImpl=fetch,now=Date.now,delay=sleep,autoPoll=true,pollTimeout=25,retryBaseMs=1000,mirrorGraceMs=2500,renameSync=fs.renameSync,platform=process.platform,pause=ms=>Atomics.wait(pauseBuffer,0,0,ms)}={}){
   super();if(!dataDir||!store||!engine||!attachments)throw Error('Telegram requires VM storage, engine and attachment storage');
+  if(!Number.isFinite(mirrorGraceMs)||mirrorGraceMs<0||mirrorGraceMs>30000)throw Error('Invalid Telegram mirror grace period');this.mirrorGraceMs=mirrorGraceMs;
   this.dir=path.resolve(dataDir);fs.mkdirSync(this.dir,{recursive:true,mode:0o700});if(fs.lstatSync(this.dir).isSymbolicLink())throw Error('Telegram data directory cannot be a link');
   this.file=path.join(this.dir,'telegram.json');this.store=store;this.engine=engine;this.attachments=attachments;this.fetch=fetchImpl;this.now=now;this.delay=delay;this.autoPoll=autoPoll;this.pollTimeout=pollTimeout;this.retryBaseMs=retryBaseMs;
   this.renameSync=renameSync;this.platform=platform;this.pause=pause;
   this.closed=false;this.connected=false;this.generation=0;this.closeAbort=new AbortController();this.loopAbort=new AbortController();this.mutations=Promise.resolve();
-  this.config={version:1,deliveryVersion:2,enabled:false,token:null,bot:null,owner:null,offset:0,pairing:null,outbox:[],receipts:[],resultKeys:[],lastError:null,pollError:null,lastInboundAt:null,lastOutboundAt:null};
+  this.config={version:1,deliveryVersion:2,forwardMode:'unread',combineReplies:true,enabled:false,token:null,bot:null,owner:null,offset:0,pairing:null,outbox:[],receipts:[],resultKeys:[],lastError:null,pollError:null,lastInboundAt:null,lastOutboundAt:null};
   if(fs.existsSync(this.file)){
    const before=fs.lstatSync(this.file);if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>MAX_CONFIG)throw Error('Telegram configuration must be a bounded regular private file');
    if(process.platform!=='win32')fs.chmodSync(this.file,0o600);
-   let legacyDeliveryHistory=false;const fd=fs.openSync(this.file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));try{const opened=fs.fstatSync(fd);if(opened.ino!==before.ino||opened.dev!==before.dev)throw Error('Telegram configuration changed');const loaded=JSON.parse(readBounded(fd,MAX_CONFIG).toString('utf8'));legacyDeliveryHistory=!Object.hasOwn(loaded,'deliveryVersion')&&Array.isArray(loaded.resultKeys)&&loaded.resultKeys.length>0;Object.assign(this.config,loaded);}finally{fs.closeSync(fd);}
+   let legacyDeliveryHistory=false,forwardingDefaults=false;const fd=fs.openSync(this.file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));try{const opened=fs.fstatSync(fd);if(opened.ino!==before.ino||opened.dev!==before.dev)throw Error('Telegram configuration changed');const loaded=JSON.parse(readBounded(fd,MAX_CONFIG).toString('utf8'));legacyDeliveryHistory=!Object.hasOwn(loaded,'deliveryVersion')&&Array.isArray(loaded.resultKeys)&&loaded.resultKeys.length>0;forwardingDefaults=!Object.hasOwn(loaded,'forwardMode')||!Object.hasOwn(loaded,'combineReplies');Object.assign(this.config,loaded);}finally{fs.closeSync(fd);}
    if(!Array.isArray(this.config.outbox)||!Array.isArray(this.config.receipts)||!Array.isArray(this.config.resultKeys)||this.config.outbox.length>MAX_OUTBOX||!Number.isSafeInteger(this.config.offset)||this.config.offset<0)throw Error('Telegram configuration is invalid');
-   let changed=false;for(const item of this.config.outbox)if(item.status==='sending'){item.status='unknown';item.error='Delivery was interrupted before confirmation and was not resent';changed=true;}
+   if(!['unread','all'].includes(this.config.forwardMode)||typeof this.config.combineReplies!=='boolean')throw Error('Telegram forwarding configuration is invalid');
+   let changed=forwardingDefaults;for(const item of this.config.outbox)if(item.status==='sending'){item.status='unknown';item.error='Delivery was interrupted before confirmation and was not resent';changed=true;}
    for(const receipt of this.config.receipts)if(receipt.status==='processing'){receipt.status='unknown';this.config.lastError='A Telegram update was interrupted; its task was not replayed';changed=true;}
    for(const item of this.config.outbox)if(!item.pairingId){const owner=this.config.owner;if(owner&&item.botId===this.config.bot?.id&&item.chatId===owner.chatId&&item.userId===owner.userId)item.pairingId=owner.pairingId;else{item.status='failed';item.error='The Telegram pairing identity could not be confirmed';}changed=true;}
    if(legacyDeliveryHistory){
@@ -89,7 +91,7 @@ export class TelegramGateway extends EventEmitter{
  words(){return telegramText[this.store.state.settings?.language==='en'?'en':'zh'];}
  status(){
   const c=this.config,issues=c.outbox.filter(item=>['unknown','failed'].includes(item.status)),latest=issues.reduce((previous,item)=>!previous||(validTime(item.failureAt)||validTime(item.lastAttemptAt)||validTime(item.at)||0)>=(validTime(previous.failureAt)||validTime(previous.lastAttemptAt)||validTime(previous.at)||0)?item:previous,null),deliveryError=issues.some(item=>item.error===c.lastError),connectionError=c.enabled&&!this.connected?(c.pollError||(!deliveryError?c.lastError:null)):null;
-  return {enabled:!!c.enabled,configured:!!c.token,connected:this.connected,bot:c.bot?{id:c.bot.id,username:c.bot.username}:null,paired:!!c.owner,owner:c.owner?{chatId:c.owner.chatId,userId:c.owner.userId}:null,pairing:c.pairing&&c.pairing.expiresAt>this.now()?{expiresAt:c.pairing.expiresAt}:null,lastError:c.lastError?this.safe(c.lastError):null,connectionError:connectionError?this.safe(connectionError):null,lastInboundAt:c.lastInboundAt||null,lastOutboundAt:c.lastOutboundAt||null,pendingOutbound:c.outbox.filter(item=>['queued','sending'].includes(item.status)).length,delivery:{failed:issues.filter(item=>item.status==='failed').length,unknown:issues.filter(item=>item.status==='unknown').length,lastIssue:latest?{status:latest.status,at:validTime(latest.failureAt)||validTime(latest.lastAttemptAt)||validTime(latest.at),reason:failureReasons.has(latest.failureReason)?latest.failureReason:latest.status==='unknown'?'unconfirmed':'rejected'}:null},sync:{mode:'new-messages',active:!!c.enabled&&!!c.owner&&c.owner.syncVersion===1,historyBackfill:false,edits:false,deletes:false,reactions:false}};
+  return {enabled:!!c.enabled,configured:!!c.token,connected:this.connected,bot:c.bot?{id:c.bot.id,username:c.bot.username}:null,paired:!!c.owner,owner:c.owner?{chatId:c.owner.chatId,userId:c.owner.userId}:null,pairing:c.pairing&&c.pairing.expiresAt>this.now()?{expiresAt:c.pairing.expiresAt}:null,lastError:c.lastError?this.safe(c.lastError):null,connectionError:connectionError?this.safe(connectionError):null,lastInboundAt:c.lastInboundAt||null,lastOutboundAt:c.lastOutboundAt||null,pendingOutbound:c.outbox.filter(item=>['queued','sending'].includes(item.status)).length,delivery:{failed:issues.filter(item=>item.status==='failed').length,unknown:issues.filter(item=>item.status==='unknown').length,lastIssue:latest?{status:latest.status,at:validTime(latest.failureAt)||validTime(latest.lastAttemptAt)||validTime(latest.at),reason:failureReasons.has(latest.failureReason)?latest.failureReason:latest.status==='unknown'?'unconfirmed':'rejected'}:null},sync:{mode:'new-messages',forwardMode:c.forwardMode,combineReplies:c.combineReplies,readState:'independent',active:!!c.enabled&&!!c.owner&&c.owner.syncVersion===1,historyBackfill:false,edits:false,deletes:false,reactions:false}};
  }
  connectionRestored(){
   const changed=!this.connected||!!this.config.pollError;this.connected=true;
@@ -127,14 +129,21 @@ export class TelegramGateway extends EventEmitter{
   if(enabled){const webhook=await this.api('getWebhookInfo',{}, {token,signal:this.closeAbort.signal});if(webhook?.url)throw Error('This bot already has a webhook. Remove it in the service currently using the bot before enabling dant');}
   return {id:String(me.id),username:me.username};
  }
- configure({token,enabled}={}){return this.mutate(async()=>{
+ configure({token,enabled,forwardMode,combineReplies}={}){return this.mutate(async()=>{
   if(enabled!==undefined&&typeof enabled!=='boolean')throw Error('Telegram enabled must be a boolean');
   if(token!==undefined&&(typeof token!=='string'||token.length>512||! /^\d{5,20}:[A-Za-z0-9_-]{20,200}$/.test(token)))throw Error('Enter a valid Telegram bot token');
+  if(forwardMode!==undefined&&!['unread','all'].includes(forwardMode))throw Error('Telegram forwarding mode must be unread or all');
+  if(combineReplies!==undefined&&typeof combineReplies!=='boolean')throw Error('Telegram combine replies must be a boolean');
+  if(token===undefined&&enabled===undefined){
+   const previous={forwardMode:this.config.forwardMode,combineReplies:this.config.combineReplies};Object.assign(this.config,{forwardMode:forwardMode??previous.forwardMode,combineReplies:combineReplies??previous.combineReplies});
+   try{this.save();}catch(error){Object.assign(this.config,previous);throw error;}this.change();this.kickOutbound();return this.status();
+  }
   const nextToken=token??this.config.token,nextEnabled=enabled??this.config.enabled;if(nextEnabled&&!nextToken)throw Error('Configure a Telegram bot token before enabling it');
   const bot=nextToken&&(token!==undefined||nextEnabled)?await this.verify(nextToken,nextEnabled):this.config.bot;
   await this.stopLoops();
-  if(nextToken!==this.config.token)Object.assign(this.config,{owner:null,offset:0,pairing:null,outbox:[],receipts:[],resultKeys:[]});
-  Object.assign(this.config,{token:nextToken,bot,enabled:nextEnabled,lastError:null,pollError:null});this.save();this.change();this.start();return this.status();
+  const previous=this.config;this.config={...previous,token:nextToken,bot,enabled:nextEnabled,forwardMode:forwardMode??previous.forwardMode,combineReplies:combineReplies??previous.combineReplies,lastError:null,pollError:null};
+  if(nextToken!==previous.token)Object.assign(this.config,{owner:null,offset:0,pairing:null,outbox:[],receipts:[],resultKeys:[]});
+  try{this.save();}catch(error){this.config=previous;this.start();throw error;}this.change();this.start();return this.status();
  });}
  pair(){return this.mutate(async()=>{
   if(!this.config.enabled||!this.config.token||!this.config.bot)throw Error('Enable a verified Telegram bot before pairing');if(this.config.owner)throw Error('Disconnect the current Telegram owner before pairing another');
@@ -292,7 +301,7 @@ export class TelegramGateway extends EventEmitter{
  safeText(text){return this.config.token?String(text).split(this.config.token).join('[redacted]'):String(text);}
  queue(item){
   if(!this.config.owner)return false;if(this.config.outbox.some(prior=>prior.id===item.id))return true;
-  while(this.config.outbox.length>=MAX_OUTBOX){const index=this.config.outbox.findIndex(prior=>prior.status==='sent');if(index<0){this.config.lastError='Telegram delivery queue is full; new output was not sent';return false;}this.config.outbox.splice(index,1);}
+  while(this.config.outbox.length>=MAX_OUTBOX){const index=this.config.outbox.findIndex(prior=>['sent','suppressed'].includes(prior.status));if(index<0){this.config.lastError='Telegram delivery queue is full; new output was not sent';return false;}this.config.outbox.splice(index,1);}
   this.config.outbox.push({...item,botId:this.config.bot.id,chatId:this.config.owner.chatId,userId:this.config.owner.userId,pairingId:this.config.owner.pairingId,status:'queued',attempts:0,at:this.now()});
   let accepted=true;if(Buffer.byteLength(JSON.stringify(this.config))>MAX_CONFIG-256*1024){this.config.outbox.pop();this.config.lastError='Telegram delivery queue reached its byte limit; new output was not sent';accepted=false;}this.save();return accepted;
  }
@@ -314,10 +323,18 @@ export class TelegramGateway extends EventEmitter{
  queueMirrorBatch(items){
   const owner=this.config.owner;if(!owner)return false;
   const old=this.config.outbox,next=[...old],ids=new Set(next.map(item=>item.id)),additions=items.filter(item=>!ids.has(item.id));
-  while(next.length+additions.length>MAX_OUTBOX){const index=next.findIndex(item=>item.status==='sent');if(index<0){this.config.lastError='Telegram delivery queue is full; new chat messages are waiting';return false;}next.splice(index,1);}
-  for(const item of additions)next.push({...item,botId:this.config.bot.id,chatId:owner.chatId,userId:owner.userId,pairingId:owner.pairingId,status:'queued',attempts:0,at:this.now()});
+  while(next.length+additions.length>MAX_OUTBOX){const index=next.findIndex(item=>['sent','suppressed'].includes(item.status));if(index<0){this.config.lastError='Telegram delivery queue is full; new chat messages are waiting';return false;}next.splice(index,1);}
+  for(const item of additions)next.push({...item,botId:this.config.bot.id,chatId:owner.chatId,userId:owner.userId,pairingId:owner.pairingId,status:'queued',attempts:0,at:this.now(),...(item.mirrorRole==='assistant'?{notBefore:this.now()+this.mirrorGraceMs}:{})});
   if(Buffer.byteLength(JSON.stringify({...this.config,outbox:next}))>MAX_CONFIG-256*1024){this.config.lastError='Telegram delivery queue reached its byte limit; new chat messages are waiting';return false;}
   this.config.outbox=next;try{this.save();}catch(error){this.config.outbox=old;throw error;}return true;
+ }
+ suppressMirror(message,kind,attachmentId){
+  const marker=message?.telegramMirror;if(marker?.pairingId===this.config.owner?.pairingId&&(kind==='text'?marker.text==='suppressed':marker.files?.some(file=>file.id===attachmentId&&file.status==='suppressed')))return true;
+  if(this.config.forwardMode!=='unread')return false;
+  if(message?.role==='user')return true;if(message?.role!=='assistant')return false;
+  // A later file can make the bubble unread again. Exact observed attachment
+  // IDs remain evidence for older files; a legacy text receipt proves no file.
+  return kind==='text'?message.read===true:Array.isArray(message.visibleAttachmentIds)&&message.visibleAttachmentIds.includes(attachmentId);
  }
  scanMirrors(){
   const owner=this.config.owner,tasks=new Map(this.store.state.messages.filter(message=>message.role==='user').map(message=>[message.id,message]));
@@ -331,13 +348,16 @@ export class TelegramGateway extends EventEmitter{
     if(marker.text==='scheduling')marker.text='unknown';marker.files=marker.files.map(file=>file.status==='scheduling'?{...file,status:'unknown'}:file);
     this.store.update(message.id,{telegramMirror:marker});for(const item of this.config.outbox)if(item.deliveryId===group&&item.status==='queued'){item.status='failed';item.error='Chat mirror scheduling was interrupted; it was not repeated';}this.config.lastError='Telegram chat mirror scheduling was interrupted; check delivery before resending';this.save();continue;
    }
-   const text=typeof message.text==='string'?message.text:'',files=(Array.isArray(message.attachments)?message.attachments:[]).slice(0,MAX_MESSAGE_ATTACHMENTS),newText=!!text&&!marker.text||marker.text==='pending',pendingFiles=files.filter(file=>typeof file?.id==='string'&&!marker.files.some(prior=>prior.id===file.id&&prior.status!=='pending'));
+   const text=typeof message.text==='string'?message.text:'',files=(Array.isArray(message.attachments)?message.attachments:[]).slice(0,MAX_MESSAGE_ATTACHMENTS);let newText=!!text&&!marker.text||marker.text==='pending',pendingFiles=files.filter(file=>typeof file?.id==='string'&&!marker.files.some(prior=>prior.id===file.id&&prior.status!=='pending'));
    if(!newText&&!pendingFiles.length)continue;
    // A previous ambiguous component freezes this message, including files
    // appended later; receiving new content never authorizes a resend.
    if(marker.text==='unknown'||marker.files.some(file=>file.status==='unknown')||this.config.outbox.some(item=>item.deliveryId===group&&item.status==='unknown'))continue;
-   const items=[];if(newText){const value=message.role==='user'?this.words().desktop+':\n'+text:telegramMirrorText(text);for(const [index,chunk]of splitTelegramText(this.safeText(value)).entries())items.push({id:group+':text:'+index,kind:'text',text:chunk,deliveryId:group,localMessageId:message.id});}
-   for(const file of pendingFiles)items.push({id:group+':file:'+file.id,kind:'document',attachmentId:file.id,deliveryId:group,localMessageId:message.id,...(message.role==='user'?{caption:this.words().desktop}:{})});
+   let suppressed=false;if(newText&&this.suppressMirror(message,'text')){marker.text='suppressed';newText=false;suppressed=true;}
+   pendingFiles=pendingFiles.filter(file=>{if(!this.suppressMirror(message,'document',file.id))return true;const prior=marker.files.find(item=>item.id===file.id);if(prior)prior.status='suppressed';else marker.files.push({id:file.id,status:'suppressed'});suppressed=true;return false;});
+   if(suppressed)this.store.update(message.id,{telegramMirror:marker});if(!newText&&!pendingFiles.length)continue;
+   const items=[];if(newText){const value=message.role==='user'?this.words().desktop+':\n'+text:telegramMirrorText(text);for(const [index,chunk]of splitTelegramText(this.safeText(value)).entries())items.push({id:group+':text:'+index,kind:'text',text:chunk,deliveryId:group,localMessageId:message.id,mirrorRole:message.role});}
+   for(const file of pendingFiles)items.push({id:group+':file:'+file.id,kind:'document',attachmentId:file.id,deliveryId:group,localMessageId:message.id,mirrorRole:message.role,...(message.role==='user'?{caption:this.words().desktop}:{})});
    if(newText)marker.text='scheduling';for(const file of pendingFiles){const prior=marker.files.find(item=>item.id===file.id);if(prior)prior.status='scheduling';else marker.files.push({id:file.id,status:'scheduling'});}
    this.store.update(message.id,{telegramMirror:marker});const accepted=this.queueMirrorBatch(items),status=accepted?'scheduled':'pending';
    if(newText)marker.text=status;marker.files=marker.files.map(file=>file.status==='scheduling'?{...file,status}:file);this.store.update(message.id,{telegramMirror:marker});
@@ -374,35 +394,76 @@ export class TelegramGateway extends EventEmitter{
   }
  }
  kickOutbound(){if(this.autoPoll&&!this.closed&&this.config.enabled&&this.config.owner)void this.flush().catch(()=>this.fail('Telegram output could not be delivered'));}
+ clearOutboundWake(){clearTimeout(this.outboundTimer);this.outboundTimer=null;}
+ scheduleOutboundWake(at){
+  this.clearOutboundWake();if(!this.autoPoll||this.closed||!this.config.enabled||!this.config.owner||!Number.isFinite(at))return;
+  this.outboundTimer=setTimeout(()=>{this.outboundTimer=null;this.kickOutbound();},Math.max(1,Math.min(30000,at-this.now())));this.outboundTimer.unref?.();
+ }
+ mirrorRole(item){return item.localMessageId?this.store.state.messages.find(message=>message.id===item.localMessageId)?.role||item.mirrorRole:null;}
+ prepareQueued(){
+  let changed=false;const owner=this.config.owner;
+  for(const item of this.config.outbox){
+   if(item.status!=='queued')continue;
+   if(item.botId!==this.config.bot.id||item.chatId!==owner.chatId||item.userId!==owner.userId||item.pairingId!==owner.pairingId){item.status='failed';item.error='The Telegram pairing changed';changed=true;continue;}
+   if(item.deliveryId&&this.config.outbox.some(prior=>prior.deliveryId===item.deliveryId&&prior.status==='unknown')){item.status='failed';item.error='An earlier part of this reply was unconfirmed; remaining parts were not sent';changed=true;continue;}
+   const message=item.localMessageId&&this.store.state.messages.find(message=>message.id===item.localMessageId),role=message?.role||item.mirrorRole;
+   if(item.localMessageId&&(this.suppressMirror(message,item.kind,item.attachmentId)||this.config.forwardMode==='unread'&&role==='user')){
+    if(message){const marker={...(message.telegramMirror||{}),pairingId:owner.pairingId,files:[...(message.telegramMirror?.files||[])]};if(item.kind==='text')marker.text='suppressed';else{const file=marker.files.find(file=>file.id===item.attachmentId);if(file)file.status='suppressed';else marker.files.push({id:item.attachmentId,status:'suppressed'});}this.store.update(message.id,{telegramMirror:marker});}
+    item.status='suppressed';item.error=null;delete item.failureReason;delete item.failureAt;changed=true;continue;
+   }
+   // Legacy, provably unsent mirror items also get one bounded visibility grace.
+   if(role==='assistant'&&item.localMessageId&&!Object.hasOwn(item,'notBefore')){item.notBefore=this.now()+this.mirrorGraceMs;item.mirrorRole=role;changed=true;}
+  }
+  if(changed)this.save();
+ }
+ nextOutbound(){
+  const now=this.now();let wakeAt=Infinity,waiting=false;
+  for(let index=0;index<this.config.outbox.length;index++){
+   const first=this.config.outbox[index];if(first.status!=='queued')continue;if(waiting&&(first.localMessageId||! /^(?:command:|update:)/.test(first.id)))continue;const items=[first];let length=first.kind==='text'?first.text.length:0,readyAt=validTime(first.notBefore)||0;
+   if(this.config.combineReplies&&first.kind==='text'&&this.mirrorRole(first)==='assistant'){
+    for(let next=index+1;next<this.config.outbox.length;next++){
+     const item=this.config.outbox[next];if(item.status!=='queued'||item.kind!=='text'||this.mirrorRole(item)!=='assistant'||item.pairingId!==first.pairingId||length+2+item.text.length>4096)break;
+     items.push(item);length+=2+item.text.length;readyAt=Math.max(readyAt,validTime(item.notBefore)||0);
+    }
+    // Continuous output cannot postpone one notification indefinitely.
+    readyAt=Math.min(readyAt,(validTime(first.at)||now)+Math.max(10000,this.mirrorGraceMs));
+   }
+   if(readyAt<=now)return {items,wakeAt:null};wakeAt=Math.min(wakeAt,readyAt);waiting=true;
+   // Never send a newer constituent separately while its earlier batch waits.
+   index+=items.length-1;
+  }
+  return {items:[],wakeAt:Number.isFinite(wakeAt)?wakeAt:null};
+ }
+ silentOutbound(items){
+  if(!items.length||items.some(item=>this.mirrorRole(item)!=='assistant'))return false;
+  const first=items[0],index=this.config.outbox.indexOf(first),previous=this.config.outbox.slice(0,index).findLast(item=>item.status==='sent');if(!previous||this.mirrorRole(previous)!=='assistant')return false;
+  const at=validTime(previous.sentAt)||validTime(previous.lastAttemptAt)||validTime(previous.at);return !!at&&this.now()>=at&&this.now()-at<=10000&&(this.config.combineReplies||items.some(item=>item.deliveryId===previous.deliveryId));
+ }
  async drain(){
   for(;;){
    if(this.closed||!this.config.enabled||!this.config.owner||this.loopAbort.signal.aborted)return;
-   let item=this.config.outbox.find(item=>item.status==='queued');if(!item){this.scanResults();item=this.config.outbox.find(item=>item.status==='queued');if(!item)return;}
-   if(item.botId!==this.config.bot.id||item.chatId!==this.config.owner.chatId||item.userId!==this.config.owner.userId||item.pairingId!==this.config.owner.pairingId){item.status='failed';item.error='The Telegram pairing changed';this.save();continue;}
-   if(item.deliveryId&&this.config.outbox.some(prior=>prior.deliveryId===item.deliveryId&&prior.status==='unknown')){item.status='failed';item.error='An earlier part of this reply was unconfirmed; remaining parts were not sent';this.save();continue;}
-   let again=true;
-   while(again){
-    again=false;if(this.closed||!this.config.enabled||this.loopAbort.signal.aborted)return;item.status='sending';item.attempts++;item.lastAttemptAt=this.now();this.save();this.change();let method;
-    try{
-     let delivered;if(item.kind==='text')delivered=await this.api('sendMessage',{chat_id:item.chatId,text:item.text,link_preview_options:{is_disabled:true}});
-     else{const {meta,data}=this.attachments.read(item.attachmentId),type=inspectContent(data,meta.name);method=!item.documentFallback&&data.length<=10000000&&['image/png','image/jpeg'].includes(type)?'sendPhoto':'sendDocument';const form=new FormData();form.set('chat_id',item.chatId);form.set(method==='sendPhoto'?'photo':'document',new Blob([data],{type}),meta.name);if(typeof item.caption==='string')form.set('caption',item.caption);delivered=await this.api(method,form);}
-     if(identifier(delivered?.message_id))item.telegramMessageId=identifier(delivered.message_id);
-     item.status='sent';item.error=null;delete item.failureReason;delete item.failureAt;this.config.lastOutboundAt=this.now();
-    }catch(error){
-     if(method==='sendPhoto'&&error.telegramCode===400&&!error.unknownOutcome&&!item.documentFallback){item.documentFallback=true;item.status='queued';item.error='Telegram rejected the photo format; sending the original file instead';this.save();again=true;}
-     else if(error.telegramCode===429&&Number.isFinite(error.retryAfter)&&error.retryAfter>0&&error.retryAfter<=300&&item.attempts<3){item.status='queued';item.error='Telegram rate limit; waiting before a confirmed-safe retry';this.save();this.change();try{await this.delay(error.retryAfter*1000,this.loopAbort.signal);again=true;}catch{} }
-     else{item.status=error.unknownOutcome?'unknown':'failed';item.error=this.safe(error.message);item.failureAt=this.now();item.failureReason=failureReasons.has(error.telegramReason)?error.telegramReason:telegramFailureReason(error,{phase:item.kind==='text'?'network':method?'network':'attachment'});this.config.lastError=item.error;}
-    }finally{this.save();this.change();}
-   }
+   this.scanResults();this.prepareQueued();const {items,wakeAt}=this.nextOutbound();if(!items.length){this.scheduleOutboundWake(wakeAt);return;}this.clearOutboundWake();
+   const item=items[0],silent=this.silentOutbound(items);for(const part of items){part.status='sending';part.attempts++;part.lastAttemptAt=this.now();part.notificationSilent=silent;}this.save();this.change();let method,retryAfter=null;
+   try{
+    let delivered;if(item.kind==='text')delivered=await this.api('sendMessage',{chat_id:item.chatId,text:items.map(part=>part.text).join('\n\n'),link_preview_options:{is_disabled:true},...(silent?{disable_notification:true}:{})});
+    else{const {meta,data}=this.attachments.read(item.attachmentId),type=inspectContent(data,meta.name);method=!item.documentFallback&&data.length<=10000000&&['image/png','image/jpeg'].includes(type)?'sendPhoto':'sendDocument';const form=new FormData();form.set('chat_id',item.chatId);form.set(method==='sendPhoto'?'photo':'document',new Blob([data],{type}),meta.name);if(typeof item.caption==='string')form.set('caption',item.caption);if(silent)form.set('disable_notification','true');delivered=await this.api(method,form);}
+    for(const part of items){if(identifier(delivered?.message_id))part.telegramMessageId=identifier(delivered.message_id);part.status='sent';part.sentAt=this.now();part.error=null;delete part.failureReason;delete part.failureAt;}this.config.lastOutboundAt=this.now();
+   }catch(error){
+    if(method==='sendPhoto'&&error.telegramCode===400&&!error.unknownOutcome&&!item.documentFallback){item.documentFallback=true;item.status='queued';item.error='Telegram rejected the photo format; sending the original file instead';}
+    else if(error.telegramCode===429&&Number.isFinite(error.retryAfter)&&error.retryAfter>0&&error.retryAfter<=300&&items.every(part=>part.attempts<3)){for(const part of items){part.status='queued';part.error='Telegram rate limit; waiting before a confirmed-safe retry';}retryAfter=error.retryAfter*1000;}
+    else{for(const part of items){part.status=error.unknownOutcome?'unknown':'failed';part.error=this.safe(error.message);part.failureAt=this.now();part.failureReason=failureReasons.has(error.telegramReason)?error.telegramReason:telegramFailureReason(error,{phase:item.kind==='text'?'network':method?'network':'attachment'});}this.config.lastError=item.error;}
+   }finally{this.save();this.change();}
+   // A safe 429 retry must re-evaluate current pairing, policy and read receipts.
+   if(retryAfter!==null){try{await this.delay(retryAfter,this.loopAbort.signal);}catch{return;}}
   }
  }
  flush(){this.scanResults();if(this.outboundTask)return this.outboundTask;const task=Promise.resolve().then(()=>this.drain()).finally(()=>{if(this.outboundTask===task)this.outboundTask=null;});this.outboundTask=task;return task;}
  async stopLoops(){
-  this.generation++;this.loopAbort.abort();clearTimeout(this.flushTimer);this.flushTimer=null;
+  this.generation++;this.loopAbort.abort();clearTimeout(this.flushTimer);this.flushTimer=null;this.clearOutboundWake();
   const pending=[this.loopTask,this.outboundTask];this.loopTask=null;this.outboundTask=null;await Promise.allSettled(pending);this.connected=false;this.loopAbort=new AbortController();
  }
  close(){
-  if(this.closePromise)return this.closePromise;this.closed=true;clearTimeout(this.flushTimer);this.engine.off('change',this.engineListener);this.closeAbort.abort();this.loopAbort.abort();
+  if(this.closePromise)return this.closePromise;this.closed=true;clearTimeout(this.flushTimer);this.clearOutboundWake();this.engine.off('change',this.engineListener);this.closeAbort.abort();this.loopAbort.abort();
   this.closePromise=Promise.allSettled([this.loopTask,this.outboundTask,this.mutations]).then(()=>{this.connected=false;});return this.closePromise;
  }
 }

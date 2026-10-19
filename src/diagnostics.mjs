@@ -21,6 +21,9 @@ const numeric=value=>typeof value==='number'&&Number.isFinite(value)&&Math.abs(v
 const safeError=code=>Object.assign(Error(code),{diagnosticCode:code});
 const sameFile=(left,right)=>left.dev===right.dev&&left.ino===right.ino;
 routes.add('/api/version');routes.add('/api/updates');
+routes.add('/api/tasks/clear-completed');
+for(const action of ['pause','resume','cancel','priority','dismiss','context'])routes.add('/api/tasks/:id/'+action);
+routes.add('/api/messages/:id/output-link/resolve');
 
 // Metadata is an explicit schema. No recursive traversal, coercion, getters,
 // messages, payloads, URLs, headers, or raw exception strings enter the file.

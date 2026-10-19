@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {EventEmitter} from 'node:events';
 import {Diagnostics,DiagnosticLogger} from '../src/diagnostics.mjs';
+import {observeHttp} from '../src/diagnostic-events.mjs';
 
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
 const DAY=86400000,MiB=1024*1024,epoch=Date.parse('2026-10-17T00:00:00.000Z');
@@ -35,6 +37,17 @@ test('events, IDs, route templates, value types and lengths reject accidental ra
  assert.deepEqual(Object.keys(logger.recent()[0]).sort(),['at','event','role']);assert.equal(logger.status().lastError,'LOG_INVALID_EVENT');
  assert.equal(logger.log('http.error',{route:'/api/messages/:id',method:'PATCH',status:409}),true);assert.equal(logger.recent().at(-1).route,'/api/messages/:id');
  assert.equal(logger.log('worker.status',Error('not serialized')),true);const proxy=new Proxy({},{getPrototypeOf(){throw Error('private proxy error');}});assert.equal(logger.log('worker.status',proxy),false);assert.equal(logger.status().lastError,'LOG_WRITE_FAILED');assert.doesNotMatch(JSON.stringify(logger.status()),/private proxy error/);
+});
+
+test('task action route templates survive HTTP observation, persistence and recent reads without sensitive route values',t=>{
+ const {logger}=setup(t),middleware=observeHttp(logger,{now:()=>0}),expected=[];
+ for(const action of ['accept','pause','resume','cancel','priority','dismiss','context']){
+  const res=new EventEmitter();res.statusCode=409;middleware({method:action==='context'?'GET':'POST',originalUrl:'/api/tasks/private-task-id/'+action+'?turnId=private-turn&conversationId=private-conversation&token=private-token',body:{text:'private-reply'}},res,()=>{});res.emit('finish');expected.push('/api/tasks/:id/'+action);
+ }
+ const res=new EventEmitter();res.statusCode=409;middleware({method:'POST',originalUrl:'/api/tasks/clear-completed?token=private-token'},res,()=>{});res.emit('finish');expected.push('/api/tasks/clear-completed');
+ const linkRes=new EventEmitter();linkRes.statusCode=404;middleware({method:'POST',originalUrl:'/api/messages/private-message/output-link/resolve?token=private-token',body:{href:'file:///private-path'}},linkRes,()=>{});linkRes.emit('finish');expected.push('/api/messages/:id/output-link/resolve');
+ assert.deepEqual(logger.recent(100).map(row=>row.route),expected);assert.doesNotMatch(fs.readFileSync(files(logger)[0],'utf8'),/private-/);
+ logger.log('http.request',{route:'/api/tasks/private-task/context',method:'GET',status:409});assert.equal(Object.hasOwn(logger.recent().at(-1),'route'),false);
 });
 
 test('observer diagnostics retain only fixed item schema metadata and safe IDs',t=>{

@@ -1,12 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {MAX_MESSAGE_ATTACHMENTS} from './attachments.mjs';
+import {safeProjectContext,captureProjectContext} from './task-project-context.mjs';
 import {safeCompletionWork,taskPlanInput} from './task-progress.mjs';
 import {continuationTime,continuationId,continuationEligible,continuationUnconfirmed,safeWorkContinuation,restoreWorkContinuation,workContinuationCheckpoint,continuationDelay,workReplyEligible} from './work-continuation-state.mjs';
 const renameRetryCodes=new Set(['EPERM','EACCES','EBUSY']);
 const pauseBuffer=new Int32Array(new SharedArrayBuffer(4));
 export const TASK_STATES=Object.freeze(['draft','accepted','queued','running','waiting_user','pausing','paused','failed','review','completed','cancelled']);
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const attachmentIdPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const attachmentIds=files=>[...new Set((Array.isArray(files)?files:[]).slice(0,MAX_MESSAGE_ATTACHMENTS).map(file=>file?.id).filter(id=>typeof id==='string'&&attachmentIdPattern.test(id)))];
+const visibleAttachmentIds=ids=>[...new Set((Array.isArray(ids)?ids:[]).filter(id=>typeof id==='string'&&attachmentIdPattern.test(id)))].slice(0,MAX_MESSAGE_ATTACHMENTS);
 const progressError=(status,message)=>Object.assign(Error(message),{status});
 const workError=(code,message)=>Object.assign(Error(message),{code});
 const dismissibleStates=new Set(['continuing','paused','failed','review','completed','cancelled']);
@@ -35,12 +40,14 @@ export class Store {
        if(typeof entry.cancelledAt==='number'&&Number.isFinite(entry.cancelledAt)&&entry.cancelledAt>0)restored.cancelledAt=entry.cancelledAt;
       if(['running','pausing','unknown'].includes(restored.status)||restored.status==='waiting_user'&&!restored.executionEndedAt){restored.status='paused';restored.pauseReason='restart';restored.updatedAt=Date.now();}else if(entry.pauseReason)restored.pauseReason=entry.pauseReason;
       if(Object.hasOwn(entry,'continuation'))Object.assign(restored,restoreWorkContinuation(restored,entry.continuation));
+      const projectContext=safeProjectContext(entry.projectContext);if(projectContext)restored.projectContext=projectContext;
       return [restored];}catch{return [];}
     }).slice(-300);
     const lastActiveAt=this.state.presence?.lastActiveAt;this.state.presence={lastActiveAt:typeof lastActiveAt==='number'&&Number.isFinite(lastActiveAt)&&lastActiveAt>0&&lastActiveAt<=8640000000000000?lastActiveAt:null};
     this.state.deletedClientMessageIds=Array.isArray(this.state.deletedClientMessageIds)?[...new Set(this.state.deletedClientMessageIds.filter(id=>typeof id==='string'&&id.length>0&&id.length<=128))].slice(-2000):[];
     for(const entry of this.state.completions)if(Object.hasOwn(entry,'progressPriority')&&!progressPriorities.has(entry.progressPriority))entry.progressPriority='normal';
     for(const m of this.state.messages){
+      if(Object.hasOwn(m,'visibleAttachmentIds')){const current=new Set(attachmentIds(m.attachments));m.visibleAttachmentIds=visibleAttachmentIds(m.visibleAttachmentIds).filter(id=>current.has(id));}
       if(Object.hasOwn(m,'progressPriority')&&!progressPriorities.has(m.progressPriority))m.progressPriority='normal';
       if(m.role==='user'){
         m.receivedAt ??= m.time||Date.now();m.executorConfirmedAt ??= null;
@@ -61,10 +68,26 @@ export class Store {
     }
   }
   add(data){const m={id:randomUUID(),time:Date.now(),reactions:[],read:false,...data};if(m.role==='user'){m.status ||= 'draft';m.receivedAt ??= Date.now();m.executorConfirmedAt ??= null;}this.state.messages.push(m);this.save();return m;}
-  update(id,data){const m=this.state.messages.find(m=>m.id===id);if(!m)throw Error('Message not found');Object.assign(m,data);this.save();return m;}
+  update(id,data){const m=this.state.messages.find(m=>m.id===id);if(!m)throw Error('Message not found');const previousIds=m.role==='assistant'&&m.read===true&&Object.hasOwn(data,'attachments')?new Set(attachmentIds(m.attachments)):null;const added=previousIds&&attachmentIds(data.attachments).some(id=>!previousIds.has(id));Object.assign(m,data);if(added){m.read=false;m.visibleAttachmentIds=visibleAttachmentIds(m.visibleAttachmentIds);}this.save();return m;}
   setTaskState(id,status,patch={}){if(!TASK_STATES.includes(status))throw Error('Invalid task state');return this.update(id,{...patch,status});}
   confirmExecution(id,patch={}){return this.update(id,{...patch,executorConfirmedAt:Date.now()});}
-  markVisible(ids){const selected=new Set(ids);for(const message of this.state.messages)if(message.role==='assistant'&&selected.has(message.id)){message.read=true;message.visibleAt=Date.now();}for(const completion of this.state.completions){if(completion.messageIds.length&&completion.messageIds.every(id=>this.state.messages.find(message=>message.id===id)?.read))completion.readAt ||= Date.now();}this.save();}
+  markVisible(ids,attachmentSnapshots){
+    const selected=new Set(ids),now=Date.now();
+    for(const message of this.state.messages)if(message.role==='assistant'&&selected.has(message.id)){
+      // Older clients acknowledge the text/label only. Preserve their read
+      // behavior without inventing evidence that any attachment was viewed.
+      if(attachmentSnapshots===undefined){message.read=true;message.visibleAt=now;continue;}
+      const current=attachmentIds(message.attachments),seen=new Set(visibleAttachmentIds(message.visibleAttachmentIds));
+      // The client reports the attachment IDs from the version it actually saw.
+      // An older in-flight receipt must never mark a newly appended file read.
+      const snapshot=attachmentSnapshots&&typeof attachmentSnapshots==='object'&&!Array.isArray(attachmentSnapshots)&&Object.hasOwn(attachmentSnapshots,message.id)?attachmentSnapshots[message.id]:null;
+      for(const id of visibleAttachmentIds(snapshot))if(current.includes(id))seen.add(id);
+      message.visibleAttachmentIds=current.filter(id=>seen.has(id));
+      message.read=message.read===true||current.every(id=>seen.has(id));message.visibleAt=now;
+    }
+    for(const completion of this.state.completions){if(completion.messageIds.length&&completion.messageIds.every(id=>this.state.messages.find(message=>message.id===id)?.read))completion.readAt ||= now;}
+    this.save();
+  }
   addCompletion({turnId,messageIds,taskId,work}){if(this.state.completions.some(item=>item.turnId===turnId))return;const completion={id:randomUUID(),turnId,messageIds:[...messageIds],taskId,at:Date.now(),readAt:null},summary=safeCompletionWork(work);if(summary)completion.work=summary;this.state.completions.push(completion);this.state.completions=this.state.completions.slice(-300);this.save();return completion;}
   confirm(id){
     const message=this.state.messages.find(m=>m.id===id&&m.role==='user');if(!message||message.status!=='review')throw Error('Only a task awaiting review can be accepted');
@@ -113,6 +136,7 @@ export class Store {
     try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;
   }
   commitWorkContinuation(index,record){const before=this.state.workTasks,next=[...before];next[index]=record;this.state.workTasks=next;try{this.save();}catch(error){this.state.workTasks=before;throw error;}return record;}
+  refreshProjectContext(workId,options={}){const index=this.state.workTasks.findIndex(record=>record.id===workId);if(index<0)return null;const previous=this.state.workTasks[index],projectContext=captureProjectContext(previous,this.state.messages,options);return this.commitWorkContinuation(index,{...previous,projectContext});}
   claimWorkContinuation(workId,{expectedTurnId,attemptId,at=Date.now(),runtimeId,threadId,humanReply=false}={}){
     const index=this.state.workTasks.findIndex(record=>record.id===workId),previous=this.state.workTasks[index];
     if(!continuationId(workId,128)||!continuationId(attemptId,128)||!continuationId(expectedTurnId)||!continuationTime(at)||typeof runtimeId!=='string'||!runtimeId.trim()||runtimeId.length>512||/[\x00-\x1f\x7f]/.test(runtimeId)||!continuationId(threadId)||previous?.turnId!==expectedTurnId||!(humanReply===true?workReplyEligible(previous,{at}):continuationEligible(previous,{at}))||this.state.workTasks.some(record=>record.continuation?.dispatch?.id===attemptId))throw continuationConflict();
@@ -133,7 +157,7 @@ export class Store {
   bindWorkContinuation(workId,attemptId,{turnId}={}){
     const {index,record,state,dispatch}=this.continuationAttempt(workId,attemptId);
     if(dispatch.phase!=='submitting'||record.status!=='continuing'||!continuationId(turnId)||this.state.workTasks.some(entry=>entry.turnId===turnId||entry.turnIds?.includes(turnId)))throw continuationConflict();
-    const bound={...record,turnId,turnIds:[...new Set([...(record.turnIds||[]),record.turnId,turnId])],status:'running',continuation:{...state,dispatch:{...dispatch,phase:'acknowledged',turnId}},updatedAt:Date.now()};delete bound.executionEndedAt;delete bound.pauseReason;delete bound.progressDismissedAt;
+    const bound={...record,turnId,turnIds:[...new Set([...(record.turnIds||[]),record.turnId,turnId])],status:'running',continuation:{...state,dispatch:{...dispatch,phase:'acknowledged',turnId}},updatedAt:Date.now()};delete bound.executionEndedAt;delete bound.pauseReason;delete bound.progressDismissedAt;delete bound.cancelledAt;
     return this.commitWorkContinuation(index,bound);
   }
   // Only the Engine's retained acknowledged owner may use this after observing

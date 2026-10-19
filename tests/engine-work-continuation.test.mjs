@@ -24,8 +24,8 @@ function ownCurrent({store,engine},source){
  const session={id:'existing-call',turns:new Map([[task.turnId,task]])};engine.nativeVoice={session};return {task,message,scope:{task,isCurrent:()=>engine.nativeVoice.session===session&&session.turns.get(task.turnId)===task}};
 }
 
-test('chat and native owned revisions keep one original work ID after an automatic public plan arrives first',async t=>{
- for(const source of ['chat','voice'])for(const status of ['review','continuing','waiting_user','paused']){
+test('chat and native owned unfinished revisions keep one original work ID after an automatic public plan arrives first',async t=>{
+ for(const source of ['chat','voice'])for(const status of ['continuing','waiting_user','paused']){
   const f=fixture(t),original=oldWork(f.store,status),{task,message,scope}=ownCurrent(f,source);
   f.engine.observeRegisteredPlan(task,steps);const provisional=task.workRecord.id;
   assert.notEqual(provisional,original.id);assert.equal(task.workRecord.provisional,true);assert.equal(message.workId,provisional);
@@ -36,7 +36,7 @@ test('chat and native owned revisions keep one original work ID after an automat
 });
 
 test('an explicit current task cannot be reassigned, and failed atomic continuation leaves its provisional owner and messages intact',t=>{
- const f=fixture(t),original=oldWork(f.store),{task,message}=ownCurrent(f,'chat');f.engine.observeRegisteredPlan(task,steps);
+ const f=fixture(t),original=oldWork(f.store,'continuing'),{task,message}=ownCurrent(f,'chat');f.engine.observeRegisteredPlan(task,steps);
  const provisional=task.workRecord,before=structuredClone(f.store.state.workTasks),save=f.store.save;f.store.save=()=>{throw Error('Storage unavailable');};
  assert.throws(()=>f.engine.registerTaskPlan({workId:original.id,title:'Revision',steps}),/Storage unavailable/);assert.deepEqual(f.store.state.workTasks,before);assert.equal(task.workRecord,provisional);assert.equal(message.workId,provisional.id);f.store.save=save;
  f.engine.registerTaskPlan({title:'A separate explicitly registered task',steps});assert.equal(task.workRecord.provisional,undefined);

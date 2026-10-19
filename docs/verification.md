@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.7-beta.6 source verification
+
+This candidate adds configurable unread-only Telegram forwarding and reply grouping, exact attachment read receipts, saved task context and task reopening, compact task cards, Windows notification sound, inline message timestamps and read-aloud controls in the message menu. Task context preserves bounded, redacted reference records; it does not grant permissions or independently verify previous results. Native speech failures now use stable localized errors and bounded metadata-only diagnostics without spoken text or dictation transcripts.
+
+The final source passed **1,880 JavaScript tests**, with zero failures or skips and **99.26% line, 92.12% branch and 92.86% function coverage**, plus **40 Windows Rust tests**, isolated PowerShell speech preflight/classifier tests and the frontend production build. Synthetic browser previews verified the task cards, inline timestamps and read-aloud menu without playing audio. No live task, call, installation or VM service was changed by these checks. Tag CI, release assets and update-channel acceptance are verified separately during publication.
+
+A read-only recent-log audit found no new task HTTP 400/404 after the Beta5 worker started. Historical startup file reads and cancelled screen requests were classified separately from product failures. Normal call `connecting` transitions and task-operation route templates are now accurately retained in diagnostics. At the audit time, Windows reported zero playback outputs, and VM connections to Telegram failed over both IPv4 and IPv6; these environment conditions are not claimed fixed by this release. Historical unconfirmed Telegram deliveries are not replayed.
+
 ## 0.4.7-beta.5 source verification
 
 This candidate adds replies addressed to an exact retained task, repeating schedules with saved time zones and priority, dated token activity, clearer connection and waiting states, explicit Reconnect service upgrades, an installed-editor application menu and the revised memory refresh control. Isolated regressions cover stale task identities, unknown delivery, retained drafts, repeated schedule claims, missed occurrences, DST, queue ordering, unavailable service capabilities, rollback, private native application discovery and preference recovery. A read-only live audit confirmed that the reported overnight task was waiting for human verification; that audit did not resume it or alter its state.

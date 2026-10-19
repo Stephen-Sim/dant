@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
-import {workProgress,renderWorkTaskHistory} from '../ui/work-progress.js';
+import {workProgress,renderWorkTaskHistory,renderActiveWork} from '../ui/work-progress.js';
 import {createTaskReplyController} from '../ui/task-reply.js';
 
 function fixture({language='en',status='waiting_user'}={}){
@@ -38,7 +38,7 @@ test('stale card controls and changed conversation identities never switch the r
  for(const change of ['turn','conversation','dismissed','removed','cancelled']){
   const app=fixture(),old=app.document.querySelector('[data-task-work-reply="work-a"]');
   if(change==='turn')app.state.workTasks[0].turnId='new-turn';else if(change==='conversation')app.state.conversationId='conversation-b';else if(change==='dismissed')app.state.workTasks[0].progressDismissedAt=2000;else if(change==='removed')app.state.workTasks.shift();else app.state.workTasks[0].status='cancelled';
-  old.click();assert.equal(app.controller.selected,false,change);assert.equal(app.opens,0);assert.match(app.toasts.at(-1),/changed|no longer/);
+  old.click();assert.equal(app.controller.selected,false,change);assert.equal(app.opens,0);assert.match(app.toasts.at(-1),change==='cancelled'?/Update the work computer/:/changed|no longer/);
  }
  const app=fixture();assert.equal(app.controller.select({workId:'work-a',turnId:'turn-b',conversationId:'conversation-a'}),false);assert.equal(app.controller.select({workId:'work-a',turnId:'turn-a',conversationId:'other'}),false);assert.equal(app.controller.select({workId:'work-a',turnId:'turn-a\n',conversationId:'conversation-a'}),false);
 });
@@ -82,5 +82,35 @@ test('old work services without explicit reply capability cannot silently accept
   const app=fixture({language}),target={workId:'work-a',turnId:'turn-a',conversationId:'conversation-a'};app.state.capabilities=capability===undefined?undefined:{workReply:capability};app.render();
   const button=app.document.querySelector('[data-task-work-reply="work-a"]');assert.equal(button.disabled,true);assert.match(button.title,language==='en'?/Update the work computer/:/更新工作电脑服务/);assert.equal(app.controller.select(target),false);assert.match(app.toasts.at(-1),language==='en'?/Update the work computer/:/更新工作电脑服务/);
   assert.equal(app.controller.restore(target),true);assert.deepEqual(app.controller.target,target);assert.throws(()=>app.controller.prepare(),error=>error.code==='task_reply_changed'&&/draft|草稿/.test(error.message));assert.match(app.controller.render(),language==='en'?/Update the work computer/:/更新工作电脑服务/);
+ }
+});
+
+test('terminal task replies select the same saved task and reopen only through the eventual explicit message',()=>{
+ for(const language of ['en','zh'])for(const status of ['review','completed','cancelled','failed']){
+  const app=fixture({language,status});app.state.capabilities.taskReopen=true;app.state.workTasks[0].plan.steps[0].status='completed';app.render();
+  const before=structuredClone(app.state),button=app.document.querySelector('[data-task-work-reply="work-a"]');assert.equal(button.disabled,false,status);assert.equal(button.textContent,language==='en'?'Reply to task':'回复任务');button.click();
+  assert.deepEqual(app.state,before,'choosing a terminal task does not start, replay or reopen it');assert.deepEqual(app.controller.prepare(),{workId:'work-a',turnId:'turn-a',conversationId:'conversation-a'});assert.equal(app.state.active.workId,'live-other');assert.equal(app.state.workTasks[0].status,status);
+  assert.match(app.controller.render(),language==='en'?/Sending this message reopens the task with its saved project context/:/发送这条消息后，将保留已有项目上下文/);assert.equal(app.document.querySelector('[data-task-priority="work-a"]'),null);
+  app.state.capabilities.taskReopen=false;assert.throws(()=>app.controller.prepare(),error=>error.code==='task_reply_changed'&&/Update|更新/.test(error.message));assert.equal(app.controller.target.workId,'work-a');assert.equal(app.composer.draft,'Keep my unsent draft');
+ }
+});
+
+test('active task reply requires a confirmed exact live owner and shares the composer route without steering another task',()=>{
+ const app=fixture({status:'running'});app.state.capabilities.taskReopen=true;app.state.active={workId:'work-a',turnId:'turn-a',status:'running',source:'chat',canSteer:true};delete app.state.workTasks[0].executionEndedAt;
+ let model=app.getModel();assert.equal(model.active.canReply,true);assert.equal(model.active.registered,true);assert.deepEqual(model.active.detailsTarget,{workId:'work-a',turnId:'turn-a',conversationId:'conversation-a'});
+ const document=parseHTML(renderActiveWork(model)).document;assert.equal(document.querySelectorAll('[data-task-work-reply]').length,1,'the compact active card contains one reply action');assert.equal(document.querySelector('.current-work .task-actions [data-task-work-reply]').dataset.taskWorkReply,'work-a');assert.equal(document.querySelector('[data-task-details]').dataset.taskDetails,'work-a');
+ assert.equal(app.controller.select(model.active.replyTarget),true);assert.deepEqual(app.controller.prepare(),{workId:'work-a',turnId:'turn-a',conversationId:'conversation-a'});
+ for(const change of ['no-cap','stopping','not-acknowledged','uncertain','dispatch','takeover']){
+  const other=fixture({status:'running'});other.state.capabilities.taskReopen=change!=='no-cap';other.state.active={workId:'work-a',turnId:'turn-a',status:change==='stopping'?'pausing':'running',source:'chat',canSteer:change!=='not-acknowledged'};
+  if(change==='uncertain')other.state.workTasks[0].submission='unknown';if(change==='dispatch')other.state.workTasks[0].continuation={dispatch:{phase:'submitting'}};if(change==='takeover')other.state.takeover=true;
+  assert.equal(other.getModel().active.canReply,false,change);assert.equal(other.controller.select({workId:'work-a',turnId:'turn-a',conversationId:'conversation-a'}),false,change);
+ }
+ const mismatched=fixture({status:'running'});mismatched.state.capabilities.taskReopen=true;mismatched.state.active={workId:'work-a',turnId:'turn-b',status:'running',canSteer:true};model=mismatched.getModel();assert.equal(model.active.replyTarget,undefined,'a mismatched work ID and turn never gains the other task target');assert.equal(model.queue[0].replyTarget,undefined,'an unregistered queued request cannot invent a persistent task target');
+});
+
+test('registered tasks expose exact details identities before results and legacy call receipts stay chat-only',()=>{
+ for(const language of ['en','zh']){
+  const app=fixture({language}),model=app.getModel(),item=model.items.find(item=>item.id==='work-a'),document=parseHTML(renderWorkTaskHistory(item,model.labels)).document,button=document.querySelector('[data-task-details]');
+  assert.equal(button.textContent,language==='en'?'View task':'查看任务详情');assert.deepEqual({...button.dataset},{taskDetails:'work-a',progressTurn:'turn-a',progressConversation:'conversation-a'});assert.equal(document.querySelector('[data-progress-message]'),null);assert.equal(item.messageId,undefined);
  }
 });

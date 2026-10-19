@@ -6,12 +6,12 @@ import {createChatHistory,historyMessages} from '../ui/chat-history.js';
 import {searchMessages} from '../ui/chat-search.js';
 
 const settle=async()=>{await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));};
-function fixture(language='en'){
+function fixture(language='en',speechOptions={}){
  const {document,Event}=parseHTML('<main id="app"></main>'),app=document.querySelector('#app'),requests=[],toasts=[],navigation=[],state={settings:{language},worker:{status:'online'},messages:[{id:'user',role:'user',text:'Original 中文 text',status:'queued',time:1,attachments:[]},{id:'assistant',role:'assistant',text:'A reply <img src=x onerror=bad>',status:'completed',time:2,attachments:[{name:'Report.pdf'}]}],credentials:{items:[{name:'kept'}]},skills:{items:[{name:'kept'}]},memory:'kept',threadId:'same-thread'};let ui,modal=null,call=false,fail=null,scrolled=null;
  const render=()=>{const template=document.createElement('template');template.innerHTML='<button data-chat-search>Search</button>'+state.messages.map(message=>`<article data-id="${message.id}"><div class="message-actions">${ui.renderActions(message)}</div>${ui.renderEdited(message)}</article>`).join('')+ui.renderSettings()+(ui.renderModal(modal)||'');for(const textarea of template.content.querySelectorAll('textarea')){const decoder=document.createElement('div');decoder.innerHTML=textarea.textContent;textarea.textContent=decoder.textContent;}reconcile(app,template.content);document.querySelectorAll('article').forEach(node=>node.scrollIntoView=options=>{scrolled={id:node.dataset.id,options};});ui.bind();ui.bindModal(modal);document.querySelectorAll('[data-action="close-modal"]').forEach(node=>node.onclick=closeModal);};
  function closeModal(){navigation.push('close');ui.onClose();modal=null;render();}
  const request=async(route,options={})=>{requests.push({route,...structuredClone(options)});if(fail?.(route,options))throw Error('Busy current task');if(route==='/state')return state;if(route==='/history'){state.messages=[];return {cleared:true};}const id=route.split('/').at(-1),message=state.messages.find(item=>item.id===id);if(options.method==='DELETE')state.messages=state.messages.filter(item=>item.id!==id);else if(options.method==='PATCH'){Object.assign(message,{text:options.body.text,editedAt:3});}return {ok:true};};
- ui=createChatHistory({getState:()=>state,request,render,toast:value=>toasts.push(value),openModal:value=>{modal=value;render();},closeModal,revealMessage:id=>{assert.equal(modal,null,'close the search dialog before revealing chat');assert.equal(scrolled,null,'reveal chat before scrolling a search hit');navigation.push('reveal:'+id);render();},document,callActive:()=>call,searchMessages,icon:name=>'<svg>'+name+'</svg>'});render();
+ ui=createChatHistory({getState:()=>state,request,render,toast:value=>toasts.push(value),openModal:value=>{modal=value;render();},closeModal,revealMessage:id=>{assert.equal(modal,null,'close the search dialog before revealing chat');assert.equal(scrolled,null,'reveal chat before scrolling a search hit');navigation.push('reveal:'+id);render();},document,callActive:()=>call,searchMessages,icon:name=>'<svg>'+name+'</svg>',...speechOptions});render();
  return {ui,document,state,requests,toasts,navigation,get modal(){return modal;},get scrolled(){return scrolled;},set call(value){call=value;},set fail(value){fail=value;},render,closeModal,async click(selector){const node=document.querySelector(selector);assert.ok(node,selector);node.dispatchEvent(new Event('click',{bubbles:true}));await settle();},input(selector,value){const node=document.querySelector(selector);node.value=value;node.dispatchEvent(new Event('input',{bubbles:true}));},async submit(){document.querySelector('#message-edit-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await settle();}};
 }
 
@@ -53,4 +53,34 @@ test('search uses current plaintext and attachment names without requests, escap
 
 test('a message removed while its edit dialog is open is reported without a mutation',async()=>{
  const f=fixture();await f.click('[data-message-more="user"]');await f.click('[data-message-edit="user"]');f.state.messages=[];f.render();assert.match(f.document.querySelector('.history-dialog').textContent,/changed or was deleted/);assert.equal(f.document.querySelector('#message-edit-form'),null);assert.equal(f.requests.length,0);
+});
+
+test('read-aloud is an explicit localized assistant menu action and stopping uses the same safe callback',async()=>{
+ for(const language of ['en','zh']){
+  const calls=[];let active=false,f;
+  f=fixture(language,{getSpeechState:message=>({active:active&&message.id==='assistant',disabled:false}),onReadAloud:id=>{assert.equal(f.document.querySelector('.history-menu'),null,'close the menu before beginning or stopping playback');calls.push(id);}});
+  assert.equal(f.document.querySelector('[data-message-speak]'),null);await f.click('[data-message-more="assistant"]');assert.deepEqual(calls,[],'opening the ellipsis never starts playback');let button=f.document.querySelector('[data-message-speak="assistant"]');assert.equal(button.getAttribute('role'),'menuitem');assert.match(button.textContent,language==='en'?/Read aloud/:/朗读/);assert.equal(button.querySelector('svg').textContent,'volume-2');assert.equal(button.disabled,false);
+  f.call=true;f.render();button=f.document.querySelector('[data-message-speak="assistant"]');assert.equal(button.disabled,false,'history mutation guards do not override the supplied speech state');assert.equal(f.document.querySelector('[data-message-remove="assistant"]').disabled,true);await f.click('[data-message-speak="assistant"]');assert.deepEqual(calls,['assistant']);assert.equal(f.requests.length,0);assert.equal(f.modal,null);
+  active=true;await f.click('[data-message-more="assistant"]');button=f.document.querySelector('[data-message-speak="assistant"]');assert.match(button.textContent,language==='en'?/Stop reading/:/停止朗读/);assert.equal(button.querySelector('svg').textContent,'square');await f.click('[data-message-speak="assistant"]');assert.deepEqual(calls,['assistant','assistant']);assert.equal(f.requests.length,0);
+  await f.click('[data-message-more="user"]');assert.equal(f.document.querySelector('[data-message-speak]'),null,'user messages never offer assistant read-aloud');
+ }
+});
+
+test('streaming, removed and changed message state are rechecked when a captured read-aloud action is clicked',async()=>{
+ const calls=[];let blocked=false;
+ const f=fixture('en',{getSpeechState:message=>({active:false,disabled:blocked||message.status==='streaming'}),onReadAloud:id=>calls.push(id)});
+ f.state.messages[1].status='streaming';await f.click('[data-message-more="assistant"]');let button=f.document.querySelector('[data-message-speak]');assert.equal(button.disabled,true);await button.onclick();assert.deepEqual(calls,[]);
+ f.state.messages[1].status='completed';f.render();button=f.document.querySelector('[data-message-speak]');assert.equal(button.disabled,false);blocked=true;await button.onclick();assert.deepEqual(calls,[]);assert.equal(f.document.querySelector('[data-message-speak]').disabled,true);
+ blocked=false;f.render();button=f.document.querySelector('[data-message-speak]');f.state.messages=f.state.messages.filter(message=>message.id!=='assistant');await button.onclick();assert.deepEqual(calls,[]);assert.equal(f.document.querySelector('[data-message-speak]'),null);assert.equal(f.requests.length,0);
+ const current=fixture('en',{getSpeechState:()=>({active:false,disabled:false}),onReadAloud:id=>calls.push(id)});await current.click('[data-message-more="assistant"]');const stale=current.document.querySelector('[data-message-speak]');await current.click('[data-message-more="assistant"]');await stale.onclick();assert.deepEqual(calls,[],'a closed menu cannot replay an old audio action');
+});
+
+test('read-aloud stays absent without both hooks, valid state and assistant text',async()=>{
+ const callback=()=>assert.fail('this menu must not start audio');
+ for(const speechOptions of [{},{onReadAloud:callback},{getSpeechState:()=>({active:false,disabled:false})},{onReadAloud:callback,getSpeechState:()=>null},{onReadAloud:callback,getSpeechState:()=>({active:false})},{onReadAloud:callback,getSpeechState:()=>{throw Error('Private audio diagnostics');}}]){
+  const f=fixture('en',speechOptions);await f.click('[data-message-more="assistant"]');assert.equal(f.document.querySelector('[data-message-speak]'),null);assert.doesNotMatch(f.document.body.textContent,/Private audio/);
+ }
+ for(const patch of [{text:''},{text:'   '},{text:null},{kind:'call'},{role:'user'}]){
+  const f=fixture('en',{onReadAloud:callback,getSpeechState:()=>({active:false,disabled:false})});Object.assign(f.state.messages[1],patch);await f.click('[data-message-more="assistant"]');assert.equal(f.document.querySelector('[data-message-speak]'),null);
+ }
 });

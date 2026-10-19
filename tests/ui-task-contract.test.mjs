@@ -3,31 +3,31 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {parseHTML} from 'linkedom';
-import {workProgress,renderWorkPriority,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory} from '../ui/work-progress.js';
+import {workProgress,renderWorkPriority,renderWorkReply,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory} from '../ui/work-progress.js';
 
 const source=fs.readFileSync(new URL('../ui/main.js',import.meta.url),'utf8');
 const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 function fixture(){
  const requests=[],toasts=[],state={active:{source:'voice',messageId:'active',turnId:'voice-turn',callId:'call'},call:{id:'call',provider:'subscription'},queue:[],messages:[{id:'active',role:'user',text:'Current task',status:'running'},{id:'paused',role:'user',text:'Paused task',status:'paused'},{id:'unknown',role:'user',text:'Unknown task',status:'paused',submission:'unknown'}]};
- const context={progressActions:{bind(){},renderConfirmation:()=>'',onClose(){},busy:false},workDisclosures:{capture(){},bind(){},isOpen:()=>false},workProgress,renderWorkPriority,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,language:()=>'en',eventConnected:true,state,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',progressExpanded:false,t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,taskRequest:async(id,route,body)=>requests.push({id,route,body}),toast:value=>toasts.push(value),openModal:()=>{}};
+ const context={progressActions:{bind(){},renderConfirmation:()=>'',onClose(){},busy:false},workDisclosures:{capture(){},bind(){},isOpen:()=>false},workProgress,renderWorkPriority,renderWorkReply,renderActiveWork,renderVoiceWorkHistory,renderWorkTaskHistory,language:()=>'en',eventConnected:true,state,pendingActions:new Set(),steerExpectedTurn:null,steerDraft:'',progressExpanded:false,t:value=>value,esc:value=>String(value??''),ico:()=>'',formatTime:()=>'',humanControl:()=>false,taskRequest:async(id,route,body)=>requests.push({id,route,body}),toast:value=>toasts.push(value),openModal:()=>{}};
  vm.createContext(context);vm.runInContext(source.match(/^const unknownTask=.*$/m)[0]+'\n'+section('function renderProgress(){','function renderModal(){')+'\n'+section('function resumeTask(id,confirmUnknown){','function bindSteer(){'),context);
  return {context,state,requests,toasts};
 }
 
-test('native work uses the call composer and disables ordinary paused-task replay',()=>{
+test('unregistered active work does not invent a reply target or separate adjustment composer and paused replay respects the call',()=>{
  const {context,state}=fixture();let html=context.renderProgress();
- assert.doesNotMatch(html,/id="steer-form"/);assert.match(html,/voiceTaskAdjust/);
+ assert.doesNotMatch(html,/id="steer-form"|id="steer-text"|data-task-work-reply|voiceTaskAdjust|workAdjustUnavailable/);
  assert.match(html,/data-task-resume="paused"[^>]*disabled/);assert.match(html,/data-task-unknown="unknown"[^>]*disabled/);assert.match(html,/resumeAfterCall/);
- state.active.messageId=null;html=context.renderProgress();assert.match(html,/voiceTaskAdjust/);assert.doesNotMatch(html,/noActiveTask|id="steer-form"/,'speech-only work is still an active task');
- state.call=null;state.active={messageId:'active',turnId:'text-turn'};html=context.renderProgress();assert.match(html,/id="steer-form"/);assert.doesNotMatch(html,/data-task-resume="paused"[^>]*disabled/);
+ state.active.messageId=null;html=context.renderProgress();assert.doesNotMatch(html,/noActiveTask|id="steer-form"|data-task-work-reply/,'speech-only work stays visible without fabricating a registered task');
+ state.call=null;state.active={messageId:'active',turnId:'text-turn'};html=context.renderProgress();assert.doesNotMatch(html,/id="steer-form"|data-task-work-reply/);assert.doesNotMatch(html,/data-task-resume="paused"[^>]*disabled/);
 });
 
-test('native background work exposes an adjustment only when the owned task can accept that reply',()=>{
- const {context,state}=fixture();state.call=null;state.active={source:'voice',messageId:null,turnId:'owned',callId:'detached-call',background:true,canSteer:false};
- let html=context.renderProgress();assert.doesNotMatch(html,/id="steer-form"/);assert.match(html,/workAdjustUnavailable/);assert.doesNotMatch(html,/data-action="stop"/);
- const controls=[...parseHTML(html).document.querySelectorAll('[data-task-cancel]')];assert.equal(controls.length,2);assert.ok(controls.every(button=>button.dataset.taskCancel==='current'&&button.dataset.progressKind==='active'&&button.dataset.progressTurn==='owned'&&button.dataset.progressCall==='detached-call'&&!button.hasAttribute('disabled')),'both the X and Cancel current work retain the detached execution owner');
- state.active.canSteer=true;state.active.status='waiting_user';html=context.renderProgress();assert.match(html,/id="steer-form"/);
- state.controller={cached:true};html=context.renderProgress();assert.match(html,/id="steer-text"[^>]*disabled/);assert.match(html,/<button type="submit"[^>]*disabled/);assert.ok([...parseHTML(html).document.querySelectorAll('[data-task-cancel]')].every(button=>button.hasAttribute('disabled')),'cached ownership cannot issue cancellation');
+test('registered background work exposes one direct reply action only while the exact owner accepts input',()=>{
+ const {context,state}=fixture();state.call=null;state.conversationId='conversation';state.capabilities={workReply:true,taskReopen:true};state.workTasks=[{id:'work',turnId:'owned',status:'running',title:'Registered background work',plan:{steps:[{step:'Verify',status:'inProgress'}]}}];state.active={workId:'work',source:'voice',messageId:null,turnId:'owned',callId:'detached-call',background:true,canSteer:false};
+ let html=context.renderProgress(),document=parseHTML(html).document;assert.equal(document.querySelector('textarea,#steer-form'),null);assert.equal(document.querySelectorAll('[data-task-work-reply]').length,1);assert.equal(document.querySelector('[data-task-work-reply]').disabled,true);assert.doesNotMatch(html,/data-action="stop"/);
+ const controls=[...document.querySelectorAll('[data-task-cancel]')];assert.equal(controls.length,1);assert.ok(controls.every(button=>button.dataset.taskCancel==='work'&&button.dataset.progressKind==='work'&&button.dataset.progressTurn==='owned'&&button.dataset.progressCall==='detached-call'&&!button.hasAttribute('disabled')),'the compact card cancellation control retains the exact registered execution owner');
+ state.active.canSteer=true;state.active.status='waiting_user';document=parseHTML(context.renderProgress()).document;const reply=document.querySelector('.current-work .task-actions [data-task-work-reply]');assert.equal(reply.disabled,false);assert.equal(reply.dataset.taskWorkReply,'work');assert.equal(reply.dataset.progressTurn,'owned');assert.equal(reply.dataset.progressConversation,'conversation');assert.equal(document.querySelector('textarea,#steer-form,.current-work-reply'),null);
+ state.controller={cached:true};document=parseHTML(context.renderProgress()).document;assert.equal(document.querySelector('[data-task-work-reply]').disabled,true);assert.ok([...document.querySelectorAll('[data-task-cancel]')].every(button=>button.hasAttribute('disabled')),'cached ownership cannot issue cancellation or a targeted reply');
 });
 
 test('direct resume handlers cannot submit while a subscription call is active',async()=>{

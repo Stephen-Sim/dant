@@ -10,6 +10,8 @@ Use **Search settings** to find a setting across all categories. English and Chi
 
 Search uses a fixed catalog of setting names and help keywords. It does not search chat history, credential values or account details. Chat history search is a separate chat action.
 
+**General → Message notifications** controls desktop banners and their Windows system notification sound together. Notifications wait briefly for an unread result or request for your input; streaming text and quiet automatic task checks do not create extra alerts. Reading a message during that brief wait prevents the alert. Windows notification permissions, sound settings and **Do not disturb** still apply; dant does not play separate audio to override them.
+
 **Chat & data → Memory & personality** shows dant's actual shared identity and durable reference notes from the work computer. These are the same references used by chat and both voice providers, with credential values omitted. The view is read-only and can be refreshed; a previously loaded copy is labelled when the computer is offline. In **0.4.7-beta.5**, **Refresh** sits at the right of the page description with a refresh icon and loading feedback, keeping the current notes visible during the read. Scheduled tasks remain in the sidebar.
 
 **Shared personality** currently displays the fixed shared identity instructions, not a separate evolving personality file. **Current memory** displays the full safe contents of `identity.md` and `working-memory.md`. A heading with no notes can be the file's actual saved content, rather than a loading or display limit. Durable notes change only when explicitly saved, such as through dant's `memory_write` tool; chat and call history are separate, and there is no automatic memory consolidation. See [shared context and durable memory](context.md#durable-memory-and-personality).
@@ -28,7 +30,11 @@ Charts use dated receipts from the past 365 days; the work computer retains up t
 
 ## Chat and call controls
 
-Chat shows a time divider at the start of the conversation, on a new day, and after gaps longer than 30 minutes. Each message's original sent time remains saved and does not change when edited. Completed dant replies show **Read** or **Unread**. The sidebar badge counts unread replies, and the **unread messages** button scrolls to the first one.
+Chat shows a time divider at the start of the conversation, on a new day, and after gaps longer than 30 minutes. Hovering over a message or focusing its controls shows its sent time inline below the bubble on the right. The original sent time does not change when edited; messages without a valid saved time leave it blank. Completed dant replies show **Read** or **Unread**. The sidebar badge counts unread replies, and the **unread messages** button scrolls to the first one.
+
+To hear a text reply, open its **…** menu and choose **Read aloud**; while it is playing, the same menu shows **Stop reading**. Opening the menu does not start playback. Read-aloud is unavailable while a reply is streaming or another audio activity blocks it. Audio attachments keep their own playback controls.
+
+Windows read-aloud uses the local computer's playback device. If no output is available, check Windows sound output and connect a playback device before trying again. Speech failures show a short message in the selected language; local native speech diagnostics retain only bounded operation metadata, never the spoken text or dictation transcript.
 
 Your message shows one check after it is saved, and two after the executor acknowledges its delivery. This confirms receipt, not comprehension or task completion. New chat messages go to the current task when it can accept followups; otherwise they wait in the queue. Explicitly resumed and scheduled tasks keep their separate queue behavior. A background task left by a subscription call accepts text followups; its attachments wait for a separate task.
 
@@ -47,6 +53,8 @@ Use the **×** or **Cancel current work** control in Work progress to cancel sel
 **Pause** stops only the selected current or ongoing task, retaining its identity, checklist and partial results. It stays **Paused** until you choose **Resume**; the automatic supervisor skips paused work. Resume keeps the same work ID and waits for the shared executor to become available. The call and unrelated queue entries remain intact. An unconfirmed stop or stale task identity cannot be reported as a successful pause or silently resumed.
 
 In **0.4.7-beta.5**, **Reply to task** opens text chat with that exact task selected above the composer. Existing drafts, files and quoted messages stay in place. Sending uses your new answer or adjustment to continue the same task, without resending its original request. If another task is running, the selected reply waits for its own task. Sent messages retain the task reference. A changed or unavailable task keeps the draft and asks you to select it again; an older work computer service must first be updated.
+
+Current registered work and saved tasks share the same compact card layout: title and status, a collapsible checklist, and one bottom row for **Reply to task**, priority, **View task** and pause where available. Current work keeps its running stage and elapsed time; its **×** cancels that exact task. Reply replaces the separate adjustment form. Completed, cancelled, failed and awaiting-review tasks hide priority controls; sending a new reply can reopen the same task with its saved project context. Selecting Reply alone does not start work. **View task** opens the checklist, original request, your additions, reported results and file references, so you can review the project before continuing it. These saved excerpts are reference records, not independent verification of a result.
 
 **Online** describes the current connection. **Idle** means no task is executing; **Waiting for your reply** means retained work needs your answer. The last activity time is available on hover and is not an offline duration. Genuine information blockers and human verification steps do not resume just because time passes. Complete the requested step, then reply to that task to continue.
 
@@ -73,6 +81,10 @@ Text and code attachments have **View** and a separate download control. Click t
 In **General → Text editor**, keep Windows Notepad or choose an installed supported editor executable, such as VS Code, Notepad++, Sublime Text, Zed or Cursor. **0.4.7-beta.5** renames this setting **Open with** and replaces the separate chooser and reset buttons with an application menu: installed editors have an icon and name, and the current choice has a checkmark. **Choose another editor…** keeps the native executable picker available, and existing custom editor settings are preserved. Choosing an editor only saves the preference; it does not launch the application. **Open in editor** opens a local copy of a text attachment, up to 10 MiB, without changing the chat attachment. The app launches the selected editor directly rather than using script file associations. Unchanged cached copies expire after three days; edits to a previously opened copy are preserved.
 
 Reusable skills use their own sidebar page rather than a settings category. It includes **Import skill** with a preview and **Download ZIP** on each managed card. See [credentials and skills](credentials-and-skills.md).
+
+## Telegram forwarding
+
+In **Settings → Telegram → Message forwarding**, choose **Unread replies only (recommended)** or **All replies**. Unread-only avoids forwarding replies already read in dant; All also forwards those read replies. Read/unread status remains independent between dant and Telegram. **Combine consecutive replies**, enabled by default, groups consecutive text replies into fewer Telegram messages; attachments are delivered separately. These controls save automatically without replacing the bot token, changing the pairing or restarting Telegram polling. Older work computer services must be updated through **Settings → Work computer → Reconnect** before these controls are available.
 
 ## Background operation on Windows
 
