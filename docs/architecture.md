@@ -2,7 +2,7 @@
 
 English · [Chinese](zh-CN/architecture.md)
 
-dant is a local-first desktop agent. Tauri 2 provides the Windows host, a Controller manages the work computer, and an Ubuntu Worker owns execution and conversation data. This document describes the current source, including the SQLite memory migration; published installers may contain an earlier implementation.
+dant is a local-first desktop agent. Tauri 2 provides the Windows host, a Controller manages the work computer, and an Ubuntu Worker owns execution and conversation data. This document describes the current source, including scoped memory retrieval and SQLite scheduling; published installers may contain an earlier implementation.
 
 ## Overall system
 
@@ -24,14 +24,17 @@ flowchart TB
     Codex[Codex App Server<br/>Model reasoning / tool loop · persistent thread]
     Tools[Dynamic tools / dant_desktop MCP]
     Desktop[Python desktop tools<br/>Screen · input · shared control lease]
-    State[Store · state.json<br/>Messages · work · schedules · receipts]
+    State[Store · state.json<br/>Messages · work · receipts]
+    ScheduleDB[ScheduleDatabase<br/>schedules/schedules.sqlite]
     Memory[MemoryStore<br/>SQLite + bounded cache + FTS5]
     Skills[Skills / Markdown + supporting files]
     Files[Immutable attachments / workspace output]
     Telegram[Paired Telegram gateway]
     Worker --> Engine
     Heartbeat -->|Eligible unfinished work| Engine
-    Scheduler -->|Persist and enqueue due work| Engine
+    Scheduler -->|Persist claim and handoff fence| ScheduleDB
+    Scheduler -->|Materialize exact-ID message| State
+    Scheduler -->|Enqueue admitted work once| Engine
     Telegram <--> Engine
     Engine <--> Codex
     Codex <--> Tools
@@ -72,11 +75,14 @@ sequenceDiagram
   participant Input as Chat / voice / schedule
   participant Store as Durable Store
   participant Engine
+  participant Memory as MemoryStore / SQLite
   participant Codex as Codex App Server
   participant Tool as Tool / VM desktop
   Input->>Engine: Authorized input with stable identity
   Engine->>Store: Save input and queued state
   Engine->>Engine: Acquire execution slot; prepare attachments / context
+  Engine->>Memory: Retrieve scoped references for this input
+  Memory-->>Engine: Bounded redacted excerpts
   Engine->>Store: Save submission intent
   Engine->>Codex: thread/start or resume; turn/start
   Codex-->>Engine: Actual threadId / turnId acknowledgment
@@ -144,7 +150,16 @@ Idle checks do not call the LLM. Paused, cancelled, waiting-for-user, review and
 
 Continuation saves its claim before asynchronous submission and rechecks the exact task/turn. Ordinary automatic narration and deliveries are buffered; only completion, failure or a real input blocker publishes a consolidated outcome. Three unchanged rounds pause a task. Qualifying fresh execution evidence permits bounded extensions; repeated observations and failed actions do not count as progress. This extension cap is not a general model tool-step or token budget.
 
-Schedules support one-time instants and five-field cron expressions in a saved IANA time zone. A missed recurring job catches up at most once, then advances to a future time. It cannot overlap its own unfinished work. Dispatch persists the claim and queued message together before execution; stable creation request IDs and deletion tombstones protect uncertain acknowledgments. Scheduling currently persists in `state.json`, rather than SQLite lease tables.
+Schedules support one-time instants and five-field cron expressions in a saved IANA time zone. A missed recurring job catches up at most once, then advances to a future time; it cannot overlap its own unfinished work. [`ScheduleDatabase`](../src/schedules/schedule-database.mts) owns jobs, creation-request tombstones and dispatch receipts in `~/dant/data/schedules/schedules.sqlite`. Existing JSON schedules are backed up and imported once; later stale JSON cannot restore deleted or edited jobs. Revision compare-and-swap protects edits, and a unique schedule/occurrence key permits one durable claim across instances.
+
+| Dispatch phase | Meaning                                                                                                    |
+| -------------- | ---------------------------------------------------------------------------------------------------------- |
+| `prepared`     | SQLite claim and immutable message identity saved; the JSON message may be absent.                         |
+| `materialized` | The exact message is durable in JSON; execution has not been handed off.                                   |
+| `held`         | Recovery permits persistence of that same message only, without enqueueing it.                             |
+| `handed-off`   | The no-replay fence was committed before enqueue; a lost acknowledgment cannot authorize another dispatch. |
+
+Chat messages remain in `state.json`. A short SQLite writer transaction serializes the exact-ID JSON message patch and phase change; this is not one atomic database transaction over both files. Restart recovers unhanded claims as the same paused message, preserving existing uncertain/submitting observations. The durable handoff fence prevents automatic replay even if enqueue throws or the JSON message is missing; it does not prove execution succeeded. Other full conversation writes retain the single-Worker ownership rule.
 
 There is no separate 15-minute AI heartbeat that creates goals. Future proactive event sources must use explicit eligibility, deduplication and the same execution admission path.
 
@@ -181,16 +196,20 @@ flowchart TB
   Pending --> Confirm[Explicit confirmation / conflict resolution]
   Confirm --> SQL[Confirmed entry in SQLite]
   SQL --> Revision[Invalidate cache / rebuildable FTS5 index]
-  Query[Explicit keyword query] --> FTS[Parameterized FTS5 search]
+  Query[Current admitted request / selected unfinished task] --> Scope[Validate conversation / work scope]
+  Scope --> FTS[Parameterized OR FTS5 retrieval]
   Revision --> FTS
-  FTS --> Results[Ranked redacted excerpts<br/>Notes / projects / confirmed entries]
+  FTS --> Results[Bounded ranked excerpts with provenance]
+  Results --> Input[Append to current input before its existing wire send]
 ```
 
 `proposeEntry`, `confirmEntry`, `updateEntry` and `deleteEntry` implement the storage workflow. Entries retain source kind, available conversation/task/message references, supplied confidence and actual creation/update times. Candidates and conflicts stay out of effective context/search; conflicts require explicit resolution, and editing a confirmed entry requires confirmation again. Suspected credentials are rejected, and reference text is sanitized/redacted before model use. These controls do not make arbitrary sensitive material suitable for retention.
 
-`search(query)` provides bounded keyword recall over notes, project context and confirmed semantic/episodic entries. FTS uses parameter binding and literal terms; its index is rebuildable. Chinese keyword matching is supported. There are no embeddings or vector searches.
+`search(query)` remains an explicit bounded keyword API. Automatic [`retrieve(query, scope)`](../src/conversation/memory-search.mts) normalizes a bounded current query, removes common filler terms and combines literal terms with **OR** in parameterized FTS5. Scope filtering precedes ranking and limits: shared notes and unscoped confirmed semantic facts are eligible; scoped facts require the matching conversation/work, and project context requires the selected work ID. Candidates, conflicts and other projects stay out. Chinese keyword matching is supported; there are no embeddings or vector searches.
 
-Current prompt construction includes safe identity/working notes and at most 32 latest confirmed entries; project replies also load the matching project context. **FTS is currently an explicit MemoryStore API, not automatic retrieval for each message or heartbeat.** Candidate CRUD is also programmatic; the existing Memory & personality page displays effective context read-only. A full editor, automatic candidate extraction and relevance/recency/confidence ranking remain integration work. The compatible `memory_write` tool still edits reference notes directly; it has not been converted into the structured candidate-confirmation workflow.
+Agent base memory context contains the safe identity/working notes only. The at-most-32-confirmed-entry `context()` view remains for compatibility/read-only use, rather than blanket injection into every agent prompt. [`agent-memory.mts`](../src/conversation/agent-memory.mts) adds up to six bounded, redacted references with provenance to the **current already-admitted input**. Normal turns, steering, automatic continuation, recognized audio and native/API typed call input read fresh memory immediately before their existing wire send; API voice task handoffs use the same Engine input path. No match leaves the original input unchanged. Revision checks make edits, deletion and conflict changes visible without retaining a recalled-result cache.
+
+Recall neither mutates the human message nor adds a separate inference request, execution turn or persistent reference-injection operation. It cannot authorize actions or resume other work. Old Codex history is not erased; the reference marks its current-input scope and supersedes earlier excerpts for that input. Idle heartbeat checks do not retrieve memory. Candidate CRUD remains programmatic and Memory & personality remains read-only; automatic extraction/consolidation and a full editor are not implemented. The compatible `memory_write` tool still edits reference notes directly.
 
 Codex owns the model thread, context window, compaction and provider token accounting. dant does not convert all chat into semantic memories or rebuild the thread from shortened UI history. See [context](context.md).
 
@@ -208,14 +227,15 @@ Human takeover reserves ownership, interrupts the exact turn and waits for a con
 
 ## Persistence and lifecycle
 
-| Owner              | Data                                                                       | Recovery rule                                                         |
-| ------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Windows Controller | Connection/deployment receipts, preferences, offline `state-cache.json`    | Display cache never enables host execution                            |
-| Worker Store       | `state.json`: messages, work, schedules, read/delivery/submission receipts | Preserve identities; pause interrupted/uncertain execution            |
-| Worker memory      | `memory/dant/memory.sqlite`, explicit exports, migration backups           | Transactions + revision-aware cache; old files are not live authority |
-| Worker files       | Immutable UUID attachments; conversation workspace/output                  | Bounded archival, independent delivered copies                        |
-| Codex runtime      | Persistent thread and private conversation                                 | Resume only for the matching conversation/runtime                     |
-| Credentials        | Restricted VM vault; relevant Windows DPAPI secrets                        | No raw secrets in ordinary state exports                              |
+| Owner              | Data                                                                    | Recovery rule                                                         |
+| ------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Windows Controller | Connection/deployment receipts, preferences, offline `state-cache.json` | Display cache never enables host execution                            |
+| Worker Store       | `state.json`: messages, work, read/delivery/submission receipts         | Preserve identities; pause interrupted/uncertain execution            |
+| Worker schedules   | `schedules/schedules.sqlite`, legacy import backup                      | CAS edits, unique occurrence claims and durable no-replay fences      |
+| Worker memory      | `memory/dant/memory.sqlite`, explicit exports, migration backups        | Transactions + revision-aware cache; old files are not live authority |
+| Worker files       | Immutable UUID attachments; conversation workspace/output               | Bounded archival, independent delivered copies                        |
+| Codex runtime      | Persistent thread and private conversation                              | Resume only for the matching conversation/runtime                     |
+| Credentials        | Restricted VM vault; relevant Windows DPAPI secrets                     | No raw secrets in ordinary state exports                              |
 
 Closing the main window hides dant to the tray when tray initialization succeeded; unavailable tray integration falls back to normal window close. Explicit Exit pauses work, confirms stopping and suspends the owned VM; reopening restores it without silently resuming paused tasks. Service updates keep the VM running while paused work allows replacement/version verification. Installer handoff adds an admission lease and owned-process/VM checks. Background work can continue with the window closed, **not while the VM is suspended after Exit or the host is asleep**. See [VM](VM.md) and [updates](updates.md).
 
@@ -225,27 +245,27 @@ Calls separate media and task identities: normal hangup can leave accepted work 
 
 The following decisions guide further work. They preserve the existing execution architecture rather than introducing another agent runtime.
 
-| Area                       | Decision                                | Next action                                                                              |
-| -------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Controller / Worker        | Retain the boundary                     | Keep execution and durable conversation authority in the Worker                          |
-| Codex App Server           | Retain the model/tool loop              | Extend orchestration without implementing a competing reasoning loop                     |
-| Single execution admission | Retain one execution owner              | Route every new input source through the existing admission and acknowledgment checks    |
-| Heartbeat                  | Retain current continuation design      | Continue actionable unfinished work without periodic chat narration                      |
-| Scheduler                  | Keep current persistence for now        | Preserve recurrence, catch-up and no-overlap behavior; no immediate SQL migration        |
-| MemoryStore                | **First priority: automatic retrieval** | Connect bounded, scoped FTS recall to context construction                               |
-| SQLite + FTS5              | Retain keyword search                   | No independent vector database at this stage                                             |
-| VM portability             | Further abstract providers              | Separate provider lifecycle capabilities from Windows-specific Hyper-V / VMware adapters |
-| Tool security              | Add independent permission enforcement  | Cover all execution paths, including Codex built-in tools and MCP                        |
+| Area                       | Decision                               | Next action                                                                              |
+| -------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Controller / Worker        | Retain the boundary                    | Keep execution and durable conversation authority in the Worker                          |
+| Codex App Server           | Retain the model/tool loop             | Extend orchestration without implementing a competing reasoning loop                     |
+| Single execution admission | Retain one execution owner             | Route every new input source through the existing admission and acknowledgment checks    |
+| Heartbeat                  | Retain current continuation design     | Continue actionable unfinished work without periodic chat narration                      |
+| Scheduler                  | SQLite authority and dispatch outbox   | Preserve CAS, recovery fences, recurrence and no-overlap behavior                        |
+| MemoryStore                | Scoped automatic retrieval implemented | Retain fresh current-input references and explicit confirmation of structured facts      |
+| SQLite + FTS5              | Retain keyword search                  | No independent vector database at this stage                                             |
+| VM portability             | Further abstract providers             | Separate provider lifecycle capabilities from Windows-specific Hyper-V / VMware adapters |
+| Tool security              | Add independent permission enforcement | Cover all execution paths, including Codex built-in tools and MCP                        |
 
-Automatic retrieval should use the current human request or the selected task's actual context, query confirmed memories in the proper conversation/project scope, and inject bounded, redacted references with provenance. It must keep candidates out, preserve explicit identity/preferences, and invalidate results after edits or deletion. An idle heartbeat should perform neither recall nor inference merely because its timer fired. Relevant tests must cover cross-project isolation, no-match behavior, stale cache, deleted/conflicting facts and unchanged user content. This is the next integration milestone, not current behavior.
+Recall and schedule recovery tests cover cross-project isolation, no-match/deleted/conflicting memories, fresh pre-send reads, unchanged user content, competing claims and cross-file crash windows. Future input sources must retain these boundaries and use the existing admission path.
 
 The permission service should validate the actual tool, arguments, task/turn owner and authorized resources **before execution**, then allow, deny or persist an approval request. Approval must bind to that exact operation; changing the arguments or owner invalidates it. Enforcement must account for Codex's built-in shell/file actions as well as application tools; adding checks only to dynamic tools would leave a bypass. This requires changes to the current execution/approval configuration, plus tests for denied actions and uncertain approval results. It must not add a second Agent loop or treat model text, memory or a web page as permission.
 
 The architecture reference informs boundaries; it does not mean its proposed features already exist:
 
-- SQLite currently covers memory, not a unified SQL schema for messages, task runs, events, approvals and schedules.
+- SQLite owns memory and schedules in separate databases; messages, durable task state, events and approvals have not moved into a unified SQL schema.
 - Continuation guards, stop controls, timeouts and bounded evidence extensions exist; unified per-task tool-step, elapsed-time and token budgets remain to be designed.
-- Keyword search and candidate storage exist; automatic retrieval, a memory editor, embeddings and automatic consolidation need integration and verification.
+- Scoped automatic retrieval and candidate storage exist; a full memory editor, embeddings and automatic consolidation remain future work.
 - Windows Controller / Ubuntu Worker lifecycle exists; a cross-platform independent user service with named pipes/Unix sockets is not implemented.
 - TypeScript contracts and runtime validators exist; React, Zustand, Tailwind, Zod and a pnpm monorepo are not current dependencies.
 

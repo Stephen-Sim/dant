@@ -18,6 +18,7 @@ import {
   VmPowerState,
   VmReceiptPhase,
   ScheduleStatus,
+  ScheduleDispatchPhase,
   MemoryEntryStatus,
 } from '../../src/contracts/states.mts';
 
@@ -48,7 +49,10 @@ const stateContractRules: readonly ContractRule[] = Object.freeze([
   })),
   { file: 'src/app/desktop-lifecycle.mts', domains: [DesktopPhase, ConnectionStatus] },
   { file: 'src/computer/vm-lifecycle.mts', domains: [VmPowerState, VmReceiptPhase] },
-  { file: 'src/schedules/scheduler.mts', domains: [ScheduleStatus] },
+  ...['scheduler', 'schedule-database'].map((name) => ({
+    file: 'src/schedules/' + name + '.mts',
+    domains: [ScheduleStatus, ScheduleDispatchPhase, TaskStatus, TaskPriority],
+  })),
   {
     file: 'src/computer/vm-service-update.mts',
     domains: [

@@ -4,6 +4,12 @@ English · [Chinese](zh-CN/verification.md)
 
 Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## Automatic memory recall and SQLite scheduling source verification
+
+The current source adds scoped SQLite/FTS5 recall to admitted agent inputs and migrates schedules to SQLite with backed-up legacy import, revision checks and durable dispatch fences. Isolated regressions cover task/conversation isolation, fresh edits and deletion, bounded reference-only excerpts, voice input acknowledgments, competing processes and recovery across the SQLite/JSON boundary. Unconfirmed execution is not automatically replayed.
+
+Verification passed **2,120 Node tests**, with zero failures or skips and **97.70% line, 90.59% branch and 93.02% function coverage**. Strict Node/UI/test type checks, state contracts, formatting, **78 Python VM-helper tests**, **11 CI-helper tests**, prerequisite/syntax/version checks and the frontend build also passed. Rust behavior was unchanged. These checks used isolated fixtures; they did not deploy a VM service, run a real model or publish an installer. The source version remains `0.4.7-beta.7`.
+
 ## 0.4.7-beta.7 source verification
 
 This candidate automatically checks the bundled work computer service when the desktop connects. A busy service stays connected with a visible pending update; a fresh idle state permits the update to continue without a separate Reconnect action. Stable content fingerprints avoid redeploying unchanged source. The UI distinguishes checking, updating, pending, confirmed and failed states and shows the target and confirmed running versions.

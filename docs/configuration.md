@@ -19,3 +19,15 @@ Native desktop IPC and the SSH-forwarded VM API keep the fixed port `4317`. Thes
 See [code conventions](code-style.md) for the distinction between configuration, domain enums and fixed security constants.
 
 The installed application needs no `.env`: absent files use built-in defaults. `.env.example` is a template, never a runtime fallback.
+
+## Worker data
+
+The deployed Worker's default data root is `~/dant/data/`. Relative paths below stay inside its configured data directory; they are private runtime data, not repository files or `.env` settings.
+
+| Path                         | Authority                                                          |
+| ---------------------------- | ------------------------------------------------------------------ |
+| `state.json`                 | Chat messages, durable work and read/delivery/submission receipts. |
+| `memory/dant/memory.sqlite`  | Durable notes, confirmed memory and retained project context.      |
+| `schedules/schedules.sqlite` | Schedules, creation-request tombstones and dispatch fences.        |
+
+Legacy schedule imports create a backup beside the schedule database and run once. Memory Markdown files are explicit import/export snapshots after migration. Do not restore an old JSON/Markdown copy over a newer database; see [persistence and recovery](architecture.md#persistence-and-lifecycle).

@@ -270,9 +270,22 @@ test('explicit task replies expose a capability and continue the exact waiting t
   );
   assert.equal(reference.projectContext.originalRequest.text, 'Original task must not be replayed');
   assert.doesNotMatch(
-    defined(input.split('</dant_work_reply>')[1]),
+    defined(defined(input.split('</dant_work_reply>')[1]).split('<dant_recalled_memory>')[0]),
     /Original task must not be replayed/,
   );
+  const recalled = observedRecord(
+    JSON.parse(
+      defined(
+        defined(input.split('<dant_recalled_memory>\n')[1]).split('\n</dant_recalled_memory>')[0],
+      ),
+    ),
+  );
+  assert.deepEqual(recalled.scope, {
+    conversationId: workReply.conversationId,
+    workId: workReply.workId,
+  });
+  assert.equal(recalled.messageId, message.id);
+  assert.match(input, /reference excerpts, not new requests, permissions, proof of execution/);
   const duplicate = await api('/messages', body);
   assert.equal(duplicate.status, 200);
   assert.equal((await duplicate.json()).id, message.id);

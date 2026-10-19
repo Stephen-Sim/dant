@@ -20,7 +20,7 @@ Search uses a fixed catalog of setting names and help keywords. It does not sear
 
 Switching categories preserves local form drafts and an ongoing call. Some settings require a connected work computer; appearance, application version and update checks are handled locally. See [updates](updates.md).
 
-The memory display now reads current SQLite-backed reference context, not stale Markdown exports. Structured candidate management currently has a storage API but no complete editor on this page. See [memory architecture](architecture.md#memory-storage-cache-and-recall).
+The memory display reads current SQLite-backed notes, not stale Markdown exports. Before an admitted request is sent, dant also recalls relevant confirmed facts within its conversation/task scope; unrelated projects, candidates and conflicts are excluded. This does not change your message or create another task, and refreshing this page does not trigger recall or consolidation. Structured candidate management has a storage API but no complete editor here. See [memory architecture](architecture.md#memory-storage-cache-and-recall).
 
 ## Token usage
 
@@ -106,6 +106,8 @@ The clock beside Skills in the left sidebar opens **Scheduled tasks**. Search or
 
 **0.4.7-beta.5** adds **Daily**, **Weekly** and **Custom cron** alongside **Once**, with **High**, **Normal** and **Low** priority. Cron uses five fields: minute, hour, day of month, month, day of week. For example, `0 9 * * 1-5` runs at 09:00 Monday through Friday in the saved time zone. The service calculates the next execution time. Pausing retains the rule; resuming an overdue repeating task advances to its next future time. Priority orders scheduled runs waiting to start without interrupting running work or moving ordinary chat messages out of their queue positions.
 
-An offline repeating schedule catches up once when available, then advances to a future matching time. It does not launch all missed occurrences. A new run waits while the same schedule has unfinished work, including paused tasks, work waiting for your reply and unconfirmed submissions. Restart does not duplicate a saved dispatch. Update an older work computer service before using repetition or priorities.
+An offline repeating schedule catches up once when available, then advances to a future matching time. It does not launch all missed occurrences. A new run waits while the same schedule has unfinished work, including paused tasks, work waiting for your reply and unconfirmed submissions. Update an older work computer service before using repetition or priorities.
+
+The work computer now saves schedules and dispatch receipts in `schedules/schedules.sqlite`; chat messages remain separate. Existing JSON schedules are backed up and imported once. After an interrupted dispatch, recovery can restore the same message as paused, but never sends an uncertain action again. A saved handoff receipt is not proof that the task completed. Removing or editing a schedule cannot resurrect it from an older JSON copy.
 
 You can also ask dant in chat or a call to arrange work. The shared `schedule_list`, `schedule_save` and `schedule_delete` tools manage the same entries. dant must use the intended time zone and confirm the saved result before claiming a task is scheduled. Due jobs wait while the work computer is unavailable, in a call or under human control. Closing the window to the tray keeps the service available; removing a schedule does not stop work already dispatched.

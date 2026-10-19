@@ -88,7 +88,7 @@ export function canContinueRegisteredWork(this: Engine, owner?: ContinuationAdmi
 export function continuationInput(
   record: StoredWorkRecord,
   redact: (text: string) => string = (text) => text,
-): RpcInputText[] {
+): [RpcInputText] {
   const context = JSON.stringify({
     workId: record.id,
     title: record.title,
@@ -283,6 +283,20 @@ export async function continueRegisteredWork(
       conversationId,
     });
     current();
+    const contextualInput = this.withMemoryInput(input, message || {}, {
+      workId: record.id,
+      ...(humanReply
+        ? {}
+        : {
+            query: [
+              record.title,
+              ...(record.plan?.steps
+                .filter((step) => step.status !== 'completed')
+                .map((step) => step.step) || []),
+            ].join('\n'),
+          }),
+    });
+    current();
     active.workRecord = this.store.setWorkContinuationPhase(
       workId,
       attemptId,
@@ -292,7 +306,7 @@ export async function continueRegisteredWork(
     if (humanReply) this.updateWork(message.id, { submission: SubmissionStatus.Submitting });
     const response = await this.worker.request('turn/start', {
       threadId,
-      input,
+      input: contextualInput,
       cwd: this.workspace,
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },

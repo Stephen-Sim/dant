@@ -2,7 +2,7 @@
 
 [English](../architecture.md) · Chinese
 
-dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括本次 SQLite 记忆迁移；已发布的安装包可能仍是较早的实现。
+dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括带作用域的记忆召回与 SQLite 调度；已发布的安装包可能仍是较早的实现。
 
 ## 总体系统
 
@@ -24,14 +24,17 @@ flowchart TB
     Codex[Codex App Server<br/>模型推理 / 工具循环 · 持久线程]
     Tools[动态工具 / dant_desktop MCP]
     Desktop[Python 桌面工具<br/>截图 · 输入 · 共享控制租约]
-    State[Store · state.json<br/>消息 · 任务 · 调度 · 回执]
+    State[Store · state.json<br/>消息 · 任务 · 回执]
+    ScheduleDB[ScheduleDatabase<br/>schedules/schedules.sqlite]
     Memory[MemoryStore<br/>SQLite + 有界缓存 + FTS5]
     Skills[Skills / Markdown 与配套文件]
     Files[不可变附件 / 工作区产物]
     Telegram[配对的 Telegram 网关]
     Worker --> Engine
     Heartbeat -->|符合条件的未完成任务| Engine
-    Scheduler -->|保存并入队到期任务| Engine
+    Scheduler -->|保存认领与交接屏障| ScheduleDB
+    Scheduler -->|保存准确 ID 的消息| State
+    Scheduler -->|将已准入任务入队一次| Engine
     Telegram <--> Engine
     Engine <--> Codex
     Codex <--> Tools
@@ -72,11 +75,14 @@ sequenceDiagram
   participant Input as 聊天 / 语音 / 定时输入
   participant Store as 持久 Store
   participant Engine
+  participant Memory as MemoryStore / SQLite
   participant Codex as Codex App Server
   participant Tool as 工具 / VM 桌面
   Input->>Engine: 带稳定身份的已授权输入
   Engine->>Store: 保存输入与排队状态
   Engine->>Engine: 获取执行名额；准备附件与上下文
+  Engine->>Memory: 按当前输入的作用域召回参考
+  Memory-->>Engine: 有界脱敏摘录
   Engine->>Store: 保存提交意图
   Engine->>Codex: thread/start 或 resume；turn/start
   Codex-->>Engine: 确认真实 threadId / turnId
@@ -144,7 +150,16 @@ flowchart LR
 
 续作在异步提交前保存认领，并再次核对准确的任务/turn。自动续作中的普通叙述与交付先缓冲，只有完成、失败或真实输入阻塞才合并发布结果。连续三轮没有进展会暂停任务；新的有效执行证据可以允许有限延长，重复观察和失败动作不算进展。延长上限不等于通用的模型工具步数或 token 预算。
 
-调度支持一次性时间点和按 IANA 时区计算的五字段 cron。错过重复任务最多补跑一次，再计算未来时间；同一调度不会与自身未完成任务重叠。派发先把认领与排队消息一起保存，再进入执行器；稳定的创建请求 ID 和删除记录防止确认不明时重复创建。调度目前保存在 `state.json`，尚未迁入 SQLite 租约表。
+调度支持一次性时间点和按 IANA 时区计算的五字段 cron。错过重复任务最多补跑一次，再计算未来时间；同一调度不会与自身未完成任务重叠。[`ScheduleDatabase`](../../src/schedules/schedule-database.mts) 在 `~/dant/data/schedules/schedules.sqlite` 保存调度、创建请求删除记录和派发回执。旧 JSON 调度先备份、仅导入一次，之后旧快照不能复活已删除或已修改的任务。修订号比较并交换（CAS）防止编辑覆盖，调度/执行时间的唯一键保证跨实例只认领一次。
+
+| 派发阶段       | 含义                                                       |
+| -------------- | ---------------------------------------------------------- |
+| `prepared`     | SQLite 已保存认领与不可变消息身份，JSON 消息可能尚未存在。 |
+| `materialized` | 相同 ID 的消息已保存到 JSON，尚未交给执行器。              |
+| `held`         | 恢复时只允许补存同一条消息，不将它入队。                   |
+| `handed-off`   | 入队前已提交禁止重放的屏障，回执丢失不能授权再次派发。     |
+
+聊天消息仍由 `state.json` 保存。短 SQLite 写事务串行完成准确 ID 的 JSON 消息补写与阶段更新，但两个文件并不构成一笔原子数据库事务。重启只把尚未交接的认领恢复为同 ID 的暂停消息，已有不确定/提交中观察继续保留。交接屏障已保存后，即使入队抛错或 JSON 消息缺失，也不会自动重放；屏障不代表执行成功。其他完整会话写入仍遵循单 Worker 所有者规则。
 
 当前没有另一套每 15 分钟自主创建目标的 AI heartbeat。后续增加主动事件来源，也必须经过明确条件、去重和同一执行入口。
 
@@ -181,16 +196,20 @@ flowchart TB
   Pending --> Confirm[显式确认 / 解决冲突]
   Confirm --> SQL[SQLite 已确认条目]
   SQL --> Revision[缓存失效 / 可重建的 FTS5 索引]
-  Query[明确的关键词查询] --> FTS[参数化 FTS5 检索]
+  Query[当前已准入请求 / 选中的未完成任务] --> Scope[校验对话 / 任务作用域]
+  Scope --> FTS[参数化 OR FTS5 召回]
   Revision --> FTS
-  FTS --> Results[排序、脱敏摘要<br/>笔记 / 项目 / 已确认条目]
+  FTS --> Results[带来源的有界排序摘录]
+  Results --> Input[在既有发送前附加到当前输入]
 ```
 
 `proposeEntry`、`confirmEntry`、`updateEntry` 和 `deleteEntry` 实现存储流程。条目保留来源类型、已知的对话/任务/消息引用、提供的置信度及真实创建/更新时间。候选和冲突条目不进入有效上下文或检索；冲突必须明确解决，编辑已确认条目后需要重新确认。疑似凭据会被拒绝，供模型使用的参考文本会清理和脱敏。这些控制不代表任意敏感资料都适合保存。
 
-`search(query)` 在笔记、项目上下文、已确认 semantic/episodic 条目中提供有界关键词召回。FTS 使用参数绑定和字面关键词，索引可重建，支持中文关键词。目前没有 embeddings 或向量检索。
+`search(query)` 继续提供显式、有界的关键词 API。自动 [`retrieve(query, scope)`](../../src/conversation/memory-search.mts) 规范化有界的当前查询，去掉常见填充词，再以 **OR** 组合字面关键词进行参数化 FTS5 检索。作用域过滤先于排序与数量限制：共享笔记和无作用域的已确认语义事实可用；带来源范围的事实必须匹配当前对话/任务，项目上下文还必须匹配选中的工作 ID。候选、冲突条目和其他项目不进入结果。支持中文关键词，不使用 embeddings 或向量检索。
 
-当前 prompt 包含安全的身份/工作笔记，以及最多 32 条最新确认条目；回复项目任务时还读取对应项目上下文。**FTS 目前是显式 MemoryStore API，尚未用于每条消息或 heartbeat 的自动召回。** 候选增删改查也是程序接口，现有 Memory & personality 页面仍只读展示有效上下文。完整编辑界面、自动候选提取、按相关性/新近程度/置信度综合排序仍需集成。兼容的 `memory_write` 工具仍直接编辑参考笔记，尚未统一改成结构化候选确认流程。
+Agent 基础记忆上下文只包含安全的身份/工作笔记。`context()` 中最多 32 条确认条目的视图保留用于兼容/只读展示，不再整批注入每个 Agent prompt。[`agent-memory.mts`](../../src/conversation/agent-memory.mts) 为**当前已经准入的输入**附加最多六条有界、脱敏且带来源的参考。普通执行轮次、任务调整、自动续作、识别后的音频以及原生/API 通话文字，都在既有发送前读取最新记忆；API 语音任务委派沿用相同 Engine 输入路径。没有匹配时原输入保持不变。修订检查使修改、删除和冲突变化立即可见，不保留独立的召回结果缓存。
+
+召回不修改用户原消息，也不增加另一项推理请求、执行轮次或持久参考注入操作；它不能授权动作或恢复其他任务。Codex 旧历史不会被清除，参考标记明确限定当前输入，并在该输入中取代旧摘录。空闲 heartbeat 检查不检索记忆。候选管理仍为程序接口，记忆与人格页面仍只读；自动提取/整理和完整编辑器尚未实现。兼容的 `memory_write` 仍直接编辑参考笔记。
 
 Codex 管理模型线程、上下文窗口、压缩和提供商 token 统计。dant 不会把全部聊天转成语义记忆，也不会用截短的 UI 历史重建线程。参见[上下文](context.md)。
 
@@ -208,14 +227,15 @@ API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。*
 
 ## 数据与生命周期
 
-| 所有者             | 数据                                               | 恢复规则                                     |
-| ------------------ | -------------------------------------------------- | -------------------------------------------- |
-| Windows Controller | 连接/部署回执、设置、离线 `state-cache.json`       | 展示缓存不能启用宿主任务执行                 |
-| Worker Store       | `state.json`：消息、任务、调度、已读/交付/提交回执 | 保留身份，暂停中断/不确定执行                |
-| Worker Memory      | `memory/dant/memory.sqlite`、显式导出、迁移备份    | 事务 + revision 缓存；旧文件不是实时数据权威 |
-| Worker 文件        | 不可变 UUID 附件、对话工作区/产物                  | 有界归档，交付保存独立副本                   |
-| Codex 运行时       | 持久线程与私有对话                                 | 只恢复匹配对话/运行时的线程                  |
-| 凭据               | 受限 VM vault、相应的 Windows DPAPI 秘密           | 普通状态导出不含秘密原值                     |
+| 所有者             | 数据                                            | 恢复规则                                       |
+| ------------------ | ----------------------------------------------- | ---------------------------------------------- |
+| Windows Controller | 连接/部署回执、设置、离线 `state-cache.json`    | 展示缓存不能启用宿主任务执行                   |
+| Worker Store       | `state.json`：消息、任务、已读/交付/提交回执    | 保留身份，暂停中断/不确定执行                  |
+| Worker 调度        | `schedules/schedules.sqlite`、旧数据导入备份    | CAS 编辑、唯一执行时间认领与禁止重放的持久屏障 |
+| Worker Memory      | `memory/dant/memory.sqlite`、显式导出、迁移备份 | 事务 + revision 缓存；旧文件不是实时数据权威   |
+| Worker 文件        | 不可变 UUID 附件、对话工作区/产物               | 有界归档，交付保存独立副本                     |
+| Codex 运行时       | 持久线程与私有对话                              | 只恢复匹配对话/运行时的线程                    |
+| 凭据               | 受限 VM vault、相应的 Windows DPAPI 秘密        | 普通状态导出不含秘密原值                       |
 
 托盘初始化成功时，关主窗口会隐藏到托盘；托盘不可用则回退为正常关闭。明确 Exit 会先暂停任务、确认停止，再挂起本应用拥有的 VM。重新打开恢复 VM，不会悄悄恢复暂停任务。服务更新保持 VM 开机，在暂停任务后替换并验证版本；安装交接还增加执行准入租约及进程/VM 所有权检查。关窗口可以继续后台工作，但 **Exit 后 VM 挂起或宿主休眠时不能继续执行**。参见 [VM](VM.md) 和[更新](updates.md)。
 
@@ -225,27 +245,27 @@ API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。*
 
 以下决策指导后续实现，保留现有执行架构，不再增加一套 Agent 运行时。
 
-| 模块                       | 决策                     | 下一步                                                |
-| -------------------------- | ------------------------ | ----------------------------------------------------- |
-| Controller / Worker        | 保留职责边界             | 执行与持久对话的数据权威仍在 Worker                   |
-| Codex App Server           | 保留模型/工具循环        | 扩展编排，不重复实现推理循环                          |
-| Single execution admission | 保留单执行权             | 新输入来源统一经过现有准入和确认检查                  |
-| Heartbeat                  | 保留当前续作设计         | 继续符合条件的未完成任务，不定时发聊天汇报            |
-| Scheduler                  | 暂时保持当前存储         | 保留重复、补跑和防重叠行为，暂不迁入 SQL              |
-| MemoryStore                | **第一优先级：自动检索** | 将有界、带作用域的 FTS 召回接入上下文构造             |
-| SQLite + FTS5              | 保留关键词检索           | 当前不引入独立 Vector DB                              |
-| VM 跨平台                  | 进一步抽象 Provider      | 把生命周期能力与 Windows 的 Hyper-V / VMware 适配分开 |
-| Tool security              | 增加独立权限控制         | 覆盖所有执行路径，包括 Codex 内置工具和 MCP           |
+| 模块                       | 决策                         | 下一步                                                |
+| -------------------------- | ---------------------------- | ----------------------------------------------------- |
+| Controller / Worker        | 保留职责边界                 | 执行与持久对话的数据权威仍在 Worker                   |
+| Codex App Server           | 保留模型/工具循环            | 扩展编排，不重复实现推理循环                          |
+| Single execution admission | 保留单执行权                 | 新输入来源统一经过现有准入和确认检查                  |
+| Heartbeat                  | 保留当前续作设计             | 继续符合条件的未完成任务，不定时发聊天汇报            |
+| Scheduler                  | SQLite 权威存储与派发 outbox | 保留 CAS、恢复屏障、重复执行与防重叠行为              |
+| MemoryStore                | 已接入带作用域的自动召回     | 保留最新的当前输入参考及结构化事实的显式确认          |
+| SQLite + FTS5              | 保留关键词检索               | 当前不引入独立 Vector DB                              |
+| VM 跨平台                  | 进一步抽象 Provider          | 把生命周期能力与 Windows 的 Hyper-V / VMware 适配分开 |
+| Tool security              | 增加独立权限控制             | 覆盖所有执行路径，包括 Codex 内置工具和 MCP           |
 
-自动检索应使用当前用户请求或选中任务的真实上下文，在正确的对话/项目范围查询已确认记忆，注入有长度限制、脱敏且带来源的参考内容。候选不能混入，明确身份/偏好要保留，修改和删除后召回结果必须失效。空闲 heartbeat 不能仅因计时器触发就检索或推理。验收需覆盖跨项目隔离、无匹配、旧缓存、已删除/冲突事实，以及用户内容保持原样。这是下一阶段的集成目标，不是当前已实现的行为。
+召回与调度恢复测试覆盖跨项目隔离、无匹配/删除/冲突记忆、发送前的新鲜读取、用户原文不变、并发认领及跨文件崩溃窗口。未来输入来源也必须保留这些边界，并使用既有准入路径。
 
 独立权限服务应在**执行前**校验真实工具、参数、任务/turn 所有者和获准资源，再允许、拒绝或保存审批请求。审批绑定具体操作，参数或所有者变化后必须失效。必须同时覆盖 Codex 内置 shell/文件操作和应用工具；只拦动态工具会留下绕过路径。这需要调整当前执行/审批配置，并验证被拒操作和审批结果不明的情形，不能新增第二套 Agent loop，也不能把模型文字、记忆或网页内容当成权限。
 
 参考架构用于指导边界，不代表其中的提案已经全部实现：
 
-- SQLite 当前覆盖记忆，没有把消息、task runs、事件、审批和调度统一迁到 SQL。
+- SQLite 分别管理记忆与调度；消息、持久任务状态、事件和审批尚未统一迁到一套 SQL schema。
 - 已有续作保护、停止控制、超时和有界证据延长；统一的每任务工具步数、执行时间和 token 预算仍需设计。
-- 已有关键词检索与候选存储；自动召回、记忆编辑器、embeddings 和自动 consolidation 需要集成与验证。
+- 已有带作用域的自动召回与候选存储；完整记忆编辑器、embeddings 和自动 consolidation 仍为后续工作。
 - 已有 Windows Controller / Ubuntu Worker 生命周期，尚未实现通过 named pipes/Unix sockets 通信的跨平台独立用户服务。
 - 已有 TypeScript 合约与运行时校验；React、Zustand、Tailwind、Zod 和 pnpm monorepo 不是当前依赖。
 

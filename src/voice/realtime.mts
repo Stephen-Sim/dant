@@ -484,7 +484,7 @@ export class NativeRealtimeVoice extends EventEmitter {
           throw Error('The active background turn changed; steering was not submitted');
         if (!interactive && !turn.awaitingChatInput && !turn.planWaitingForUser)
           throw Error('The background task is no longer awaiting input');
-        const input = this.engine.input(message);
+        const input = this.engine.withMemoryInput(this.engine.input(message), message);
         this.engine.updateWork(message.id, {
           status: 'running',
           submission: 'submitting',
@@ -1208,6 +1208,7 @@ export class NativeRealtimeVoice extends EventEmitter {
         !s.stopping &&
         !s.closed,
       send: ({ text, kind, messageId }) => {
+        let inputText = text;
         if (kind === 'input') {
           const input = s.callInputs?.get(messageId ?? '');
           try {
@@ -1221,6 +1222,10 @@ export class NativeRealtimeVoice extends EventEmitter {
               this.pendingHandoffs(s)
             )
               throw Error('The voice task handoff is unconfirmed');
+            const message = this.engine.task(messageId);
+            if (!message) throw Error('The typed call message no longer exists');
+            const reference = this.engine.memoryReference(message);
+            if (reference) inputText += '\n\n' + reference;
             this.engine.updateWork(messageId, {
               status: 'queued',
               submission: 'submitting',
@@ -1236,7 +1241,7 @@ export class NativeRealtimeVoice extends EventEmitter {
         if (!s.threadId) throw Error('The voice conversation is no longer acknowledged.');
         return this.worker.request('thread/realtime/appendText', {
           threadId: this.requireThreadId(s),
-          text,
+          text: inputText,
         });
       },
     }));

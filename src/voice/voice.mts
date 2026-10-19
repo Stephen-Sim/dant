@@ -630,11 +630,13 @@ export class Voice extends EventEmitter {
     reply = null,
     callId,
     isCurrent = () => true,
+    memoryReference = () => '',
   }: {
     message?: unknown;
     reply?: unknown;
     callId?: string;
     isCurrent?: () => boolean;
+    memoryReference?: () => string;
   } = {}): Promise<VoiceInputResult> {
     const message = isRecord(value) ? value : {};
     const s = this.#session;
@@ -717,6 +719,8 @@ export class Voice extends EventEmitter {
           );
         if (s.socket?.readyState !== 1) throw Error('The voice control connection is unavailable.');
         admission();
+        const reference = memoryReference();
+        entry.inputText = reference ? entry.text + '\n\n' + reference : entry.text;
         await this.sendInput(s, entry);
         // The matching item event is the read receipt. A later hangup cannot undo
         // it, and it must never turn this same input into another executor task.
@@ -788,7 +792,7 @@ export class Voice extends EventEmitter {
               id: entry.itemId,
               type: 'message',
               role: 'user',
-              content: [{ type: 'input_text', text: entry.text }],
+              content: [{ type: 'input_text', text: entry.inputText ?? entry.text }],
             },
           }),
           (error) => {
@@ -1114,7 +1118,7 @@ export class Voice extends EventEmitter {
         Array.isArray(item.content) &&
         item.content.length === 1 &&
         item.content[0]?.type === 'input_text' &&
-        item.content[0]?.text === entry.text
+        item.content[0]?.text === (entry.inputText ?? entry.text)
       ) {
         entry.submission = 'confirmed';
         entry.confirmedAt = Date.now();

@@ -1,5 +1,6 @@
 import { TaskStatus, SubmissionStatus, PlanStepStatus } from '../contracts/states.mts';
 import { readRpcEvent } from '../runtime/rpc-values.mts';
+import { retrieveAgentMemory } from '../conversation/agent-memory.mts';
 import { errorMessage, isRecord, includesValue } from '../contracts/json.mts';
 import type { JsonObject } from '../contracts/json.mts';
 import type { Store } from '../conversation/store.mts';
@@ -344,6 +345,7 @@ export class Engine extends EventEmitter {
   loaded?: boolean;
   streamingSaveTimer?: ReturnType<typeof setTimeout> | null;
   referencePending = 0;
+  readonly preparedMemoryQueries = new WeakMap<readonly RpcInput[], string>();
   contextChain?: Promise<unknown>;
   threadPromise?: Promise<string> | null;
   cancelling?: { owner: ExecutionTask } | null;
@@ -687,7 +689,7 @@ export class Engine extends EventEmitter {
     this.change();
     const call = this.call;
     if (call) {
-      const memory = this.redact(this.memory.context()),
+      const memory = this.redact(this.memory.context({ includeEntries: false })),
         provider = call.provider === 'subscription' ? this.nativeVoice : this.voice;
       const outcomes = await Promise.allSettled([
         this.injectReference(
@@ -777,6 +779,7 @@ export class Engine extends EventEmitter {
       ];
     return [
       DANT_IDENTITY_INSTRUCTIONS,
+      'Automatically retrieved memory applies only to the current input carrying it. A later input without retrieved references supplies no such facts; do not carry recalled project facts across tasks or treat old excerpts as current memory.',
       'Your work computer is your own Ubuntu VM. Speak naturally in the user language.',
       'Match the current user message language; if it is ambiguous, use ' +
         languageInfo(this.store.state.settings.language).name +
@@ -815,7 +818,7 @@ export class Engine extends EventEmitter {
             })),
           ),
         ),
-      'Durable reference memory:\n' + this.redact(this.memory.context()),
+      'Durable reference memory:\n' + this.redact(this.memory.context({ includeEntries: false })),
     ].join('\n');
   }
   ensureWorkspace() {
@@ -1087,6 +1090,7 @@ export class Engine extends EventEmitter {
         if (!voice.message) throw Error('Typed input is unavailable for this voice call.');
         result = await voice.message({
           message,
+          memoryReference: () => this.memoryReference(message),
           reply: message.replyTo ? this.task(message.replyTo) : null,
           callId: call.id,
           isCurrent: () => {
@@ -1998,6 +2002,7 @@ export class Engine extends EventEmitter {
         speech.set(attachment.id, this.redact(result.text));
       }
     const input = this.input(message, speech);
+    this.preparedMemoryQueries.set(input, [message.text || '', ...speech.values()].join('\n'));
     if (speech.size && call?.provider === 'api' && this.call === call) {
       // The independent live peer needs the recognized words too. This replaces
       // the same message's reference; it never dispatches a second task or bubble.
@@ -2022,6 +2027,52 @@ export class Engine extends EventEmitter {
     }
     if (signal?.aborted) throw Error('Voice message recognition was cancelled.');
     return input;
+  }
+  memoryReference(
+    message: Partial<WorkMessage>,
+    { workId, query }: { workId?: string; query?: string } = {},
+  ): string {
+    const target = message.workReply;
+    if (target && target.conversationId !== this.store.state.conversationId)
+      throw Error('The selected task belongs to another conversation.');
+    const owner = this.active || this.nativeVoice?.active;
+    if (workId && target && target.workId !== workId)
+      throw Error('The selected task changed before memory retrieval.');
+    const selectedId =
+      workId ||
+      target?.workId ||
+      (owner && 'continuation' in owner ? owner.continuation?.workId : undefined) ||
+      (owner && 'workRecord' in owner ? owner.workRecord?.id : undefined) ||
+      (owner?.turnId
+        ? this.store.state.workTasks.find((record) => record.turnId === owner.turnId)?.id
+        : undefined);
+    if (selectedId && !this.store.state.workTasks.some((record) => record.id === selectedId))
+      throw Error('The selected task no longer exists.');
+    return retrieveAgentMemory(
+      this.memory,
+      query ?? message.text ?? '',
+      {
+        conversationId: this.store.state.conversationId,
+        ...(selectedId ? { workId: selectedId } : {}),
+      },
+      {
+        ...(message.id ? { messageId: message.id } : {}),
+        redact: (text) => this.redact(text),
+      },
+    );
+  }
+  withMemoryInput(
+    input: [RpcInputText, ...RpcInput[]],
+    message: Partial<WorkMessage>,
+    options: { workId?: string; query?: string } = {},
+  ): [RpcInputText, ...RpcInput[]] {
+    const reference = this.memoryReference(message, {
+      ...options,
+      query: options.query ?? this.preparedMemoryQueries.get(input) ?? message.text ?? '',
+    });
+    if (!reference) return input;
+    const [first, ...rest] = input;
+    return [{ ...first, text: first.text + '\n\n' + reference }, ...rest];
   }
   input(
     message: Partial<WorkMessage>,
@@ -2224,11 +2275,12 @@ export class Engine extends EventEmitter {
         await this.finish(TaskStatus.Paused);
         return;
       }
+      const contextualInput = this.withMemoryInput(input, message);
       active.startSubmitted = true;
       this.updateWork(message.id, { submission: SubmissionStatus.Submitting });
       const result = await this.worker.request('turn/start', {
         threadId: active.threadId ?? undefined,
-        input,
+        input: contextualInput,
         cwd: this.workspace,
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'dangerFullAccess' },
@@ -2365,6 +2417,7 @@ export class Engine extends EventEmitter {
         });
         const input = await this.prepareInput(message, { signal: active.preparation?.signal });
         assertCurrent();
+        const contextualInput = this.withMemoryInput(input, message);
         this.updateWork(message.id, { submission: SubmissionStatus.Submitting });
         submitted = true;
         const waitRevision = active.planWaitRevision;
@@ -2372,7 +2425,7 @@ export class Engine extends EventEmitter {
         await this.worker.request('turn/steer', {
           threadId: active.threadId,
           expectedTurnId,
-          input,
+          input: contextualInput,
         });
         this.safeUpdate(message.id, {
           submission: SubmissionStatus.Confirmed,
@@ -4090,10 +4143,10 @@ export class Engine extends EventEmitter {
       // The independent API provider needs an explicit conversation reference.
       const context = provider === 'api' ? await this.conversationContext() : undefined;
       if (this.call !== call) throw Error('Call cancelled');
-      const memory = this.redact(this.memory.context()),
+      const memory = this.redact(this.memory.context({ includeEntries: false })),
         result = await voice.start({ sdp, callId: call.id, voice: selected, memory, context });
       if (this.call === call) {
-        const latest = this.redact(this.memory.context());
+        const latest = this.redact(this.memory.context({ includeEntries: false }));
         if (latest !== memory) {
           const synced = await voice.syncMemory?.({ memory: latest, callId: call.id });
           if (!includesValue(['submitted', 'superseded'], synced?.status))

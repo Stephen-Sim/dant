@@ -275,6 +275,12 @@ test('clear completed atomically hides only accepted task/work/linked receipts a
   store.state.schedules = [
     { id: 'schedule', text: 'Keep scheduled work', at: 1000, status: 'pending' },
   ];
+  store.scheduleDatabase.replace(
+    store.scheduleDatabase.snapshot().revision,
+    store.state.schedules,
+    [],
+  );
+  store.refreshSchedules();
   store.state.memory = 'Persistent memory';
   store.save();
   const before = withoutDismissal(store.state),

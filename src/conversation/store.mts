@@ -1,4 +1,5 @@
-import { restoreScheduledRecords } from '../schedules/schedule-records.mts';
+import { ScheduleDatabase } from '../schedules/schedule-database.mts';
+import type { ScheduledMessage } from '../schedules/schedule-database-types.ts';
 import { restoreTokenUsage } from '../settings/token-usage.mts';
 import { restoreConversationState } from './store-restore.mts';
 import { includesValue, isRecord } from '../contracts/json.mts';
@@ -110,6 +111,7 @@ export class Store {
   readonly pause: (milliseconds: number) => unknown;
   readonly dir: string;
   readonly file: string;
+  readonly scheduleDatabase: ScheduleDatabase;
   state: ConversationStoreState;
   constructor(
     dir: string,
@@ -130,7 +132,6 @@ export class Store {
       : {};
     const restoredState = restoreConversationState(raw);
     this.state = restoredState.state;
-    this.state.schedules = restoreScheduledRecords(restoredState.rawSchedules);
     if (restoredState.rawTokenUsage !== undefined)
       this.state.tokenUsage = restoreTokenUsage(restoredState.rawTokenUsage, {
         timeZone: this.state.settings.timeZone,
@@ -314,16 +315,130 @@ export class Store {
         m.pauseReason = 'restart';
       }
     }
+    this.scheduleDatabase = new ScheduleDatabase(dir, {
+      schedules: restoredState.rawSchedules,
+      deletedRequestIds: this.state.deletedScheduleRequestIds,
+    });
+    this.refreshSchedules();
     this.save();
   }
   save() {
+    const { schedules: _schedules, deletedScheduleRequestIds: _deleted, ...state } = this.state;
+    this.persist(state);
+  }
+  private persist(state: unknown) {
     const temp = this.file + '.tmp';
-    fs.writeFileSync(temp, JSON.stringify(this.state, null, 2));
+    fs.writeFileSync(temp, JSON.stringify(state, null, 2));
     renameAtomicFileSync(temp, this.file, {
       renameSync: this.renameSync,
       platform: this.platform,
       pause: this.pause,
     });
+  }
+  refreshSchedules() {
+    const snapshot = this.scheduleDatabase.snapshot();
+    this.state.schedules = snapshot.items;
+    this.state.deletedScheduleRequestIds = snapshot.deletedRequestIds;
+    return snapshot;
+  }
+  /** Caller holds the schedule database writer lock; patch only chat messages in current JSON. */
+  materializeScheduledMessage(
+    input: ScheduledMessage,
+    { recovered = false }: { recovered?: boolean } = {},
+  ): ChatMessage {
+    const raw: unknown = fs.existsSync(this.file)
+      ? JSON.parse(fs.readFileSync(this.file, 'utf8'))
+      : {};
+    if (!isRecord(raw) || (raw.messages !== undefined && !Array.isArray(raw.messages)))
+      throw Error('Invalid conversation storage');
+    const messages: unknown[] = Array.isArray(raw.messages) ? raw.messages : [];
+    const matching = messages.filter((message) => isRecord(message) && message.id === input.id);
+    if (matching.length > 1) throw Error('Conflicting scheduled message identity');
+    const existing = matching[0];
+    if (existing !== undefined) {
+      if (
+        !isRecord(existing) ||
+        existing.role !== input.role ||
+        existing.scheduled !== true ||
+        existing.scheduleId !== input.scheduleId ||
+        existing.scheduledAt !== input.scheduledAt ||
+        existing.text !== input.text
+      )
+        throw Error('Conflicting scheduled message identity');
+      let observed = existing;
+      if (
+        recovered &&
+        existing.status === TaskStatus.Queued &&
+        existing.unknownOutcome !== true &&
+        !existing.turnId &&
+        existing.executorConfirmedAt == null &&
+        (existing.submission == null || existing.submission === SubmissionStatus.NotSubmitted)
+      ) {
+        observed = { ...existing, status: TaskStatus.Paused, pauseReason: 'schedule-recovery' };
+        const { schedules: _schedules, deletedScheduleRequestIds: _deleted, ...persisted } = raw;
+        this.persist({
+          ...persisted,
+          messages: messages.map((value) => (value === existing ? observed : value)),
+        });
+      }
+      const restored = restoreConversationState({ messages: [observed] }).state.messages[0];
+      if (!restored) throw Error('Invalid scheduled message');
+      const local = this.state.messages.find((message) => message.id === input.id);
+      if (local) {
+        if (
+          local.role !== input.role ||
+          local.scheduled !== true ||
+          local.scheduleId !== input.scheduleId ||
+          local.scheduledAt !== input.scheduledAt ||
+          local.text !== input.text
+        )
+          throw Error('Conflicting scheduled message identity');
+        Object.assign(local, restored);
+        return local;
+      }
+      this.state.messages.push(restored);
+      return restored;
+    }
+    const local = this.state.messages.find((message) => message.id === input.id);
+    if (
+      local &&
+      (local.role !== input.role ||
+        local.scheduled !== true ||
+        local.scheduleId !== input.scheduleId ||
+        local.scheduledAt !== input.scheduledAt ||
+        local.text !== input.text)
+    )
+      throw Error('Conflicting scheduled message identity');
+    const savedLocal =
+      recovered &&
+      local?.status === TaskStatus.Queued &&
+      local.unknownOutcome !== true &&
+      !local.turnId &&
+      local.executorConfirmedAt == null &&
+      (local.submission == null || local.submission === SubmissionStatus.NotSubmitted)
+        ? { ...local, status: TaskStatus.Paused, pauseReason: 'schedule-recovery' }
+        : local;
+    const message: ChatMessage = savedLocal ?? {
+      ...input,
+      time: Date.now(),
+      receivedAt: Date.now(),
+      executorConfirmedAt: null,
+      read: false,
+      reactions: [],
+      ...(recovered ? { status: TaskStatus.Paused, pauseReason: 'schedule-recovery' } : {}),
+    };
+    const { schedules: _schedules, deletedScheduleRequestIds: _deleted, ...persisted } = raw;
+    this.persist({ ...persisted, messages: [...messages, message] });
+    // Preserve already persisted messages created by another schedule instance.
+    const localIds = new Set(this.state.messages.map((value) => value.id));
+    for (const value of restoreConversationState({ messages }).state.messages)
+      if (!localIds.has(value.id)) this.state.messages.push(value);
+    if (local) {
+      Object.assign(local, message);
+      return local;
+    }
+    this.state.messages.push(message);
+    return message;
   }
   bindProjectMemory(memory: ProjectMemory) {
     this.projectMemory = memory;

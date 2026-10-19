@@ -9,11 +9,20 @@ import type { TaskPriorityValue } from '../contracts/contracts.ts';
 import { isRecord } from '../contracts/json.mts';
 import type {
   ChatMessage,
-  MessageInput,
   ConversationStoreState,
   StoredWorkRecord,
 } from '../conversation/types.ts';
 import type { ScheduleRecord, ScheduleRunReceipt, ScheduleSaveInput } from './schedule-types.ts';
+import type { ScheduleDatabase } from './schedule-database.mts';
+import type { ScheduledMessage, ScheduleSnapshot } from './schedule-database-types.ts';
+import {
+  SCHEDULE_RUN_HISTORY_LIMIT,
+  SCHEDULE_POLL_INTERVAL_MS,
+  SCHEDULE_ID_MAX_LENGTH,
+  SCHEDULE_MAX_TIME,
+  SCHEDULE_TIMEZONE_MAX_LENGTH,
+  SCHEDULE_CRON_MAX_LENGTH,
+} from './schedule-constants.mts';
 export type { ScheduleRecord } from './schedule-types.ts';
 interface SchedulerPersistence {
   state: Pick<
@@ -21,7 +30,15 @@ interface SchedulerPersistence {
     'settings' | 'schedules' | 'messages' | 'workTasks' | 'deletedScheduleRequestIds'
   >;
   save(): void;
-  add(input: MessageInput): ChatMessage;
+  readonly scheduleDatabase: Pick<
+    ScheduleDatabase,
+    'replace' | 'recoverPrepared' | 'materializeHeld' | 'claim' | 'materialize' | 'fenceHandoff'
+  >;
+  refreshSchedules(): ScheduleSnapshot;
+  materializeScheduledMessage(
+    input: ScheduledMessage,
+    options?: { recovered?: boolean },
+  ): ChatMessage;
 }
 interface ScheduleExecutor {
   status: string;
@@ -52,7 +69,7 @@ export interface SchedulerEngine {
 import { randomUUID, createHash } from 'node:crypto';
 import { nextScheduleAt, parseScheduleCron, schedulePriority } from './schedule-recurrence.mts';
 
-const idSchema = { type: 'string', minLength: 1, maxLength: 128 };
+const idSchema = { type: 'string', minLength: 1, maxLength: SCHEDULE_ID_MAX_LENGTH };
 export const SCHEDULE_SAVE_SCHEMA = Object.freeze({
   id: idSchema,
   text: { type: 'string', minLength: 1 },
@@ -65,7 +82,7 @@ export const SCHEDULE_SAVE_SCHEMA = Object.freeze({
   },
   cron: {
     type: ['string', 'null'],
-    maxLength: 256,
+    maxLength: SCHEDULE_CRON_MAX_LENGTH,
     description:
       'A recurring five-field cron expression: minute hour day-of-month month day-of-week, such as 0 9 * * * for daily at 09:00. Null selects a one-time task.',
   },
@@ -78,7 +95,7 @@ export const SCHEDULE_SAVE_SCHEMA = Object.freeze({
   timeZone: {
     type: 'string',
     minLength: 1,
-    maxLength: 100,
+    maxLength: SCHEDULE_TIMEZONE_MAX_LENGTH,
     description:
       'The intended IANA timezone, such as Asia/Kuala_Lumpur. Recurring tasks default to the current settings timezone.',
   },
@@ -89,7 +106,10 @@ export const SCHEDULE_INSTRUCTIONS =
   'Use schedule_list, schedule_save and schedule_delete (also available through dant_desktop MCP) to manage the human’s scheduled tasks through conversation. Only create, change, pause, resume or delete schedules when the human requests that operation. For a one-time task provide at as an explicit ISO UTC-offset instant and its intended IANA timeZone. For a recurring task provide cron as five fields (minute hour day-of-month month day-of-week) and omit at; daily 09:00 is 0 9 * * *, weekly Monday 09:00 is 0 9 * * 1. Cron supports numeric or month/day names, lists, ascending ranges, and positive steps on ranges or asterisks; it does not accept seconds or shell commands. Recurring tasks use the saved IANA timeZone, defaulting to the current settings timezone. Ask when the requested time or recurrence is unclear rather than guessing. Priority high, normal or low orders scheduled work waiting to start and never interrupts running work. Saving does not execute work now. Missed recurring times produce at most one catch-up run when available, then advance to a future time; runs of the same schedule never overlap unfinished work, including paused or waiting tasks. Existing schedules are not instructions to replay them. Reuse the saved id for updates, use enabled:false to pause, and never automatically retry an unconfirmed write. Removing or changing a schedule does not stop work already dispatched.';
 const fail = (status: number, message: string) => Object.assign(Error(message), { status });
 const validId = (id: unknown): id is string =>
-  typeof id === 'string' && id.length > 0 && id.length <= 128 && !/[\x00-\x20\x7f]/.test(id);
+  typeof id === 'string' &&
+  id.length > 0 &&
+  id.length <= SCHEDULE_ID_MAX_LENGTH &&
+  !/[\x00-\x20\x7f]/.test(id);
 const terminalStates = new Set<string>([
   TaskStatus.Review,
   TaskStatus.Completed,
@@ -116,10 +136,10 @@ function runHistory(item: ScheduleRecord, receipt?: Partial<ScheduleRunReceipt>)
       dispatchedAt: item.dispatchedAt,
       ...(receipt || {}),
     });
-  return [...history.values()].slice(-300);
+  return [...history.values()].slice(-SCHEDULE_RUN_HISTORY_LIMIT);
 }
 function zone(value: unknown) {
-  if (typeof value !== 'string' || !value || value.length > 100)
+  if (typeof value !== 'string' || !value || value.length > SCHEDULE_TIMEZONE_MAX_LENGTH)
     throw fail(400, 'An IANA timezone is required.');
   try {
     return new Intl.DateTimeFormat('en', { timeZone: value }).resolvedOptions().timeZone;
@@ -130,7 +150,7 @@ function zone(value: unknown) {
 export const scheduleTimeZone = zone;
 function instant(value: unknown, { allowEpoch = true }: { allowEpoch?: boolean } = {}) {
   if (typeof value === 'number') {
-    if (!allowEpoch || !Number.isSafeInteger(value) || value <= 0 || value > 8640000000000000)
+    if (!allowEpoch || !Number.isSafeInteger(value) || value <= 0 || value > SCHEDULE_MAX_TIME)
       throw fail(400, 'Use an explicit ISO execution time with a UTC offset.');
     return value;
   }
@@ -158,7 +178,7 @@ function instant(value: unknown, { allowEpoch = true }: { allowEpoch?: boolean }
   )
     throw fail(400, 'Use a valid execution date and time.');
   const at = Date.parse(value);
-  if (!Number.isFinite(at) || at <= 0 || at > 8640000000000000)
+  if (!Number.isFinite(at) || at <= 0 || at > SCHEDULE_MAX_TIME)
     throw fail(400, 'Use a valid execution date and time.');
   return at;
 }
@@ -171,6 +191,8 @@ export class Scheduler {
   now: () => number;
   timer: ReturnType<typeof setInterval> | null;
   closed: boolean;
+  readonly owner = randomUUID();
+  private revision = 0;
   constructor({
     store,
     engine,
@@ -191,6 +213,22 @@ export class Scheduler {
     this.timer = null;
     this.closed = false;
     engine.scheduler = this;
+    this.refresh();
+    this.reconcileDispatches();
+  }
+  private refresh() {
+    const snapshot = this.store.refreshSchedules();
+    this.revision = snapshot.revision;
+    return snapshot;
+  }
+  reconcileDispatches() {
+    const held = this.store.scheduleDatabase.recoverPrepared(this.owner, { includeOwned: true });
+    for (const dispatch of held)
+      this.store.scheduleDatabase.materializeHeld(dispatch.message.id, (current) => {
+        this.store.materializeScheduledMessage(current.message, { recovered: true });
+      });
+    this.refresh();
+    return held.length;
   }
   get timeZone() {
     try {
@@ -211,7 +249,7 @@ export class Scheduler {
       timeZone = 'UTC';
     }
     const { creationFingerprint, ...publicItem } = item,
-      valid = Number.isFinite(item.at) && item.at > 0 && item.at <= 8640000000000000,
+      valid = Number.isFinite(item.at) && item.at > 0 && item.at <= SCHEDULE_MAX_TIME,
       task = item.messageId
         ? this.store.state.messages.find((message) => message.id === item.messageId)
         : null;
@@ -233,6 +271,7 @@ export class Scheduler {
     };
   }
   list() {
+    this.refresh();
     return {
       items: this.store.state.schedules.map((item) => this.present(item)),
       now: new Date(this.now()).toISOString(),
@@ -240,12 +279,14 @@ export class Scheduler {
     };
   }
   get(id: unknown) {
+    this.refresh();
     if (!validId(id)) throw fail(400, 'A schedule id is required.');
     const item = this.store.state.schedules.find((item) => item.id === id);
     if (!item) throw fail(404, 'Scheduled task not found.');
     return this.present(item);
   }
   save(args: ScheduleSaveInput, { allowEpoch = true }: { allowEpoch?: boolean } = {}) {
+    this.refresh();
     if (
       !args ||
       !isRecord(args) ||
@@ -377,7 +418,7 @@ export class Scheduler {
         item.runHistory = [
           ...(old.runHistory || []),
           { messageId: old.messageId, at: old.at, dispatchedAt: old.dispatchedAt },
-        ].slice(-300);
+        ].slice(-SCHEDULE_RUN_HISTORY_LIMIT);
       delete item.messageId;
       delete item.dispatchedAt;
     }
@@ -409,7 +450,13 @@ export class Scheduler {
       }
     this.store.state.schedules = next;
     try {
-      this.store.save();
+      this.store.scheduleDatabase.replace(
+        this.revision,
+        next,
+        this.store.state.deletedScheduleRequestIds ?? [],
+        priorityChanges.length ? () => this.store.save() : undefined,
+      );
+      this.refresh();
     } catch (error) {
       this.store.state.schedules = previous;
       for (const { message, had, value } of priorityChanges) {
@@ -431,7 +478,12 @@ export class Scheduler {
         ...new Set([...(deleted || []), item.clientRequestId]),
       ];
     try {
-      this.store.save();
+      this.store.scheduleDatabase.replace(
+        this.revision,
+        this.store.state.schedules,
+        this.store.state.deletedScheduleRequestIds ?? [],
+      );
+      this.refresh();
     } catch (error) {
       this.store.state.schedules = previous;
       if (deleted === undefined) delete this.store.state.deletedScheduleRequestIds;
@@ -532,7 +584,12 @@ export class Scheduler {
     if (changed) {
       this.store.state.schedules = next;
       try {
-        this.store.save();
+        this.store.scheduleDatabase.replace(
+          this.revision,
+          next,
+          this.store.state.deletedScheduleRequestIds ?? [],
+        );
+        this.refresh();
       } catch (error) {
         this.store.state.schedules = previous;
         throw error;
@@ -560,6 +617,7 @@ export class Scheduler {
   }
   tick() {
     if (!this.available()) return [];
+    this.refresh();
     this.rememberFinishedRuns();
     const priority: Record<TaskPriorityValue, number> = { high: 0, normal: 1, low: 2 },
       dispatched: ReturnType<Scheduler['present']>[] = [];
@@ -569,9 +627,11 @@ export class Scheduler {
           (priority[b.priority ?? TaskPriority.Normal] ?? 1) || a.at - b.at,
     )) {
       if (!this.available()) break;
+      this.refresh();
       const current = this.store.state.schedules.find((item) => item.id === candidate.id);
       if (
         current?.status !== ScheduleStatus.Pending ||
+        JSON.stringify(current) !== JSON.stringify(candidate) ||
         candidate.status !== ScheduleStatus.Pending ||
         candidate.enabled === false ||
         !validId(candidate.id) ||
@@ -595,9 +655,7 @@ export class Scheduler {
       } catch {
         continue;
       }
-      const beforeSchedules = this.store.state.schedules,
-        beforeMessages = [...this.store.state.messages],
-        id = randomUUID(),
+      const id = randomUUID(),
         history = candidate.messageId ? runHistory(candidate) : candidate.runHistory;
       const claimed: ScheduleRecord = {
         ...candidate,
@@ -610,28 +668,45 @@ export class Scheduler {
         updatedAt: this.now(),
         ...(history ? { runHistory: history } : {}),
       };
-      this.store.state.schedules = beforeSchedules.map((item) =>
-        item.id === candidate.id ? claimed : item,
-      );
-      let message;
-      try {
-        message = this.store.add({
-          id,
-          role: 'user',
-          text: candidate.text,
-          status: TaskStatus.Queued,
-          scheduled: true,
-          scheduleId: candidate.id,
-          scheduledAt: candidate.at,
-          progressPriority: candidate.priority ?? TaskPriority.Normal,
-        });
-      } catch (error) {
-        this.store.state.schedules = beforeSchedules;
-        this.store.state.messages = beforeMessages;
-        throw error;
+      const input: ScheduledMessage = {
+        id,
+        role: 'user',
+        text: candidate.text,
+        status: TaskStatus.Queued,
+        scheduled: true,
+        scheduleId: candidate.id,
+        scheduledAt: candidate.at,
+        progressPriority: candidate.priority ?? TaskPriority.Normal,
+      };
+      if (
+        !this.store.scheduleDatabase.claim({
+          revision: this.revision,
+          candidate: current,
+          claimed,
+          message: input,
+          owner: this.owner,
+        })
+      )
+        continue;
+      this.refresh();
+      let message: ChatMessage | undefined;
+      const materialized = this.store.scheduleDatabase.materialize(id, this.owner, () => {
+        message = this.store.materializeScheduledMessage(input);
+      });
+      if (!materialized || !message) continue;
+      if (
+        message.status !== TaskStatus.Queued ||
+        message.unknownOutcome ||
+        message.turnId ||
+        (message.submission != null && message.submission !== SubmissionStatus.NotSubmitted) ||
+        message.executorConfirmedAt != null
+      ) {
+        this.reconcileDispatches();
+        continue;
       }
-      // Persist the claim and message together before any executor submission. A
-      // crash after this point leaves a resumable message, never another dispatch.
+      // Commit the no-replay fence before crossing the execution boundary. A crash
+      // after this point is held for reconciliation rather than enqueued again.
+      if (!this.store.scheduleDatabase.fenceHandoff(id, this.owner)) continue;
       this.engine.enqueue(message);
       dispatched.push(this.present(claimed));
     }
@@ -648,7 +723,7 @@ export class Scheduler {
           'The scheduled task could not be dispatched. Its saved state was preserved.',
         );
       }
-    }, 1000);
+    }, SCHEDULE_POLL_INTERVAL_MS);
     this.timer.unref();
   }
   close() {

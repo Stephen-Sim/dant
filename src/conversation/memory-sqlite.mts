@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
 import { isRecord } from '../contracts/json.mts';
 import { MemoryEntryStatus as EntryStatus } from '../contracts/states.mts';
-import { searchMemory } from './memory-search.mts';
+import { searchMemory, retrieveMemory } from './memory-search.mts';
 import {
   listMemoryEntries,
   proposeMemoryEntry,
@@ -31,6 +31,7 @@ import type {
   MemoryEntry,
   MemoryEntryStatus,
   MemorySnapshot,
+  MemoryRetrievalOptions,
 } from './memory-types.ts';
 import type { ProjectContext } from './types.ts';
 
@@ -366,6 +367,9 @@ export class MemoryDatabase {
   }
   search(query: unknown, options: { limit?: number } = {}) {
     return this.transaction(true, (db) => searchMemory(db, query, options), false);
+  }
+  retrieve(query: unknown, scope: unknown, options: MemoryRetrievalOptions = {}) {
+    return this.transaction(true, (db) => retrieveMemory(db, query, scope, options), false);
   }
   listEntries({ status }: { status?: MemoryEntryStatus } = {}) {
     return this.transaction(false, (db) => listMemoryEntries(db, status));

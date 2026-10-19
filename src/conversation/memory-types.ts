@@ -51,6 +51,17 @@ export interface MemorySearchResult {
   conversationId?: string;
   workId?: string;
 }
+export interface MemoryRetrievalScope {
+  conversationId: string;
+  workId?: string;
+}
+export interface MemoryRetrievalOptions {
+  limit?: number;
+}
+export interface MemoryRetrievalReference extends MemorySearchResult {
+  source?: MemorySource;
+  confidence?: number | null;
+}
 export interface MemorySnapshot {
   revision: string;
   notes: MemoryNote[];

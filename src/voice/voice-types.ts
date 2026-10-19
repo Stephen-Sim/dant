@@ -60,6 +60,7 @@ export interface VoiceInputResult {
 export interface VoiceInputEntry {
   messageId: string;
   text: string;
+  inputText?: string;
   itemId: string;
   eventId: string;
   submission: string;

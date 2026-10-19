@@ -177,7 +177,11 @@ test('legacy numeric schedules retain compatibility and a missing legacy timezon
     at: NOW + 2000,
     status: 'pending',
   });
-  f.store.save();
+  f.store.scheduleDatabase.replace(
+    f.store.scheduleDatabase.snapshot().revision,
+    f.store.state.schedules,
+    f.store.state.deletedScheduleRequestIds ?? [],
+  );
   assert.equal(f.scheduler.get('legacy').timeZone, 'UTC');
   assert.equal(Object.hasOwn(defined(f.store.state.schedules[1]), 'timeZone'), false);
   f.setNow(NOW + 3000);
@@ -253,7 +257,9 @@ test('due claim and stable message ID are durable before enqueue and cannot disp
     messages: ChatMessage[];
   };
   f.engine.enqueue = (message) => {
-    disk = JSON.parse(fs.readFileSync(f.store.file, 'utf8'));
+    const chat = JSON.parse(fs.readFileSync(f.store.file, 'utf8'));
+    assert.equal(Object.hasOwn(chat, 'schedules'), false);
+    disk = { ...chat, schedules: f.store.scheduleDatabase.snapshot().items };
     f.enqueued.push({ message, options: undefined });
   };
   const result = f.scheduler.tick();
@@ -321,8 +327,12 @@ test('failed schedule saves, deletions and due claims roll back in-memory state 
   const f = fixture(t),
     saved = f.scheduler.save(job()),
     before = structuredClone(f.store.state),
-    save = f.store.save;
-  f.store.save = () => {
+    replace = f.store.scheduleDatabase.replace,
+    claim = f.store.scheduleDatabase.claim;
+  f.store.scheduleDatabase.replace = () => {
+    throw Error('Disk full');
+  };
+  f.store.scheduleDatabase.claim = () => {
     throw Error('Disk full');
   };
   assert.throws(() => f.scheduler.save({ id: saved.id, text: 'Unsaved change' }), /Disk full/);
@@ -333,7 +343,8 @@ test('failed schedule saves, deletions and due claims roll back in-memory state 
   assert.throws(() => f.scheduler.tick(), /Disk full/);
   assert.deepEqual(f.store.state, before);
   assert.equal(f.enqueued.length, 0);
-  f.store.save = save;
+  f.store.scheduleDatabase.replace = replace;
+  f.store.scheduleDatabase.claim = claim;
   assert.equal(f.scheduler.tick().length, 1);
   assert.equal(f.enqueued.length, 1);
 });
@@ -400,6 +411,11 @@ test('a deleted creation request cannot resurrect after more than two thousand l
   const oldest = defined(f.store.state.deletedScheduleRequestIds)[0];
   defined(f.store.state.deletedScheduleRequestIds).push(
     ...Array.from({ length: 2000 }, () => randomUUID()),
+  );
+  f.store.scheduleDatabase.replace(
+    f.store.scheduleDatabase.snapshot().revision,
+    f.store.state.schedules,
+    f.store.state.deletedScheduleRequestIds ?? [],
   );
   const latest = f.scheduler.save(job({ at: Date.parse(ISO), clientRequestId: randomUUID() }));
   f.scheduler.remove(latest.id);
@@ -827,7 +843,9 @@ test('recurring claims and messages are durable before enqueue and do not duplic
     messages: ChatMessage[];
   };
   f.engine.enqueue = (message) => {
-    disk = JSON.parse(fs.readFileSync(f.store.file, 'utf8'));
+    const chat = JSON.parse(fs.readFileSync(f.store.file, 'utf8'));
+    assert.equal(Object.hasOwn(chat, 'schedules'), false);
+    disk = { ...chat, schedules: f.store.scheduleDatabase.snapshot().items };
     f.enqueued.push({ message, options: undefined });
   };
   f.scheduler.tick();
@@ -1035,7 +1053,11 @@ test('recurring creation receipts ignore derived next times and legacy one-time 
   defined(raw).creationFingerprint = createHash('sha256')
     .update(JSON.stringify({ text: old.text, at: old.at, timeZone: old.timeZone, enabled: true }))
     .digest('hex');
-  legacy.store.save();
+  legacy.store.scheduleDatabase.replace(
+    legacy.store.scheduleDatabase.snapshot().revision,
+    legacy.store.state.schedules,
+    legacy.store.state.deletedScheduleRequestIds ?? [],
+  );
   legacy.setNow(old.at + 1000);
   assert.equal(legacy.scheduler.save({ ...oldArgs, cron: null, priority: 'normal' }).id, old.id);
   assert.throws(
@@ -1048,15 +1070,15 @@ test('recurring write failures keep the original due time and never create a sec
   const f = fixture(t),
     saved = f.scheduler.save(recurring({ cron: '* * * * *', timeZone: 'UTC' })),
     before = structuredClone(f.store.state),
-    save = f.store.save;
+    claim = f.store.scheduleDatabase.claim;
   f.setNow(saved.at + 1);
-  f.store.save = () => {
+  f.store.scheduleDatabase.claim = () => {
     throw Error('Disk unavailable');
   };
   assert.throws(() => f.scheduler.tick(), /Disk unavailable/);
   assert.deepEqual(f.store.state, before);
   assert.equal(f.enqueued.length, 0);
-  f.store.save = save;
+  f.store.scheduleDatabase.claim = claim;
   f.engine.enqueue = () => {
     throw Error('Queue unavailable');
   };

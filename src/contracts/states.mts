@@ -112,6 +112,14 @@ export const ScheduleStatus = Object.freeze({
   Dispatched: 'dispatched',
 } as const);
 export type ScheduleStatusValue = (typeof ScheduleStatus)[keyof typeof ScheduleStatus];
+export const ScheduleDispatchPhase = Object.freeze({
+  Prepared: 'prepared',
+  Materialized: 'materialized',
+  Held: 'held',
+  HandedOff: 'handed-off',
+} as const);
+export type ScheduleDispatchPhaseValue =
+  (typeof ScheduleDispatchPhase)[keyof typeof ScheduleDispatchPhase];
 export const ProvisioningStatus = Object.freeze({
   Idle: 'idle',
   Preparing: 'preparing',
