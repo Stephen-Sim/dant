@@ -1444,11 +1444,12 @@ export class Engine extends EventEmitter {
       if (
         !message ||
         message.role !== 'user' ||
-        !includesValue([TaskStatus.Paused, TaskStatus.Failed], message.status)
+        !includesValue([TaskStatus.Paused, TaskStatus.Failed, TaskStatus.Unknown], message.status)
       )
         throw Error('Task cannot be resumed');
       if (
-        (message.unknownOutcome ||
+        (message.status === TaskStatus.Unknown ||
+          message.unknownOutcome ||
           includesValue(
             [SubmissionStatus.Unknown, SubmissionStatus.Submitting],
             message.submission,

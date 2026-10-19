@@ -8,6 +8,7 @@ English · [Chinese](zh-CN/README.md)
 - [Set up or connect a work computer](VM.md) · [VMware setup](vmware.md)
 - [Settings and chat controls](settings.md)
 - [Versions and updates](updates.md)
+- [Local work computer backups and recovery](backups.md)
 
 ## Use dant
 

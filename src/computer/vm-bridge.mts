@@ -1003,8 +1003,20 @@ export class VmBridge extends EventEmitter {
     });
   }
   async deployedSource(vm: VmBinding = this.binding()) {
-    const command =
-      "python3 - <<'PY'\nimport json,pathlib,subprocess\np=pathlib.Path.home()/'dant/deployed-source.json'\nsha=None\ntry:\n data=p.read_bytes()\n if len(data)<=4096:\n  value=json.loads(data).get('sha256')\n  if isinstance(value,str) and len(value)==64 and all(c in '0123456789abcdef' for c in value): sha=value\nexcept (OSError,ValueError,AttributeError): pass\nactive=subprocess.run(['systemctl','--user','is-active','--quiet','dant-worker.service','dant-guest-local.service'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0\nprint(json.dumps({'sha256':sha,'active':active}))\nPY";
+    const command = `python3 - <<'PY'
+import json,pathlib,subprocess
+p=pathlib.Path.home()/'dant/deployed-source.json'
+sha=None
+try:
+ data=p.read_bytes()
+ if len(data)<=4096:
+  value=json.loads(data).get('sha256')
+  if isinstance(value,str) and len(value)==64 and all(c in '0123456789abcdef' for c in value): sha=value
+except (OSError,ValueError,AttributeError): pass
+REQUIRED_SERVICES=('dant-worker.service','dant-guest-local.service')
+states=[subprocess.run(['systemctl','--user','is-active','--quiet',unit],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0 for unit in REQUIRED_SERVICES]
+print(json.dumps({'sha256':sha,'active':all(states)}))
+PY`;
     let output;
     try {
       output = await this.run('ssh', [...sshArgs(vm), `${vm.user}@${vm.host}`, command], {

@@ -23,10 +23,11 @@ import express from 'express';
 import multer from 'multer';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
+import { pipeline } from 'node:stream';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { Store } from '../conversation/store.mts';
 import { LocalWorker, assertVmRuntime } from '../runtime/local-worker.mts';
 import { createControllerApp } from './controller.mts';
@@ -75,6 +76,9 @@ import {
 import { taskContextSnapshots } from '../work/task-project-context.mts';
 import { loadProjectEnv } from '../config/env.mts';
 import { applicationEndpoint, allowedLocalOrigin, NATIVE_PROTOCOL } from '../config/network.mts';
+import { createWorkerBackup } from '../backups/worker-archive.mts';
+import { backupError } from '../backups/archive-stream.mts';
+import { loadedWorkerRestoreInfo } from '../backups/worker-restore.mts';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 loadProjectEnv({ projectRoot: root });
 export function createApp(
@@ -128,6 +132,10 @@ export function createWorkerApp({
     history = new ConversationHistory({ store, engine }),
     app = express(),
     server = http.createServer(app);
+  const loadedBackupInfo = loadedWorkerRestoreInfo({
+    dataDir,
+    workspaceRoot: engine.workspaceRoot,
+  });
   const scheduler = new Scheduler({ store, engine, worker });
   const credentialVault = credentialVaultFactory({ dataDir }),
     credentials = credentialRequestsFactory({
@@ -530,6 +538,7 @@ export function createWorkerApp({
         workReply: true,
         taskReopen: true,
         recurringSchedules: true,
+        backups: true,
         languages: languages.map((item) => item.code),
       },
       conversationId: store.state.conversationId,
@@ -578,6 +587,60 @@ export function createWorkerApp({
       provisioning: provisioning.snapshot(),
     };
   };
+  app.get('/api/backups/export', (_req, res) => {
+    const validateCurrent = () => {
+      if (
+        closing ||
+        engine.active ||
+        engine.finishing ||
+        engine.queue.length ||
+        engine.call ||
+        engine.pendingFollowups.size ||
+        engine.callReferences.size ||
+        nativeVoice.active ||
+        engine.acquiring ||
+        engine.takeover ||
+        computer.pending ||
+        computer.state.status !== ComputerControlStatus.Dant ||
+        computer.state.sessionId ||
+        !includesValue([ConnectionStatus.Online, ConnectionStatus.Offline], worker.status)
+      )
+        throw backupError('backup_busy');
+    };
+    try {
+      validateCurrent();
+      store.save();
+      const archive = createWorkerBackup({
+        dataDir,
+        workspaceRoot: engine.workspaceRoot,
+        appVersion: version,
+        sourceId: createHash('sha256').update(engine.runtimeId).digest('hex'),
+        validateCurrent,
+      });
+      res.status(200).setHeader('Content-Type', 'application/x-dant-backup');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader(
+        'X-Dant-Backup-Metadata',
+        Buffer.from(JSON.stringify(archive.metadata)).toString('base64'),
+      );
+      pipeline(archive.stream, res, () => {
+        try {
+          archive.cleanup();
+        } catch {
+          diagnostics.log('backup.cleanup.failed', { code: 'cleanup_failed' });
+        }
+      });
+    } catch (error) {
+      const busy = isRecord(error) && includesValue(['backup_busy', 'source_changed'], error.code);
+      res.status(busy ? 409 : 400).json({
+        error: busy
+          ? 'The work computer is busy or changed during backup.'
+          : 'The work computer backup could not be created.',
+        code: busy ? 'backup_busy' : 'backup_failed',
+      });
+    }
+  });
+  app.get('/api/backups/info', (_req, res) => res.json(loadedBackupInfo));
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '', 'http://localhost');

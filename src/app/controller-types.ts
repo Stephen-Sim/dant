@@ -15,6 +15,7 @@ import type { VmObservation } from '../computer/vm-observation-types.ts';
 import type { Diagnostics, DiagnosticsOptions } from '../diagnostics/diagnostics.mts';
 import type { UpdateService, UpdateServiceOptions } from '../updates/updates.mts';
 import type { listSystemFonts } from '../settings/appearance.mts';
+import type { ControllerBackups } from '../backups/controller-backups.mts';
 
 export interface ControllerConfig extends Appearance {
   language: LanguageCode;
@@ -82,6 +83,22 @@ export type ControllerProfiles = Pick<
 >;
 export type ControllerDiagnostics = Pick<Diagnostics, 'status' | 'log' | 'recent' | 'close'>;
 export type ControllerUpdates = Pick<UpdateService, 'info' | 'check' | 'close'>;
+export type ControllerBackupService = Pick<
+  ControllerBackups,
+  | 'busy'
+  | 'phase'
+  | 'pending'
+  | 'status'
+  | 'configure'
+  | 'run'
+  | 'previewRestore'
+  | 'restore'
+  | 'beforeVmChange'
+  | 'exportPortable'
+  | 'importPortable'
+  | 'changed'
+  | 'close'
+>;
 export interface ControllerAppOptions {
   dataDir?: string;
   projectRoot?: string;
@@ -95,6 +112,9 @@ export interface ControllerAppOptions {
   diagnosticsFactory?: (options: DiagnosticsOptions) => ControllerDiagnostics;
   updatesFactory?: (options: UpdateServiceOptions) => ControllerUpdates;
   lifecycleFactory?: (options: VmLifecycleOptions) => OwnedVmLifecycle;
+  backupFactory?: (
+    options: ConstructorParameters<typeof ControllerBackups>[0],
+  ) => ControllerBackupService;
 }
 
 declare global {

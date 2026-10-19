@@ -5,6 +5,7 @@ import { projectRoot } from './version.mts';
 import { assertNodeRuntime } from './node-runtime.mts';
 
 assertNodeRuntime();
+const CI_TOOL_TIMEOUT_MS = 5_000;
 
 function run(command: string, args: readonly string[]): void {
   const result = spawnSync(command, args, { cwd: projectRoot, stdio: 'inherit', shell: false });
@@ -24,6 +25,15 @@ if (process.platform === 'win32') {
 for (const tool of ['ssh', 'ssh-keygen']) {
   const result = spawnSync(tool, ['-V'], { stdio: 'ignore', shell: false });
   if (result.error) throw new Error(`${tool} is required by CI: ${result.error.message}`);
+}
+if (process.platform === 'linux') {
+  const result = spawnSync('flock', ['--version'], {
+    stdio: 'ignore',
+    shell: false,
+    timeout: CI_TOOL_TIMEOUT_MS,
+  });
+  if (result.error || result.status !== 0)
+    throw new Error('util-linux flock is required by the offline Worker restore tests.');
 }
 run('python', [
   '-c',

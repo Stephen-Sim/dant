@@ -1,0 +1,69 @@
+# 工作电脑备份
+
+[English](../backups.md) · Chinese
+
+在 **设置 → 工作电脑 → 工作电脑备份** 中保存 VM 的 dant 持久数据。恢复始终需要先预览，再明确点击 **替换数据并恢复**。本文描述当前源码；已发布安装包可能仍是较早的实现。
+
+## 配置备份
+
+| 设置           | 行为                                                                                             |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| 手动           | 只有 **立即备份** 会创建副本；定期、连接后、更换 VM 前的自动触发全部关闭。                       |
+| 自动           | 启用选中的连接/更换 VM 触发项与定期备份，默认采用此模式。                                        |
+| 备份间隔       | **15–10,080 分钟**，默认 **60 分钟**。                                                           |
+| 连接后         | 默认开启，符合条件的连接会安排后台备份检查。                                                     |
+| 更换工作电脑前 | 默认开启，需要先完成备份，再进行连接或配置变更。                                                 |
+| 保留数量       | 默认 **每台工作电脑保留 10 份**；鉴权设置 API 还接受 `retainCount` 1–100，当前界面未提供此控件。 |
+
+Controller 负责配置与后台检查。设置页面只读取元数据、提交明确动作，不会运行 Agent、发送 heartbeat 聊天汇报或增加模型请求。离开设置页面会停止该页面的轮询，Controller 仍可完成已接纳的备份。
+
+备份要求工作电脑连接正常、Worker 支持备份，且本机秘密保护可用。只要 Worker 能安全导出空闲数据，模型提供商可以尚未登录。正在执行的工作、通话、用户接管、安装或其他受保护操作可能阻止捕获。捕获被拒绝或发现来源变化时，已有备份会保留。
+
+开启 **更换工作电脑前备份** 后，首次变更请求可能启动备份并返回 `backup_before_vm_change_required`。等待备份完成，再明确重试原来的变更操作；Controller 不会把切换 VM 延迟排队。近期成功的副本可以满足此保护。手动模式会关闭该保护及其他自动触发项。
+
+## 存储与覆盖范围
+
+配置位于 Controller 现有私有数据目录的 `dataDir/backup-settings.json`，归档位于 `dataDir/vm-backups/<id>.dantbak`。目前不提供自定义目的地，也不回退到明文保存。保留策略按来源电脑分别计算，新电脑的备份不会挤掉旧电脑应保留的副本。
+
+每份本机归档使用独立的 **AES-256-GCM** 密钥，并由 Windows **DPAPI** 使用本地用户配置保护密钥；归档元数据与密文一起参与认证。迁移到另一账号或电脑时，使用**导出备份**生成密码保护的便携 `.dant` 文件；只复制私有 `.dantbak` 文件不会迁移本机密钥。宿主秘密保护是明确的能力边界：未来 Unix 适配器需要先实现该能力，才能启用本地备份。没有可用实现时会明确失败，不会保存未加密归档。
+
+归档包含 Worker 的 **data** 与 **workspaces** 两个目录域，通常是 `~/dant/data/` 和 `~/dant/workspaces/`。覆盖聊天/任务记录、记忆与调度数据库、保留项目上下文、附件、托管技能和工作区文件。项目的 `.git` 目录也会保存，保留本地提交与未发布分支。排除 Worker 数据根目录中的 runtime、deploy、diagnostics、logs、cache、tmp、updates、backups、`.env`，以及任意 `node_modules`、`.cache`、`.ssh`、`.codex` 和 `.openai` 子树。工作区的普通项目配置文件（包括项目 `.env`）仍包含在加密数据中。它是 dant 数据备份，不是操作系统或 VM 磁盘镜像。
+
+捕获会暂存普通文件，限制读取大小并核对文件身份和版本。SQLite 文件通过 **`VACUUM INTO`** 与完整性检查生成快照，不把正在使用的 journal/WAL 边车文件当成独立数据复制。观察到文件、目录或 SQLite 连接变化时会中止捕获。单个 SQLite 快照具有一致性，但 JSON、文件和多个数据库组合起来**不是全系统 ACID 事务**，也不会冻结无关外部进程。捕获/恢复暂存采用私有目录并清理，只有完整加密归档会成为保留副本。
+
+## 明确选择恢复
+
+首次使用时，dant 会先询问是否已有备份。有备份可以先导入，没有再创建工作电脑。导入不要求 VM 在线，也不会恢复或启动任务；之后连接或创建目标 VM，再预览导入的备份并恢复。
+
+通过**导出备份**，可以在支持的客户端、电脑和 VM 之间迁移或分享 dant。输入并确认密码，保存便携文件；在目标电脑选择**导入备份**，选中文件并输入密码。Controller 会先验证密码认证和归档结构，再以目标电脑的本机保护方式保存。密码错误、文件被篡改或上传中断，不会成为成功导入。Windows 文件选择器采用流式处理大文件；浏览器备用传输限制为 64 MiB。
+
+便携导出保留身份、记忆、Skills、历史、定时任务和项目内容，包括本地 Git 历史；排除已知凭据库、模型/SSH 登录资料及集成密钥，目标电脑需要重新登录或配对。备份包含个人聊天和记忆，请只分享给预期接收者。Google Drive 同步将作为后续存储适配器考虑；本版提供明确的文件导入/导出，不连接 Drive。
+
+便携过滤也会排除私有 `.env` 变体与 Git 远程配置（`.git/config`），保留 `.env.example`、Git 引用和对象。请在目标电脑重新配置私有环境值及 remote。普通 `credentials` 源码模块、名为 `auth.json` 的测试文件仍保留；过滤依据归档目录域和明确的认证路径，不猜测用户内容。
+
+1. 连接目标工作电脑，打开备份列表。
+2. 点击 **预览恢复**，核对时间、服务版本、文件数量与大小。预览会提示来源电脑或版本不同，以及当前数据将被替换。
+3. 只对该预览点击 **替换数据并恢复**。取消、过期、刷新、更换电脑/对话、离开页面或断开连接，都会废弃界面的确认。服务端也把短时、单次确认绑定到准确备份与目标连接。
+4. 等待结果。`202 {started:true}` 只表示操作已接纳，不表示已经完成；界面通过元数据轮询确认结束。
+
+Controller 会先暂停工作并确认静止，再停止 `dant-worker.service`，通过 SSH 运行固定的恢复 CLI；VM 保持开机。CLI 在私有暂存目录校验完整归档，再通过 journal 替换本应用拥有的 data/workspace 两个根目录，并提供两目录替换中断时的回滚/恢复。这不是跨两个文件系统的一次原子重命名。Worker 重启后，Controller 会核对准确的启动时恢复回执，才报告成功。
+
+恢复保留历史 ID 和结果，移除正在使用的执行/线程绑定。非终态任务保持暂停；已有不确定提交保持不确定，不会重放。调度任务被禁用/暂停，已派发历史和派发屏障保留，未完成交接需要核对。恢复后 Telegram 被禁用。模型登录资料不包含在归档中，可能需要重新登录。恢复数据不会悄悄继续任务、周期作业或发送消息。
+
+恢复中断或结果未确认时，会保留持久回执并显示未知结果。检查先核对启动时已加载的回执。如果数据已经确认提交、但服务尚未启动，固定 CLI 会在持有 Linux 内核恢复锁期间核对准确的恢复 ID 和当前服务状态，之后才完成启动。它不会重新上传、应用或回滚归档。提交记录缺失或结果不确定时仍保持阻挡。先核对实际状态，再考虑新的恢复或更换 VM。
+
+## 实现边界
+
+| 边界                     | 模块                                                                                                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 界面与校验               | [`vm-backups.mts`](../../ui/settings/vm-backups.mts)、共享备份类型、枚举与限制                                                                                                                   |
+| 本机调度与确认           | [`controller-backups.mts`](../../src/backups/controller-backups.mts)                                                                                                                             |
+| 本机加密归档             | [`local-backup-vault.mts`](../../src/backups/local-backup-vault.mts)                                                                                                                             |
+| 便携格式与鉴权传输       | [`portable-backup.mts`](../../src/backups/portable-backup.mts)、[`portable-archive.mts`](../../src/backups/portable-archive.mts)、[`portable-routes.mts`](../../src/backups/portable-routes.mts) |
+| 首次引导与原生文件传输   | [`first-run.mts`](../../ui/onboarding/first-run.mts)、[`backup-transfer.mts`](../../ui/platform/backup-transfer.mts)、[`backup_transfer.rs`](../../src-tauri/src/backup_transfer.rs)             |
+| 鉴权导出 / 离线 SSH 恢复 | [`vm-backup-transport.mts`](../../src/backups/vm-backup-transport.mts)                                                                                                                           |
+| Worker 捕获、校验与恢复  | [`worker-archive.mts`](../../src/backups/worker-archive.mts)、[`worker-restore.mts`](../../src/backups/worker-restore.mts)、[`worker-state.mts`](../../src/backups/worker-state.mts)             |
+
+Controller 提供 `GET /api/backups`、`PATCH /api/backups/settings`、`POST /api/backups/run`、`POST /api/backups/import`、`POST /api/backups/:id/export`、`POST /api/backups/:id/preview` 和 `POST /api/backups/:id/restore`，沿用本机 API 鉴权。Worker 的导出与回执接口仍通过已鉴权的 VM 通道访问。备份接口不会让 Windows Controller 成为 Agent 执行器。
+
+测试使用隔离数据、注入的通信与时钟，不会备份、恢复、停止或重连用户的真实 VM。相关边界和验收记录参见[系统架构](architecture.md)、[VM 设置](VM.md)和[验证](verification.md)。

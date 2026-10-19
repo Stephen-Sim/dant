@@ -2,12 +2,16 @@ param(
   [Parameter(Mandatory=$true)][ValidateSet('suspend','resume')][string]$Action,
   [Parameter(Mandatory=$true)][string]$DataDirectory,
   [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{64}$')][string]$ExpectedBinding,
+  [Parameter(Mandatory=$true)][ValidatePattern('^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$')][string]$ExpectedOperation,
+  [Parameter(Mandatory=$true)][ValidateRange(1,9223372036854775807)][long]$ExpectedDeadline,
   [ValidatePattern('^[a-fA-F0-9-]{36}$')][string]$ExpectedVmId,
   [string]$ElevatedResult
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $utf8 = New-Object System.Text.UTF8Encoding $false
+$maximumOperationMilliseconds = 85000
+$maximumGuestAddresses = 16
 function Assert-Directory([string]$Path) {
   $current = [System.IO.Path]::GetFullPath($Path)
   while ($current) {
@@ -30,6 +34,28 @@ function Read-File([string]$Path, [long]$Limit = 65536) {
 function Quote-Argument([string]$Value) {
   if ($Value -match '["\r\n\x00]') { throw 'Invalid VM argument' }
   return '"' + [regex]::Replace($Value,'(\\+)$','$1$1') + '"'
+}
+function Binding-Digest {
+  $raw = Read-File (Join-Path $script:dataRoot 'vm.json')
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($raw)))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
+}
+function Assert-Intent([string]$Provider) {
+  if ((Binding-Digest) -ne $ExpectedBinding) { throw 'VM binding changed' }
+  $intent = (Read-File (Join-Path $script:dataRoot 'vm-lifecycle.json')) | ConvertFrom-Json
+  $phase = if ($Action -eq 'suspend') { 'suspending' } else { 'resuming' }
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  if ($intent.version -ne 1 -or $intent.provider -ne $Provider -or $intent.binding -ne $ExpectedBinding -or $intent.phase -ne $phase -or $intent.operationId -ne $ExpectedOperation -or $intent.expiresAt -isnot [ValueType] -or [long]$intent.expiresAt -ne $ExpectedDeadline -or $ExpectedDeadline -le $now -or $ExpectedDeadline - $now -gt $maximumOperationMilliseconds -or ($ExpectedVmId -and $intent.vmId -ne $ExpectedVmId) -or (!$ExpectedVmId -and $null -ne $intent.vmId)) { throw 'VM operation intent expired or changed' }
+}
+function Test-OwnedDisk($Vm, [string]$Disk) {
+  foreach ($drive in @(Get-VMHardDiskDrive -VM $Vm)) {
+    $candidate = $drive.Path
+    for ($depth=0; $candidate -and $depth -lt 16; $depth++) {
+      if ([System.IO.Path]::GetFullPath($candidate) -eq [System.IO.Path]::GetFullPath($Disk)) { return $true }
+      try { $candidate = (Get-VHD -Path $candidate -ErrorAction Stop).ParentPath } catch { break }
+    }
+  }
+  return $false
 }
 function Invoke-Vmrun([string[]]$Arguments, [int]$Timeout = 60000) {
   $start = New-Object System.Diagnostics.ProcessStartInfo
@@ -73,6 +99,7 @@ function Invoke-Lifecycle {
   $script:base = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($binding.keyPath)); Assert-Directory $script:base
   [void](Read-File $binding.keyPath)
   $provider = if ($binding.provider -eq 'vmware') { 'vmware' } elseif (!$binding.provider -or $binding.provider -eq 'hyperv') { 'hyperv' } else { throw 'Unsupported VM provider' }
+  Assert-Intent $provider
   if ($provider -eq 'hyperv') {
     $status = (Read-File (Join-Path $script:base 'vm-setup-status.json')) | ConvertFrom-Json
     if ($status.stage -notin @('ready','guest-installing') -or $status.name -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$' -or ($binding.name -and $binding.name -ne $status.name)) { throw 'Managed Hyper-V identity unavailable' }
@@ -80,12 +107,12 @@ function Invoke-Lifecycle {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
       if ($ElevatedResult) { throw 'Hyper-V management permission unavailable' }
-      # Explicit Exit may request Windows administrator permission. Closing the
-      # window never runs this script, and refusal leaves dant open with work paused.
+      # Lifecycle changes may request administrator permission. The bounded durable
+      # intent is rechecked by the elevated child after the user accepts UAC.
       $resultPath = Join-Path $script:dataRoot ('.vm-lifecycle-result-' + [guid]::NewGuid().ToString() + '.json')
       [System.IO.File]::WriteAllText($resultPath,'{}',$utf8)
       try {
-        $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Argument $PSCommandPath),'-Action',$Action,'-DataDirectory',(Quote-Argument $script:dataRoot),'-ExpectedBinding',$ExpectedBinding,'-ElevatedResult',(Quote-Argument $resultPath))
+        $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Quote-Argument $PSCommandPath),'-Action',$Action,'-DataDirectory',(Quote-Argument $script:dataRoot),'-ExpectedBinding',$ExpectedBinding,'-ExpectedOperation',$ExpectedOperation,'-ExpectedDeadline',$ExpectedDeadline,'-ElevatedResult',(Quote-Argument $resultPath))
         if ($ExpectedVmId) { $arguments += @('-ExpectedVmId',$ExpectedVmId) }
         $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -PassThru
         if (!$process.WaitForExit(75000)) { throw 'VM suspend outcome unconfirmed' }
@@ -93,25 +120,47 @@ function Invoke-Lifecycle {
       } finally { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue }
     }
     Import-Module Hyper-V
-    $vms = @(Get-VM -Name $status.name -ErrorAction Stop)
+    if ($ExpectedVmId) { $vms = @(Get-VM -Id ([guid]$ExpectedVmId) -ErrorAction Stop) }
+    else {
+      # Legacy bindings do not contain VMID. Only the unique VM using the exact
+      # owned VHD (or its differencing descendant) can establish that identity.
+      $vms = @(Get-VM -ErrorAction Stop | Where-Object { Test-OwnedDisk $_ $disk })
+    }
     if ($vms.Count -ne 1) { throw 'VM identity is ambiguous' }; $vm = $vms[0]; $vmId = $vm.Id.ToString().ToLowerInvariant()
     if ($ExpectedVmId -and $vmId -ne $ExpectedVmId.ToLowerInvariant()) { throw 'VM identity changed' }
-    $owned = $false
-    foreach ($drive in @(Get-VMHardDiskDrive -VM $vm)) {
-      $candidate = $drive.Path
-      for ($depth=0; $candidate -and $depth -lt 16; $depth++) {
-        if ([System.IO.Path]::GetFullPath($candidate) -eq [System.IO.Path]::GetFullPath($disk)) { $owned = $true; break }
-        $candidate = (Get-VHD -Path $candidate).ParentPath
-      }
-    }
-    if (!$owned) { throw 'VM does not use its owned dant disk' }
+    if (!(Test-OwnedDisk $vm $disk)) { throw 'VM does not use its owned dant disk' }
+    $vm = Get-VM -Id $vm.Id
+    if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk)) { throw 'VM identity changed' }
+    Assert-Intent $provider
     $changed = $false
     if ($Action -eq 'suspend' -and $vm.State -eq 'Running') { Save-VM -VM $vm; $changed = $true }
     elseif ($Action -eq 'resume' -and $vm.State -eq 'Saved') { Start-VM -VM $vm | Out-Null; $changed = $true }
     elseif ($vm.State -notin @('Running','Saved','Off')) { throw 'VM power state unconfirmed' }
     $vm = Get-VM -Id $vm.Id
+    if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk)) { throw 'VM identity changed' }
+    Assert-Intent $provider
     $state = switch ([string]$vm.State) { 'Saved' { 'suspended' }; 'Running' { 'running' }; 'Off' { 'off' }; default { throw 'VM power state unconfirmed' } }
-    return @{ok=$true;provider=$provider;vmId=$vmId;state=$state;changed=$changed}
+    $result = @{ok=$true;provider=$provider;vmId=$vmId;state=$state;changed=$changed}
+    if ($Action -eq 'resume' -and $state -eq 'running') {
+      $addresses = @()
+      foreach ($adapter in @(Get-VMNetworkAdapter -VM $vm -ErrorAction Stop)) {
+        foreach ($candidate in @($adapter.IPAddresses)) {
+          $parsed = $null
+          if ($candidate -isnot [string] -or $candidate -notmatch '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$' -or ![System.Net.IPAddress]::TryParse($candidate, [ref]$parsed)) { continue }
+          if ($parsed.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or $parsed.ToString() -ne $candidate) { continue }
+          $bytes = $parsed.GetAddressBytes()
+          if ($bytes[0] -eq 0 -or $bytes[0] -eq 127 -or $bytes[0] -ge 224 -or ($bytes[0] -eq 169 -and $bytes[1] -eq 254)) { continue }
+          if ($addresses -notcontains $candidate) { $addresses += $candidate }
+          if ($addresses.Count -gt $maximumGuestAddresses) { throw 'VM address count exceeds limit' }
+        }
+      }
+      # Network discovery never replaces VM or operation ownership confirmation.
+      $vm = Get-VM -Id $vm.Id
+      if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk) -or [string]$vm.State -ne 'Running') { throw 'VM identity or power state changed' }
+      Assert-Intent $provider
+      $result.addresses = @($addresses)
+    }
+    return $result
   }
   $manifest = (Read-File (Join-Path $script:base 'manifest.json')) | ConvertFrom-Json
   $script:vmx = Join-Path $script:base 'dant.vmx'; $disk = Join-Path $script:base 'dant.vmdk'
@@ -127,9 +176,11 @@ function Invoke-Lifecycle {
   }
   if (!$script:vmrun) { throw 'VMware management tool unavailable' }
   $running = Vmware-Running; $changed = $false
+  Assert-Intent $provider
   if ($Action -eq 'suspend' -and $running) { [void](Invoke-Vmrun @('-T','ws','suspend',$script:vmx,'soft')); $changed = $true }
   elseif ($Action -eq 'resume' -and !$running -and (Vmware-Saved)) { [void](Invoke-Vmrun @('-T','ws','start',$script:vmx,'nogui')); $changed = $true }
   $state = if (Vmware-Running) { 'running' } elseif (Vmware-Saved) { 'suspended' } else { 'off' }
+  Assert-Intent $provider
   return @{ok=$true;provider=$provider;vmId=$vmId.ToLowerInvariant();state=$state;changed=$changed}
 }
 try { $result = Invoke-Lifecycle } catch { $result = @{ok=$false;reason='unconfirmed'} }

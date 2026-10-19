@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 use tauri::Manager;
+mod backup_transfer;
 mod call_overlay;
 mod downloads;
 mod l10n;
@@ -84,6 +85,8 @@ fn main() {
             speech::speech_start,
             speech::speech_stop,
             downloads::save_attachment,
+            backup_transfer::export_dant_backup,
+            backup_transfer::import_dant_backup,
             call_overlay::call_overlay_update,
             call_overlay::call_overlay_get,
             call_overlay::call_overlay_action,

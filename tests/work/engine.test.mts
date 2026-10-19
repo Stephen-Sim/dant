@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Store } from '../../src/conversation/store.mts';
 import { Engine } from '../../src/work/engine.mts';
+import { TaskStatus } from '../../src/contracts/states.mts';
 
 const base = path.resolve('.cache/tests');
 fs.mkdirSync(base, { recursive: true });
@@ -220,7 +221,8 @@ test('crash during submission becomes unknown and needs explicit confirmation, w
   const engine = new Engine(restored, worker),
     uncertain = restored.state.messages.find((message) => message.id === submitting.id),
     safe = restored.state.messages.find((message) => message.id === preparing.id);
-  assert.equal(defined(uncertain).status, 'paused');
+  assert.equal(defined(uncertain).status, TaskStatus.Unknown);
+  assert.equal(defined(uncertain).unknownOutcome, true);
   assert.equal(defined(uncertain).submission, 'unknown');
   assert.equal(defined(uncertain).pauseReason, 'restart');
   assert.equal(defined(safe).status, 'paused');
@@ -267,6 +269,27 @@ test('resume guards submitting and legacy unknown-outcome tasks even without a S
     assert.ok(!message.unknownOutcome);
   }
   assert.equal(engine.queue.length, 3);
+});
+
+test('generic resume never selects Unknown work and an explicit ID still requires boolean confirmation', (t) => {
+  const { store, worker, engine } = setup(t);
+  worker.status = 'offline';
+  const message = store.add({
+    role: 'user',
+    text: 'Reconcile before another attempt',
+    status: TaskStatus.Unknown,
+  });
+  assert.deepEqual(engine.resumePaused(undefined, { confirmUnknown: true }), []);
+  assert.equal(message.status, TaskStatus.Unknown);
+  assert.throws(() => engine.resumePaused([message.id]), /explicitly confirm/);
+  assert.equal(engine.queue.length, 0);
+  assert.equal(worker.calls.length, 0);
+  engine.resumePaused([message.id], { confirmUnknown: true });
+  assert.deepEqual(
+    engine.queue.map((item) => item.id),
+    [message.id],
+  );
+  assert.equal(worker.calls.length, 0);
 });
 
 test('submission acknowledgement, assistant visibility and user acceptance are distinct', async (t) => {

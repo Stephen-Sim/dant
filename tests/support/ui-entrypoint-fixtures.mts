@@ -175,6 +175,13 @@ const entrypointSlots: UiMainFunctions = {
 export function uiEntrypointFixture<T extends object>(
   context: T,
 ): Omit<T, keyof UiMainFunctions> & UiMainFunctions & Omit<Partial<MainBindings>, keyof T> {
-  const bindings: Partial<MainBindings> = {};
+  const bindings: Partial<MainBindings> = {
+    firstRun: {
+      render: () => '',
+      observe: async () => {},
+      handle: async () => false,
+      dispose() {},
+    },
+  };
   return Object.assign(bindings, entrypointSlots, context);
 }

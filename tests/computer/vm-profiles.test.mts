@@ -79,6 +79,34 @@ test('one known workspace binding is imported by reference without copying keys,
   assert.equal(fs.readFileSync(data.registryFile, 'utf8').includes('private test fixture'), false);
 });
 
+test('explicit replacement can select another registered VM and preserves the previous valid binding', (t) => {
+  const data = setup(t);
+  profile(data.target, { host: '192.0.2.10' });
+  const other = profile(path.join(data.directory, 'replacement'), { host: '192.0.2.11' });
+  const profiles = manager(data, { includeProject: false, candidateDirs: [other] });
+  const selected = defined(
+    profiles.discover().candidates.find((item) => item.host === '192.0.2.11'),
+  );
+  const original = fs.readFileSync(path.join(data.target, 'vm.json'));
+  assert.throws(() => profiles.import({ id: selected.id }), /valid VM connection already exists/);
+  assert.throws(
+    () => profiles.import({ id: selected.id, replaceCurrent: 'true' }),
+    /Invalid VM replacement/,
+  );
+  assert.throws(
+    () => profiles.import({ id: selected.id, directory: other, replaceCurrent: true }),
+    /Choose one/,
+  );
+  assert.deepEqual(fs.readFileSync(path.join(data.target, 'vm.json')), original);
+  assert.equal(profiles.import({ id: selected.id, replaceCurrent: true }).ok, true);
+  assert.equal(readVmBinding(data.target).host, '192.0.2.11');
+  const saved = defined(
+    fs.readdirSync(data.target).find((name) => name.startsWith('vm.json.previous-')),
+  );
+  assert.deepEqual(fs.readFileSync(path.join(data.target, saved)), original);
+  assert.equal(readVmBinding(data.target).keyPath, fs.realpathSync(path.join(other, 'vm-key')));
+});
+
 test('multiple different known bindings require explicit selection and do not create a binding', (t) => {
   const data = setup(t),
     first = profile(path.join(data.directory, 'one')),

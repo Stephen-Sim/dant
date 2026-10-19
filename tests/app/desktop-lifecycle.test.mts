@@ -144,3 +144,35 @@ test('a denied startup restoration can be retried through explicit Reconnect pre
     ['resume', 'connect', 'pause'],
   );
 });
+
+test('only explicit Reconnect preparation can recover an owned legacy saved VM without a receipt', async () => {
+  const ordinary = fixture();
+  ordinary.bridge.status = 'offline';
+  ordinary.lifecycle.resumeForReconnect = async () => ordinary.calls.push(['recover-owned']);
+  await ordinary.service.prepare();
+  assert.deepEqual(
+    ordinary.calls.map((row) => row[0]),
+    ['resume', 'connect', 'pause'],
+  );
+
+  const explicit = fixture();
+  explicit.bridge.status = 'offline';
+  explicit.lifecycle.resumeForReconnect = async () => explicit.calls.push(['recover-owned']);
+  await explicit.service.prepare({ recoverManagedVm: true });
+  assert.deepEqual(
+    explicit.calls.map((row) => row[0]),
+    ['recover-owned', 'connect', 'pause'],
+  );
+  assert.deepEqual(explicit.calls[1], ['connect', { deploy: false }]);
+});
+
+test('unconfirmed legacy recovery does not connect, deploy or pause another executor', async () => {
+  const f = fixture();
+  f.bridge.status = 'offline';
+  f.lifecycle.resumeForReconnect = async () => {
+    throw Error('identity-unconfirmed');
+  };
+  await assert.rejects(f.service.prepare({ recoverManagedVm: true }), /identity-unconfirmed/);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.service.phase, 'idle');
+});

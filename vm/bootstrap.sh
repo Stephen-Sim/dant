@@ -18,7 +18,7 @@ echo "Starting dant guest setup at $(date -Is)"
 retry apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=180 update
 retry apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=180 install -y \
   xfce4 xfce4-terminal xvfb x11-utils x11-xserver-utils xdotool scrot xclip \
-  dbus-x11 python3 python3-pip nodejs npm fonts-noto-cjk firefox espeak-ng
+  dbus-x11 python3 python3-pip nodejs npm fonts-noto-cjk firefox espeak-ng util-linux
 retry npm install -g @openai/codex@0.163.0
 install -d -o dant -g dant /home/dant/work /home/dant/.dant-codex
 chmod +x /opt/dant/start-codex.sh /opt/dant/desktop.py

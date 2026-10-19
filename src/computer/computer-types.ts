@@ -1,5 +1,6 @@
-export type ManagedVmProvider = 'hyperv' | 'vmware';
-export type VmProvider = ManagedVmProvider | 'ssh';
+import type { VmProviderId, VmProviderIdValue } from '../contracts/states.mts';
+export type ManagedVmProvider = Exclude<VmProviderIdValue, typeof VmProviderId.Ssh>;
+export type VmProvider = VmProviderIdValue;
 export interface VmBindingMetadata {
   provider?: VmProvider;
   name?: string;

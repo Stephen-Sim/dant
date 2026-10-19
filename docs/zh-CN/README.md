@@ -21,14 +21,14 @@ Windows 上的 AI 数字伙伴，既能与你聊天，也能在自己的 Ubuntu 
 需要 Windows 11、Python 3.11+、OpenSSH，以及 Hyper-V 或 VMware Workstation；也可以通过 SSH 连接已有的 Ubuntu 桌面 VM。
 
 1. 下载并安装 dant。便携版请完整解压 ZIP，再打开与 `backend` 文件夹同目录的 `dant.exe`。当前安装包未签名，附 SHA-256 校验和。
-2. 在**设置 → 工作电脑**创建电脑或连接已有 VM，详见[设置指南](VM.md)。
+2. 首次引导先询问是否已有 dant 备份。导入备份，或按引导创建工作电脑、连接已有 VM；参见[设置指南](VM.md)与[备份迁移](backups.md)。
 3. 在设置中登录 ChatGPT，然后交给 dant 第一项任务。
 
 文字任务及默认语音使用 ChatGPT 订阅额度，语音可用性取决于账号；可选的独立 API 语音另行计费。详见[语音配置](VOICE-KEY.md)。
 
 ## 继续了解
 
-[设置](settings.md) · [Telegram](TELEGRAM.md) · [更新](updates.md) · [架构](architecture.md) · [验证记录](verification.md)
+[设置](settings.md) · [备份](backups.md) · [Telegram](TELEGRAM.md) · [更新](updates.md) · [架构](architecture.md) · [验证记录](verification.md)
 
 <details>
 <summary>从源码运行</summary>

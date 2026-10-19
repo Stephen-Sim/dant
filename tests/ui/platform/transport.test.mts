@@ -173,6 +173,93 @@ test('only exact stable/beta update reads and version reads bypass pending nativ
   ]);
 });
 
+test('local recovery reads reach the authenticated native bridge while Reconnect blocks the mutation queue', async () => {
+  let finishConnection: ((value: ReturnType<typeof response>) => void) | undefined;
+  const requests: NativeApiRequest[] = [];
+  const transport = createTransport({
+    desktop: true,
+    invokeRequest: async (command, request) => {
+      assert.equal(command, 'api_request');
+      requests.push(request);
+      if (request.route === '/api/connect')
+        return new Promise((resolve) => {
+          finishConnection = resolve;
+        });
+      return response(
+        request.route === '/api/session' ? { token: 'refreshed-session' } : { ok: true },
+      );
+    },
+  });
+  transport.setToken('current-session');
+  const connecting = transport.json('/api/connect', {
+    method: 'POST',
+    body: { updateRunningWork: true },
+  });
+  await until(() => finishConnection);
+  const session = transport.json('/api/session');
+  const settings = transport.json('/api/controller/settings');
+  const queued = [
+    transport.json('/api/controller/settings', { method: 'PATCH', body: { language: 'en' } }),
+    transport.json('/api/session', { method: 'POST' }),
+    transport.json('/api/controller/settings?unsafe=1'),
+    transport.json('/api/controller/settings/other'),
+    transport.json('/api/state'),
+  ];
+  try {
+    assert.deepEqual(await session, { token: 'refreshed-session' });
+    assert.deepEqual(await settings, { ok: true });
+    assert.deepEqual(
+      requests.map(({ route, method, token, body }) => ({ route, method, token, body })),
+      [
+        {
+          route: '/api/connect',
+          method: 'POST',
+          token: 'current-session',
+          body: '{"updateRunningWork":true}',
+        },
+        { route: '/api/session', method: 'GET', token: 'current-session', body: null },
+        { route: '/api/controller/settings', method: 'GET', token: 'current-session', body: null },
+      ],
+    );
+    // Token refresh remains the caller's validated action. Queued mutations use
+    // the current session when they actually cross the native boundary.
+    transport.setToken('refreshed-session');
+  } finally {
+    defined(finishConnection)(response({ ok: true }));
+    await Promise.all([connecting, ...queued]);
+    transport.close();
+  }
+  assert.deepEqual(
+    requests.slice(3).map(({ route, method, token }) => ({ route, method, token })),
+    [
+      { route: '/api/controller/settings', method: 'PATCH', token: 'refreshed-session' },
+      { route: '/api/session', method: 'POST', token: 'refreshed-session' },
+      { route: '/api/controller/settings?unsafe=1', method: 'GET', token: 'refreshed-session' },
+      { route: '/api/controller/settings/other', method: 'GET', token: 'refreshed-session' },
+      { route: '/api/state', method: 'GET', token: 'refreshed-session' },
+    ],
+  );
+});
+
+test('independent recovery reads retain native authentication and reject an unconfirmed response', async () => {
+  const transport = createTransport({
+    desktop: true,
+    invokeRequest: async (_command, request) => {
+      assert.equal(request.token, 'expired-session');
+      if (request.route === '/api/controller/settings')
+        return { status: 401, body: '{"error":"Unauthorized"}' };
+      return { status: 200, body: 'not JSON' };
+    },
+  });
+  transport.setToken('expired-session');
+  await assert.rejects(
+    transport.json('/api/controller/settings'),
+    (error) => requestError(error).status === 401,
+  );
+  await assert.rejects(transport.json('/api/session'), /Invalid JSON/);
+  transport.close();
+});
+
 test('desktop state polling waits until the prior request completes and never opens browser streams', async () => {
   let finishFirst: (() => void) | undefined,
     finishSecond: (() => void) | undefined,

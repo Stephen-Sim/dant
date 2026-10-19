@@ -3,7 +3,12 @@ import type { ParamsDictionary } from 'express-serve-static-core';
 import type { VmObservation } from '../computer/vm-observation-types.ts';
 import type { VmRequestOptions } from '../computer/vm-bridge.mts';
 import type { VmBinding } from '../computer/computer-types.ts';
-import type { ControllerAppOptions, ControllerConfig, PreferenceSync } from './controller-types.ts';
+import type {
+  ControllerAppOptions,
+  ControllerConfig,
+  ControllerBackupService,
+  PreferenceSync,
+} from './controller-types.ts';
 import { isRecord, errorMessage, includesValue } from '../contracts/json.mts';
 type ControllerRequest = Request<ParamsDictionary, unknown, unknown>;
 type ControllerHandler = (
@@ -28,6 +33,7 @@ import {
 } from '../contracts/states.mts';
 import { allowedLocalOrigin, NATIVE_PROTOCOL } from '../config/network.mts';
 import { VmLifecycle } from '../computer/vm-lifecycle.mts';
+import { installPortableBackupRoutes } from '../backups/portable-routes.mts';
 import { DesktopLifecycle } from './desktop-lifecycle.mts';
 import { isLanguage, normalizeLanguage, languageForWorker } from '../i18n/languages.mts';
 import express from 'express';
@@ -58,6 +64,10 @@ import {
 } from '../diagnostics/diagnostic-events.mts';
 import { VmServiceUpdateLoop } from '../computer/vm-service-update.mts';
 import { UpdateService, installUpdateRoutes } from '../updates/updates.mts';
+import { ControllerBackups } from '../backups/controller-backups.mts';
+import { VmBackupTransport } from '../backups/vm-backup-transport.mts';
+import { backupError } from '../backups/backup-validation.mts';
+import { BackupPhase } from '../contracts/states.mts';
 import {
   UpdateInstallLease,
   installLeaseRoutes,
@@ -112,6 +122,7 @@ export function createControllerApp({
   diagnosticsFactory = (options) => new Diagnostics(options),
   updatesFactory = (options) => new UpdateService(options),
   lifecycleFactory = (options) => new VmLifecycle(options),
+  backupFactory = (options) => new ControllerBackups(options),
 }: ControllerAppOptions = {}) {
   if (typeof selectedDataDir !== 'string' || typeof selectedProjectRoot !== 'string')
     throw Error('Controller directories are required.');
@@ -156,6 +167,7 @@ export function createControllerApp({
     provisioning = provisioningFactory({ projectRoot, dataDir }),
     lifecycle = lifecycleFactory({ dataDir, projectRoot });
   let desktop: DesktopLifecycle;
+  let backups: ControllerBackupService | undefined;
   let manualServiceUpdate: Promise<void> | null = null;
   bridge.reconnectManaged = true;
   const stopBridgeDiagnostics = observeBridge(diagnostics, bridge);
@@ -179,7 +191,10 @@ export function createControllerApp({
     if (req.headers.origin) {
       res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
       res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Dant-Token');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, X-Dant-Token, X-Dant-Backup-Passphrase',
+      );
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     }
     if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -194,6 +209,12 @@ export function createControllerApp({
   );
   app.use('/api/internal', (_req, res) => res.sendStatus(403));
   app.use('/api', (req, res, next) => {
+    if (
+      backups &&
+      [BackupPhase.Restoring, BackupPhase.Unknown].some((phase) => phase === backups?.phase) &&
+      !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+    )
+      return next(backupError('backup_restore_unconfirmed'));
     if (
       desktop?.blocked &&
       !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
@@ -217,10 +238,10 @@ export function createControllerApp({
   const updateLease = new UpdateInstallLease({
     snapshot,
     refresh: async () => {
-      if (bridge.preparing || manualConnect || manualServiceUpdate)
+      if (bridge.preparing || manualConnect || manualServiceUpdate || backups?.busy)
         throw Object.assign(Error('Update installation has already started.'), { status: 409 });
       if (bridge.refreshing) await bridge.refreshing;
-      await desktop.prepare();
+      await prepareDesktopConnection();
       if (bridge.status === ConnectionStatus.Online) await bridge.refresh(true);
     },
     onFailure: releasePrepared,
@@ -258,6 +279,21 @@ export function createControllerApp({
     binding,
     onChange: () => broadcast('state', snapshot()),
   });
+  async function prepareDesktopConnection(explicit = false) {
+    const restore = bridge.status !== ConnectionStatus.Online;
+    if (restore) {
+      if (explicit && lifecycle.resumeForReconnect) await lifecycle.resumeForReconnect();
+      else await lifecycle.resume();
+    }
+    // A proven owned-VM DHCP refresh may update its binding. Capture the
+    // Desktop transaction identity only after that local transition completes.
+    await desktop.prepare({ managedVmAlreadyRestored: restore });
+  }
+  async function cancelDesktopTransition() {
+    const restore = bridge.status !== ConnectionStatus.Online;
+    if (restore) await lifecycle.resume();
+    return desktop.cancel({ managedVmAlreadyRestored: restore });
+  }
   let preferenceSync: PreferenceSync | null = null;
   // These idempotent preferences share one writer per SSH/VM connection. A
   // newer UI language waits for any older write before applying its latest value.
@@ -434,6 +470,7 @@ export function createControllerApp({
       !prepareOnly &&
       !manualConnect &&
       !manualServiceUpdate &&
+      !backups?.busy &&
       !desktop.blocked &&
       !config.serviceUpdatesPaused &&
       !!binding().host &&
@@ -536,6 +573,7 @@ export function createControllerApp({
     broadcast('state', snapshot());
     syncPreferencesAfterEvent();
     automaticConnection.changed();
+    backups?.changed();
   });
   bridge.on('change', () => {
     const status = diagnosticWorkerStatus(bridge.status);
@@ -546,6 +584,7 @@ export function createControllerApp({
     broadcast('state', snapshot());
     syncPreferencesAfterEvent();
     automaticConnection.changed();
+    backups?.changed();
   });
   bridge.on('event', (event: unknown) => {
     if (isRecord(event) && typeof event.type === 'string') broadcast(event.type, event.data);
@@ -627,21 +666,87 @@ export function createControllerApp({
       } catch {}
     res.json({ status: diagnostics.status(), recent: diagnostics.recent(50), worker });
   });
+  // Recovery configuration must remain available even when the remote chat
+  // snapshot cannot be decoded, or the old VM is no longer reachable.
+  app.get('/api/controller/settings', (_req, res) => {
+    let discovered: unknown = { candidates: [], current: null };
+    let providers: unknown = { provider: null, availableProviders: [] };
+    try {
+      discovered = profiles.discover();
+    } catch {}
+    try {
+      providers = provisioning.providers();
+    } catch {}
+    const configured = binding();
+    res.json({
+      version,
+      language: config.language,
+      vm: configured.host
+        ? configured
+        : { host: '', user: 'dant', port: 22, keyPath: '', knownHosts: '' },
+      status: bridge.status,
+      serviceUpdate: bridge.serviceUpdate ?? null,
+      updatesPaused: config.serviceUpdatesPaused,
+      profiles: discovered,
+      providers,
+    });
+  });
   app.all('/api/diagnostics', (_req, res) =>
     res.status(405).json({ error: 'Diagnostics are read-only.' }),
   );
   app.post(
     '/api/provision',
-    admitted((req, res) => res.json(provisioning.start(jsonBody(req.body)))),
+    admitted(async (req, res) => {
+      await backups?.beforeVmChange();
+      res.json(provisioning.start(jsonBody(req.body)));
+    }),
   );
   let manualConnect: Promise<void> | null = null;
+  backups = backupFactory({
+    dataDir,
+    transport: new VmBackupTransport({ bridge, binding }),
+    automatic: !prepareOnly,
+    allowed: () =>
+      !closing &&
+      !prepareOnly &&
+      !manualConnect &&
+      !manualServiceUpdate &&
+      !bridge.preparing &&
+      !desktop.blocked &&
+      !provisioning.snapshot().running &&
+      !updateLease.current(),
+    changed: () => broadcast('backups', { changed: true }),
+  });
+  const localBackups = backups;
+  installPortableBackupRoutes(app, localBackups);
+  app.get('/api/backups', async (_req, res) => res.json(await localBackups.status()));
+  app.patch('/api/backups/settings', (req, res, next) => {
+    try {
+      localBackups.configure(req.body);
+      void localBackups.status().then((status) => res.json(status), next);
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post('/api/backups/run', (_req, res) => {
+    localBackups.run();
+    res.status(202).json({ started: true });
+  });
+  app.post('/api/backups/:id/preview', async (req, res) =>
+    res.json(await localBackups.previewRestore(req.params.id)),
+  );
+  app.post('/api/backups/:id/restore', (req, res) => {
+    localBackups.restore(req.params.id, jsonBody(req.body).confirmation);
+    res.status(202).json({ started: true });
+  });
   app.post(
     '/api/connect',
     admitted(async (_req, res) => {
       if (!manualConnect) {
+        if (backups?.busy) throw backupError('backup_running');
         updateLease.assertQuiescent(1);
         const pending = (async () => {
-          await desktop.prepare();
+          await prepareDesktopConnection(true);
           await connect({ recoverExecutor: true });
         })().finally(() => {
           releasePrepared();
@@ -677,7 +782,7 @@ export function createControllerApp({
       if (!manualServiceUpdate) {
         updateLease.assertQuiescent(1);
         const pending = (async () => {
-          await desktop.prepare();
+          await prepareDesktopConnection(true);
           await connect({ recoverExecutor: true });
         })().finally(() => {
           releasePrepared();
@@ -693,6 +798,7 @@ export function createControllerApp({
     }),
   );
   app.post('/api/desktop/exit', async (req, res) => {
+    if (backups?.busy) throw backupError('backup_running');
     if (bridge.preparing || manualConnect || manualServiceUpdate)
       throw Object.assign(Error('Update installation has already started.'), { status: 409 });
     const body = jsonBody(req.body ?? {}),
@@ -734,7 +840,7 @@ export function createControllerApp({
         : body.leaseId !== undefined
     )
       throw Object.assign(Error('The installation lease changed.'), { status: 409 });
-    const result = await desktop.cancel();
+    const result = await cancelDesktopTransition();
     if (body.leaseId && updateLease.current()) updateLease.release(body.leaseId);
     automaticConnection.changed();
     res.json(result);
@@ -747,7 +853,7 @@ export function createControllerApp({
       throw Object.assign(Error('Update installation has already started.'), { status: 409 });
     updateLease.assertQuiescent();
     if (desktop.blocked || bridge.status !== ConnectionStatus.Online) {
-      await desktop.cancel();
+      await cancelDesktopTransition();
       if (!prepareOnly && binding().host && !provisioning.snapshot().running)
         await automaticConnection.start();
     }
@@ -765,9 +871,26 @@ export function createControllerApp({
   app.get('/api/fonts', async (_req, res) => res.json(await fontsProvider()));
   app.post(
     '/api/vm/import',
-    admitted((req, res) => {
+    admitted(async (req, res) => {
+      const body = { ...jsonBody(req.body) };
+      if (Object.hasOwn(body, 'skipBackupOnce') && body.skipBackupOnce !== true)
+        throw Object.assign(Error('Invalid backup acknowledgement.'), { status: 400 });
+      if (backups?.busy) throw backupError('backup_running');
+      if (body.skipBackupOnce !== true) await backups?.beforeVmChange();
+      delete body.skipBackupOnce;
+      if (
+        bridge.status === ConnectionStatus.Online &&
+        (cached.active ||
+          cached.call ||
+          cached.takeover ||
+          observedObject(cached.computer).sessionId)
+      )
+        throw Object.assign(
+          Error('Stop active work and return computer control before changing its connection'),
+          { status: 409 },
+        );
       const previous = profiles.discover().current,
-        result = profiles.import(jsonBody(req.body));
+        result = profiles.import(body);
       profileError = null;
       if (previous?.id !== profiles.discover().current?.id) {
         bridge.disconnect();
@@ -809,8 +932,13 @@ export function createControllerApp({
   });
   app.patch('/api/settings', async (req, res, next) => {
     const body = { ...jsonBody(req.body) };
+    if (Object.hasOwn(body, 'skipBackupOnce') && (body.skipBackupOnce !== true || !body.vm))
+      throw Object.assign(Error('Invalid backup acknowledgement.'), { status: 400 });
+    const skipBackupOnce = body.skipBackupOnce === true;
+    delete body.skipBackupOnce;
     if (
       body.vm &&
+      bridge.status === ConnectionStatus.Online &&
       (cached.active ||
         cached.call ||
         cached.takeover ||
@@ -847,6 +975,8 @@ export function createControllerApp({
           dataDir,
         ),
         temporary = path.join(dataDir, `.vm-settings-${randomUUID()}.tmp`);
+      if (backups?.busy) throw backupError('backup_running');
+      if (!skipBackupOnce) await backups?.beforeVmChange();
       try {
         fs.writeFileSync(temporary, JSON.stringify(vm, null, 2), { flag: 'wx', mode: 0o600 });
         fs.renameSync(temporary, path.join(dataDir, 'vm.json'));
@@ -1008,6 +1138,7 @@ export function createControllerApp({
     diagnostics,
     updates,
     lifecycle,
+    backups: localBackups,
     desktop,
     snapshot,
     start: async () => {
@@ -1020,10 +1151,12 @@ export function createControllerApp({
         !['preparing', 'creating', 'installing', 'awaiting-admin'].includes(progress.status)
       )
         await automaticConnection.start();
+      localBackups.changed();
     },
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
+      localBackups.close();
       desktop.close();
       automaticConnection.close();
       stopBridgeDiagnostics();

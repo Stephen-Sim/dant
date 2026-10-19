@@ -2,7 +2,7 @@
 
 [English](../architecture.md) · Chinese
 
-dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括带作用域的记忆召回与 SQLite 调度；已发布的安装包可能仍是较早的实现。
+dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括带作用域的记忆召回、SQLite 调度与本地加密备份；已发布的安装包可能仍是较早的实现。
 
 ## 总体系统
 
@@ -12,9 +12,13 @@ flowchart TB
     UI[TypeScript UI · Vite · DOM / CSS]
     Native[Tauri 2 / Rust<br/>窗口 · 托盘 · 通知 · 安装器]
     Controller[Node.js Controller<br/>VM 生命周期 · 设置 · 离线缓存]
+    Backups[ControllerBackups<br/>本机调度 · 明确恢复确认]
+    Vault[本机加密归档<br/>AES-GCM · Windows DPAPI]
     UI -->|桌面 IPC| Native
     Native -->|鉴权的回环 HTTP| Controller
     UI -->|浏览器 HTTP / SSE| Controller
+    Controller --> Backups
+    Backups --> Vault
   end
   subgraph Ubuntu 工作电脑
     Worker[Worker API]
@@ -46,23 +50,26 @@ flowchart TB
     Worker -->|确认后的人类接管| Desktop
   end
   Controller <-->|SSH 本地转发| Worker
+  Backups <-->|鉴权捕获 / 受保护的离线恢复| Worker
   Codex <-->|提供商连接| Models[模型服务]
   Telegram <-->|HTTPS Bot API| Phone[Telegram 私聊]
 ```
 
 UI 展示状态并提交操作。Controller **不会创建 Engine，也不会在 Windows 上执行 Agent 任务**。Worker 必须在有可用图形桌面的 Linux VM 内，以普通用户身份启动。UI 断开不会把 Controller 变成执行器。
 
-| 组件        | 源码                                                            | 职责                                               |
-| ----------- | --------------------------------------------------------------- | -------------------------------------------------- |
-| 原生宿主    | `src-tauri/src/`                                                | 窗口、托盘、原生 IPC、通知、安全宿主集成、安装交接 |
-| 应用组装    | [`src/app/`](../../src/app/)                                    | Controller/Worker 模式、API 与服务所有权           |
-| 运行时通信  | [`src/runtime/`](../../src/runtime/)                            | Codex 进程、JSON-RPC、事件校验与响应所有权         |
-| Agent 执行  | [`engine.mts`](../../src/work/engine.mts)                       | 接纳输入、绑定确认的 turn、处理工具、保存结果      |
-| 任务连续性  | [`src/work/`](../../src/work/)                                  | 计划、回复、暂停/取消、项目上下文与安全续作        |
-| Heartbeat   | [`work-continuation.mts`](../../src/work/work-continuation.mts) | 判断已结束执行但未完成的任务能否继续               |
-| 调度器      | [`scheduler.mts`](../../src/schedules/scheduler.mts)            | 执行时间、重复规则、优先级和派发回执               |
-| 记忆 / 对话 | [`src/conversation/`](../../src/conversation/)                  | Store、共享参考上下文、SQLite 记忆与迁移           |
-| 电脑控制    | [`src/computer/`](../../src/computer/)、`vm/`                   | VM 部署、SSH、截图、输入和控制权                   |
+| 组件           | 源码                                                                                  | 职责                                               |
+| -------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| 原生宿主       | `src-tauri/src/`                                                                      | 窗口、托盘、原生 IPC、通知、安全宿主集成、安装交接 |
+| 应用组装       | [`src/app/`](../../src/app/)                                                          | Controller/Worker 模式、API 与服务所有权           |
+| 运行时通信     | [`src/runtime/`](../../src/runtime/)                                                  | Codex 进程、JSON-RPC、事件校验与响应所有权         |
+| Agent 执行     | [`engine.mts`](../../src/work/engine.mts)                                             | 接纳输入、绑定确认的 turn、处理工具、保存结果      |
+| 任务连续性     | [`src/work/`](../../src/work/)                                                        | 计划、回复、暂停/取消、项目上下文与安全续作        |
+| Heartbeat      | [`work-continuation.mts`](../../src/work/work-continuation.mts)                       | 判断已结束执行但未完成的任务能否继续               |
+| 调度器         | [`scheduler.mts`](../../src/schedules/scheduler.mts)                                  | 执行时间、重复规则、优先级和派发回执               |
+| 记忆 / 对话    | [`src/conversation/`](../../src/conversation/)                                        | Store、共享参考上下文、SQLite 记忆与迁移           |
+| 电脑控制       | [`src/computer/`](../../src/computer/)、`vm/`                                         | VM 部署、SSH、截图、输入和控制权                   |
+| 宿主 / VM 适配 | [`src/platform/`](../../src/platform/)、[`providers/`](../../src/computer/providers/) | 宿主能力及提供商的检测/创建/生命周期命令           |
+| 本地备份       | [`src/backups/`](../../src/backups/)                                                  | Controller 加密归档、Worker 快照与明确的离线恢复   |
 
 运行时模块使用 Node 原生可擦除类型的 TypeScript（`.mts`），纯类型放在 `.ts`。前端使用 Vite、TypeScript 和 DOM/CSS。模块与测试目录遵循[代码规范](code-style.md)。当前是 npm 仓库，尚未改成 React 应用或 pnpm workspace monorepo。
 
@@ -230,6 +237,7 @@ API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。*
 | 所有者             | 数据                                            | 恢复规则                                       |
 | ------------------ | ----------------------------------------------- | ---------------------------------------------- |
 | Windows Controller | 连接/部署回执、设置、离线 `state-cache.json`    | 展示缓存不能启用宿主任务执行                   |
+| Controller 备份    | `backup-settings.json`、`vm-backups/*.dantbak`  | 按来源保留加密副本；明确预览并核验恢复回执     |
 | Worker Store       | `state.json`：消息、任务、已读/交付/提交回执    | 保留身份，暂停中断/不确定执行                  |
 | Worker 调度        | `schedules/schedules.sqlite`、旧数据导入备份    | CAS 编辑、唯一执行时间认领与禁止重放的持久屏障 |
 | Worker Memory      | `memory/dant/memory.sqlite`、显式导出、迁移备份 | 事务 + revision 缓存；旧文件不是实时数据权威   |
@@ -241,29 +249,43 @@ API 使用 `X-Dant-Token`、host/origin 检查和固定原生端点描述符。*
 
 通话媒体与任务身份分开：正常挂断可以保留已接纳任务，关闭结果不明不能证明任务已停。浮动通话窗口只转发限定控制，不拥有另一套麦克风/执行器。Telegram 共享 Store 和 Engine，使用稳定输入 ID、配对和持久发送回执，不会另建运行时。参见[语音](VOICE-KEY.md)、[共享上下文](context.md)与 [Telegram](TELEGRAM.md)。
 
-## 跨平台边界（规划，尚未实现）
+## 本地备份与恢复
 
-当前源码已做部分平台隔离。`VmProvider` 表示提供商选择，生命周期行为仍按提供商分支处理；统一的 `HostPlatform` 能力接口和 `VMProvider` 生命周期接口仍属于规划。Windows 桌面与 Linux VM Worker 的存在，不代表已支持 macOS/Linux 桌面。
+[`ControllerBackups`](../../src/backups/controller-backups.mts) 负责本机备份配置、定期/连接触发及明确恢复确认，通过已鉴权的 Worker 通道获取空闲状态下的持久数据/工作区快照，再在 Controller 数据目录保存加密 `.dantbak` 归档。AES-256-GCM 密钥由 HostPlatform 秘密保护接口封装；Windows 实现 DPAPI，缺少提供商时拒绝明文保存。按来源绑定分别保留副本，默认每台工作电脑十份。
 
-`HostPlatform` 计划负责宿主通知、受保护凭据、进程控制、路径、安装与更新；`VMProvider` 计划负责检测、创建、连接、挂起、恢复，以及受管理 VM 的所有权/身份确认。现有 Windows 代码提供 Hyper-V、VMware 生命周期操作与非托管 SSH 连接；单独的 SSH 连接不提供已验证的虚拟机挂起能力。
+便携 `.dant` 文件采用独立、带版本的传输格式。[`PortableBackup`](../../src/backups/portable-backup.mts) 使用固定参数的 scrypt 从用户密码派生密钥，以 AES-256-GCM 保护归档和元数据。纯流式校验器检查路径、记录、文件哈希及计数，并过滤已知认证存储。导入先对完整的加密暂存文件完成认证和校验，再以目标电脑的本机密钥重新加密入库；不暂存明文归档，也不改变原本机备份。
 
-未来 macOS/Linux 适配器共享 Controller、Worker、Engine、MemoryStore 和 Scheduler，保留单一 Agent loop 及只在 VM 执行任务的边界。缺少能力时必须明确返回不可用，不得静默切换提供商，也不得改用宿主 shell 执行 Agent 任务。相关接口和桌面发布目标仍需实现与验证，不能据此声称已经可以跨平台发布。
+首次引导先询问备份，再提供 VM 创建入口。导入在本机完成，无须连接 VM；恢复仍要求独立、绑定目标的预览与确认。Tauri 负责文件选择和有大小上限的流式传输，经过鉴权的本机 Controller API；浏览器使用同格式及较小的传输限额。因此可以在支持的前端、电脑和 VM 之间复制 dant，但不负责两份运行中副本的实时协调。未来 Google Drive 适配器可以存储相同的便携格式，本版没有接入 Drive。
+
+Worker 使用 `VACUUM INTO` 捕获 SQLite，并检查观察到的文件、目录身份和数据库版本是否变化。单个 SQLite 快照具有一致性，变化的捕获会被拒绝；多个数据库与工作区文件之间不是全系统事务。运行时/部署状态、缓存、SSH 材料和模型登录资料被排除。
+
+恢复需要先展示有界元数据/警告预览，再使用绑定当前目标的单次确认。Controller 暂停工作、停止 Worker，通过受保护的 SSH 调用离线恢复 CLI。私有暂存与双根目录 journal 支持回滚/恢复，data/workspace 替换并非跨文件系统的一次原子操作。任务与调度保持暂停/禁用，不确定提交保留屏障，Telegram 被禁用，模型可能需要重新登录。只有核对准确的启动时回执后才确认成功，未知结果只核对、不重发。参见[备份配置与恢复](backups.md)。
+
+准确的持久拒绝证明可区分已验证的未应用或完整回滚，与未知结果。证明位于两个恢复根目录之外，在内核锁内核对恢复 ID 和两个现有根目录身份。只有该证明可以把对应 Controller 意图解除为失败，不能把恢复标成成功或重放。替换中断且没有证明时仍保持未知。
+
+## 宿主平台与 VM Provider 能力
+
+[`HostPlatform`](../../src/platform/host-types.ts) 与 [`createHostPlatform`](../../src/platform/host-platform.mts) 现在已经实现宿主能力边界，描述平台身份、托管 VM/已有 SSH 支持、固定命令/配置访问，以及可选的秘密保护。该抽象不会把窗口/通知的原生职责从 Tauri 移出，也不会创建另一套任务执行器。
+
+[`VmProviderRegistry`](../../src/computer/providers/provider-types.ts) 包含 Hyper-V、VMware 适配器，以及非托管 SSH 能力。[`createVmProviders`](../../src/computer/providers/vm-providers.mts) 提供检测、创建计划与固定生命周期命令；Provisioning 和 `VmLifecycle` 消费这些适配器，VM 所有权、静止确认与结果核验仍由既有生命周期服务负责。单独的 SSH 连接不提供已验证的虚拟机挂起/恢复能力。缺少能力时明确返回不可用，不会偷偷更换提供商或回退到宿主 shell 执行任务。
+
+当前托管适配器仍要求 Windows。已识别 Unix 宿主的平台 ID 与 SSH 能力是扩展点，不代表已经支持 macOS/Linux 桌面发布。未来宿主还需要各自经过验证的生命周期、秘密保护、原生集成和发布适配器，并继续共享 Controller/Worker、Engine、记忆与调度；Ubuntu Worker 仍是执行权威。
 
 ## 当前边界与后续工作
 
 以下决策指导后续实现，保留现有执行架构，不再增加一套 Agent 运行时。
 
-| 模块                       | 决策                         | 下一步                                                |
-| -------------------------- | ---------------------------- | ----------------------------------------------------- |
-| Controller / Worker        | 保留职责边界                 | 执行与持久对话的数据权威仍在 Worker                   |
-| Codex App Server           | 保留模型/工具循环            | 扩展编排，不重复实现推理循环                          |
-| Single execution admission | 保留单执行权                 | 新输入来源统一经过现有准入和确认检查                  |
-| Heartbeat                  | 保留当前续作设计             | 继续符合条件的未完成任务，不定时发聊天汇报            |
-| Scheduler                  | SQLite 权威存储与派发 outbox | 保留 CAS、恢复屏障、重复执行与防重叠行为              |
-| MemoryStore                | 已接入带作用域的自动召回     | 保留最新的当前输入参考及结构化事实的显式确认          |
-| SQLite + FTS5              | 保留关键词检索               | 当前不引入独立 Vector DB                              |
-| VM 跨平台                  | 进一步抽象 Provider          | 把生命周期能力与 Windows 的 Hyper-V / VMware 适配分开 |
-| Tool security              | 增加独立权限控制             | 覆盖所有执行路径，包括 Codex 内置工具和 MCP           |
+| 模块                       | 决策                         | 下一步                                             |
+| -------------------------- | ---------------------------- | -------------------------------------------------- |
+| Controller / Worker        | 保留职责边界                 | 执行与持久对话的数据权威仍在 Worker                |
+| Codex App Server           | 保留模型/工具循环            | 扩展编排，不重复实现推理循环                       |
+| Single execution admission | 保留单执行权                 | 新输入来源统一经过现有准入和确认检查               |
+| Heartbeat                  | 保留当前续作设计             | 继续符合条件的未完成任务，不定时发聊天汇报         |
+| Scheduler                  | SQLite 权威存储与派发 outbox | 保留 CAS、恢复屏障、重复执行与防重叠行为           |
+| MemoryStore                | 已接入带作用域的自动召回     | 保留最新的当前输入参考及结构化事实的显式确认       |
+| SQLite + FTS5              | 保留关键词检索               | 当前不引入独立 Vector DB                           |
+| VM 跨平台                  | 已实现能力适配器             | 扩展并验证各宿主生命周期、秘密保护与桌面发布适配器 |
+| Tool security              | 增加独立权限控制             | 覆盖所有执行路径，包括 Codex 内置工具和 MCP        |
 
 召回与调度恢复测试覆盖跨项目隔离、无匹配/删除/冲突记忆、发送前的新鲜读取、用户原文不变、并发认领及跨文件崩溃窗口。未来输入来源也必须保留这些边界，并使用既有准入路径。
 

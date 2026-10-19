@@ -104,6 +104,15 @@ function fixture() {
     navigate: (action: () => void) => action(),
   };
   c.memorySettings ??= { setVisible() {}, render: () => '', bind() {}, dispose() {} };
+  c.vmBackups ??= {
+    setVisible() {},
+    render: () => '',
+    bind() {},
+    dispose() {},
+    load: async () => {},
+    openImport: async () => {},
+  };
+  c.recoverySettings ??= { show() {}, hide() {} };
   vm.createContext(uiFixtureContext(c));
   vm.runInContext(
     stripTypeScriptTypes(

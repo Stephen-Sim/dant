@@ -19,7 +19,12 @@ export interface VmObservation {
   computer?: unknown;
   mode?: unknown;
   memory?: unknown;
-  capabilities?: { languages?: unknown; workReply?: unknown; recurringSchedules?: unknown };
+  capabilities?: {
+    languages?: unknown;
+    workReply?: unknown;
+    recurringSchedules?: unknown;
+    backups?: unknown;
+  };
   provisioning?: unknown;
   controller?: unknown;
   schedules?: unknown;

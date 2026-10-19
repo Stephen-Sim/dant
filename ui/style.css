@@ -2031,6 +2031,25 @@ textarea:disabled {
   padding: 8px 13px;
   font-size: calc(var(--app-font-size) * 11 / 13);
 }
+.recovery-settings {
+  width: min(100%, 720px);
+  max-height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+}
+.recovery-settings > .inline-actions {
+  justify-content: center;
+}
+.recovery-settings .setting-card {
+  display: block;
+  text-align: start;
+  margin-top: 24px;
+}
+.recovery-settings input:not([type='checkbox']),
+.recovery-settings select {
+  width: min(100%, 340px);
+  min-width: 0;
+}
 @keyframes pulse {
   50% {
     opacity: 0.4;

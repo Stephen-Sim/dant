@@ -7,6 +7,7 @@ import path from 'node:path';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { VmBridge, vmSourceFingerprint } from '../../src/computer/vm-bridge.mts';
 import type { VmBridgeOptions } from '../../src/computer/vm-bridge.mts';
 import type { SpawnOptions } from 'node:child_process';
@@ -1024,6 +1025,61 @@ test('unknown deployment is durable across bridge restart and only read-only rem
   );
 });
 
+test('an explicit reconnect replaces a legacy update fence only under a durable new attempt', async (t) => {
+  const { bridge, dataDir, projectRoot } = fixture(t);
+  resources(projectRoot);
+  const vm = bridge.binding();
+  const oldSource = 'b'.repeat(64);
+  bridge.updateAttempts(vm, oldSource, 'start');
+  const file = path.join(dataDir, 'vm-update-attempts.json');
+  const original = fs.readFileSync(file, 'utf8');
+  const recorded = archiveRecorder(bridge, () => {
+    const entries = observedRecords(
+      observedRecord(JSON.parse(fs.readFileSync(file, 'utf8'))).entries,
+    );
+    assert.equal(entries.length, 1);
+    assert.equal(defined(entries[0]).source, bridge.desiredSource);
+    assert.notEqual(defined(entries[0]).source, oldSource);
+  });
+  await assert.rejects(bridge.deploy(vm), (error) => observedRecord(error).unknownOutcome === true);
+  assert.equal(recorded.calls.length, 0);
+  assert.equal(fs.readFileSync(file, 'utf8'), original);
+  // The failed automatic attempt consumed one read-only probe. A fresh recorder
+  // starts its explicit before/after observations with the actual older worker.
+  const explicit = archiveRecorder(bridge, () => {
+    assert.equal(bridge.updateAttempts(vm, bridge.desiredSource, 'has-source'), true);
+  });
+  await bridge.deploy(vm, { updateRunningWork: true });
+  const installs = explicit.calls.filter((call) => call.command === 'ssh');
+  assert.equal(installs.length, 1);
+  assert.ok(defined(defined(installs[0]).args.at(-1)).endsWith(' --update-running-work'));
+  assert.equal(bridge.updateAttempts(vm, oldSource), false);
+});
+
+test('a lost explicit update result keeps its new fence and never authorizes an automatic replay', async (t) => {
+  const { bridge, dataDir, projectRoot } = fixture(t);
+  resources(projectRoot);
+  const vm = bridge.binding();
+  bridge.updateAttempts(vm, 'b'.repeat(64), 'start');
+  const recorded = archiveRecorder(bridge, () => {
+    throw Error('Isolated transport result lost');
+  });
+  await assert.rejects(
+    bridge.deploy(vm, { updateRunningWork: true }),
+    (error) => observedRecord(error).unknownOutcome === true,
+  );
+  const file = path.join(dataDir, 'vm-update-attempts.json');
+  const saved = fs.readFileSync(file, 'utf8');
+  const entries = observedRecords(observedRecord(JSON.parse(saved)).entries);
+  assert.equal(entries.length, 1);
+  assert.equal(defined(entries[0]).source, bridge.desiredSource);
+  assert.equal(recorded.calls.filter((call) => call.command === 'ssh').length, 1);
+  bridge.deployedSource = async () => ({ sha256: null, active: true });
+  bridge.run = () => assert.fail('The unknown explicit result must not be replayed automatically');
+  await assert.rejects(bridge.deploy(vm), (error) => observedRecord(error).unknownOutcome === true);
+  assert.equal(fs.readFileSync(file, 'utf8'), saved);
+});
+
 test('invalid or full unknown-update receipts fail closed without overwriting saved evidence', async (t) => {
   const { bridge, dataDir, projectRoot } = fixture(t);
   resources(projectRoot);
@@ -1226,5 +1282,47 @@ test('read-only deployment probe rejects invalid responses and never uploads sou
       bridge.deployedSource(),
       (error) => observedRecord(error).updateRetryable === true,
     );
+  }
+});
+test('deployment is active only when both required services are active', async (t) => {
+  const { bridge, root } = fixture(t);
+  const cases = [
+    [],
+    ['dant-worker.service'],
+    ['dant-guest-local.service'],
+    ['dant-worker.service', 'dant-guest-local.service'],
+  ];
+  for (const activeUnits of cases) {
+    bridge.run = async (_command, args) => {
+      const command = defined(args.at(-1));
+      const marker = "python3 - <<'PY'\n";
+      assert.ok(command.startsWith(marker));
+      assert.ok(command.endsWith('\nPY'));
+      const script = command.slice(marker.length, -3);
+      const prelude = `import sys,json,pathlib,types
+pathlib.Path.home=classmethod(lambda cls: pathlib.Path(sys.argv[1]))
+active_units=set(json.loads(sys.argv[2]))
+mock=types.ModuleType('subprocess')
+mock.DEVNULL=-3
+def systemctl(command,**options):
+ if command[:4]!=['systemctl','--user','is-active','--quiet']: raise AssertionError('Unexpected operation')
+ units=command[4:]
+ if not units or any(unit not in ('dant-worker.service','dant-guest-local.service') for unit in units): raise AssertionError('Unexpected service')
+ # systemctl is-active accepts multiple units with ANY semantics. This fixture
+ # reproduces that contract so a combined probe cannot prove both are running.
+ return types.SimpleNamespace(returncode=0 if any(unit in active_units for unit in units) else 3)
+mock.run=systemctl
+sys.modules['subprocess']=mock
+`;
+      return execFileSync(
+        process.env.PYTHON || 'python',
+        ['-c', prelude + script, root, JSON.stringify(activeUnits)],
+        { encoding: 'utf8', windowsHide: true, timeout: 10000 },
+      );
+    };
+    assert.deepEqual(await bridge.deployedSource(), {
+      sha256: null,
+      active: activeUnits.length === 2,
+    });
   }
 });

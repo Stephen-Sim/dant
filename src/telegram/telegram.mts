@@ -1,6 +1,7 @@
 import { restoreTelegramConfig } from './telegram-config.mts';
 import { isRecord, includesValue } from '../contracts/json.mts';
 import { operationError } from '../runtime/errors.mts';
+import { TaskStatus, SubmissionStatus } from '../contracts/states.mts';
 import type {
   TelegramOptions,
   TelegramConfig,
@@ -1468,7 +1469,9 @@ export class TelegramGateway extends EventEmitter {
       }
       const paused = this.store.state.messages.filter(
           (message) =>
-            message.role === 'user' && message.kind !== 'call' && message.status === 'paused',
+            message.role === 'user' &&
+            message.kind !== 'call' &&
+            message.status === TaskStatus.Paused,
         ),
         selected = args
           ? this.store.state.messages.find(
@@ -1476,7 +1479,10 @@ export class TelegramGateway extends EventEmitter {
                 message.id === args &&
                 message.role === 'user' &&
                 message.kind !== 'call' &&
-                includesValue(['paused', 'failed'], message.status),
+                includesValue(
+                  [TaskStatus.Paused, TaskStatus.Failed, TaskStatus.Unknown],
+                  message.status,
+                ),
             )
           : paused.length === 1
             ? paused[0]
@@ -1500,7 +1506,11 @@ export class TelegramGateway extends EventEmitter {
         return;
       }
       if (
-        includesValue(['unknown', 'submitting'], selected.submission) ||
+        selected.status === TaskStatus.Unknown ||
+        includesValue(
+          [SubmissionStatus.Unknown, SubmissionStatus.Submitting],
+          selected.submission,
+        ) ||
         selected.unknownOutcome
       ) {
         this.queueText(key, t('resumeUnknown'));

@@ -4,6 +4,16 @@ English · [Chinese](zh-CN/verification.md)
 
 Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.7-beta.9 candidate source verification
+
+This candidate fixes valid nullable startup metadata, provides independent recovery settings and first-use backup/VM guidance, and introduces HostPlatform/VMProvider boundaries. Owned VM recovery validates disk identity, uses bounded operation intents and refreshes a unique confirmed Hyper-V IPv4 address. Explicit legacy updates support a safely stopped executor; deployment requires both services and confirms the live version.
+
+Configurable local backups cover persistent data, workspaces and local Git history. Password-protected portable files can move between independent Controller accounts without a connected VM. Regressions cover authentication, filtering, corruption, interrupted streams, target consent, SQLite snapshots, kernel restore ownership, rollback/rejection proofs and retained unknown outcomes. Imports do not restore a VM or resume tasks.
+
+The complete local run passed **2,319 of 2,321 Node tests**, with zero failures and **two Linux-only kernel-lock probes skipped on Windows**. Coverage is **97.73% lines, 90.19% branches and 93.34% functions**. Strict Node/UI/test types, **22 adopted state modules**, formatting, **78 Python VM-helper tests**, **54 native Windows tests**, prerequisite/syntax/version checks and the frontend build passed. Linux-specific probes remain required in tag CI; no threshold or required module was removed.
+
+Separately, an authorized operational check recovered the exact owned saved VM, refreshed its changed guest address and connected to the existing **Beta 8** service. Thirteen tasks remained paused, with no active work, call or queue. This source checkpoint precedes candidate packaging and local Beta 9 installation; tag CI, assets and installed desktop/Worker versions must be accepted separately before publication.
+
 ## 0.4.7-beta.8 candidate source verification
 
 The current source adds scoped SQLite/FTS5 recall to admitted agent inputs and migrates schedules to SQLite with backed-up legacy import, revision checks and durable dispatch fences. Isolated regressions cover task/conversation isolation, fresh edits and deletion, bounded reference-only excerpts, voice input acknowledgments, competing processes and recovery across the SQLite/JSON boundary. Unconfirmed execution is not automatically replayed.

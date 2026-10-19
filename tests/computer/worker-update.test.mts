@@ -163,6 +163,132 @@ test('an unconfirmed legacy per-task pause stops installation without replaying 
   assert.equal(result.report.calls.filter((call) => call.route === '/api/connect').length, 0);
 });
 
+test('explicit installation recovers a stopped idle executor only after two confirmed pauses', () => {
+  const offline = {
+    ...idle(),
+    worker: { status: 'offline' },
+    workTasks: [{ id: 'saved', status: 'paused' }],
+  };
+  const online = { ...offline, worker: { status: 'online' } };
+  const result = run([
+    session(),
+    state(offline),
+    pause(),
+    state(offline),
+    pause(),
+    state(offline),
+    witness(),
+    state(online),
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.report.remaining, 0);
+  assert.deepEqual(
+    result.report.calls.filter((call) => call.method === 'POST').map((call) => call.route),
+    ['/api/tasks/pause', '/api/tasks/pause', '/api/connect'],
+  );
+});
+
+test('explicit stopped-executor installation preserves accepted speech from an ended call', () => {
+  const offline = {
+    ...idle(),
+    worker: { status: 'offline' },
+    messages: [
+      { role: 'user', status: 'accepted', workKind: 'conversation', voiceCallId: 'ended-call' },
+    ],
+  };
+  const result = run([
+    session(),
+    state(offline),
+    pause(),
+    state(offline),
+    pause(),
+    state(offline),
+    witness(),
+    state({ ...offline, worker: { status: 'online' } }),
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.report.remaining, 0);
+});
+
+test('an offline executor with queued, active, unknown or uncontrolled work is never recovered for installation', () => {
+  const offline = { ...idle(), worker: { status: 'offline' } };
+  for (const current of [
+    { ...offline, messages: undefined },
+    { ...offline, workTasks: undefined },
+    { ...offline, active: { turnId: 'active' } },
+    { ...offline, call: { id: 'call' } },
+    { ...offline, queue: ['queued'] },
+    { ...offline, workTasks: [{ status: 'continuing' }] },
+    { ...offline, messages: [{ role: 'user', status: 'queued' }] },
+    { ...offline, messages: [{ role: 'user', status: 'paused', submission: 'unknown' }] },
+    { ...offline, workTasks: [{ status: 'unknown' }] },
+    {
+      ...offline,
+      workTasks: [{ status: 'paused', continuation: { dispatch: { phase: 'acknowledged' } } }],
+    },
+    { ...offline, computer: { status: 'human', sessionId: 'lease' } },
+    { ...offline, computer: { status: 'dant', pending: true } },
+    { ...offline, acquiring: true },
+  ]) {
+    const result = run([session(), state(current)]);
+    assert.equal(result.status, 1, JSON.stringify(current));
+    assert.ok(result.report.calls.every((call) => call.method === 'GET'));
+    assert.equal(result.report.remaining, 0);
+  }
+});
+
+test('fresh stopped-executor activity after either pause blocks recovery and installation', () => {
+  const offline = { ...idle(), worker: { status: 'offline' } };
+  for (const current of [
+    { ...offline, active: { turnId: 'new' } },
+    { ...offline, queue: ['new'] },
+    { ...offline, messages: [{ role: 'user', status: 'queued' }] },
+    { ...offline, workTasks: [{ status: 'continuing' }] },
+    { ...offline, messages: [{ role: 'user', status: 'unknown', submission: 'unknown' }] },
+  ])
+    for (const afterFirst of [true, false]) {
+      const result = run([
+        session(),
+        state(offline),
+        pause(),
+        ...(afterFirst ? [state(current)] : [state(offline), pause(), state(current)]),
+      ]);
+      assert.equal(result.status, 1, JSON.stringify({ current, afterFirst }));
+      assert.ok(result.report.calls.every((call) => call.route !== '/api/connect'));
+      assert.equal(result.report.remaining, 0);
+    }
+});
+
+test('explicit stopped-executor recovery must confirm online and never resends an unconfirmed witness', () => {
+  const offline = { ...idle(), worker: { status: 'offline' } };
+  for (const result of [
+    run([
+      session(),
+      state(offline),
+      pause(),
+      state(offline),
+      pause(),
+      state(offline),
+      witness(),
+      state(offline),
+    ]),
+    run([
+      session(),
+      state(offline),
+      pause(),
+      state(offline),
+      pause(),
+      state(offline),
+      { ...witness(), error: true },
+    ]),
+  ]) {
+    assert.equal(result.status, 1);
+    assert.equal(result.report.calls.filter((call) => call.route === '/api/connect').length, 1);
+    assert.equal(result.report.remaining, 0);
+    assert.doesNotMatch(result.stderr, /PRIVATE RESPONSE/);
+  }
+});
+
 test('automatic deployment leaves busy work running without issuing mutations', () => {
   const result = run([session(), state({ ...idle(), active: { turnId: 'current' } })], {
     mode: 'check',
@@ -236,7 +362,7 @@ test('malformed state, human control and unconfirmed work fail before any mutati
     { ...idle(), takeover: true },
     { ...idle(), active: 'bad' },
     { ...idle(), call: { id: '' } },
-    { ...idle(), worker: { status: 'offline' } },
+    { ...idle(), worker: { status: 'connecting' } },
     { ...idle(), computer: { status: 'dant', pending: true } },
     { ...idle(), computer: { status: 'dant', sessionId: 'lease' } },
     { ...idle(), messages: [{ role: 'user', status: 'paused', submission: 'unknown' }] },
@@ -516,7 +642,10 @@ const shellPath = (value: string) =>
         .replace(/^([A-Za-z]):/, (_: string, drive: string) => '/' + drive.toLowerCase())
     : value;
 
-test('the same deployed manifest returns current without pausing work or restarting services, including manual reconnect', (t) => {
+function currentDeployment(
+  t: NodeTestContext,
+  { manual = false, workerActive = true, guestActive = true } = {},
+) {
   const testRoot = path.resolve('.cache/tests');
   fs.mkdirSync(testRoot, { recursive: true });
   const root = fs.mkdtempSync(path.join(testRoot, 'worker-current-'));
@@ -535,28 +664,65 @@ set -euo pipefail
 export HOME="$1"
 source_dir="$2"
 update_running_work="$3"
+worker_active="$4"
+guest_active="$5"
 cd "$source_dir"
 prepare_transcription() { printf 'transcription\n' >> "$HOME/events"; }
 node() { printf 'node:%s\n' "$*" >> "$HOME/events"; }
-systemctl() { printf 'systemctl:%s\n' "$*" >> "$HOME/events"; [[ "$*" == '--user is-active --quiet dant-worker.service dant-guest-local.service' ]]; }
+systemctl() {
+  printf 'systemctl:%s\n' "$*" >> "$HOME/events"
+  if [[ "$*" == '--user is-active --quiet dant-worker.service' ]]; then [[ "$worker_active" == true ]];
+  elif [[ "$*" == '--user is-active --quiet dant-guest-local.service' ]]; then [[ "$guest_active" == true ]];
+  else return 2; fi
+}
 check_idle_worker() { printf 'pause-check\n' >> "$HOME/events"; exit 9; }
 `;
   const runFile = path.join(root, 'current-fixture.sh');
-  fs.writeFileSync(runFile, harness + '\n' + current);
-  for (const manual of ['false', 'true']) {
-    fs.writeFileSync(path.join(home, 'events'), '');
-    const result = spawnSync(
-      bash,
-      ['--noprofile', '--norc', shellPath(runFile), shellPath(home), shellPath(stage), manual],
-      { encoding: 'utf8', shell: false, timeout: 10000 },
-    );
-    if (result.error) throw result.error;
+  fs.writeFileSync(runFile, harness + '\n' + current + '\nprintf "DANT_INSTALL_CONTINUES\\n"\n');
+  const result = spawnSync(
+    bash,
+    [
+      '--noprofile',
+      '--norc',
+      shellPath(runFile),
+      shellPath(home),
+      shellPath(stage),
+      String(manual),
+      String(workerActive),
+      String(guestActive),
+    ],
+    { encoding: 'utf8', shell: false, timeout: 10000 },
+  );
+  if (result.error) throw result.error;
+  return {
+    ...result,
+    events: fs.existsSync(path.join(home, 'events'))
+      ? fs.readFileSync(path.join(home, 'events'), 'utf8')
+      : '',
+  };
+}
+
+test('the same deployed manifest returns current without pausing work or restarting services, including manual reconnect', (t) => {
+  for (const manual of [false, true]) {
+    const result = currentDeployment(t, { manual });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /^DANT_UPDATE_CURRENT$/m);
-    const events = fs.readFileSync(path.join(home, 'events'), 'utf8');
-    assert.match(events, /is-active/);
-    assert.doesNotMatch(events, /pause-check|restart|stop/);
+    assert.doesNotMatch(result.stdout, /DANT_INSTALL_CONTINUES/);
+    assert.match(result.events, /is-active --quiet dant-worker.service/);
+    assert.match(result.events, /is-active --quiet dant-guest-local.service/);
+    assert.doesNotMatch(result.events, /pause-check|restart|stop/);
   }
+});
+
+test('a current manifest with only one running service still proceeds through installation', (t) => {
+  for (const manual of [false, true])
+    for (const workerActive of [false, true]) {
+      const result = currentDeployment(t, { manual, workerActive, guestActive: !workerActive });
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(result.stdout, /DANT_UPDATE_CURRENT/);
+      assert.match(result.stdout, /^DANT_INSTALL_CONTINUES$/m);
+      assert.doesNotMatch(result.events, /transcription|node:|pause-check|restart|stop/);
+    }
 });
 
 function deployment(

@@ -1,6 +1,10 @@
-import { ProvisioningStatus } from '../contracts/states.mts';
+import { ProvisioningStatus, VmProviderId } from '../contracts/states.mts';
 import type { ProvisioningStatusValue } from '../contracts/states.mts';
 import { isRecord, includesValue, errorMessage } from '../contracts/json.mts';
+import { createHostPlatform } from '../platform/host-platform.mts';
+import type { HostPlatform } from '../platform/host-types.ts';
+import { createVmProviders } from './providers/vm-providers.mts';
+import type { VmProviderRegistry } from './providers/provider-types.ts';
 import type { SpawnOptions } from 'node:child_process';
 import type {
   Hypervisor,
@@ -25,6 +29,7 @@ export interface ProvisioningOptions {
   dataDir?: string;
   spawnProcess?: ProvisioningSpawn;
   platform?: NodeJS.Platform;
+  host?: HostPlatform;
   detectProviders?: () => Hypervisor[];
   probeIntervalMs?: number;
   installTimeoutMs?: number;
@@ -89,6 +94,8 @@ export class Provisioning extends EventEmitter {
   readonly dataDir: string;
   readonly spawnProcess: ProvisioningSpawn;
   readonly platform: NodeJS.Platform;
+  readonly host: HostPlatform;
+  readonly vmProviders: VmProviderRegistry;
   readonly detectProviders: () => Hypervisor[];
   readonly probeIntervalMs: number;
   readonly installTimeoutMs: number;
@@ -106,7 +113,8 @@ export class Provisioning extends EventEmitter {
     dataDir = path.join(projectRoot, 'data'),
     spawnProcess = spawn,
     platform = process.platform,
-    detectProviders = () => detectHypervisors({ platform }),
+    host = createHostPlatform({ platform }),
+    detectProviders = () => detectHypervisors({ host }),
     probeIntervalMs = 15000,
     installTimeoutMs = 45 * 60 * 1000,
   }: ProvisioningOptions = {}) {
@@ -114,7 +122,9 @@ export class Provisioning extends EventEmitter {
     this.projectRoot = path.resolve(projectRoot);
     this.dataDir = path.resolve(dataDir);
     this.spawnProcess = spawnProcess;
-    this.platform = platform;
+    this.platform = host.platform;
+    this.host = host;
+    this.vmProviders = createVmProviders(host);
     this.detectProviders = detectProviders;
     this.probeIntervalMs = probeIntervalMs;
     this.installTimeoutMs = installTimeoutMs;
@@ -172,7 +182,12 @@ export class Provisioning extends EventEmitter {
               .map((key) => [key, connection[key]]),
           ),
         };
-        if (includesValue(['hyperv', 'vmware', 'ssh'] as const, connection.provider)) {
+        if (
+          includesValue(
+            [VmProviderId.HyperV, VmProviderId.VMware, VmProviderId.Ssh] as const,
+            connection.provider,
+          )
+        ) {
           configuredProvider = connection.provider;
           this.state.provider = configuredProvider;
         }
@@ -191,10 +206,18 @@ export class Provisioning extends EventEmitter {
       const progress = parseFile(file);
       if (typeof progress.stage !== 'string') return;
       if (!configuredProvider)
-        this.state.provider = includesValue(['hyperv', 'vmware'] as const, progress.provider)
+        this.state.provider = includesValue(
+          [VmProviderId.HyperV, VmProviderId.VMware] as const,
+          progress.provider,
+        )
           ? progress.provider
-          : this.state.provider || 'hyperv';
-      if (includesValue(['auto', 'hyperv', 'vmware'] as const, progress.selected))
+          : this.state.provider || VmProviderId.HyperV;
+      if (
+        includesValue(
+          ['auto', VmProviderId.HyperV, VmProviderId.VMware] as const,
+          progress.selected,
+        )
+      )
         this.state.selected = progress.selected;
       const failed = progress.stage === 'failed' || progress.stage.startsWith('failed:');
       if (this.state.status === ProvisioningStatus.Failed && !failed && progress.stage !== 'ready')
@@ -222,7 +245,7 @@ export class Provisioning extends EventEmitter {
   }
   start(options: SetupInput = {}) {
     if (this.closed) throw Error('VM setup controller is closed');
-    if (this.platform !== 'win32') throw Error('Automatic VM setup requires Windows');
+    if (!this.host.capabilities.managedVm) throw Error('Automatic VM setup requires Windows');
     if (this.running) throw Error('VM setup is already running');
     this.refresh();
     if (['creating', 'awaiting-admin'].includes(this.state.status))
@@ -235,7 +258,7 @@ export class Provisioning extends EventEmitter {
       (fs.existsSync(path.join(this.dataDir, 'vm')) &&
         fs.readdirSync(path.join(this.dataDir, 'vm')).length) ||
       ['dant.vmx', 'dant.vmdk'].some((name) =>
-        fs.existsSync(path.join(this.dataDir, 'vmware', name)),
+        fs.existsSync(path.join(this.dataDir, VmProviderId.VMware, name)),
       )
     )
       throw Error(
@@ -279,7 +302,10 @@ export class Provisioning extends EventEmitter {
     };
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.state.provider = provider;
-    this.state.selected = includesValue(['auto', 'hyperv', 'vmware'] as const, options.provider)
+    this.state.selected = includesValue(
+      ['auto', VmProviderId.HyperV, VmProviderId.VMware] as const,
+      options.provider,
+    )
       ? options.provider
       : 'auto';
     this.state.startedAt = Date.now();
@@ -304,7 +330,7 @@ export class Provisioning extends EventEmitter {
     this.refresh();
     if (!['creating', 'awaiting-admin', 'installing'].includes(this.state.status))
       return this.snapshot();
-    if (this.platform !== 'win32') throw Error('VM setup monitoring requires Windows');
+    if (!this.host.capabilities.managedVm) throw Error('VM setup monitoring requires Windows');
     this.running = true;
     this.resuming = true;
     this.failure = null;
@@ -384,38 +410,15 @@ export class Provisioning extends EventEmitter {
     );
   }
   async run(values: SetupValues) {
-    const dataArgs = ['-DataDirectory', this.dataDir];
-    const vmware = values.provider === 'vmware',
-      tools =
-        vmware && values.tools
-          ? [
-              '-VmrunPath',
-              values.tools.vmrun ?? '',
-              '-VdiskmanagerPath',
-              values.tools.vdiskmanager ?? '',
-            ]
-          : [];
-    await this.execute(vmware ? 'prepare-vmware.ps1' : 'prepare-vm.ps1', [
-      ...dataArgs,
-      ...tools,
-      ...(values.adminSudo ? ['-AdminSudo'] : []),
-    ]);
+    const adapter = this.vmProviders.get(values.provider);
+    if (adapter.id === VmProviderId.Ssh)
+      throw Error('Automatic VM setup requires a managed provider.');
+    const plan = adapter.setupPlan({ ...values, dataDir: this.dataDir });
+    await this.execute(plan.prepare.script, plan.prepare.args);
     this.ensureOpen();
-    this.saveProgress(vmware ? 'creating' : 'awaiting-admin');
-    this.set({
-      status: vmware ? ProvisioningStatus.Creating : ProvisioningStatus.AwaitingAdmin,
-      stage: vmware ? 'creating' : 'awaiting-admin',
-    });
-    await this.execute(vmware ? 'create-vmware.ps1' : 'launch-vm.ps1', [
-      ...dataArgs,
-      ...tools,
-      '-Cpu',
-      String(values.cpu),
-      '-MemoryGB',
-      String(values.memoryGB),
-      '-DiskGB',
-      String(values.diskGB),
-    ]);
+    this.saveProgress(plan.stage);
+    this.set({ status: plan.stage, stage: plan.stage });
+    await this.execute(plan.create.script, plan.create.args);
     this.ensureOpen();
     this.refresh();
     if (!this.state.connection) throw Error('VM creation finished without connection details');
@@ -467,6 +470,8 @@ export class Provisioning extends EventEmitter {
   }
   execute(script: string, args: readonly string[]) {
     this.ensureOpen();
+    const powershell = this.host.commands.powershell;
+    if (!powershell) throw Error('VM setup monitoring requires Windows');
     return new Promise<void>((resolve, reject) => {
       let settled = false,
         output = '';
@@ -479,7 +484,7 @@ export class Provisioning extends EventEmitter {
       let child: ProvisioningProcess;
       try {
         child = this.spawnProcess(
-          'powershell.exe',
+          powershell,
           [
             '-NoLogo',
             '-NoProfile',

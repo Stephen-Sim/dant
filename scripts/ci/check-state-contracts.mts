@@ -20,6 +20,11 @@ import {
   ScheduleStatus,
   ScheduleDispatchPhase,
   MemoryEntryStatus,
+  HostPlatformId,
+  VmProviderId,
+  BackupMode,
+  BackupPhase,
+  WorkerRestorePhase,
 } from '../../src/contracts/states.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -48,7 +53,21 @@ const stateContractRules: readonly ContractRule[] = Object.freeze([
     domains: [MemoryEntryStatus],
   })),
   { file: 'src/app/desktop-lifecycle.mts', domains: [DesktopPhase, ConnectionStatus] },
-  { file: 'src/computer/vm-lifecycle.mts', domains: [VmPowerState, VmReceiptPhase] },
+  { file: 'src/computer/vm-lifecycle.mts', domains: [VmPowerState, VmReceiptPhase, VmProviderId] },
+  { file: 'src/platform/host-platform.mts', domains: [HostPlatformId] },
+  { file: 'src/backups/worker-lock.mts', domains: [HostPlatformId] },
+  { file: 'src/backups/controller-backups.mts', domains: [BackupMode, BackupPhase] },
+  { file: 'src/backups/backup-validation.mts', domains: [BackupMode] },
+  { file: 'src/backups/worker-restore.mts', domains: [WorkerRestorePhase] },
+  { file: 'ui/settings/vm-backups.mts', domains: [BackupMode, BackupPhase] },
+  {
+    file: 'ui/app/recovery-settings.mts',
+    domains: [BackupMode, BackupPhase, ConnectionStatus, ServiceUpdateStatus],
+  },
+  ...['hypervisors', 'provisioning', 'providers/vm-providers'].map((name) => ({
+    file: 'src/computer/' + name + '.mts',
+    domains: [VmProviderId],
+  })),
   ...['scheduler', 'schedule-database'].map((name) => ({
     file: 'src/schedules/' + name + '.mts',
     domains: [ScheduleStatus, ScheduleDispatchPhase, TaskStatus, TaskPriority],

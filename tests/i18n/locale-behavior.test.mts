@@ -135,6 +135,7 @@ function mainFixture() {
       'sync' | 'isVisible' | 'render' | 'bind'
     >,
     memorySettings: { setVisible: noop },
+    vmBackups: { setVisible: noop, render: empty },
     workDisclosures: { capture: noop },
     appUpdates: { setVisible: noop, render: empty },
     appearance: { sync: noop },

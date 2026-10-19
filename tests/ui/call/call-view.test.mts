@@ -150,6 +150,14 @@ function fixture(language = 'en', theme = 'light') {
   c.updateInstalling = false;
   c.chatScroll ??= { capture() {}, restore() {}, dispose() {}, navigate: (action) => action() };
   c.memorySettings ??= { setVisible() {}, render: () => '', bind() {}, dispose() {} };
+  c.vmBackups ??= {
+    setVisible() {},
+    render: () => '',
+    bind() {},
+    dispose() {},
+    load: async () => {},
+    openImport: async () => {},
+  };
   c.taskReplies ??= createTaskReplyController({ document: c.document, getModel: () => ({}) });
   vm.createContext(uiFixtureContext(c));
   vm.runInContext(

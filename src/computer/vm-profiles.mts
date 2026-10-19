@@ -329,7 +329,13 @@ export class VmProfiles {
     }
     return this.public(current);
   }
-  import({ id, directory }: { id?: unknown; directory?: unknown } = {}) {
+  import({
+    id,
+    directory,
+    replaceCurrent = false,
+  }: { id?: unknown; directory?: unknown; replaceCurrent?: unknown } = {}) {
+    if (typeof replaceCurrent !== 'boolean')
+      throw configurationError('Invalid VM replacement choice.');
     if ((id !== undefined) === (directory !== undefined))
       throw configurationError(
         'Choose one existing profile or enter its absolute data-directory path.',
@@ -362,9 +368,10 @@ export class VmProfiles {
     if (current) {
       if (current.id === selected.id)
         return { ok: true, profile: this.public(current), connected: false };
-      throw configurationError(
-        'A valid VM connection already exists. It was preserved; edit its connection settings explicitly to change computers.',
-      );
+      if (!replaceCurrent)
+        throw configurationError(
+          'A valid VM connection already exists. It was preserved; edit its connection settings explicitly to change computers.',
+        );
     }
     fs.mkdirSync(this.dataDir, { recursive: true });
     const target = path.join(this.dataDir, 'vm.json'),
@@ -377,7 +384,10 @@ export class VmProfiles {
         );
       fs.copyFileSync(
         target,
-        path.join(this.dataDir, `vm.json.invalid-${Date.now()}-${randomUUID()}.bak`),
+        path.join(
+          this.dataDir,
+          `vm.json.${current ? 'previous' : 'invalid'}-${Date.now()}-${randomUUID()}.bak`,
+        ),
         fs.constants.COPYFILE_EXCL,
       );
     }

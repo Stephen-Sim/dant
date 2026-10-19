@@ -206,6 +206,24 @@ export class Store {
             startedAt: typeof entry.startedAt === 'number' ? entry.startedAt : 0,
             updatedAt: typeof entry.updatedAt === 'number' ? entry.updatedAt : 0,
           };
+          if (typeof entry.unknownOutcome === 'boolean')
+            restored.unknownOutcome = entry.unknownOutcome;
+          if (Object.hasOwn(entry, 'submission')) {
+            if (isEnumValue(SubmissionStatus, entry.submission))
+              restored.submission = entry.submission;
+            else {
+              restored.submission = SubmissionStatus.Unknown;
+              restored.unknownOutcome = true;
+            }
+          }
+          const unconfirmed =
+            restored.status === TaskStatus.Unknown || unconfirmedProgress(restored);
+          if (unconfirmed) {
+            restored.status = TaskStatus.Unknown;
+            restored.unknownOutcome = true;
+            if (restored.submission === SubmissionStatus.Submitting)
+              restored.submission = SubmissionStatus.Unknown;
+          }
           if (typeof entry.progressDismissedAt === 'number' && entry.progressDismissedAt > 0)
             restored.progressDismissedAt = entry.progressDismissedAt;
           if (Object.hasOwn(entry, 'progressPriority'))
@@ -226,10 +244,7 @@ export class Store {
           )
             restored.cancelledAt = entry.cancelledAt;
           if (
-            includesValue(
-              [TaskStatus.Running, TaskStatus.Pausing, TaskStatus.Unknown],
-              restored.status,
-            ) ||
+            includesValue([TaskStatus.Running, TaskStatus.Pausing], restored.status) ||
             (restored.status === TaskStatus.WaitingUser && !restored.executionEndedAt)
           ) {
             restored.status = TaskStatus.Paused;
@@ -239,6 +254,7 @@ export class Store {
             restored.pauseReason = entry.pauseReason;
           if (Object.hasOwn(entry, 'continuation'))
             Object.assign(restored, restoreWorkContinuation(restored, entry.continuation));
+          if (unconfirmed) restored.status = TaskStatus.Unknown;
           const projectContext = safeProjectContext(entry.projectContext);
           if (projectContext) restored.projectContext = projectContext;
           return [restored];
@@ -289,11 +305,20 @@ export class Store {
         // recorded. That submission must never become an ordinary safe retry.
         if (m.submission === SubmissionStatus.Submitting) {
           m.submission = SubmissionStatus.Unknown;
+          m.unknownOutcome = true;
           if (!includesValue([TaskStatus.Review, TaskStatus.Completed], m.status)) {
-            m.status = TaskStatus.Paused;
+            m.status = TaskStatus.Unknown;
             m.pauseReason = 'restart';
           }
         }
+        if (
+          unconfirmedProgress(m) &&
+          !includesValue(
+            [TaskStatus.Review, TaskStatus.Completed, TaskStatus.Cancelled, TaskStatus.Failed],
+            m.status,
+          )
+        )
+          m.status = TaskStatus.Unknown;
         if (
           includesValue(
             [

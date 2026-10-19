@@ -18,9 +18,21 @@ A failed or rate-limited request shows a retry message rather than claiming the 
 
 ## Work computer service updates
 
+### Startup compatibility in 0.4.7-beta.9
+
+Beta 9 fixes a desktop state-validation regression that could show **Invalid application state** even while the local Controller and VM service were reachable. The UI now accepts supported empty values and older Worker metadata without inventing task ownership or execution confirmation. The fix is in the desktop executable's embedded frontend, so updating only the VM cannot repair an already installed Beta 8 frontend. If that screen prevents opening Settings, install the newer desktop package from the release page.
+
+Older Beta 7 installations could retain an unconfirmed update receipt after a pre-install busy-work guard. Automatic checks preserve that receipt rather than retrying an uncertain deployment. An explicit **Reconnect** uses the protected pause, saved-task and final-idle checks before a new update intent; successful live source/version confirmation resolves it. Do not remove update receipts to bypass those checks.
+
+Beta 9 also adds configurable [local VM data backups](backups.md). The backup UI requires the matching Worker capability; upgrade the connected service before using it. Existing backups are retained while the service is unavailable.
+
+If chat state cannot be loaded, the recovery page reads local connection settings independently. It shows the Controller version, permits editing the SSH connection or selecting a discovered profile, and checks published updates without VM access. Saving settings does not silently reconnect or deploy. When the previous VM cannot provide its required pre-change backup, an explicit one-time skip permits changing the connection without disabling future backups. A restore with an unknown outcome remains protected and cannot be bypassed by that checkbox.
+
 dant checks the bundled work computer service when connecting after installation or startup. If the work computer is busy, dant connects to its existing service and keeps a pending update. Once fresh state confirms that work, calls and computer control are idle, it continues the update automatically; no separate Reconnect action is required. Transient connection failures retry with a bounded backoff. Ordinary network recovery does not repeatedly deploy an already current service.
 
 **Settings → Work computer** shows the service update status and target / confirmed running versions. A cached connection or a successful installer exit alone does not mean the service is current; dant confirms the running version through the live VM connection. An executor intentionally stopped for safety is not restarted by automatic updates. Unconfirmed update outcomes are reconciled through read-only checks instead of replaying pause or restart operations. **Pause updates** suspends automatic service updates until **Resume updates**. **Pause work and install**, or an explicit **Reconnect**, first pauses current work and verifies its saved records before replacing the service. A changed call, control owner or unknown execution outcome prevents replacement. Paused tasks require an explicit task reply or Resume afterward.
+
+Explicit installation also supports an older Worker whose executor is already safely stopped: after confirmed pause and fresh idle checks, the existing idle-recovery endpoint confirms the update witness. This does not resume paused tasks. If an owned legacy VM is saved but has no local suspension receipt, explicit **Reconnect** can verify its exact owned disk and recover that saved VM before opening SSH. Automatic startup does not guess that an unrecorded suspension should be resumed, and a powered-off VM is not started by this compatibility path.
 
 The bundled service requires Node.js 22.18+ LTS or 24+ with native TypeScript, built-in SQLite and FTS5 support. Preflight, packaging and VM deployment verify these capabilities with a bounded in-memory database query. If Reconnect reports `runtime-incompatible`, dant preserves the existing VM runtime and service. Update that Node runtime through the VM’s maintenance process, then reconnect.
 

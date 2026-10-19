@@ -83,6 +83,7 @@ function fixture() {
     messages: [],
   };
   const context = uiEntrypointFixture({
+    vmBackups: { setVisible() {}, render: () => '', bind() {}, dispose() {}, load: async () => {} },
     textEditor: { renderSettings: () => '', bind() {}, load: async () => {}, dispose() {} },
     settingsCategory: 'general' as SettingsCategory,
     settingsNavigation: createSettingsNavigation({

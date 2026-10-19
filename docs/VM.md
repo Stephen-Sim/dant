@@ -4,6 +4,8 @@ English · [Chinese](zh-CN/VM.md)
 
 dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Windows Controller reaches the VM's work API at `127.0.0.1:4317` through an SSH local tunnel. The VM Node service starts Codex over stdio; the desktop bridge is also accessible only inside the VM. New VMs default to 4 CPUs, 6 GB RAM, and a 40 GB disk. Hyper-V uses its Default Switch; VMware Workstation uses NAT. The Worker boundary and SSH connection are the same for both.
 
+On a fresh installation, first choose whether you have an existing dant backup. A portable backup can be imported before a VM is available. Otherwise the guide explains how to create a work computer, detect Hyper-V/VMware, or connect an existing SSH computer. Creation requires your explicit action; merely viewing the guide does not create a VM. Existing configured installations open normally. After connecting a new VM, preview and restore an imported backup to continue with its memory and projects; see [backups](backups.md).
+
 ## Worker deployment and operation
 
 The first connection deploys an explicit source allowlist, verifies and installs Node 22 in the VM user's directory, installs runtime dependencies from the lockfile, and creates the ordinary user's `dant-worker.service` and `dant-guest-local.service`. With user lingering enabled, closing the Windows Controller does not stop these services. The legacy system desktop bridge on port 4319 remains available; the new Worker uses the local lease-aware bridge on port 4320. Neither listens on an external VM address.

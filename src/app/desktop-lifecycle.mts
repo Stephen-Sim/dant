@@ -22,6 +22,7 @@ export type VmSuspension =
 export interface OwnedVmLifecycle {
   suspend(): Promise<VmSuspension>;
   resume(): Promise<unknown>;
+  resumeForReconnect?(): Promise<unknown>;
 }
 export interface DesktopLifecycleOptions {
   bridge: DesktopBridge;
@@ -111,11 +112,21 @@ export class DesktopLifecycle {
     current();
     this.state(DesktopPhase.Paused);
   }
-  prepare() {
+  prepare({
+    recoverManagedVm = false,
+    managedVmAlreadyRestored = false,
+  }: {
+    recoverManagedVm?: boolean;
+    managedVmAlreadyRestored?: boolean;
+  } = {}) {
     return this.run(async (current) => {
       if (this.binding().host && this.bridge.status !== ConnectionStatus.Online) {
         this.state(DesktopPhase.Resuming);
-        await this.lifecycle.resume();
+        if (!managedVmAlreadyRestored) {
+          if (recoverManagedVm && this.lifecycle.resumeForReconnect)
+            await this.lifecycle.resumeForReconnect();
+          else await this.lifecycle.resume();
+        }
         current();
       }
       await this.pause(current);
@@ -140,10 +151,10 @@ export class DesktopLifecycle {
         : { ...context, vmSuspended: false as const, unsupported: true as const };
     });
   }
-  cancel() {
+  cancel({ managedVmAlreadyRestored = false }: { managedVmAlreadyRestored?: boolean } = {}) {
     return this.run(async (current) => {
       this.state(DesktopPhase.Resuming);
-      await this.lifecycle.resume();
+      if (!managedVmAlreadyRestored) await this.lifecycle.resume();
       current();
       if (this.binding().host && this.bridge.status !== ConnectionStatus.Online)
         await this.bridge.connect({ deploy: false });

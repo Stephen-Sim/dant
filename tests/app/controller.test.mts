@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createControllerApp } from '../../src/app/controller.mts';
 import { VmBridge } from '../../src/computer/vm-bridge.mts';
+import { readVmBinding } from '../../src/computer/vm-profiles.mts';
 import { assertVmRuntime } from '../../src/runtime/local-worker.mts';
 import { appearanceDefaults, appearanceKeys } from '../../src/settings/appearance.mts';
 import { createWorkerApp } from '../../src/app/server.mts';
@@ -118,6 +119,11 @@ async function listenWithBridge<Bridge extends FakeBridge>(
   bridge: Bridge,
   options: ControllerAppOptions = {},
 ) {
+  // These routing/identity fixtures deliberately choose manual backups. Backup
+  // admission and its automatic default have their own end-to-end scenarios.
+  const backupPreferences = path.join(dir, 'backup-settings.json');
+  if (!fs.existsSync(backupPreferences))
+    fs.writeFileSync(backupPreferences, JSON.stringify({ mode: 'manual' }));
   const app = createControllerApp({
     dataDir: dir,
     projectRoot: path.resolve('.'),
@@ -563,6 +569,77 @@ test('prepare mode displays setup without automatically connecting a bound VM', 
   t.after(() => instance.close());
   await instance.start();
   assert.equal(defined(instance.snapshot().worker).status, 'offline');
+});
+
+test('local recovery settings remain authenticated and usable when the cached conversation is invalid', async (t) => {
+  const dir = temporary(t);
+  fs.writeFileSync(
+    path.join(dir, 'state-cache.json'),
+    JSON.stringify({
+      messages: 'invalid remote history',
+      worker: { status: 'offline', models: [] },
+    }),
+  );
+  const { base, headers, bridge } = await listen(t, dir);
+  assert.equal((await fetch(base + '/api/controller/settings')).status, 401);
+  const broken: unknown = await (await fetch(base + '/api/state', { headers })).json();
+  assert.throws(() => readAppState(broken), /Invalid application state/);
+  const response = await fetch(base + '/api/controller/settings', { headers });
+  assert.equal(response.status, 200);
+  const recovery: unknown = await response.json();
+  assert.ok(isRecord(recovery) && isRecord(recovery.vm) && isRecord(recovery.profiles));
+  assert.equal(recovery.status, 'offline');
+  assert.equal(recovery.vm.user, 'dant');
+  assert.equal(Array.isArray(recovery.profiles.candidates), true);
+  assert.equal(Object.hasOwn(recovery, 'messages'), false);
+  assert.equal(bridge.requests.length, 0);
+});
+
+test('explicit one-time backup acknowledgement permits changing an unavailable VM without changing backup preferences', async (t) => {
+  const dir = temporary(t),
+    keyPath = path.join(dir, 'isolated-key'),
+    knownHosts = path.join(dir, 'isolated-known-hosts');
+  fs.writeFileSync(keyPath, 'isolated fixture key');
+  fs.writeFileSync(knownHosts, 'isolated host');
+  fs.writeFileSync(
+    path.join(dir, 'vm.json'),
+    JSON.stringify({ host: '192.0.2.10', user: 'dant', port: 22, keyPath, knownHosts }),
+  );
+  fs.writeFileSync(
+    path.join(dir, 'backup-settings.json'),
+    JSON.stringify({ mode: 'automatic', beforeVmChange: true }),
+  );
+  const { base, headers, bridge } = await listen(t, dir);
+  const changed = await fetch(base + '/api/settings', {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ vm: { host: '192.0.2.11' }, skipBackupOnce: true }),
+  });
+  assert.equal(changed.status, 200);
+  assert.equal(readVmBinding(dir).host, '192.0.2.11');
+  const saved: unknown = JSON.parse(
+    fs.readFileSync(path.join(dir, 'backup-settings.json'), 'utf8'),
+  );
+  assert.ok(isRecord(saved));
+  assert.equal(saved.mode, 'automatic');
+  assert.equal(saved.beforeVmChange, true);
+  assert.equal(
+    bridge.requests.length,
+    0,
+    'the old VM is not contacted or sent backup bypass fields',
+  );
+  for (const body of [
+    { skipBackupOnce: true },
+    { vm: { host: '192.0.2.12' }, skipBackupOnce: 'true' },
+  ]) {
+    const invalid = await fetch(base + '/api/settings', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(invalid.status, 400);
+  }
+  assert.equal(readVmBinding(dir).host, '192.0.2.11');
 });
 
 test('SSE sends the same cached state contract without opening a VM connection', async (t) => {
@@ -1350,6 +1427,58 @@ test('automatic Controller startup and provisioning reconnect preserve a deliber
   assert.equal(bridge.requests.length, 0);
   assert.equal(defined(app.snapshot().worker).status, 'offline');
   assert.equal(defined(observedRecords(app.snapshot().messages)[0]).status, 'paused');
+});
+
+for (const route of ['/api/connect', '/api/service-update']) {
+  test(`explicit ${route} verifies legacy owned VM restoration before opening SSH`, async (t) => {
+    const calls: string[] = [];
+    const { base, headers, bridge } = await recoveryFixture(t, idleRecoveryState(), {
+      lifecycleFactory: () => ({
+        suspend: async () => ({ supported: false, vmSuspended: false }),
+        resume: async () => {
+          calls.push('receipt-only');
+        },
+        resumeForReconnect: async () => {
+          calls.push('verified-owned-restore');
+        },
+      }),
+    });
+    const connectBridge = bridge.connect.bind(bridge);
+    bridge.connect = async (options) => {
+      calls.push(options?.deploy === false ? 'ssh-existing' : 'ssh-update');
+      return connectBridge(options);
+    };
+    const response = await fetch(base + route, {
+      method: 'POST',
+      headers,
+      body: route === '/api/connect' ? '{}' : JSON.stringify({ action: 'install' }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls, ['verified-owned-restore', 'ssh-existing', 'ssh-update']);
+    assert.equal(bridge.state.messages[0]?.status, 'paused');
+  });
+}
+
+test('an identity-verified owned VM address refresh precedes the Desktop transaction binding capture', async (t) => {
+  const { base, headers, bridge } = await recoveryFixture(t, idleRecoveryState(), {
+    lifecycleFactory: (options) => ({
+      suspend: async () => ({ supported: false, vmSuspended: false }),
+      resume: async () => {},
+      resumeForReconnect: async () => {
+        assert.ok(options.dataDir);
+        writeProfile(options.dataDir, '192.0.2.91');
+      },
+    }),
+  });
+  const response = await fetch(base + '/api/connect', { method: 'POST', headers, body: '{}' });
+  assert.equal(response.status, 200);
+  const settings: unknown = await (
+    await fetch(base + '/api/controller/settings', { headers })
+  ).json();
+  assert.ok(isRecord(settings) && isRecord(settings.vm));
+  assert.equal(settings.vm.host, '192.0.2.91');
+  assert.equal(bridge.state.messages[0]?.status, 'paused');
+  assert.equal(bridge.state.active, null);
 });
 
 test('only the explicit Reconnect action authorizes updating running VM work', async (t) => {

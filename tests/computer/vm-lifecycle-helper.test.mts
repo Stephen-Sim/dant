@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { observedRecord } from '../support/service-fixtures.mts';
@@ -13,7 +13,25 @@ const helper = fileURLToPath(new URL('../../scripts/vm-lifecycle.ps1', import.me
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 function fixture(
   t: NodeTestContext,
-  { state = 'Running', foreign = false, expected = '', action = 'suspend' } = {},
+  {
+    state = 'Running',
+    foreign = false,
+    expected = '',
+    action = 'suspend',
+    ambiguous = false,
+    renamed = false,
+    ancestor = false,
+    stale = false,
+    expired = false,
+    excessiveDeadline = false,
+    changeIntent = false,
+    changeBinding = false,
+    addresses = ['192.0.2.44'],
+    changeNetworkIntent = false,
+    changeNetworkBinding = false,
+    changeNetworkState = false,
+    changeNetworkDisk = false,
+  } = {},
 ) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dant-power-helper-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -32,26 +50,60 @@ function fixture(
   });
   fs.writeFileSync(path.join(dir, 'vm.json'), raw);
   const digest = createHash('sha256').update(raw).digest('hex');
+  const operationId = randomUUID(),
+    deadline = Date.now() + (expired ? -1 : excessiveDeadline ? 120000 : 85000);
+  const intentFile = path.join(dir, 'vm-lifecycle.json');
+  fs.writeFileSync(
+    intentFile,
+    JSON.stringify({
+      version: 1,
+      phase: action === 'suspend' ? 'suspending' : 'resuming',
+      provider: 'hyperv',
+      binding: digest,
+      vmId: expected || null,
+      operationId: stale ? randomUUID() : operationId,
+      expiresAt: deadline,
+    }),
+  );
   const wrapper = path.join(dir, 'fixture.ps1');
   fs.writeFileSync(
     wrapper,
     `
 $ErrorActionPreference='Stop'
-$global:dantFixtureState=${literal(state)}; $global:dantSaves=0; $global:dantStarts=0
+$global:dantFixtureState=${literal(state)}; $global:dantSaves=0; $global:dantStarts=0; $global:dantQueries=0; $global:dantNameLookup=$false; $global:dantNetworkQueries=0; $global:dantNetworkRead=$false
 function New-Object {
  param([string]$TypeName,[Parameter(ValueFromRemainingArguments=$true)][object[]]$ArgumentList)
  if($TypeName -eq 'Security.Principal.WindowsPrincipal') { $value=[pscustomobject]@{}; $value|Add-Member -MemberType ScriptMethod -Name IsInRole -Value {param($role) return $true}; return $value }
  Microsoft.PowerShell.Utility\\New-Object -TypeName $TypeName -ArgumentList $ArgumentList
 }
 function Import-Module {param($Name) if($Name -ne 'Hyper-V'){throw 'Unexpected module'} }
-function Get-VM {param($Name,$Id) return [pscustomobject]@{Id=[guid]'312961c7-77b3-4b59-8c39-437c9ca99bd1'; State=$global:dantFixtureState} }
-function Get-VMHardDiskDrive {param($VM) return [pscustomobject]@{Path=${literal(foreign ? path.join(dir, 'other.vhdx') : disk)}} }
-function Get-VHD {throw 'Foreign disk must never be traversed in this fixture'}
+function Get-VM {
+ param($Name,$Id)
+ $global:dantQueries++
+ if($Name) { $global:dantNameLookup=$true; ${renamed ? "throw 'Old name no longer exists'" : ''} }
+ ${changeIntent ? `if($Id) { $intent=Get-Content -LiteralPath ${literal(intentFile)} -Raw|ConvertFrom-Json; $intent.operationId=[guid]::NewGuid().ToString(); [IO.File]::WriteAllText(${literal(intentFile)},($intent|ConvertTo-Json -Compress)) }` : ''}
+ ${changeBinding ? `if($Id) { [IO.File]::WriteAllText(${literal(path.join(dir, 'vm.json'))},'{}') }` : ''}
+ if($Id -and [string]$Id -ne '312961c7-77b3-4b59-8c39-437c9ca99bd1') { throw 'Unexpected VMID' }
+ $vm=[pscustomobject]@{Id=[guid]'312961c7-77b3-4b59-8c39-437c9ca99bd1';State=$global:dantFixtureState}
+ if(!$Id -and ${ambiguous ? '$true' : '$false'}) { return @($vm,[pscustomobject]@{Id=[guid]'21111111-1111-4111-8111-111111111111';State=$global:dantFixtureState}) }
+ return $vm
+}
+function Get-VMHardDiskDrive {param($VM) if($global:dantNetworkRead -and ${changeNetworkDisk ? '$true' : '$false'}) {return [pscustomobject]@{Path=${literal(path.join(dir, 'foreign-after-network.vhdx'))}}}; return [pscustomobject]@{Path=${literal(foreign || ancestor ? path.join(dir, 'other.vhdx') : disk)}} }
+function Get-VHD {param($Path) ${ancestor ? `return [pscustomobject]@{ParentPath=${literal(disk)}}` : "throw 'Foreign disk must never be traversed in this fixture'"} }
+function Get-VMNetworkAdapter {
+ param($VM)
+ if([string]$VM.Id -ne '312961c7-77b3-4b59-8c39-437c9ca99bd1') {throw 'Wrong network VM identity'}
+ $global:dantNetworkQueries++; $global:dantNetworkRead=$true
+ ${changeNetworkIntent ? ` $intent=Get-Content -LiteralPath ${literal(intentFile)} -Raw|ConvertFrom-Json; $intent.operationId=[guid]::NewGuid().ToString(); [IO.File]::WriteAllText(${literal(intentFile)},($intent|ConvertTo-Json -Compress))` : ''}
+ ${changeNetworkBinding ? `[IO.File]::WriteAllText(${literal(path.join(dir, 'vm.json'))},'{}')` : ''}
+ ${changeNetworkState ? "$global:dantFixtureState='Off'" : ''}
+ return [pscustomobject]@{IPAddresses=@(${addresses.map(literal).join(',')})}
+}
 function Save-VM {param($VM) $global:dantSaves++; $global:dantFixtureState='Saved' }
 function Start-VM {param($VM) $global:dantStarts++; $global:dantFixtureState='Running' }
 function Start-Process {throw 'No real process or elevation is permitted by this fixture'}
-$reply = & ${literal(helper)} -Action ${action} -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} ${expected ? `-ExpectedVmId ${expected}` : ''} | ConvertFrom-Json
-@{reply=$reply;saves=$global:dantSaves;starts=$global:dantStarts;state=$global:dantFixtureState}|ConvertTo-Json -Compress
+$reply = & ${literal(helper)} -Action ${action} -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} -ExpectedOperation ${operationId} -ExpectedDeadline ${deadline} ${expected ? `-ExpectedVmId ${expected}` : ''} | ConvertFrom-Json
+@{reply=$reply;saves=$global:dantSaves;starts=$global:dantStarts;state=$global:dantFixtureState;nameLookup=$global:dantNameLookup;networkQueries=$global:dantNetworkQueries}|ConvertTo-Json -Compress
 `,
   );
   return JSON.parse(
@@ -90,6 +142,12 @@ test(
       { expected: '11111111-1111-4111-8111-111111111111' },
       { foreign: true },
       { state: 'Pausing' },
+      { ambiguous: true },
+      { stale: true },
+      { expired: true },
+      { excessiveDeadline: true },
+      { changeIntent: true },
+      { changeBinding: true },
     ]) {
       const result = fixture(t, options);
       assert.equal(result.reply.ok, false);
@@ -98,6 +156,90 @@ test(
     }
   },
 );
+test(
+  'legacy Hyper-V lookup accepts only unique owned disk ancestry despite a renamed VM',
+  { skip: process.platform !== 'win32' },
+  (t) => {
+    const result = fixture(t, { action: 'resume', state: 'Saved', renamed: true, ancestor: true });
+    assert.equal(result.reply.ok, true);
+    assert.equal(result.starts, 1);
+    assert.equal(result.nameLookup, false);
+    const known = fixture(t, {
+      action: 'resume',
+      state: 'Saved',
+      expected: '312961c7-77b3-4b59-8c39-437c9ca99bd1',
+      renamed: true,
+    });
+    assert.equal(known.reply.ok, true);
+    assert.equal(known.starts, 1);
+    assert.equal(known.nameLookup, false);
+  },
+);
+test(
+  'Hyper-V resume reports only bounded canonical guest IPv4 for its confirmed Running VM',
+  { skip: process.platform !== 'win32' },
+  (t) => {
+    const result = fixture(t, {
+      action: 'resume',
+      state: 'Running',
+      addresses: [
+        '::1',
+        'fe80::abcd',
+        '127.0.0.1',
+        '169.254.1.2',
+        '0.0.0.0',
+        '224.0.0.1',
+        '255.255.255.255',
+        '192.000.2.4',
+        '10.1',
+        '192.0.2.44',
+        '192.0.2.44',
+      ],
+    });
+    assert.equal(result.reply.ok, true);
+    assert.equal(result.reply.state, 'running');
+    assert.deepEqual(result.reply.addresses, ['192.0.2.44']);
+    assert.equal(result.networkQueries, 1);
+    assert.equal(result.starts, 0);
+    assert.equal(result.saves, 0);
+    assert.deepEqual(Object.keys(result.reply).sort(), [
+      'addresses',
+      'changed',
+      'ok',
+      'provider',
+      'state',
+      'vmId',
+    ]);
+    const empty = fixture(t, { action: 'resume', state: 'Running', addresses: [] });
+    assert.deepEqual(empty.reply.addresses, []);
+    const off = fixture(t, { action: 'resume', state: 'Off' });
+    assert.equal(off.reply.ok, true);
+    assert.equal(off.reply.addresses, undefined);
+    assert.equal(off.networkQueries, 0);
+  },
+);
+
+test(
+  'network observation cannot bypass the final VM disk, Running state, binding or operation fence',
+  { skip: process.platform !== 'win32' },
+  (t) => {
+    for (const extra of [
+      { changeNetworkIntent: true },
+      { changeNetworkBinding: true },
+      { changeNetworkState: true },
+      { changeNetworkDisk: true },
+      { addresses: Array.from({ length: 17 }, (_, index) => '192.0.2.' + (index + 1)) },
+    ]) {
+      const result = fixture(t, { action: 'resume', state: 'Running', ...extra });
+      assert.equal(result.reply.ok, false, JSON.stringify(extra));
+      assert.equal(result.reply.addresses, undefined);
+      assert.equal(result.starts, 0);
+      assert.equal(result.saves, 0);
+      assert.equal(result.networkQueries, 1);
+    }
+  },
+);
+
 test(
   'VMware helper suspends and restores its exact annotated VM with confirmed vmrun state',
   { skip: process.platform !== 'win32' },
@@ -135,6 +277,7 @@ test(
     fs.writeFileSync(path.join(dir, 'vm.json'), raw);
     const digest = createHash('sha256').update(raw).digest('hex'),
       state = path.join(base, 'fixture-state');
+    const operationId = randomUUID();
     fs.writeFileSync(state, 'running');
     const wrapper = path.join(dir, 'fixture.ps1');
     fs.writeFileSync(
@@ -156,7 +299,10 @@ class DantFixtureVmrun { static int Main(string[] args) {
 } }
 '@
 $Error.Clear()
-$paused = & ${literal(helper)} -Action suspend -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} | ConvertFrom-Json
+$deadline=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+85000
+$intent=@{version=1;phase='suspending';provider='vmware';binding='${digest}';vmId=$null;operationId='${operationId}';expiresAt=$deadline}
+[IO.File]::WriteAllText(${literal(path.join(dir, 'vm-lifecycle.json'))},($intent|ConvertTo-Json -Compress))
+$paused = & ${literal(helper)} -Action suspend -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} -ExpectedOperation ${operationId} -ExpectedDeadline $deadline | ConvertFrom-Json
 $pausedError = if (!$paused.ok -and $Error.Count) {
   # Only synthetic fixture operations run here; production results stay bounded
   # and do not expose process output, SSH details or credentials.
@@ -165,7 +311,9 @@ $pausedError = if (!$paused.ok -and $Error.Count) {
   $detail.Substring(0, [Math]::Min(512, $detail.Length))
 } else { '' }
 $Error.Clear()
-$resumed = & ${literal(helper)} -Action resume -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} -ExpectedVmId ${vmId} | ConvertFrom-Json
+$intent.phase='resuming'; $intent.vmId='${vmId}'; $intent.operationId=[guid]::NewGuid().ToString(); $intent.expiresAt=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+85000
+[IO.File]::WriteAllText(${literal(path.join(dir, 'vm-lifecycle.json'))},($intent|ConvertTo-Json -Compress))
+$resumed = & ${literal(helper)} -Action resume -DataDirectory ${literal(dir)} -ExpectedBinding ${digest} -ExpectedVmId ${vmId} -ExpectedOperation $intent.operationId -ExpectedDeadline $intent.expiresAt | ConvertFrom-Json
 $resumedError = if (!$resumed.ok -and $Error.Count) {
   $failure = $Error[0]
   $detail = $failure.FullyQualifiedErrorId + ': ' + $failure.Exception.Message

@@ -1,4 +1,36 @@
 /** Named wire values shared by the Controller, Worker and browser. */
+export const HostPlatformId = Object.freeze({
+  Windows: 'win32',
+  MacOS: 'darwin',
+  Linux: 'linux',
+  Unsupported: 'unsupported',
+} as const);
+export const VmProviderId = Object.freeze({
+  HyperV: 'hyperv',
+  VMware: 'vmware',
+  Ssh: 'ssh',
+} as const);
+export type HostPlatformIdValue = (typeof HostPlatformId)[keyof typeof HostPlatformId];
+export type VmProviderIdValue = (typeof VmProviderId)[keyof typeof VmProviderId];
+
+export const BackupMode = Object.freeze({ Manual: 'manual', Automatic: 'automatic' } as const);
+export const BackupPhase = Object.freeze({
+  Idle: 'idle',
+  BackingUp: 'backing-up',
+  Restoring: 'restoring',
+  Failed: 'failed',
+  Unknown: 'unknown',
+} as const);
+export type BackupModeValue = (typeof BackupMode)[keyof typeof BackupMode];
+export type BackupPhaseValue = (typeof BackupPhase)[keyof typeof BackupPhase];
+export const WorkerRestorePhase = Object.freeze({
+  Prepared: 'prepared',
+  Installing: 'installing',
+  Committed: 'committed',
+  RollingBack: 'rolling-back',
+} as const);
+export type WorkerRestorePhaseValue = (typeof WorkerRestorePhase)[keyof typeof WorkerRestorePhase];
+
 export const DesktopPhase = Object.freeze({
   Idle: 'idle',
   Pausing: 'pausing',
@@ -15,6 +47,7 @@ export const VmPowerState = Object.freeze({
 export const VmReceiptPhase = Object.freeze({
   Suspending: 'suspending',
   Suspended: 'suspended',
+  Resuming: 'resuming',
 } as const);
 export const ServiceUpdateStatus = Object.freeze({
   Checking: 'checking',

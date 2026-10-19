@@ -10,6 +10,7 @@ import type { ProvisioningOptions, ProvisioningSpawn } from '../../src/computer/
 import type { Hypervisor, VmProvider } from '../../src/computer/computer-types.ts';
 import type { ProvisioningStatusValue } from '../../src/contracts/states.mts';
 import { observedRecord } from '../support/service-fixtures.mts';
+import { createHostPlatform } from '../../src/platform/host-platform.mts';
 
 type SpawnCall = {
   command: string;
@@ -78,6 +79,20 @@ function writeBinding(dir: string, provider?: VmProvider) {
       }),
   );
 }
+
+test('provisioning honors the injected host capability before writing or spawning', (t) => {
+  const dataDir = directory(t);
+  const p = new Provisioning({
+    dataDir,
+    platform: 'win32',
+    host: createHostPlatform({ platform: 'linux' }),
+    spawnProcess: () => assert.fail('No Windows helper on an unsupported host'),
+  });
+  t.after(() => p.close());
+  assert.throws(() => p.start(), /requires Windows/);
+  assert.deepEqual(fs.readdirSync(dataDir), []);
+  assert.equal(p.running, false);
+});
 
 test('provisioning never starts automatically and rejects invalid options before spawning', (t) => {
   const calls: Parameters<ProvisioningSpawn>[] = [],

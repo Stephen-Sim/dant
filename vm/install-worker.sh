@@ -119,7 +119,7 @@ try:
         reply = request(route, data, reason)
         if not isinstance(reply, dict) or reply.get('ok') is not True:
             reject(reason)
-    def snapshot():
+    def snapshot(allow_offline=False):
         state = request('/api/state', reason='state-unavailable')
         if not isinstance(state, dict) or not all(key in state for key in ('active', 'queue', 'call', 'takeover')) or not isinstance(state['queue'], list) or not isinstance(state['takeover'], bool) or state['active'] is not None and not isinstance(state['active'], dict) or state['call'] is not None and not isinstance(state['call'], dict):
             reject('state-invalid')
@@ -132,7 +132,8 @@ try:
             if not manual:
                 defer('control-busy')
             reject('control-busy')
-        if not isinstance(state.get('worker'), dict) or state['worker'].get('status') != 'online':
+        worker = state.get('worker')
+        if not isinstance(worker, dict) or worker.get('status') != 'online' and not (allow_offline and worker.get('status') == 'offline'):
             if not manual:
                 defer('executor-offline')
             reject('executor-offline')
@@ -157,7 +158,26 @@ try:
                 if type(ended) not in (int, float) or not math.isfinite(ended) or ended <= 0:
                     return True
         return False
-    state = snapshot()
+    def quiescent(state):
+        if not isinstance(state.get('messages'), list) or not isinstance(state.get('workTasks'), list):
+            return False
+        if state['active'] or state['call'] or state['queue'] or state['takeover'] or unresolved(state, final=True) or pending_saved_work(state):
+            return False
+        for entry in state.get('messages', []):
+            # Accepted speech from an ended call is history, with no task owner.
+            if entry.get('role') == 'user' and entry.get('workKind') == 'conversation' and entry.get('voiceCallId') and not entry.get('turnId') and not entry.get('workId') and entry.get('status') == 'accepted':
+                continue
+            if entry.get('status') in ('running', 'queued', 'accepted', 'continuing', 'pausing', 'unknown'):
+                return False
+            if entry.get('status') == 'waiting_user':
+                ended = entry.get('executionEndedAt')
+                if type(ended) not in (int, float) or not math.isfinite(ended) or ended <= 0:
+                    return False
+        return True
+    state = snapshot(allow_offline=manual)
+    stopped_executor = manual and state['worker']['status'] == 'offline'
+    if stopped_executor and not quiescent(state):
+        reject('work-still-active')
     if manual:
         if state['takeover'] or unresolved(state):
             reject('work-unconfirmed')
@@ -167,7 +187,9 @@ try:
         stage = 'pause'
         confirmed('/api/tasks/pause', {}, 'pause-unconfirmed')
         stage = 'post-pause'
-        state = snapshot()
+        state = snapshot(allow_offline=stopped_executor)
+        if stopped_executor and not quiescent(state):
+            reject('work-still-active')
         if state['call']:
             if not call_id or state['call'].get('id') != call_id:
                 reject('call-owner-changed')
@@ -180,7 +202,9 @@ try:
         # too, preventing its supervisor from starting another turn mid-update.
         stage = 'saved-pause'
         confirmed('/api/tasks/pause', {}, 'saved-pause-unconfirmed')
-        state = snapshot()
+        state = snapshot(allow_offline=stopped_executor)
+        if stopped_executor and not quiescent(state):
+            reject('work-still-active')
         if state['active'] or state['call'] or state['queue'] or state['takeover'] or unresolved(state, final=True):
             reject('work-still-active')
         # Legacy bulk pause skips historical continuing records whose plans are
@@ -199,6 +223,10 @@ try:
         stage = 'final' if manual else 'rollback'
         # Legacy snapshots omit pending handoffs and finalization. Preserve the
         # existing explicit manual/rollback witness; automatic checks use GET only.
+        # Only explicit installation may recover an already stopped executor, after
+        # both confirmed pauses and fresh quiescent snapshots. This endpoint checks
+        # hidden work before connecting; paused records are never resumed. The
+        # resulting executor must be online before any live files can be replaced.
         confirmed('/api/connect', {'idleRecovery': True}, 'idle-unconfirmed')
         state = snapshot()
     if state['active'] or state['call'] or state['queue'] or state['takeover'] or unresolved(state, final=True) or pending_saved_work(state):
@@ -215,7 +243,8 @@ fi
 }
 if [ -f "$HOME/dant/deployed-source.json" ] && \
   cmp -s deploy-manifest.json "$HOME/dant/deployed-source.json" && \
-  systemctl --user is-active --quiet dant-worker.service dant-guest-local.service; then
+  systemctl --user is-active --quiet dant-worker.service && \
+  systemctl --user is-active --quiet dant-guest-local.service; then
   prepare_transcription
   node vm/migrate-state.mts "$source_dir/migration" "$HOME/dant/data"
   echo 'DANT_UPDATE_CURRENT'

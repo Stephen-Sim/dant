@@ -2,7 +2,7 @@
 
 English · [Chinese](zh-CN/architecture.md)
 
-dant is a local-first desktop agent. Tauri 2 provides the Windows host, a Controller manages the work computer, and an Ubuntu Worker owns execution and conversation data. This document describes the current source, including scoped memory retrieval and SQLite scheduling; published installers may contain an earlier implementation.
+dant is a local-first desktop agent. Tauri 2 provides the Windows host, a Controller manages the work computer, and an Ubuntu Worker owns execution and conversation data. This document describes the current source, including scoped memory retrieval, SQLite scheduling and protected local backups; published installers may contain an earlier implementation.
 
 ## Overall system
 
@@ -12,9 +12,13 @@ flowchart TB
     UI[TypeScript UI · Vite · DOM / CSS]
     Native[Tauri 2 / Rust<br/>Window · tray · notifications · installer]
     Controller[Node.js Controller<br/>VM lifecycle · preferences · offline cache]
+    Backups[ControllerBackups<br/>Local scheduling · explicit restore consent]
+    Vault[Encrypted local archives<br/>AES-GCM · Windows DPAPI]
     UI -->|Desktop IPC| Native
     Native -->|Authenticated loopback HTTP| Controller
     UI -->|Browser HTTP / SSE| Controller
+    Controller --> Backups
+    Backups --> Vault
   end
   subgraph Ubuntu work computer
     Worker[Worker API]
@@ -46,23 +50,26 @@ flowchart TB
     Worker -->|Confirmed human takeover| Desktop
   end
   Controller <-->|SSH local forwarding| Worker
+  Backups <-->|Authenticated capture / guarded offline restore| Worker
   Codex <-->|Provider connection| Models[Model service]
   Telegram <-->|HTTPS Bot API| Phone[Telegram private chat]
 ```
 
 The UI renders state and submits actions. The Controller **never constructs an Engine or executes agent work on Windows**. The Worker requires an ordinary user in a Linux VM with a healthy graphical desktop. Disconnecting the UI does not turn the Controller into an executor.
 
-| Component             | Source                                                       | Responsibility                                                                     |
-| --------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Native host           | `src-tauri/src/`                                             | Window/tray, native IPC, notifications, secure host integration, installer handoff |
-| Application assembly  | [`src/app/`](../src/app/)                                    | Controller/Worker modes, APIs and service ownership                                |
-| Runtime transport     | [`src/runtime/`](../src/runtime/)                            | Codex process, JSON-RPC, validated events and response ownership                   |
-| Agent execution       | [`engine.mts`](../src/work/engine.mts)                       | Admit input, bind acknowledged turns, handle tools, finalize results               |
-| Task continuity       | [`src/work/`](../src/work/)                                  | Plans, replies, pause/cancel, retained projects and safe continuation              |
-| Heartbeat             | [`work-continuation.mts`](../src/work/work-continuation.mts) | Check whether an ended unfinished task can continue                                |
-| Scheduling            | [`scheduler.mts`](../src/schedules/scheduler.mts)            | Due times, recurrence, priority and dispatch receipts                              |
-| Memory / conversation | [`src/conversation/`](../src/conversation/)                  | Store, shared reference context, SQLite memory and migration                       |
-| Computer control      | [`src/computer/`](../src/computer/), `vm/`                   | VM deployment, SSH, screenshots, input and control ownership                       |
+| Component             | Source                                                                          | Responsibility                                                                     |
+| --------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Native host           | `src-tauri/src/`                                                                | Window/tray, native IPC, notifications, secure host integration, installer handoff |
+| Application assembly  | [`src/app/`](../src/app/)                                                       | Controller/Worker modes, APIs and service ownership                                |
+| Runtime transport     | [`src/runtime/`](../src/runtime/)                                               | Codex process, JSON-RPC, validated events and response ownership                   |
+| Agent execution       | [`engine.mts`](../src/work/engine.mts)                                          | Admit input, bind acknowledged turns, handle tools, finalize results               |
+| Task continuity       | [`src/work/`](../src/work/)                                                     | Plans, replies, pause/cancel, retained projects and safe continuation              |
+| Heartbeat             | [`work-continuation.mts`](../src/work/work-continuation.mts)                    | Check whether an ended unfinished task can continue                                |
+| Scheduling            | [`scheduler.mts`](../src/schedules/scheduler.mts)                               | Due times, recurrence, priority and dispatch receipts                              |
+| Memory / conversation | [`src/conversation/`](../src/conversation/)                                     | Store, shared reference context, SQLite memory and migration                       |
+| Computer control      | [`src/computer/`](../src/computer/), `vm/`                                      | VM deployment, SSH, screenshots, input and control ownership                       |
+| Host / VM adapters    | [`src/platform/`](../src/platform/), [`providers/`](../src/computer/providers/) | Host capabilities and provider-specific detection/setup/lifecycle commands         |
+| Local backups         | [`src/backups/`](../src/backups/)                                               | Protected Controller archives, Worker snapshots and explicit offline recovery      |
 
 Runtime modules use native erasable TypeScript (`.mts`); shared types use `.ts`. The browser uses Vite, TypeScript and DOM/CSS. Feature folders and matching tests follow [code style](code-style.md). This is currently an npm repository, not a React application or pnpm workspace monorepo.
 
@@ -227,43 +234,58 @@ Human takeover reserves ownership, interrupts the exact turn and waits for a con
 
 ## Persistence and lifecycle
 
-| Owner              | Data                                                                    | Recovery rule                                                         |
-| ------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Windows Controller | Connection/deployment receipts, preferences, offline `state-cache.json` | Display cache never enables host execution                            |
-| Worker Store       | `state.json`: messages, work, read/delivery/submission receipts         | Preserve identities; pause interrupted/uncertain execution            |
-| Worker schedules   | `schedules/schedules.sqlite`, legacy import backup                      | CAS edits, unique occurrence claims and durable no-replay fences      |
-| Worker memory      | `memory/dant/memory.sqlite`, explicit exports, migration backups        | Transactions + revision-aware cache; old files are not live authority |
-| Worker files       | Immutable UUID attachments; conversation workspace/output               | Bounded archival, independent delivered copies                        |
-| Codex runtime      | Persistent thread and private conversation                              | Resume only for the matching conversation/runtime                     |
-| Credentials        | Restricted VM vault; relevant Windows DPAPI secrets                     | No raw secrets in ordinary state exports                              |
+| Owner              | Data                                                                    | Recovery rule                                                              |
+| ------------------ | ----------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Windows Controller | Connection/deployment receipts, preferences, offline `state-cache.json` | Display cache never enables host execution                                 |
+| Controller backups | `backup-settings.json`, `vm-backups/*.dantbak`                          | Per-source encrypted copies; explicit preview and verified restore receipt |
+| Worker Store       | `state.json`: messages, work, read/delivery/submission receipts         | Preserve identities; pause interrupted/uncertain execution                 |
+| Worker schedules   | `schedules/schedules.sqlite`, legacy import backup                      | CAS edits, unique occurrence claims and durable no-replay fences           |
+| Worker memory      | `memory/dant/memory.sqlite`, explicit exports, migration backups        | Transactions + revision-aware cache; old files are not live authority      |
+| Worker files       | Immutable UUID attachments; conversation workspace/output               | Bounded archival, independent delivered copies                             |
+| Codex runtime      | Persistent thread and private conversation                              | Resume only for the matching conversation/runtime                          |
+| Credentials        | Restricted VM vault; relevant Windows DPAPI secrets                     | No raw secrets in ordinary state exports                                   |
 
 Closing the main window hides dant to the tray when tray initialization succeeded; unavailable tray integration falls back to normal window close. Explicit Exit pauses work, confirms stopping and suspends the owned VM; reopening restores it without silently resuming paused tasks. Service updates keep the VM running while paused work allows replacement/version verification. Installer handoff adds an admission lease and owned-process/VM checks. Background work can continue with the window closed, **not while the VM is suspended after Exit or the host is asleep**. See [VM](VM.md) and [updates](updates.md).
 
 Calls separate media and task identities: normal hangup can leave accepted work running; uncertain shutdown does not prove work stopped. The floating call window forwards scoped controls without another microphone/executor. Telegram shares the Store and Engine, with stable input IDs, pairing and durable outbound receipts. Neither creates another runtime. See [voice](VOICE-KEY.md), [shared context](context.md) and [Telegram](TELEGRAM.md).
 
-## Cross-platform boundaries (planned, not implemented)
+## Local backups and recovery
 
-The current source has partial platform isolation. `VmProvider` identifies provider choices, while lifecycle behavior still uses provider-specific branches. A unified `HostPlatform` capability interface and a common `VMProvider` lifecycle interface remain planned. The Windows desktop and Linux VM Worker do not establish macOS/Linux desktop support.
+[`ControllerBackups`](../src/backups/controller-backups.mts) owns local backup settings, periodic/connection triggers and explicit restore consent. It obtains idle persistent-data/workspace snapshots through the authenticated Worker transport, then retains encrypted `.dantbak` archives under the Controller data directory. AES-256-GCM keys are protected through the HostPlatform secret provider; Windows implements DPAPI, while a host without a provider refuses plaintext storage. Copies are retained per source binding, defaulting to ten per work computer.
 
-`HostPlatform` would own host notifications, protected credentials, process control, paths, installation and updates. `VMProvider` would own detection, creation, connection, suspension, resumption and verification of the managed VM's ownership/identity. Existing Windows code covers Hyper-V and VMware lifecycle operations plus unmanaged SSH connections; an SSH connection alone supplies no verified hypervisor suspension capability.
+Portable `.dant` files are a separate, versioned transfer format. [`PortableBackup`](../src/backups/portable-backup.mts) derives a key from a user-supplied passphrase with fixed scrypt parameters and protects the archive and metadata with AES-256-GCM. A pure streaming validator checks paths, frames, file hashes and counts while removing known authentication stores. Import authenticates and validates the complete encrypted staging file before re-encrypting it into the destination's local vault. No plaintext archive is staged. The original local backup remains unchanged.
 
-Future macOS/Linux adapters would share the Controller, Worker, Engine, MemoryStore and Scheduler. They must preserve the single agent loop and VM-only execution boundary. An unavailable capability must return an explicit unavailable result; adapters must not silently switch providers or run agent tasks in a host shell. These interfaces and desktop release targets require implementation and validation before cross-platform publication.
+The first-run UI asks about a backup before offering VM creation. Import is local and works without a connected VM; restoration remains a separate target-bound preview and confirmation. Tauri owns file pickers and bounded streaming file transfer through the authenticated loopback Controller API. The browser uses the same format with a smaller transfer limit. This permits copying a companion between supported frontends, computers and VMs. It does not coordinate two live copies. A future Google Drive adapter can store the same portable format; no Drive integration is implemented here.
+
+The Worker captures SQLite databases with `VACUUM INTO` and checks observed files, directory identities and database versions for change. This provides consistent individual SQLite snapshots and rejects changed captures; it does not create a whole-system transaction across databases and workspace files. Runtime/deployment state, caches, SSH material and model authentication are excluded.
+
+Restoration requires a bounded metadata/warning preview and a single-use confirmation tied to the current target. The Controller pauses work, stops the Worker and uses guarded SSH to run the offline restore CLI. Private staging and a two-root journal support rollback/recovery; data/workspace replacement is not one atomic operation across filesystems. Tasks and schedules stay paused/disabled, uncertain submissions retain their fences, Telegram is disabled and model sign-in may be required. Completion requires the exact startup-loaded receipt. Unknown outcomes are reconciled, never resent. See [backup configuration and recovery](backups.md).
+
+An exact durable rejection proof can distinguish a validated non-application or completed rollback from an unknown outcome. The proof is outside both restored roots and checked under the kernel lock against the restore ID and both live root identities. Only that proof can release the matching Controller intent as failed; it cannot mark the restore successful or replay it. Interrupted replacement without a proof remains unknown.
+
+## Host platform and VM provider capabilities
+
+[`HostPlatform`](../src/platform/host-types.ts) and [`createHostPlatform`](../src/platform/host-platform.mts) now provide an implemented host capability boundary: platform identity, managed-VM/existing-SSH support, fixed command/configuration access and optional protected-secret storage. This abstraction does not move native window/notification ownership out of Tauri or create another task executor.
+
+[`VmProviderRegistry`](../src/computer/providers/provider-types.ts) contains Hyper-V and VMware adapters plus an unmanaged SSH capability. [`createVmProviders`](../src/computer/providers/vm-providers.mts) supplies detection, setup plans and fixed lifecycle commands. Provisioning and `VmLifecycle` consume these adapters; VM ownership, quiescence and result confirmation remain with their existing lifecycle services. SSH alone supplies no verified hypervisor suspend/resume capability. Missing capabilities return an explicit unavailable result, with no provider or host-shell execution fallback.
+
+The current managed adapters still require Windows. Platform IDs and an SSH capability for recognized Unix hosts are extension points, not proof of supported macOS/Linux desktop releases. Future hosts need their own tested lifecycle, protected-secret, native integration and release adapters. They retain the same Controller/Worker split, Engine, memory and scheduler; the Ubuntu Worker remains the execution authority.
 
 ## Current limits and next steps
 
 The following decisions guide further work. They preserve the existing execution architecture rather than introducing another agent runtime.
 
-| Area                       | Decision                               | Next action                                                                              |
-| -------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Controller / Worker        | Retain the boundary                    | Keep execution and durable conversation authority in the Worker                          |
-| Codex App Server           | Retain the model/tool loop             | Extend orchestration without implementing a competing reasoning loop                     |
-| Single execution admission | Retain one execution owner             | Route every new input source through the existing admission and acknowledgment checks    |
-| Heartbeat                  | Retain current continuation design     | Continue actionable unfinished work without periodic chat narration                      |
-| Scheduler                  | SQLite authority and dispatch outbox   | Preserve CAS, recovery fences, recurrence and no-overlap behavior                        |
-| MemoryStore                | Scoped automatic retrieval implemented | Retain fresh current-input references and explicit confirmation of structured facts      |
-| SQLite + FTS5              | Retain keyword search                  | No independent vector database at this stage                                             |
-| VM portability             | Further abstract providers             | Separate provider lifecycle capabilities from Windows-specific Hyper-V / VMware adapters |
-| Tool security              | Add independent permission enforcement | Cover all execution paths, including Codex built-in tools and MCP                        |
+| Area                       | Decision                               | Next action                                                                               |
+| -------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Controller / Worker        | Retain the boundary                    | Keep execution and durable conversation authority in the Worker                           |
+| Codex App Server           | Retain the model/tool loop             | Extend orchestration without implementing a competing reasoning loop                      |
+| Single execution admission | Retain one execution owner             | Route every new input source through the existing admission and acknowledgment checks     |
+| Heartbeat                  | Retain current continuation design     | Continue actionable unfinished work without periodic chat narration                       |
+| Scheduler                  | SQLite authority and dispatch outbox   | Preserve CAS, recovery fences, recurrence and no-overlap behavior                         |
+| MemoryStore                | Scoped automatic retrieval implemented | Retain fresh current-input references and explicit confirmation of structured facts       |
+| SQLite + FTS5              | Retain keyword search                  | No independent vector database at this stage                                              |
+| VM portability             | Capability adapters implemented        | Extend and verify host-specific lifecycle, secret-protection and desktop release adapters |
+| Tool security              | Add independent permission enforcement | Cover all execution paths, including Codex built-in tools and MCP                         |
 
 Recall and schedule recovery tests cover cross-project isolation, no-match/deleted/conflicting memories, fresh pre-send reads, unchanged user content, competing claims and cross-file crash windows. Future input sources must retain these boundaries and use the existing admission path.
 

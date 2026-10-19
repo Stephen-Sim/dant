@@ -4,6 +4,13 @@ import { isRecord, LocalRequestError, requestError } from '../shared/contracts.m
 import type { ApiOptions, Timer } from '../shared/contracts.mts';
 const EVENT_RECONNECT_DELAY_MS = 2_000;
 const STATE_POLL_DELAY_MS = 700;
+const INDEPENDENT_READ_ROUTES = Object.freeze([
+  '/api/session',
+  '/api/controller/settings',
+  '/api/version',
+  '/api/updates',
+  '/api/updates?channel=beta',
+]);
 export interface TransportEvent {
   type: string;
   data: unknown;
@@ -125,13 +132,12 @@ export function createTransport({
         throw error;
       }
     };
-    // Public-release lookups are independent reads and may wait on GitHub.
-    // Keep them outside the native work queue so they cannot delay hangup,
-    // input ownership changes or the next authoritative state poll.
+    // Local recovery reads must remain reachable while a VM connection is pending.
+    // Public-release reads can wait on GitHub. Neither belongs in the native
+    // mutation queue; both still use the same authenticated native bridge.
     if (
       !desktop ||
-      (method === 'GET' &&
-        ['/api/version', '/api/updates', '/api/updates?channel=beta'].includes(route)) ||
+      (method === 'GET' && INDEPENDENT_READ_ROUTES.includes(route)) ||
       (method === 'POST' && route === '/api/skills/import/preview')
     )
       return perform();

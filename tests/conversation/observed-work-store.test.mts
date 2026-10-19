@@ -207,7 +207,7 @@ test('unplanned review restores as unfinished and ended waits survive without re
     ['state-1', 'waiting_user'],
     ['state-2', 'paused'],
     ['state-3', 'paused'],
-    ['state-4', 'paused'],
+    ['state-4', 'unknown'],
     ['state-5', 'paused'],
     ['state-6', 'continuing'],
     ['state-7', 'failed'],
@@ -222,6 +222,7 @@ test('unplanned review restores as unfinished and ended waits survive without re
   assert.ok(defined(byTurn.get('state-1')).executionEndedAt);
   assert.equal(defined(byTurn.get('state-2')).pauseReason, 'restart');
   assert.equal(defined(byTurn.get('state-2')).executionEndedAt, undefined);
+  assert.equal(defined(byTurn.get('state-4')).unknownOutcome, true);
 });
 
 test('explicit continuation can replace its own planless provisional record while preserving the older work history', (t) => {

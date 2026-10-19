@@ -150,6 +150,10 @@ import { createUpdates } from './settings/updates.mts';
 import { createNativeUpdates } from './platform/native-updates.mts';
 import { createUpdateDraft, updateDraftScope } from './settings/update-draft.mts';
 import { createMemorySettings } from './settings/memory-settings.mts';
+import { createVmBackups } from './settings/vm-backups.mts';
+import { createRecoverySettings } from './app/recovery-settings.mts';
+import { createFirstRun } from './onboarding/first-run.mts';
+import './onboarding/first-run.css';
 import { createSettingsNavigation } from './settings/settings-navigation.mts';
 import { renderUsageSettings } from './settings/usage-settings.mts';
 import { createUsageActivityController } from './settings/usage-activity.mts';
@@ -441,6 +445,38 @@ const memorySettings = createMemorySettings({
   connected: () => eventConnected,
   renderMarkdown: md,
 });
+const vmBackups = createVmBackups({
+  request: api,
+  desktop: Boolean(window.__TAURI_INTERNALS__),
+  getToken: () => token,
+  getState: () => state,
+  getLanguage: language,
+  connected: () => eventConnected,
+  onChange: render,
+  toast,
+  document,
+});
+const firstRun = createFirstRun({
+  getState: () => state,
+  getLanguage: language,
+  request: api,
+  onChange: () => {
+    if (!unloading && state) render();
+  },
+  onCreate: async () => {
+    openModal({ type: 'setup' });
+    await loadVMProviders();
+  },
+  onExisting: useExistingComputer,
+  onManual: async () => {
+    manualVMExpanded = true;
+    await action('computer-settings');
+  },
+  onBackupImport: async () => {
+    await action('computer-settings');
+    await vmBackups.openImport();
+  },
+});
 const settingsNavigation = createSettingsNavigation({
   document,
   getLanguage: language,
@@ -512,6 +548,20 @@ let presenceTimer: Interval | undefined;
 const appNode = document.querySelector<HTMLElement>('#app');
 if (!appNode) throw Error('Application root is missing');
 const app: HTMLElement = appNode;
+const recoverySettings = createRecoverySettings({
+  container: app,
+  getLanguage: language,
+  request: async (route, options) => {
+    if (route === '/api/controller/settings' || route === '/api/updates?channel=beta') {
+      const session = await transport.json('/api/session');
+      if (!isRecord(session) || typeof session.token !== 'string') throw Error('Invalid session');
+      transport.setToken(session.token);
+    }
+    return transport.json(route, options);
+  },
+  onRetry: boot,
+  openExternal,
+});
 document.body.insertAdjacentHTML(
   'beforeend',
   '<div id="toast" role="status" aria-live="polite"></div>',
@@ -982,6 +1032,7 @@ function render() {
   memorySettings.setVisible(page === 'memory');
   workDisclosures.capture();
   settingsNavigation.sync(page === 'settings');
+  vmBackups.setVisible(page === 'settings' && settingsNavigation.isVisible('computer'));
   appUpdates.setVisible(page === 'settings' && settingsNavigation.isVisible('about'));
   modal = managedSettings.syncModal(modal, page);
   modal = filePreview.syncModal(modal);
@@ -1181,7 +1232,7 @@ function renderVoiceRecorder() {
   return `<section class="voice-message-recorder" data-key="voice-message-recorder" aria-label="${t('recordAudio')}"><button type="button" class="icon-btn" data-action="cancel-record" title="${t('cancelRecording')}" aria-label="${t('cancelRecording')}" ${busy || unknown ? 'disabled' : ''}>${ico('x')}</button><div class="voice-recording-content"><div class="voice-recording-state"><i class="voice-recording-dot ${paused || ready ? 'paused' : ''}" aria-hidden="true"></i><span>${t(busy ? 'voiceSending' : preparing ? 'recordStarting' : paused ? 'recordPaused' : ready ? 'voicePreview' : 'recording')}</span><time data-record-duration>${recordingTime()}</time></div>${draft?.previewURL && (paused || ready) ? `<audio data-key="voice-preview-${draft.generation}" controls preload="metadata" src="${esc(draft.previewURL)}" aria-label="${t('voicePreview')}"></audio>` : ''}</div>${draft && !ready ? `<button type="button" class="icon-btn voice-record-pause" data-action="pause-record" title="${t(paused ? 'resumeRecording' : 'pauseRecording')}" aria-label="${t(paused ? 'resumeRecording' : 'pauseRecording')}" ${busy || preparing ? 'disabled' : ''}>${ico(paused ? 'play' : 'pause')}</button>` : ''}<button type="button" class="send-btn voice-send-btn" data-action="send-voice" title="${t('sendVoice')}" aria-label="${t('sendVoice')}" ${!draft || busy || sending || uploading || preparing || unknown || !eventConnected || speechBlocked() ? 'disabled' : ''}>${ico('arrow-up')}</button></section>`;
 }
 function renderChat() {
-  return `${currentState().settings?.showWorkSummary === true ? renderWorkSummary(workProgress(state, { language: language(), connected: eventConnected })) : ''}<div id="messages" class="messages"><div class="message-column" data-key="message-column">${currentState().messages.length ? renderMessages() : `<div class="welcome">${eyes('hero')}<h1>${t('hello')}</h1><p>${t('intro')}</p>${currentState().worker.status !== ConnectionStatus.Online ? `<button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button><small>${t('setupHint')}</small>` : ''}</div>`}</div></div><div class="composer-wrap" data-key="composer-wrap">${renderUnreadControl()}${managedSettings.renderRequests()}${taskReplies.render()}${replyTo ? `<div class="reply-preview" data-key="reply-preview"><div><small>${t('reply')} ${currentState().messages.find((message) => message.id === replyTo)?.role === 'assistant' ? 'dant' : t('you')}</small><span>${esc((currentState().messages.find((message) => message.id === replyTo)?.text || '').slice(0, 180))}</span></div>${button('cancel-reply', 'x', t('close'))}</div>` : ''}${attachments.length ? `<div class="attachment-chips" data-key="attachments">${attachments.map(renderDraftAttachment).join('')}</div>` : ''}${renderUnconfirmedMessage()}${renderVoiceRecorder()}<form id="message-form" class="composer-box" ${recordDraft || recordStarting ? 'hidden' : ''}><textarea id="composer" rows="1" placeholder="${t('placeholder')}" aria-label="${t('placeholder')}">${esc(composerDraft)}</textarea><div class="composer-tools">${renderAttachmentOptions()}<button type="button" class="icon-btn" data-action="record" title="${t('recordAudio')}" aria-label="${t('recordAudio')}" ${speechBlocked() || dictating || recordStarting || recordDraft ? 'disabled' : ''}>${ico('mic')}</button>${currentState().active || currentState().queue?.length ? button('stop', 'square', t('stop')) : ''}<button class="send-btn" type="submit" title="${t('send')}" aria-label="${t('send')}" ${sending || uploading || recording || recordStarting || recordDraft || !eventConnected ? 'disabled' : ''}>${ico('arrow-up')}</button></div></form>${uploading ? `<small class="composer-status">${t('uploading')}</small>` : dictating ? `<small class="composer-status">${t('dictating')}</small>` : speakingId ? `<small class="composer-status">${t('reading')} <button type="button" class="text-link" data-action="speech-stop">${t('stop')}</button></small>` : ''}</div>`;
+  return `${currentState().settings?.showWorkSummary === true ? renderWorkSummary(workProgress(state, { language: language(), connected: eventConnected })) : ''}<div id="messages" class="messages"><div class="message-column" data-key="message-column">${currentState().messages.length ? renderMessages() : firstRun.render() || `<div class="welcome">${eyes('hero')}<h1>${t('hello')}</h1><p>${t('intro')}</p>${currentState().worker.status !== ConnectionStatus.Online ? `<button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button><small>${t('setupHint')}</small>` : ''}</div>`}</div></div><div class="composer-wrap" data-key="composer-wrap">${renderUnreadControl()}${managedSettings.renderRequests()}${taskReplies.render()}${replyTo ? `<div class="reply-preview" data-key="reply-preview"><div><small>${t('reply')} ${currentState().messages.find((message) => message.id === replyTo)?.role === 'assistant' ? 'dant' : t('you')}</small><span>${esc((currentState().messages.find((message) => message.id === replyTo)?.text || '').slice(0, 180))}</span></div>${button('cancel-reply', 'x', t('close'))}</div>` : ''}${attachments.length ? `<div class="attachment-chips" data-key="attachments">${attachments.map(renderDraftAttachment).join('')}</div>` : ''}${renderUnconfirmedMessage()}${renderVoiceRecorder()}<form id="message-form" class="composer-box" ${recordDraft || recordStarting ? 'hidden' : ''}><textarea id="composer" rows="1" placeholder="${t('placeholder')}" aria-label="${t('placeholder')}">${esc(composerDraft)}</textarea><div class="composer-tools">${renderAttachmentOptions()}<button type="button" class="icon-btn" data-action="record" title="${t('recordAudio')}" aria-label="${t('recordAudio')}" ${speechBlocked() || dictating || recordStarting || recordDraft ? 'disabled' : ''}>${ico('mic')}</button>${currentState().active || currentState().queue?.length ? button('stop', 'square', t('stop')) : ''}<button class="send-btn" type="submit" title="${t('send')}" aria-label="${t('send')}" ${sending || uploading || recording || recordStarting || recordDraft || !eventConnected ? 'disabled' : ''}>${ico('arrow-up')}</button></div></form>${uploading ? `<small class="composer-status">${t('uploading')}</small>` : dictating ? `<small class="composer-status">${t('dictating')}</small>` : speakingId ? `<small class="composer-status">${t('reading')} <button type="button" class="text-link" data-action="speech-stop">${t('stop')}</button></small>` : ''}</div>`;
 }
 function renderDraftAttachment(file: Attachment) {
   return `<span class="${String(file.type || '').startsWith('audio/') ? 'draft-audio' : ''}" data-id="${esc(file.id)}">${ico(String(file.type || '').startsWith('audio/') ? 'mic' : 'paperclip')}<span>${esc(file.name)}</span>${String(file.type || '').startsWith('audio/') ? `<audio controls preload="metadata" src="${esc(fileURL(file))}" aria-label="${esc(file.name)}"></audio>` : ''}<button type="button" data-remove="${esc(file.id)}" aria-label="${t('close')}">×</button></span>`;
@@ -1396,7 +1447,7 @@ function renderSettings() {
     general: `<section class="settings-section setting-card language-card"><div class="card-label"><h2>${t('language')}</h2><p>${t('languageHint')}</p></div><div class="card-content"><select id="language" data-language class="language-select" aria-label="${t('language')}" dir="ltr" ${pendingActions.has('setting:language') ? 'disabled aria-busy="true"' : ''}>${languages.map((item) => `<option value="${item.code}" lang="${item.locale}" dir="${item.direction}" ${settings.language === item.code ? 'selected' : ''}>${item.label}</option>`).join('')}</select></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('notify')}</h2></div><div class="card-content"><div class="setting-row"><div>${t('notifySub')}</div><input type="checkbox" id="notifications" ${settings.notifications ? 'checked' : ''} aria-label="${t('notify')}"></div></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('progress')}</h2></div><div class="card-content"><div class="setting-row"><label for="showWorkSummary">${t('showWorkSummary')}</label><input type="checkbox" id="showWorkSummary" ${settings.showWorkSummary === true ? 'checked' : ''} ${pendingActions.has('setting:showWorkSummary') ? 'disabled' : ''} aria-label="${t('showWorkSummary')}"></div><p class="card-description">${t('showWorkSummaryHint')}</p></div></section>${textEditor.renderSettings()}`,
     appearance: renderAppearance(),
     voice: renderVoiceSettings(settings),
-    computer: `${renderVMSettings()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing ? `<p class="card-description">${t('currentPermissions')}</p>${button('computer', 'monitor', t('viewComputer'), 'text-btn')}` : `<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo ? 'permissionsAdminHint' : 'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
+    computer: `${renderVMSettings()}${vmBackups.render()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing ? `<p class="card-description">${t('currentPermissions')}</p>${button('computer', 'monitor', t('viewComputer'), 'text-btn')}` : `<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo ? 'permissionsAdminHint' : 'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
     account: `<section class="settings-section setting-card" data-setting-card="account"><div class="card-label"><h2>${t('accountSubscription')}</h2></div><div class="card-content"><div class="setting-row"><div><strong>${esc(currentState().worker.account?.email || 'ChatGPT')}</strong><small>${esc(currentState().worker.account?.planType || t('offline'))}</small></div><button type="button" class="text-btn ${currentState().worker.account ? '' : 'primary'}" data-action="${currentState().worker.account ? 'logout' : 'login'}">${t(currentState().worker.account ? 'logout' : 'login')}</button></div><p class="card-description">${t('subscriptionTasks')}</p><div id="login-details">${renderLoginDetails()}</div><div class="setting-row model-setting"><span>${t('model')}</span><select id="model" aria-label="${t('model')}"><option value="">${t('default')}</option>${currentState()
       .worker.models.map(
         (model) =>
@@ -2844,6 +2895,7 @@ function bind() {
   bindAppearance();
   bindVMSettings();
   managedSettings.bind();
+  if (document.querySelector<HTMLElement>('.vm-backups')) vmBackups.bind();
   chatHistory.bind();
   if (modal) chatHistory.bindModal(modal);
   if (document.querySelector<HTMLElement>('.app-about-settings')) appUpdates.bind();
@@ -3225,6 +3277,7 @@ async function openExternal(url: string) {
 const pendingActions = new Set<string>();
 async function action(a: string) {
   if (updateInstalling) return;
+  if (a.startsWith('onboarding-') && (await firstRun.handle(a))) return;
   if (['chat', 'settings', 'computer-settings', 'memory', 'schedules', 'skills'].includes(a)) {
     const next = a === 'computer-settings' ? 'settings' : a;
     managedSettings.onClose(modal);
@@ -4370,6 +4423,7 @@ async function handleEvent(event: TransportEvent) {
   if (event.type === 'state') {
     eventConnected = true;
     state = readAppState(event.data);
+    void firstRun.observe();
     await restoreUpdateDraft();
     callDuration.sync(currentState().call, currentState().messages);
     callSubtitles.sync(currentState().call);
@@ -4542,6 +4596,9 @@ window.addEventListener('beforeunload', () => {
   unloading = true;
   chatScroll.dispose();
   memorySettings.dispose();
+  vmBackups.dispose();
+  firstRun.dispose();
+  recoverySettings.hide();
   settingsNavigation.sync(false);
   appUpdates.dispose();
   nativeTray.dispose();
@@ -4582,11 +4639,15 @@ async function boot() {
       (m) => m.role === 'assistant' && m.status === TaskStatus.Completed,
     ))
       lastAssistant.add(message.id);
+    recoverySettings.hide();
+    void firstRun.observe();
     render();
     startPresenceTicker();
     connectEvents();
-  } catch (e) {
-    app.innerHTML = `<div class="boot-error"><h1>dant</h1><p>${esc(t('bootFailed'))}</p><p>${esc(errorText(e))}</p><button onclick="location.reload()">${t('retryConnection')}</button></div>`;
+  } catch (cause) {
+    recoverySettings.show({
+      stateUnavailable: cause instanceof Error && cause.message === 'Invalid application state',
+    });
   }
 }
 boot();
@@ -4774,6 +4835,9 @@ export type MainBindings = {
   chatScroll: Pick<typeof chatScroll, 'capture' | 'restore' | 'dispose' | 'navigate'>;
   appearance: typeof appearance;
   memorySettings: Pick<typeof memorySettings, 'setVisible' | 'render' | 'bind' | 'dispose'>;
+  vmBackups: typeof vmBackups;
+  firstRun: typeof firstRun;
+  recoverySettings: typeof recoverySettings;
   settingsNavigation: typeof settingsNavigation;
   usageActivity: typeof usageActivity;
   taskReplies: typeof taskReplies;

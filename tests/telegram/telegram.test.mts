@@ -42,6 +42,7 @@ import { Store } from '../../src/conversation/store.mts';
 import { AttachmentStore, MAX_ATTACHMENT_BYTES } from '../../src/files/attachments.mts';
 import { createWorkerApp } from '../../src/app/server.mts';
 import { Engine } from '../../src/work/engine.mts';
+import { TaskStatus } from '../../src/contracts/states.mts';
 
 const TOKEN = '123456:abcdefghijklmnopqrstuvwxyz_123456789',
   OTHER_TOKEN = '654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_123456789';
@@ -1568,7 +1569,7 @@ test('/resume gives voice-only tasks no fabricated chat ID and failed tasks requ
   assert.equal(output.includes('private failure'), false);
 });
 
-test('/resume never replays a submitting task restored as paused after a crash, while preparing remains eligible', async (t) => {
+test('/resume never replays a submitting task restored as Unknown after a crash, while preparing remains eligible', async (t) => {
   const context = setup(t);
   await paired(context);
   const submitting = context.store.add({
@@ -1590,12 +1591,13 @@ test('/resume never replays a submitting task restored as paused after a crash, 
     resumes: Array<unknown> = [];
   restarted.engine.resumePaused = (ids, options) => resumes.push({ ids, options });
   const restored = restarted.store.state.messages.find((message) => message.id === submitting.id);
-  assert.equal(defined(restored).status, 'paused');
+  assert.equal(defined(restored).status, TaskStatus.Unknown);
+  assert.equal(defined(restored).unknownOutcome, true);
   assert.equal(defined(restored).submission, 'unknown');
   await restarted.gateway.receive(update(2, '/resume ' + submitting.id));
   assert.equal(resumes.length, 0);
   assert.equal(defined(restored).submission, 'unknown');
-  assert.equal(defined(restored).status, 'paused');
+  assert.equal(defined(restored).status, TaskStatus.Unknown);
   assert.ok(
     restarted.gateway.config.outbox.some(
       (item) => item.kind === 'text' && item.text.includes('submission is unconfirmed'),
@@ -1604,6 +1606,28 @@ test('/resume never replays a submitting task restored as paused after a crash, 
   await restarted.gateway.receive(update(3, '/resume ' + preparing.id));
   assert.deepEqual(resumes, [{ ids: [preparing.id], options: { confirmUnknown: false } }]);
   assert.equal(restarted.engine.enqueued.length, 0);
+});
+
+test('generic and targeted Telegram resume never authorize an Unknown task even without legacy submission flags', async (t) => {
+  const context = setup(t);
+  await paired(context);
+  const message = context.store.add({
+      role: 'user',
+      text: 'Read the actual result first',
+      status: TaskStatus.Unknown,
+    }),
+    calls: unknown[] = [];
+  context.engine.resumePaused = (ids, options) => calls.push({ ids, options });
+  await context.gateway.receive(update(2, '/resume'));
+  await context.gateway.receive(update(3, '/resume ' + message.id));
+  assert.deepEqual(calls, []);
+  assert.equal(message.status, TaskStatus.Unknown);
+  assert.equal(context.engine.enqueued.length, 0);
+  assert.ok(
+    context.gateway.config.outbox.some(
+      (item) => item.kind === 'text' && item.text.includes('submission is unconfirmed'),
+    ),
+  );
 });
 
 test('commands reveal no task data or control to unpaired users, other owners, groups or bots', async (t) => {

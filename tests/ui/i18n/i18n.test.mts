@@ -48,6 +48,7 @@ function fixture(selected = 'zh') {
   const { document } = parseHTML('<html><body></body></html>');
   document.documentElement.dataset.theme = 'light';
   const context = uiEntrypointFixture({
+    vmBackups: { setVisible() {}, render: () => '', bind() {}, dispose() {}, load: async () => {} },
     progressActions: { bind() {}, renderConfirmation: () => '', onClose() {}, busy: false },
     workDisclosures: { capture() {}, bind() {}, isOpen: () => false },
     bindAttachmentImages,
