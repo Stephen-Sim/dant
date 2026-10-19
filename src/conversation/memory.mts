@@ -50,6 +50,11 @@ export class MemoryStore {
   private contextCache: { revision: string; text: string; includeEntries: boolean } | null = null;
   private contextHits = 0;
   private contextBuilds = 0;
+  /** Explicit shadow tooling only; no model context or production retrieval is switched. */
+  shadowSnapshot(directory: string) {
+    this.guardDirectory();
+    return this.database.shadowSnapshot(directory);
+  }
   constructor(dataDir: string) {
     const root = path.resolve(dataDir);
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });

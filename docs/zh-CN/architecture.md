@@ -4,7 +4,7 @@
 
 dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括带作用域的记忆召回、SQLite 调度与本地加密备份；已发布的安装包可能仍是较早的实现。
 
-已确认的目标是 **Go Agent Core + Rust Tauri + TypeScript UI**。下文中的 Controller 与 Worker 当前仍运行于 Node.js；[Go Core 迁移设计](go-core-migration.md)记录规划中的职责、兼容要求与执行权切换。Go 运行时迁移尚未实现。
+已确认的目标是 **Go Agent Core + Rust Tauri + TypeScript UI**。下文中的 Controller 与 Worker 当前仍运行于 Node.js。仓库已加入生成的 Go 契约和隔离的只读 Memory 影子运行时；它不是已打包的执行器，也不会注入模型上下文。[Go Core 迁移设计](go-core-migration.md)记录实现边界、测量与尚未完成的执行权切换。
 
 ## 总体系统
 

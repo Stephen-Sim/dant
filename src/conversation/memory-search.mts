@@ -48,7 +48,7 @@ const visibleIndexedText = (text: string) =>
   sanitizeMemoryText(
     text.slice(0, text.lastIndexOf('\n') < 0 ? undefined : text.lastIndexOf('\n')),
   );
-function synchronizeSearchIndex(db: DatabaseSync) {
+export function synchronizeSearchIndex(db: DatabaseSync) {
   const metadata = db
     .prepare('SELECT revision, search_revision FROM memory_meta WHERE id = 1')
     .get();
@@ -123,10 +123,7 @@ export function searchMemory(
       /[\x00-\x20\x7f]/.test(conversationId))
   )
     throw Error('Invalid memory search scope');
-  const terms = [...new Set(searchTokens(safeQuery(query)).flatMap(cjkPairs))].slice(
-    0,
-    MEMORY_SEARCH_TERM_LIMIT,
-  );
+  const terms = prepareMemorySearch(query);
   if (!terms.length) return [];
   synchronizeSearchIndex(db);
   // FTS operators are never accepted from input; every normalized term is a literal.
@@ -262,6 +259,43 @@ const validScopeId = (value: unknown): value is string =>
   value.length > 0 &&
   value.length <= MEMORY_RETRIEVAL_ID_MAX_CHARS &&
   !/[\x00-\x20\x7f]/.test(value);
+
+/** The shadow reader shares normalization and secret handling with the authoritative owner. */
+export function prepareMemorySearch(query: unknown): string[] {
+  if (
+    typeof query !== 'string' ||
+    query.length > MEMORY_SEARCH_QUERY_MAX_CHARS ||
+    query.includes('\0')
+  )
+    throw Error('Memory search query must be bounded text');
+  return [...new Set(searchTokens(safeQuery(query)).flatMap(cjkPairs))].slice(
+    0,
+    MEMORY_SEARCH_TERM_LIMIT,
+  );
+}
+
+export function prepareMemoryRetrieval(query: unknown): string[] {
+  if (typeof query !== 'string') throw Error('Memory retrieval query must be text');
+  const text = safeQuery(query.slice(0, MEMORY_RETRIEVAL_INPUT_MAX_CHARS))
+    .normalize('NFKC')
+    .replace(/\0/g, ' ');
+  const tokens = searchTokens(
+    text.replace(/([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+)/gu, ' $1 '),
+  ).flatMap(cjkPairs);
+  const terms: string[] = [];
+  let termCharacters = 0;
+  for (const term of new Set(tokens)) {
+    if (
+      retrievalStopWords.has(term) ||
+      termCharacters + term.length > MEMORY_SEARCH_QUERY_MAX_CHARS
+    )
+      continue;
+    terms.push(term);
+    termCharacters += term.length;
+    if (terms.length >= MEMORY_SEARCH_TERM_LIMIT) break;
+  }
+  return terms;
+}
 export function memoryRetrievalScope(value: unknown): MemoryRetrievalScope {
   if (
     !isRecord(value) ||
@@ -318,24 +352,7 @@ export function retrieveMemory(
   if (typeof query !== 'string') throw Error('Memory retrieval query must be text');
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MEMORY_RETRIEVAL_RESULT_LIMIT)
     throw Error('Invalid memory retrieval result limit');
-  const text = safeQuery(query.slice(0, MEMORY_RETRIEVAL_INPUT_MAX_CHARS))
-    .normalize('NFKC')
-    .replace(/\0/g, ' ');
-  const tokens = searchTokens(
-    text.replace(/([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]+)/gu, ' $1 '),
-  ).flatMap(cjkPairs);
-  const terms: string[] = [];
-  let termCharacters = 0;
-  for (const term of new Set(tokens)) {
-    if (
-      retrievalStopWords.has(term) ||
-      termCharacters + term.length > MEMORY_SEARCH_QUERY_MAX_CHARS
-    )
-      continue;
-    terms.push(term);
-    termCharacters += term.length;
-    if (terms.length >= MEMORY_SEARCH_TERM_LIMIT) break;
-  }
+  const terms = prepareMemoryRetrieval(query);
   if (!terms.length) return [];
   synchronizeSearchIndex(db);
   const expression = terms.map((term) => '"' + term.replaceAll('"', '""') + '"').join(' OR ');

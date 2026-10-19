@@ -5,6 +5,7 @@ import type { StatementSync } from 'node:sqlite';
 import { isRecord } from '../contracts/json.mts';
 import { MemoryEntryStatus as EntryStatus } from '../contracts/states.mts';
 import { searchMemory, retrieveMemory } from './memory-search.mts';
+import { writeMemoryShadowSnapshot } from './memory-shadow-snapshot.mts';
 import {
   listMemoryEntries,
   proposeMemoryEntry,
@@ -372,6 +373,10 @@ export class MemoryDatabase {
   }
   retrieve(query: unknown, scope: unknown, options: MemoryRetrievalOptions = {}) {
     return this.transaction(true, (db) => retrieveMemory(db, query, scope, options), false);
+  }
+  /** Developer-only shadow read export; the Node owner still serializes index writes. */
+  shadowSnapshot(directory: string) {
+    return this.transaction(true, (db) => writeMemoryShadowSnapshot(db, directory), false);
   }
   listEntries({ status }: { status?: MemoryEntryStatus } = {}) {
     return this.transaction(false, (db) => listMemoryEntries(db, status));

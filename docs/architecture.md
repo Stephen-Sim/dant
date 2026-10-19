@@ -4,7 +4,7 @@ English · [Chinese](zh-CN/architecture.md)
 
 dant is a local-first desktop agent. Tauri 2 provides the Windows host, a Controller manages the work computer, and an Ubuntu Worker owns execution and conversation data. This document describes the current source, including scoped memory retrieval, SQLite scheduling and protected local backups; published installers may contain an earlier implementation.
 
-The adopted target is **Go Agent Core + Rust Tauri + TypeScript UI**. The Controller and Worker described below still run on Node.js; [Go Core migration design](go-core-migration.md) records the planned ownership, compatibility and execution cutover. No Go runtime migration has been implemented yet.
+The adopted target is **Go Agent Core + Rust Tauri + TypeScript UI**. The Controller and Worker described below still run on Node.js. The repository includes generated Go contracts and an isolated read-only Memory shadow runtime; it is not the packaged executor and does not inject model context. [Go Core migration design](go-core-migration.md) records implementation boundaries, measurements and the remaining ownership cutover.
 
 ## Overall system
 

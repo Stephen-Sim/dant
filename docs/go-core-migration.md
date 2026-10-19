@@ -2,7 +2,7 @@
 
 English · [Chinese](zh-CN/go-core-migration.md)
 
-**Status: adopted target; implementation is planned.** The current application, including the Beta12 source, still uses a TypeScript/Node.js Controller and Worker. No Go backend, Go build gate or Go runtime cutover is implemented by this document. [System architecture](architecture.md) remains the description of current behavior.
+**Status: foundation and isolated Memory shadow implementation in progress.** The packaged application still uses a TypeScript/Node.js Controller and Worker. The repository now contains a pinned Go module, generated cross-runtime state contracts, build checks and a read-only Memory shadow runtime. Shadow results do not enter model context or acquire execution ownership. [System architecture](architecture.md) remains the description of production behavior.
 
 The target is **Go Agent Core + Rust Tauri + TypeScript UI**. This changes the language of dant's backend orchestration; Codex App Server continues to own model reasoning, tool iterations and its conversation. Go must not introduce a second LLM loop.
 
@@ -53,13 +53,42 @@ Keep the existing SQLite-plus-JSON scheduling boundary explicit: a SQLite claim 
 
 ## Migration phases
 
-1. **Establish the implementation foundation.** Before the first Go source change, update [AGENTS.md](../AGENTS.md) and [code style](code-style.md) to define Go module ownership, tests and reproducible formatting. Add pinned build, format, test and race-check gates without weakening existing gates. The proposed toolchain pin is **Go 1.27.2**, verified on 19 October 2026 against the [official release history and support policy](https://go.dev/doc/devel/release). This is a future pin, not an installed prerequisite or an existing repository configuration.
+1. **Establish the implementation foundation.** [AGENTS.md](../AGENTS.md) and [code style](code-style.md) define Go module ownership, tests and reproducible formatting. The module pins **Go 1.27.2**, verified on 19 October 2026 against the [official release history and support policy](https://go.dev/doc/devel/release). Existing TypeScript, Python and Rust checks remain enabled. Install this exact official compiler; checks disable automatic toolchain selection.
 2. **Shadow memory retrieval.** Keep Node as the only writer and executor. A Go helper reads an immutable, revision-bound snapshot or bounded candidates, and compares recall, scoping, ranking, redaction and text budgets against current outputs. Shadow results do not reach the model or trigger tools. After parity, connect this read path to Memory search and already-admitted input context through an adapter.
 3. **Transfer Memory ownership.** Route every memory mutation, project-context write and consolidation action to Go. Establish one writer before enabling Go writes. Preserve user revision conflicts, confirmation and explicit import/export; retain the Node adapter only as a client.
 4. **Transfer Worker execution ownership.** Implement Store, Scheduler, Heartbeat, Codex RPC and Engine admission behind compatibility tests. Activate their dispatch authority together. A shadow Scheduler or Engine may observe fixtures or snapshots, but must never claim jobs, create live Codex sessions or call tools.
 5. **Transfer Controller and packaging.** Preserve Windows provider behavior while moving its host orchestration to Go. Update Tauri sidecar launch, resource allowlists, deployment, service management, source fingerprints, versions and artifact provenance together. Remove old backend modules only after imports, deployment and rollback behavior are verified. Node remains a UI build dependency and may still be needed by user-authored tools; removing the backend runtime does not authorize deleting those tools.
 
 Keep each phase reviewable and independently releasable. Existing behavior remains authoritative until that phase's owner is deliberately switched.
+
+## Go implementation boundaries and optimization
+
+Go runtime entrypoints live under `core/cmd/`; feature packages live under `core/internal/`. Memory separates the retrieval policy, the SQLite repository, fixed parameterized queries, and validated row mapping. SQL scope predicates, confirmation rules and revision checks are security invariants, not environment settings. A generic CRUD repository or an ORM does not replace these feature-specific checks.
+
+```text
+core/
+  cmd/dant-core/          Signal handling and process entry only
+  internal/
+    contracts/           Generated state vocabulary and transport limits
+    shadow/              Shadow role assembly, options and snapshot lifecycle
+    transport/           Bounded stdio framing, dispatch and cancellation
+    memory/              Retrieval policy, repository, queries and row mapping
+      stdio/             Memory request/response adapter
+scripts/core/            Pinned tooling, generation and shadow client
+tests/core/              TypeScript tooling tests and explicit parity runner
+```
+
+Go behavioral tests live beside their package. Interfaces belong to the consumer that needs a replaceable capability; for example, the Memory stdio adapter consumes only query operations and a snapshot guard. Domain packages do not import command entrypoints or transport adapters. Add Controller, Worker and provider packages when their responsibilities move, rather than creating empty generic layers in advance.
+
+The first Memory slice uses `database/sql` with pinned pure-Go SQLite. FTS5 `MATCH`, `bm25`, immutable snapshots and exact revision behavior benefit from explicit SQL. GORM supports [raw SQL](https://gorm.io/docs/sql_builder.html), but introducing it here would still require these queries and a separate schema compatibility policy. No ORM or automatic schema migration is enabled. SQL statements use bound values; never interpolate a query, scope, identifier or sort order supplied by a caller.
+
+`src/contracts/state-domains.json` generates the existing frozen TypeScript domains and typed Go states; `core-protocol.json` generates shared transport limits. `npm run check:contracts` rejects generated drift. API DTO generation and the execution-ownership fence remain later work; these foundation files do not imply that all Core contracts have migrated.
+
+The shadow runtime has only `ping`, `search` and `retrieve` requests over parent-owned stdio. Four workers and a queue of sixteen bound read concurrency. Deadlines, explicit cancellation, single-writer output, frame limits and bounded session identities prevent unlimited goroutine, queue or retained-ID growth. Cancellation stops waiting; it never authorizes replay. This runtime has no model connection, task admission, scheduler dispatch or HTTP listener.
+
+The Node owner synchronizes FTS and captures sanitized reference projections inside one transaction. The independent snapshot preserves every indexed row for equivalent ranking and binds the search revision to its authority revision. Go reuses its process and read connections rather than spawning a process or copying a database per query. Original databases and raw note/project tables are not copied into the shadow snapshot. Query normalization and sensitive-value handling remain shared with the existing TypeScript implementation until their own parity migration.
+
+Use `npm run test:core:parity` for isolated cross-runtime fixtures and warm latency measurements. It compares identities, scope, ordering, excerpts, nullable metadata and scores, including CJK and UTF-16 boundaries. Node reads against its authoritative database and Go reads an immutable projection; timings include this architectural difference and are not a general language benchmark. Record startup, snapshot creation and warm request latency separately. Future optimizations require separate measurements for large file streaming/backpressure, Scheduler/Heartbeat I/O cancellation, process RSS and real UI interaction. Task state transitions and SQLite mutations keep a single owner even when independent I/O runs concurrently.
 
 ## Execution cutover
 

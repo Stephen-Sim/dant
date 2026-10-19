@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "requestMaxBytes": 262144,
+  "responseMaxBytes": 262144,
+  "requestIdMaxChars": 64,
+  "workers": 4,
+  "queueCapacity": 16,
+  "defaultDeadlineMs": 5000,
+  "maxDeadlineMs": 10000,
+  "shutdownMs": 1000,
+  "maxSessionRequests": 4096,
+  "snapshotMaxBytes": 268435456
+}

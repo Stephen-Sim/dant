@@ -10,7 +10,9 @@ TypeScript coverage must reach at least 90% of lines, 80% of branches, and 80% o
 
 `CI` runs on Ubuntu 24.04 and Windows 2025 with Node.js 22.18+ and Python 3.12. It installs locked npm dependencies, runs TypeScript unit tests and coverage checks, tests Python VM helpers, and builds the frontend. `pycdlib==1.14.0` and OpenSSH are required so seed-image and SSH-key tests cannot silently disappear when tools are missing. Windows DPAPI tests use temporary test keys; Linux explicitly skips Windows-only checks.
 
-All maintained application, browser, tool and Node-test modules use TypeScript. The strict compiler checks Node sources, browser sources, and tests as separate projects. Node tests are grouped by module under `tests/`; UI tests mirror `ui/`, shared fixtures live in `tests/support/`, and Python VM tests live in `tests/vm/`. Unit tests and coverage use the same recursive discovery helper and a shared limit of four isolated test processes to bound desktop and CI resource usage.
+Maintained Node application, browser, tool and Node-test modules use TypeScript. The strict compiler checks Node sources, browser sources, and tests as separate projects. Node tests are grouped by module under `tests/`; UI tests mirror `ui/`, shared fixtures live in `tests/support/`, and Python VM tests live in `tests/vm/`. Unit tests and coverage use the same recursive discovery helper and a shared limit of four isolated test processes to bound desktop and CI resource usage.
+
+The separate `Go core` workflow runs on Windows and Ubuntu with exactly Go 1.27.2. It verifies generated contracts, `gofmt`, `go vet`, all Go package tests and isolated Node/Go Memory parity. Linux also runs the race detector. Go tests sit beside their feature packages. The explicit parity runner builds a private CGO-free helper and uses fixture-only SQLite snapshots; ordinary Node tests do not require a Go compiler. Latency reports describe the synthetic workload and do not establish a production speed improvement. The packaged Controller and Worker still use Node; adding this workflow does not activate the shadow reader or add a Go sidecar to release assets.
 
 Bash and PowerShell files are parsed without creating a VM or requesting administrator access. Tests do not use real model accounts, open microphones, or contact a configured Telegram bot. Telegram tests inject a simulated Bot API and verify owner pairing, authorization, deduplication, attachment bounds, delivery results, and shutdown.
 
@@ -41,6 +43,9 @@ Normal jobs have `contents: read`; only the draft-release job receives `contents
 npm run format:check
 npm run typecheck
 npm run check:states
+npm run check:contracts
+npm run check:core
+npm run test:core:parity
 npm run test:coverage
 python -m unittest discover -s tests/vm -p "test_*.py" -v
 node scripts/ci/version.mts

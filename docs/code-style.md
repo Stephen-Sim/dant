@@ -27,6 +27,8 @@ A move includes every affected import, packaging allowlist, test fixture, covera
 
 Tests mirror their feature: `tests/work/`, `tests/conversation/`, `tests/computer/`, and the other server modules; browser tests use `tests/ui/chat/`, `tests/ui/settings/`, and their matching UI modules. Shared fixtures live in `tests/support/`, compile-time contracts in `tests/types/`, and Python VM tests in `tests/vm/`. Both `npm test` and coverage use the same recursive discovery helper, so moving a test into a feature folder does not silently remove it from the suite. Focused Node runs use the complete test path, for example `node --test tests/work/task-cancel.test.mts`.
 
+Adopted Go core packages live under `core/internal/<feature>/`, with `*_test.go` beside the implementation. TypeScript tooling for that core belongs under `scripts/core/`, with Node tooling tests under `tests/core/`. Introducing a package does not switch the live application to a new runtime: migrations must preserve the existing Controller, Worker, browser and authenticated transport boundaries.
+
 ## Formatting commands
 
 Install locked JavaScript dependencies with `npm ci`. Formatting uses **Prettier 3.9.10**, pinned in `package-lock.json`, and Rust's `rustfmt` component. The packaging toolchain is specified in the Windows build workflow; install its `rustfmt` component before running the Rust checks.
@@ -36,9 +38,11 @@ npm run format
 npm run format:check
 ```
 
-`format` writes Prettier-supported source and documentation, then runs `cargo fmt`. `format:check` checks both without changing files. For a focused pass, use `format:prettier`, `format:prettier:check`, `format:rust`, or `format:rust:check`. Use these local commands rather than a global formatter with different defaults.
+`format` writes Prettier-supported source and documentation, then runs `cargo fmt` and the pinned Go formatter. `format:check` checks all three without changing files. For a focused pass, use `format:prettier`, `format:prettier:check`, `format:rust`, `format:rust:check`, `format:go`, or `format:go:check`. Use these local commands rather than a global formatter with different defaults.
 
 Prettier owns JavaScript, TypeScript, JSON, CSS, HTML, Markdown, and YAML. `.prettierrc.json` specifies two spaces, semicolons, single JavaScript quotes, trailing commas, a 100-column target, and LF. Existing prose line breaks are preserved. `.editorconfig` sets UTF-8 and final newlines, and four spaces for Python, Rust, and PowerShell. Python, PowerShell, and Bash retain their syntax and behavioral checks; there is no undeclared Python or shell formatting dependency.
+
+Go source uses exactly **Go 1.27.2** and its bundled `gofmt`, including Go's tab indentation. `scripts/core/go.mts` prefers the pinned `.tools/go1.27.2/go/bin` installation, otherwise validates the PATH Go executable, and rejects any different version before formatting or testing. It sets `GOTOOLCHAIN=local` so checks cannot silently choose or download a compiler. Install that exact official toolchain explicitly when it is unavailable. The dedicated core workflow pins the same version on Windows and Linux.
 
 `.gitattributes` keeps detected text files as LF on every platform, including Windows CI; Git's automatic binary detection keeps image and other binary files unchanged.
 
@@ -64,7 +68,11 @@ Use the frozen runtime enums in `src/contracts/states.mts` for state values. Nam
 
 `ChatTaskStatus` and `WorkStatus` deliberately differ. Chat task validation keeps its existing accepted states, while a durable work record can remain `continuing` between execution turns or `unknown` while its outcome is reconciled. Legacy display normalization stays at its existing compatibility boundary. Use `isEnumValue(domain, value)` when accepting an unknown value; reject or explicitly preserve uncertainty rather than inventing a safe state.
 
-`src/contracts/contracts.ts` defines shared boundary shapes; feature-specific types stay beside their owning modules. All maintained application code, browser code, tools, and Node tests use TypeScript. Runtime modules use `.mts`; files containing only types use `.ts` and type-only imports. Generated browser bundles, vendor files, and JavaScript inside user-file fixtures retain their original formats.
+`src/contracts/contracts.ts` defines shared boundary shapes; feature-specific types stay beside their owning modules. Browser code, Node application modules, tools, and Node tests use TypeScript; adopted Go core packages use Go's checked types. Runtime TypeScript modules use `.mts`; files containing only types use `.ts` and type-only imports. Generated browser bundles, vendor files, and JavaScript inside user-file fixtures retain their original formats.
+
+`src/contracts/state-domains.json` owns the shared state vocabulary. `npm run generate:contracts` regenerates the TypeScript and Go contracts; `npm run check:contracts` verifies their exact generated contents, using the pinned formatters. Do not hand-maintain a second set of Go wire values or edit generated contracts separately. Go boundary validation must reject unknown states and retain the same task identities, legacy compatibility and explicit uncertainty semantics. Feature-specific Go types stay in their owning packages. Dependencies remain pinned in `core/go.mod` and `core/go.sum`; dependency changes must be deliberate and reviewed.
+
+Keep persistence inside the owning feature's repository. Separate fixed parameterized queries, transaction ownership and validated row mapping from application policy; do not pass SQL or database rows to an entrypoint or renderer. Use named bindings for repeated optional scope values. Authorization predicates, persisted document names, confirmation rules and schema/revision checks are code invariants, not user-editable configuration. Prefer concrete feature operations over a generic CRUD abstraction. Introduce an ORM or a SQL generator only when its benefit and SQLite/FTS/schema compatibility are demonstrated; never enable automatic schema changes during a runtime-language migration.
 
 The pinned compiler runs with `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `noEmit`. `npm run typecheck` checks three projects: Node entrypoints and tools, the Vite browser application, and all Node tests. Node uses `NodeNext` resolution; browser and mixed browser-test imports use `Bundler`, matching their package entrypoints. Declaration checking remains enabled. Compile fixtures include intentional invalid states that must remain type errors. `npm run check:states` rejects raw enum-value literals in the explicitly adopted Store, plan, continuation, scheduler, desktop lifecycle, and VM lifecycle modules. Each module lists its applicable domains, so unrelated brand names or external protocol fields are not mistaken for states. Extend that enforced list as other domains are migrated.
 
@@ -76,8 +84,24 @@ For format-independent source fixtures, use `tests/support/source-fixtures.mts` 
 
 The DOM fixtures use only LinkeDOM's public `parseHTML` entrypoint. `tests/types/linkedom.d.ts` preserves that entrypoint's documented return contract and restricts its input to HTML strings. This isolates the upstream package's incompatible internal DOM class declarations without disabling declaration checks for the repository or its other dependencies.
 
+## Go packages and interfaces
+
+Keep each `core/internal/<feature>` package responsible for its own policy and data access. Small `cmd` entrypoints parse validated startup options, assemble dependencies and own process shutdown; they do not grow into query, mapping or protocol implementations. Prefer concrete types by default. Define a narrow interface where a consumer needs a replaceable boundary, using only the operations it actually consumes. Avoid provider-owned universal interfaces, generic `BaseRepository` layers and `common` or `utils` packages that mix unrelated features.
+
+Pass `context.Context` as the first argument of blocking and cancellable operations, carry the request deadline into SQL and child work, and do not replace it with a background context inside the call chain. Root assembly owns long-lived contexts. Classify wrapped failures with `errors.Is` and `errors.As`; wrap internal causes only when the owning boundary can safely retain them. Transport errors expose fixed validated codes, not SQL text, paths, query contents or raw causes. Cancellation of one request must retain the existing distinction between a stopped execution and durable unfinished work.
+
+Every goroutine has an owner and an exit path. Bound worker and queue counts, input/output frames, deadlines and session lifetime; cancel and join workers during shutdown. Release rows, statements, transactions and files on every path. Protect shared state explicitly and retain exact request, snapshot and revision identity across asynchronous work. A timeout or missing reply does not authorize replay of an operation with an unknown outcome.
+
+Use fixed parameterized SQL inside the owning repository and map rows into validated feature-specific types. At JSON boundaries, a temporary `map[string]json.RawMessage` may validate allowed fields before decoding typed DTOs; do not carry untyped maps through the application as its data model. Represent absence, explicit null and zero deliberately, using pointers or a feature-specific nullable type when the contract distinguishes them. Preserve existing Unicode, numeric precision, ordering, scope and legacy wire semantics rather than silently normalizing them during migration.
+
+Place table-driven behavioral and failure-path tests beside each package. Use isolated SQLite fixtures and injected narrow dependencies at process or storage boundaries; preserve cancellation, concurrency and cleanup checks. The adopted gates remain the pinned `gofmt`, `go vet`, package tests and Linux race detector. Add another linter or generator only with a demonstrated need, an exact reproducible version and corresponding local and CI commands.
+
 ## Verification and side effects
 
 Formatting and behavior are separate checks. Run relevant tests during implementation and complete the integrated checks listed in [AGENTS.md](../AGENTS.md) before handoff. [CI](ci.md) checks Prettier on the test runners and Rust formatting on the Windows packaging runner before building.
+
+`npm run check:core` checks Go formatting, runs `go vet ./...` and tests every core package. `npm run test:core` runs the package tests; `npm run test:core:race` additionally enables the race detector on Linux with a working C compiler. Core CI runs Windows and Linux checks plus the Linux race pass; a missing prerequisite is a failure, never an ignored test. Core tests must use isolated data and injected dependencies, with no real model sessions, VM operations or user account data.
+
+`npm run test:core:parity` explicitly builds the read-only shadow tool with `CGO_ENABLED=0`, creates private temporary memory fixtures, and compares authoritative TypeScript search/retrieval references against the persistent Go IPC reader. Only scores permit an absolute `1e-10` tolerance; reference fields and ordering must match exactly. It separately records 200 sequential reads per runtime as experimental p50/p95 statistics, with no performance guarantee. Output contains statistics, not fixture contents. Ordinary Node test discovery does not start this Go-dependent runner; core CI invokes it explicitly.
 
 Tests use fixtures, injected clocks and transports, and temporary data. They must not contact real model accounts or Telegram bots, operate a user's VM, or use live audio devices. Preserve exact task and connection identity, durable state, and the rule that an unknown action is reconciled rather than resent. Do not disable gates or lower coverage requirements to pass a refactor.

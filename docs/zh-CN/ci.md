@@ -8,7 +8,9 @@
 
 `Windows build` 在 Windows 2025 上先执行同样的 Node/Python 检查，再使用 Rust 1.99.1 和 `cargo --locked` 构建 Tauri NSIS 安装包。Rust 缓存仅保存依赖和编译中间文件，不缓存用户数据、VM 镜像或打包输出。没有平台签名密钥也可以构建，当前产物未签名。
 
-所有维护的应用、浏览器、工具和 Node 测试模块均使用 TypeScript。严格编译分别检查 Node 源码、浏览器源码与全部 Node 测试。测试按模块放入 `tests/<module>/`，UI 测试对应 `ui/`，共享夹具位于 `tests/support/`，Python VM 测试位于 `tests/vm/`。普通测试与覆盖率共用递归发现逻辑和最多四个隔离测试进程，限制桌面与 CI 资源占用。
+维护中的 Node 应用、浏览器、工具和 Node 测试模块使用 TypeScript。严格编译分别检查 Node 源码、浏览器源码与全部 Node 测试。测试按模块放入 `tests/<module>/`，UI 测试对应 `ui/`，共享夹具位于 `tests/support/`，Python VM 测试位于 `tests/vm/`。普通测试与覆盖率共用递归发现逻辑和最多四个隔离测试进程，限制桌面与 CI 资源占用。
+
+独立的 `Go core` 工作流在 Windows 和 Ubuntu 上固定使用 Go 1.27.2，检查生成契约、`gofmt`、`go vet`、全部 Go 包测试及隔离的 Node/Go Memory 一致性。Linux 另行运行 race 检测。Go 测试与所属功能包相邻。显式一致性工具构建私有的无 CGO 辅助进程，仅使用夹具 SQLite 快照；普通 Node 测试不要求 Go 编译器。延迟报告只描述合成负载，不能证明生产性能提升。已打包的 Controller 与 Worker 仍使用 Node；增加工作流不会启用影子检索，也不会给发布产物加入 Go sidecar。
 
 两个工作流都执行格式、严格 TypeScript 类型及已接入状态域的检查。Windows 打包 job 自己执行这些门禁，标签不能依赖另一个 `CI` 工作流中尚未确认的结果就生成发布草稿。
 
@@ -31,6 +33,9 @@
 npm run format:check
 npm run typecheck
 npm run check:states
+npm run check:contracts
+npm run check:core
+npm run test:core:parity
 npm run test:coverage
 python -m unittest discover -s tests/vm -p "test_*.py" -v
 node scripts/ci/version.mts
