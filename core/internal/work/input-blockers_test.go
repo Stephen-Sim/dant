@@ -21,9 +21,7 @@ func backgroundFixture(t *testing.T) (*Engine, *execution, *fakeWorker) {
 		t.Fatal(err)
 	}
 	acceptThreadAndTurn(t, worker, "background-turn")
-	waitSnapshot(t, engine, func(snapshot Snapshot) bool {
-		return snapshot.Active != nil && snapshot.Active.TurnID.Value == "background-turn"
-	})
+	waitToolScope(t, engine, "background-turn")
 	engine.mu.Lock()
 	active := engine.active
 	active.nativeBackground = true

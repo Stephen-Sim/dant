@@ -87,7 +87,12 @@ func (f *fakeWorker) TerminateConfirmed(context.Context) (bool, error) {
 
 func engineFixture(t *testing.T) (*Engine, *store.Store, *fakeWorker) {
 	t.Helper()
-	persistence, err := store.Open(t.TempDir(), store.Options{})
+	return engineFixtureWithStoreOptions(t, store.Options{})
+}
+
+func engineFixtureWithStoreOptions(t *testing.T, options store.Options) (*Engine, *store.Store, *fakeWorker) {
+	t.Helper()
+	persistence, err := store.Open(t.TempDir(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +150,20 @@ func waitSnapshot(
 			return
 		}
 	}
+}
+
+func waitToolScope(t *testing.T, engine *Engine, turnID string) ToolContext {
+	t.Helper()
+	var owner ToolContext
+	waitSnapshot(t, engine, func(Snapshot) bool {
+		current, ok := engine.ToolScope()
+		if !ok || current.TurnID != turnID {
+			return false
+		}
+		owner = current
+		return true
+	})
+	return owner
 }
 
 func terminal(turnID, status string) runtime.Event {
