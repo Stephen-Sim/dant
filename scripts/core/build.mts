@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveGoToolchain, type GoRunner } from './go.mts';
 import { readVersion } from '../ci/version.mts';
+import { isRecord } from '../../src/contracts/json.mts';
 import {
   CORE_BUILD_MANIFEST,
   CORE_LINUX,
@@ -84,6 +85,82 @@ function buildDirectory(root: string, supplied?: string): string {
   return path.resolve(output);
 }
 
+/** A clean Git status cannot prove the origin of an ignored go:embed input. */
+function verifyEmbeddedSources(
+  root: string,
+  tool: string,
+  environment: NodeJS.ProcessEnv,
+  run: GoRunner,
+  runGit: GoRunner,
+): void {
+  const options = {
+    cwd: path.join(root, 'core'),
+    env: environment,
+    encoding: 'utf8' as const,
+    timeout: BUILD_TIMEOUT_MS,
+    maxBuffer: BUILD_OUTPUT_BYTES,
+    shell: false,
+    windowsHide: true,
+  };
+  const listed = run(
+    tool,
+    [
+      'list',
+      '-f',
+      '{"directory":{{printf "%q" .Dir}},"files":[{{range $index,$file := .EmbedFiles}}{{if $index}},{{end}}{{printf "%q" $file}}{{end}}]}',
+      './...',
+    ],
+    options,
+  );
+  const tracked = runGit('git', ['ls-files', '-z', '--', 'core'], {
+    ...options,
+    cwd: root,
+    timeout: GIT_TIMEOUT_MS,
+  });
+  if (
+    listed.error ||
+    listed.status !== 0 ||
+    typeof listed.stdout !== 'string' ||
+    tracked.error ||
+    tracked.status !== 0 ||
+    typeof tracked.stdout !== 'string'
+  )
+    throw Error('The embedded Go source inventory could not be verified.');
+
+  const paths = new Set(tracked.stdout.split('\0'));
+  const records = listed.stdout.split(/\r?\n/).filter(Boolean);
+  if (!records.length) throw Error('The embedded Go source inventory is empty.');
+  for (const line of records) {
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      throw Error('The embedded Go source inventory is invalid.');
+    }
+    if (!isRecord(record) || typeof record.directory !== 'string')
+      throw Error('The embedded Go source inventory is invalid.');
+    const directory = path.relative(path.join(root, 'core'), record.directory);
+    if (path.isAbsolute(directory) || directory === '..' || directory.startsWith('..' + path.sep))
+      throw Error('The embedded Go source directory is outside the core.');
+    if (record.files === null) continue;
+    if (!Array.isArray(record.files)) throw Error('The embedded Go source inventory is invalid.');
+
+    for (const file of record.files) {
+      if (typeof file !== 'string' || !file || path.isAbsolute(file) || file.includes('\0'))
+        throw Error('The embedded Go source inventory is invalid.');
+      const name = path
+        .relative(root, path.resolve(record.directory, file))
+        .split(path.sep)
+        .join('/');
+      if (!name.startsWith('core/') || !paths.has(name))
+        throw Error(
+          'Every embedded Go input must belong to the source commit, including ignored files.',
+        );
+      describeFile(root, name);
+    }
+  }
+}
+
 export function buildCore({
   root = PROJECT_ROOT,
   outputDir,
@@ -113,6 +190,14 @@ export function buildCore({
       ['windows', CORE_WINDOWS],
       ['linux', CORE_LINUX],
     ] as const) {
+      const environment = {
+        ...toolchain.env,
+        CGO_ENABLED: '0',
+        GOOS: os,
+        GOARCH: 'amd64',
+        GOAMD64: 'v1',
+      };
+      verifyEmbeddedSources(root, toolchain.go, environment, run, runGit);
       const result = run(
         toolchain.go,
         [
@@ -127,7 +212,7 @@ export function buildCore({
         ],
         {
           cwd: path.join(root, 'core'),
-          env: { ...toolchain.env, CGO_ENABLED: '0', GOOS: os, GOARCH: 'amd64', GOAMD64: 'v1' },
+          env: environment,
           encoding: 'utf8',
           timeout: BUILD_TIMEOUT_MS,
           maxBuffer: BUILD_OUTPUT_BYTES,

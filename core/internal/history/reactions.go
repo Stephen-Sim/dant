@@ -12,7 +12,7 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
 
-//go:embed data/reactions.txt
+//go:embed assets/reactions.txt
 var reactionData string
 var reactionSet = sync.OnceValue(func() map[string]bool {
 	result := make(map[string]bool)

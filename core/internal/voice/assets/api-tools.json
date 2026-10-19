@@ -1,0 +1,361 @@
+[
+  {
+    "type": "function",
+    "name": "run_task",
+    "description": "Ask the existing dant coworker to perform work in its Ubuntu VM. Await the actual task result before claiming success.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "task_list",
+    "description": "List saved tasks in this conversation with their actual workId, title, status and completed/total step counts. Use this read-only list to identify the matching task before cancellation; never guess IDs. Listing never executes, restarts, cancels or completes work.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "task_cancel",
+    "description": "Cancel an existing task in this conversation by its exact workId when the human requests cancellation or the task is explicitly abandoned or superseded. Supports current acknowledged running/waiting work and saved continuing/waiting_user tasks; the application verifies execution ownership. Paused, failed, review, completed and unconfirmed records require Work progress review. Preserves cancelled history without completing, deleting or starting work. cancelRequested means stopping awaits confirmation; only cancelled:true confirms cancellation.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "workId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["workId"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "memory_write",
+    "description": "Replace durable dant memory with concise updated notes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxLength": 100000
+        }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "send_message",
+    "description": "Share requested text, progress, or a useful link in the same chat. Do not send ordinary speech transcripts.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxLength": 100000,
+          "minLength": 1
+        }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "react_message",
+    "description": "Optionally react to a user message when it naturally fits. Use its actual messageId, a single emoji, or null to remove your reaction. Do not acknowledge every message.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "emoji": {
+          "type": ["string", "null"],
+          "maxLength": 64
+        }
+      },
+      "required": ["messageId", "emoji"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "credential_find",
+    "description": "Find saved credential metadata. This never returns secret values.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "maxLength": 300
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "credential_get",
+    "description": "Read a saved credential only when needed for the current authorized work. Never repeat secret values in speech or chat.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "credential_request",
+    "description": "Ask the user to enter missing credentials through a secure form. Never ask them to dictate passwords.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "service": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 500
+        }
+      },
+      "required": ["name", "service", "reason"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "credential_store",
+    "description": "Save an authorized credential in the encrypted vault. Keep secret values out of chat, memory and skills.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "service": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "secret": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        }
+      },
+      "required": ["name", "service", "username", "secret"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "skill_list",
+    "description": "List dant-managed reusable skills and their enabled state.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "skill_get",
+    "description": "Read a dant-managed skill before using or updating it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "skill_save",
+    "description": "Create or update a reusable skill in the VM workspace. Never include credentials. Saving does not mean its helper scripts were tested.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 49152
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "files": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        }
+      },
+      "required": ["name", "description", "instructions"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "send_file",
+    "description": "Deliver an existing completed file from the Ubuntu VM to the same chat.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1
+        }
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "schedule_list",
+    "description": "List saved one-time and recurring tasks, their IDs, intended timezones, cron expressions, priorities and state.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "schedule_save",
+    "description": "Create or manage a scheduled task only when the human requests it. One-time tasks need an explicit ISO-offset at and IANA timeZone. Recurring tasks use a five-field cron expression and omit at. Priority high/normal/low orders waiting runs. Reuse id for updates; enabled:false pauses. Saving never executes work immediately.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "For a one-time task: an explicit ISO 8601 instant with Z or a numeric UTC offset. Omit at for recurring tasks."
+        },
+        "cron": {
+          "type": ["string", "null"],
+          "maxLength": 256,
+          "description": "A recurring five-field cron expression: minute hour day-of-month month day-of-week, such as 0 9 * * * for daily at 09:00. Null selects a one-time task."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["high", "normal", "low"],
+          "description": "Priority for scheduled runs waiting to start; never interrupts work already running."
+        },
+        "timeZone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "The intended IANA timezone, such as Asia/Kuala_Lumpur. Recurring tasks default to the current settings timezone."
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "schedule_delete",
+    "description": "Remove a requested scheduled task by id. Dispatched work is not stopped.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "end_call",
+    "description": "End this voice call when the user asks to hang up.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+]

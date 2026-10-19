@@ -11,10 +11,10 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/i18n"
 )
 
-//go:embed data/dynamic-tools.json
+//go:embed assets/dynamic-tools.json
 var dynamicToolsJSON []byte
 
-//go:embed data/instructions.txt
+//go:embed assets/instructions.txt
 var instructionsTemplate string
 
 // DynamicTools returns independent canonical declarations. Schemas are shared

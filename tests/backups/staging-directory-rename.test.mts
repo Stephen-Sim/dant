@@ -10,6 +10,113 @@ import {
   STAGING_RENAME_DELAY_MS,
 } from '../../src/backups/staging-directory-rename.mts';
 
+const FIXTURE_RENAME_ATTEMPTS = 6;
+const FIXTURE_RENAME_DELAY_MS = 10;
+const fixtureRenamePause = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+const fixtureRenameCodes = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+interface FixtureRenameOptions {
+  renameSync?: (source: string, destination: string) => void;
+  platform?: NodeJS.Platform;
+  pause?: (milliseconds: number) => void;
+}
+
+// These moves manufacture isolated test changes; their native sharing locks
+// are independent of the injected error whose exact identity is under test.
+function renameFixtureDirectory(
+  root: string,
+  source: string,
+  destination: string,
+  {
+    renameSync = fs.renameSync,
+    platform = process.platform,
+    pause = (delay) => Atomics.wait(fixtureRenamePause, 0, 0, delay),
+  }: FixtureRenameOptions = {},
+) {
+  const inside = (file: string) => {
+    const relative = path.relative(root, file);
+    return (
+      path.isAbsolute(root) &&
+      path.resolve(root) === root &&
+      path.isAbsolute(file) &&
+      path.resolve(file) === file &&
+      relative !== '' &&
+      !path.isAbsolute(relative) &&
+      relative !== '..' &&
+      !relative.startsWith('..' + path.sep)
+    );
+  };
+  assert.ok(
+    inside(source) && inside(destination),
+    'A fixture move must stay inside its exact root',
+  );
+  assert.ok(
+    source !== destination &&
+      !source.startsWith(destination + path.sep) &&
+      !destination.startsWith(source + path.sep),
+    'Fixture move roots must not overlap',
+  );
+
+  const directory = (file: string) => {
+    const stat = fs.lstatSync(file, { bigint: true });
+    assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'Fixture directories must be ordinary');
+    return stat;
+  };
+  const parents = new Map<string, fs.BigIntStats>();
+  for (const file of [source, destination]) {
+    for (let parent = path.dirname(file); ; parent = path.dirname(parent)) {
+      parents.set(parent, directory(parent));
+      if (parent === root) break;
+      assert.ok(inside(parent), 'Fixture parents must stay inside their root');
+    }
+  }
+  const original = directory(source);
+  const unchanged = () => {
+    try {
+      for (const [file, expected] of parents) {
+        const current = directory(file);
+        if (current.dev !== expected.dev || current.ino !== expected.ino) return false;
+      }
+      if (fs.lstatSync(destination, { bigint: true, throwIfNoEntry: false })) return false;
+      const current = directory(source);
+      return (
+        current.dev === original.dev &&
+        current.ino === original.ino &&
+        current.mode === original.mode &&
+        current.size === original.size &&
+        current.nlink === original.nlink &&
+        current.mtimeNs === original.mtimeNs &&
+        current.ctimeNs === original.ctimeNs
+      );
+    } catch {
+      return false;
+    }
+  };
+  assert.ok(unchanged(), 'Fixture source and destination must be unchanged before moving');
+
+  let failure: unknown;
+  for (let attempt = 0; attempt < FIXTURE_RENAME_ATTEMPTS; attempt++) {
+    if (attempt > 0 && !unchanged()) throw failure;
+    try {
+      renameSync(source, destination);
+      return;
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+      if (
+        platform !== 'win32' ||
+        typeof code !== 'string' ||
+        !fixtureRenameCodes.has(code) ||
+        attempt + 1 === FIXTURE_RENAME_ATTEMPTS ||
+        !unchanged()
+      )
+        throw error;
+      failure = error;
+      pause(FIXTURE_RENAME_DELAY_MS * (attempt + 1));
+    }
+  }
+}
+
 function fixture(t: TestContext) {
   const base = path.resolve('.cache/tests');
   fs.mkdirSync(base, { recursive: true });
@@ -46,6 +153,89 @@ function freezeDirectoryMetadata(t: TestContext, root: string) {
   return observed;
 }
 
+test('fixture directory moves tolerate only bounded known-unapplied sharing locks', (t) => {
+  const f = fixture(t),
+    waits: number[] = [];
+  let attempts = 0;
+  renameFixtureDirectory(f.root, f.source, f.destination, {
+    platform: 'win32',
+    renameSync(from, to) {
+      if (++attempts < 3) throw Object.assign(Error('Isolated fixture lock'), { code: 'EPERM' });
+      renameFixtureDirectory(f.root, from, to);
+    },
+    pause: (delay) => waits.push(delay),
+  });
+  assert.equal(attempts, 3);
+  assert.deepEqual(waits, [FIXTURE_RENAME_DELAY_MS, FIXTURE_RENAME_DELAY_MS * 2]);
+  assert.equal(
+    fs.readFileSync(path.join(f.destination, 'retained.txt'), 'utf8'),
+    'Retained staged bytes',
+  );
+
+  const exhausted = fixture(t),
+    failure = Object.assign(Error('Last isolated fixture lock'), { code: 'EBUSY' });
+  attempts = 0;
+  assert.throws(
+    () =>
+      renameFixtureDirectory(exhausted.root, exhausted.source, exhausted.destination, {
+        platform: 'win32',
+        renameSync() {
+          attempts++;
+          throw failure;
+        },
+        pause() {},
+      }),
+    (error) => error === failure,
+  );
+  assert.equal(attempts, FIXTURE_RENAME_ATTEMPTS);
+});
+
+test('fixture move retries stop on changed roots, links, parents, destinations or unconfirmed application', (t) => {
+  for (const change of ['applied', 'source', 'source-linked', 'parent', 'destination'] as const) {
+    const f = fixture(t),
+      failure = Object.assign(Error('Original isolated fixture lock'), { code: 'EACCES' });
+    let attempts = 0;
+    assert.throws(
+      () =>
+        renameFixtureDirectory(f.root, f.source, f.destination, {
+          platform: 'win32',
+          renameSync(from, to) {
+            attempts++;
+            if (change === 'applied') renameFixtureDirectory(f.root, from, to);
+            throw failure;
+          },
+          pause() {
+            if (change === 'destination') fs.mkdirSync(f.destination);
+            else if (change === 'parent') {
+              renameFixtureDirectory(f.root, f.targetParent, f.targetParent + '.retired');
+              fs.mkdirSync(f.targetParent);
+            } else if (change === 'source' || change === 'source-linked') {
+              renameFixtureDirectory(f.root, f.source, f.source + '.retired');
+              if (change === 'source') fs.mkdirSync(f.source);
+              else
+                fs.symlinkSync(
+                  f.source + '.retired',
+                  f.source,
+                  process.platform === 'win32' ? 'junction' : 'dir',
+                );
+            } else assert.fail('An unconfirmed fixture move must never be repeated');
+          },
+        }),
+      (error) => error === failure,
+      change,
+    );
+    assert.equal(attempts, 1, change);
+  }
+
+  const f = fixture(t),
+    other = fixture(t);
+  assert.throws(() =>
+    renameFixtureDirectory(f.root, f.source, other.destination, {
+      renameSync: () => assert.fail('A fixture mutation must not leave its root'),
+    }),
+  );
+});
+
 test('private stage moves retry bounded Windows sharing failures while retaining bytes and checking offline on every attempt', (t) => {
   for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
     const f = fixture(t),
@@ -59,7 +249,7 @@ test('private stage moves retry bounded Windows sharing failures while retaining
       },
       renameSync(from, to) {
         if (++attempts <= 2) throw Object.assign(Error('Isolated transient lock'), { code });
-        fs.renameSync(from, to);
+        renameFixtureDirectory(f.root, from, to);
       },
       pause: (delay) => waits.push(delay),
     });
@@ -203,7 +393,7 @@ test('replaced, missing, linked or changed staging, new destinations and changed
               change.startsWith('source-') &&
               ['source-replaced', 'source-removed', 'source-linked', 'source-file'].includes(change)
             ) {
-              fs.renameSync(f.source, f.source + '.retired');
+              renameFixtureDirectory(f.root, f.source, f.source + '.retired');
               if (change === 'source-replaced') fs.mkdirSync(f.source);
               if (change === 'source-file') fs.writeFileSync(f.source, 'Different type');
               if (change === 'source-linked')
@@ -234,7 +424,7 @@ test('replaced, missing, linked or changed staging, new destinations and changed
                       ? f.targetGroup
                       : null;
             if (parent) {
-              fs.renameSync(parent, parent + '.retired');
+              renameFixtureDirectory(f.root, parent, parent + '.retired');
               if (change.startsWith('source-')) fs.mkdirSync(f.source, { recursive: true });
               else fs.mkdirSync(f.targetParent, { recursive: true });
             }
@@ -258,7 +448,7 @@ test('a move that may already have applied is never retried or reported as confi
         assertOffline() {},
         renameSync(from, to) {
           attempts++;
-          fs.renameSync(from, to);
+          renameFixtureDirectory(f.root, from, to);
           throw failure;
         },
         pause: () => assert.fail('An unconfirmed move must not be repeated'),
@@ -331,7 +521,7 @@ test('unsafe initial directories, paths, ancestors and occupied targets cannot r
   ] as const) {
     const f = fixture(t);
     if (kind === 'source-link' || kind === 'source-file') {
-      fs.renameSync(f.source, f.source + '.retired');
+      renameFixtureDirectory(f.root, f.source, f.source + '.retired');
       if (kind === 'source-link')
         fs.symlinkSync(
           f.source + '.retired',
@@ -348,7 +538,7 @@ test('unsafe initial directories, paths, ancestors and occupied targets cannot r
           ? f.targetParent
           : null;
     if (parent) {
-      fs.renameSync(parent, parent + '.retired');
+      renameFixtureDirectory(f.root, parent, parent + '.retired');
       fs.symlinkSync(
         parent + '.retired',
         parent,
@@ -462,6 +652,7 @@ test('a non-Windows move does not enumerate the staging tree', (t) => {
   renamePrivateStagingDirectorySync(f.source, f.destination, {
     platform: 'linux',
     assertOffline() {},
+    renameSync: (from, to) => renameFixtureDirectory(f.root, from, to),
   });
   assert.equal(fs.existsSync(f.source), false);
   assert.equal(

@@ -8,7 +8,7 @@ test('the Go reaction vocabulary retains every bundled sequence under the actual
   checkReactions();
   const values = fs
     .readFileSync(
-      new URL('../../core/internal/history/data/reactions.txt', import.meta.url),
+      new URL('../../core/internal/history/assets/reactions.txt', import.meta.url),
       'utf8',
     )
     .trimEnd()

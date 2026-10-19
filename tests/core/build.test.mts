@@ -33,7 +33,9 @@ function fixture(t: TestContext) {
   write('src-tauri/tauri.conf.json', JSON.stringify({ version: '1.2.3' }));
   write('src-tauri/Cargo.toml', '[package]\nversion="1.2.3"\n');
   const commit = 'a'.repeat(40);
-  const state = { dirty: false, fail: false, changed: false };
+  const asset = 'core/internal/fixture/assets/config.json';
+  write(asset, '{"fixture":true}');
+  const state = { dirty: false, fail: false, changed: false, ignoredAsset: false };
   const calls: { args: readonly string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
   const run: GoRunner = (_executable, args, options) => {
     calls.push({ args, env: options.env });
@@ -41,6 +43,15 @@ function fixture(t: TestContext) {
     if (args[0] === 'env')
       return { status: 0, stdout: path.join(root, 'verified-toolchain') + '\n' };
     if (state.fail) return { status: 1, stderr: 'bounded isolated compiler failure' };
+    if (args[0] === 'list')
+      return {
+        status: 0,
+        stdout:
+          JSON.stringify({
+            directory: path.join(root, 'core/internal/fixture'),
+            files: ['assets/config.json'],
+          }) + '\n',
+      };
     const output = args[args.indexOf('-o') + 1];
     assert.equal(typeof output, 'string');
     if (!output) throw Error('fixture requires owned compiler output');
@@ -53,9 +64,13 @@ function fixture(t: TestContext) {
     stdout:
       args[0] === 'rev-parse'
         ? commit + '\n'
-        : state.dirty
-          ? ' M core/internal/app/worker.go\n'
-          : '',
+        : args[0] === 'ls-files'
+          ? state.ignoredAsset
+            ? ''
+            : asset + '\0'
+          : state.dirty
+            ? ' M core/internal/app/worker.go\n'
+            : '',
   });
   return {
     root,
@@ -161,6 +176,15 @@ test('artifact verification rejects changed bytes and unsupported manifest paths
       ),
     /invalid file/,
   );
+});
+
+test('ignored embedded assets fail provenance checks before either binary is built', (t) => {
+  const f = fixture(t);
+  f.state.ignoredAsset = true;
+  const previous = f.write('.cache/core/build/keep.txt', 'previous');
+  assert.throws(() => buildCore(f.options), /embedded Go input must belong to the source commit/);
+  assert.equal(f.calls.filter((call) => call.args[0] === 'build').length, 0);
+  assert.equal(fs.readFileSync(previous, 'utf8'), 'previous');
 });
 
 test('VM resource allowlist matches both the Go deployer and Python cutover installer', () => {

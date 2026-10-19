@@ -9,10 +9,10 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
 
-//go:embed data/api-tools.json
+//go:embed assets/api-tools.json
 var apiToolsJSON []byte
 
-//go:embed data/instructions.json
+//go:embed assets/instructions.json
 var voiceInstructionsJSON []byte
 var voiceAssetsOnce sync.Once
 var voiceInstructions map[string]string

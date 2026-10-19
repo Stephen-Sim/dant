@@ -51,11 +51,11 @@ test('Go embedded text and JSON assets participate in source provenance', () => 
   const f = fixture();
   try {
     const original = fingerprintCoreSources(f.root);
-    f.write('core/internal/history/data/reactions.txt', 'fixture reactions\n');
+    f.write('core/internal/history/assets/reactions.txt', 'fixture reactions\n');
     const textAsset = fingerprintCoreSources(f.root);
     assert.equal(textAsset.files, original.files + 1);
     assert.notEqual(textAsset.digest, original.digest);
-    f.write('core/internal/history/data/reactions.txt', 'changed reactions\n');
+    f.write('core/internal/history/assets/reactions.txt', 'changed reactions\n');
     assert.notEqual(fingerprintCoreSources(f.root).digest, textAsset.digest);
     f.write('core/internal/i18n/language-registry.json', '[{"code":"fixture"}]\n');
     const jsonAsset = fingerprintCoreSources(f.root);

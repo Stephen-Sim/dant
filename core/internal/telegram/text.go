@@ -12,7 +12,7 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/i18n"
 )
 
-//go:embed data/words.json
+//go:embed assets/words.json
 var wordsData []byte
 
 var words = func() map[string]map[string]json.RawMessage {

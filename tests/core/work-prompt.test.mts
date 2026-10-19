@@ -6,7 +6,7 @@ import { dynamicTools, Engine } from '../../src/work/engine.mts';
 test('Go tool declarations preserve every original permission-specific JSON schema', () => {
   const declarations: unknown = JSON.parse(
     fs.readFileSync(
-      new URL('../../core/internal/work/data/dynamic-tools.json', import.meta.url),
+      new URL('../../core/internal/work/assets/dynamic-tools.json', import.meta.url),
       'utf8',
     ),
   );
@@ -40,7 +40,7 @@ test('the Go instruction template retains the complete current Engine instructio
     .replace('use English.', 'use {{languageName}}.');
   assert.equal(
     fs.readFileSync(
-      new URL('../../core/internal/work/data/instructions.txt', import.meta.url),
+      new URL('../../core/internal/work/assets/instructions.txt', import.meta.url),
       'utf8',
     ),
     expected + '\n',

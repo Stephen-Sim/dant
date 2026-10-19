@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const directory = path.join(root, 'core/internal/history/data');
+const directory = path.join(root, 'core/internal/history/assets');
 const maxDataBytes = 2 * 1024 * 1024;
 const sources = [
   {
