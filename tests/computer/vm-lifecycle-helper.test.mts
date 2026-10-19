@@ -142,14 +142,15 @@ test(
       `
 $ErrorActionPreference='Stop'
 $env:ProgramFiles=${literal(path.join(dir, 'programs'))}; [Environment]::SetEnvironmentVariable('ProgramFiles(x86)',$env:ProgramFiles)
-$env:DANT_FIXTURE_VMX=${literal(vmx)}; $env:DANT_FIXTURE_STATE=${literal(state)}
+# Exercise equivalent path spelling, including the 8.3 temp paths used by Windows runners.
+$env:DANT_FIXTURE_VMX=${literal(path.dirname(vmx) + path.sep + '.' + path.sep + path.basename(vmx))}; $env:DANT_FIXTURE_STATE=${literal(state)}
 Add-Type -OutputType ConsoleApplication -OutputAssembly ${literal(path.join(tools, 'vmrun.exe'))} -TypeDefinition @'
 using System; using System.IO;
 class DantFixtureVmrun { static int Main(string[] args) {
- var vmx=Environment.GetEnvironmentVariable("DANT_FIXTURE_VMX"); var file=Environment.GetEnvironmentVariable("DANT_FIXTURE_STATE");
+ var vmx=Path.GetFullPath(Environment.GetEnvironmentVariable("DANT_FIXTURE_VMX")); var file=Environment.GetEnvironmentVariable("DANT_FIXTURE_STATE");
  if(args.Length<3) return 2;
  if(args[2]=="list") { var running=File.ReadAllText(file)=="running"; Console.WriteLine("Total running VMs: "+(running?1:0)); if(running) Console.WriteLine(vmx); return 0; }
- if(args.Length<4||args[3]!=vmx) return 3;
+ if(args.Length<4||!String.Equals(Path.GetFullPath(args[3]),vmx,StringComparison.OrdinalIgnoreCase)) return 3;
  if(args[2]=="suspend") {File.WriteAllText(file,"saved");File.WriteAllText(Path.Combine(Path.GetDirectoryName(vmx),"dant.vmss"),"fixture");return 0;}
  if(args[2]=="start") {File.WriteAllText(file,"running");return 0;} return 4;
 } }
