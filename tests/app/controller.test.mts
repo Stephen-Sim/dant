@@ -5,6 +5,7 @@ import {
   deferred,
   observedRecord,
   observedRecords,
+  WorkerServiceFixture,
 } from '../support/service-fixtures.mts';
 import type { ControllerAppOptions } from '../../src/app/controller-types.ts';
 import type { VmObservation } from '../../src/computer/vm-observation-types.ts';
@@ -20,6 +21,11 @@ import { createControllerApp } from '../../src/app/controller.mts';
 import { VmBridge } from '../../src/computer/vm-bridge.mts';
 import { assertVmRuntime } from '../../src/runtime/local-worker.mts';
 import { appearanceDefaults, appearanceKeys } from '../../src/settings/appearance.mts';
+import { createWorkerApp } from '../../src/app/server.mts';
+import { VoiceKeyStore } from '../../src/security/secrets.mts';
+import { ConnectionStatus, TaskStatus, PlanStepStatus } from '../../src/contracts/states.mts';
+import { readAppState } from '../../ui/app/application-state.mts';
+import { workProgress } from '../../ui/work/work-progress.mts';
 
 const root = path.resolve('.cache/tests');
 fs.mkdirSync(root, { recursive: true });
@@ -275,17 +281,126 @@ test('language changes persist offline and synchronize the VM default on reconne
 
 test('default Controller has no authoritative Store or local task executor', async (t) => {
   const dir = temporary(t),
-    { app, base, session, headers } = await listen(t, dir);
+    { app, base, session, headers } = await listen(t, dir, new FakeBridge(), {
+      secretFactory: (directory) => new VoiceKeyStore(directory, { platform: 'linux', env: {} }),
+    });
   assert.equal(session.product, 'dant');
   assert.equal(session.mode, 'controller');
   assert.equal('store' in app, false);
   assert.equal('engine' in app, false);
   assert.equal('worker' in app, false);
   assert.equal(fs.existsSync(path.join(dir, 'state.json')), false);
-  const state = await fetch(base + '/api/state', { headers }).then((response) => response.json());
+  const wire: unknown = await fetch(base + '/api/state', { headers }).then((response) =>
+      response.json(),
+    ),
+    state = readAppState(wire),
+    progress = workProgress(state);
   assert.equal(state.mode, 'vm-controller');
-  assert.equal(state.controller.authority, 'vm');
+  assert.equal(observedRecord(observedRecord(wire).controller).authority, 'vm');
   assert.deepEqual(state.messages, []);
+  assert.equal(state.worker.realtime?.key?.source, null);
+  assert.equal(progress.active, null);
+  assert.deepEqual(progress.items, []);
+});
+
+test('Controller forwarding a real older Worker state preserves nullable task identity and unknown progress', async (t) => {
+  const workerDir = fs.mkdtempSync(path.join(root, 'controller-worker-state-')),
+    worker = new WorkerServiceFixture();
+  worker.status = ConnectionStatus.Online;
+  worker.error = null;
+  worker.models = null;
+  worker.rpc = null;
+  worker.disconnect = () => {
+    worker.status = ConnectionStatus.Offline;
+  };
+  const workerApp = createWorkerApp({
+    dataDir: workerDir,
+    workerFactory: () => worker,
+    secretFactory: (dir) => new VoiceKeyStore(dir, { platform: 'linux', env: {} }),
+  });
+  t.after(async () => {
+    await workerApp.close();
+    fs.rmSync(workerDir, { recursive: true, force: true });
+  });
+  const result = workerApp.store.add({
+      role: 'assistant',
+      text: 'Retained voice result',
+      status: TaskStatus.Completed,
+      turnId: 'retained-voice-turn',
+    }),
+    completion = defined(
+      workerApp.store.addCompletion({
+        turnId: 'retained-voice-turn',
+        taskId: null,
+        messageIds: [result.id],
+        work: { source: 'voice', status: TaskStatus.Review },
+      }),
+    ),
+    work = workerApp.store.registerWork({
+      turnId: 'unconfirmed-voice-turn',
+      messageId: null,
+      source: 'voice',
+      title: 'Unconfirmed retained voice task',
+      status: TaskStatus.Unknown,
+      plan: { steps: [{ step: 'Reconcile the actual outcome', status: PlanStepStatus.Pending }] },
+    });
+  await new Promise<void>((resolve) => workerApp.server.listen(0, '127.0.0.1', resolve));
+  const workerBase = `http://127.0.0.1:${listeningPort(workerApp.server)}`,
+    workerSession: unknown = await fetch(workerBase + '/api/session').then((response) =>
+      response.json(),
+    ),
+    workerToken = observedRecord(workerSession).token;
+  assert.equal(typeof workerToken, 'string');
+  assert.ok(typeof workerToken === 'string');
+  const workerResponse = await fetch(workerBase + '/api/state', {
+    headers: { 'X-Dant-Token': workerToken },
+  });
+  assert.equal(workerResponse.status, 200);
+  const legacy = observedRecord(await workerResponse.json()),
+    telegram = observedRecord(legacy.telegram),
+    sync = observedRecord(telegram.sync);
+  // Older Workers omit these newer preferences; retain the rest of the real API response.
+  delete sync.forwardMode;
+  delete sync.combineReplies;
+  delete sync.readState;
+  const bridge = new FakeBridge(),
+    { app, base, headers } = await listen(t, temporary(t), bridge, {
+      secretFactory: (dir) => new VoiceKeyStore(dir, { platform: 'linux', env: {} }),
+    });
+  bridge.status = ConnectionStatus.Online;
+  for (const withoutSync of [false, true]) {
+    if (withoutSync) delete telegram.sync;
+    bridge.emit('state', legacy);
+    const response = await fetch(base + '/api/state', { headers });
+    assert.equal(response.status, 200);
+    const wire: unknown = await response.json(),
+      state = readAppState(wire),
+      progress = workProgress(state),
+      retainedWork = defined(state.workTasks?.find((record) => record.id === work.id)),
+      retainedCompletion = defined(
+        state.completions?.find((record) => record.id === completion.id),
+      ),
+      progressItem = defined(progress.items.find((record) => record.id === work.id));
+    assert.equal(retainedWork.messageId, null);
+    assert.equal(retainedCompletion.taskId, null);
+    assert.equal(state.worker.realtime?.key?.source, null);
+    assert.equal(state.usage?.subscription?.totals, null);
+    assert.equal(state.telegram?.sync?.forwardMode, undefined);
+    assert.equal(progressItem.status, TaskStatus.Unknown);
+    assert.equal(progressItem.progressCompleted, false);
+    assert.equal(progressItem.canResume, false);
+    assert.equal(progress.active, null);
+    assert.equal(progress.completedCount, 0);
+  }
+  assert.equal('store' in app, false);
+  assert.equal('engine' in app, false);
+  assert.equal(workerApp.engine.active, null);
+  assert.deepEqual(workerApp.engine.queue, []);
+  assert.ok(
+    bridge.requests.every(
+      (request) => request.route === '/api/settings' && request.method === 'PATCH',
+    ),
+  );
 });
 
 test('Controller retains cached VM conversation offline and never loads legacy host state as authority', async (t) => {

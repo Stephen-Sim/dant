@@ -18,6 +18,9 @@ import { randomUUID } from 'node:crypto';
 import { createWorkerApp } from '../../src/app/server.mts';
 import { Store } from '../../src/conversation/store.mts';
 import { SKILL_SUPPORT_FILE_LIMIT } from '../../src/skills/skill-limits.mts';
+import { VoiceKeyStore } from '../../src/security/secrets.mts';
+import { readAppState } from '../../ui/app/application-state.mts';
+import { workProgress } from '../../ui/work/work-progress.mts';
 
 const root = path.resolve('.cache/tests');
 fs.mkdirSync(root, { recursive: true });
@@ -106,6 +109,38 @@ async function fixture(t: NodeTestContext, options: WorkerAppOptions = {}) {
   }
   return { ...instance, worker, api, base, token, dir };
 }
+
+test('a new Worker state decodes and renders progress with unconfigured voice and no reported usage', async (t) => {
+  const { api, worker, engine } = await fixture(t, {
+    secretFactory: (dir) => new VoiceKeyStore(dir, { platform: 'linux', env: {} }),
+  });
+  const response = await api('/state');
+  assert.equal(response.status, 200);
+  const wire: unknown = await response.json(),
+    raw = observedRecord(wire),
+    key = observedRecord(observedRecord(observedRecord(raw.worker).realtime).key),
+    usage = observedRecord(raw.usage);
+  assert.equal(key.configured, false);
+  assert.equal(key.source, null, 'the real secret store reports absence as null');
+  assert.equal(usage.recordedSince, null);
+  for (const source of ['subscription', 'apiVoice']) {
+    const counters = observedRecord(usage[source]);
+    assert.equal(counters.available, false);
+    assert.equal(counters.totals, null);
+    assert.equal(counters.lastResponse, null);
+  }
+  const state = readAppState(wire),
+    progress = workProgress(state);
+  assert.equal(state.worker.realtime?.key?.source, null);
+  assert.equal(state.usage?.recordedSince, null);
+  assert.equal(progress.active, null);
+  assert.deepEqual(progress.items, []);
+  assert.deepEqual(progress.queue, []);
+  assert.equal(progress.completedCount, 0);
+  assert.equal(engine.active, null);
+  assert.equal(worker.connections, 0);
+  assert.deepEqual(worker.calls, []);
+});
 
 test('state exposes durable native and optional API voice usage without launching work', async (t) => {
   const { api, worker, engine, store } = await fixture(t);
