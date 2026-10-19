@@ -259,7 +259,7 @@ test('explicit Controller Reconnect starts an idle stopped VM executor once and 
 test('automatic Controller startup and provisioning reconnect preserve a deliberately stopped executor',async t=>{
  const provisioning=new FakeProvisioning(),{app,bridge}=await recoveryFixture(t,idleRecoveryState(),{provisioningFactory:()=>provisioning});
  await app.start();assert.equal(bridge.connections,1);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().worker.status,'offline');
- provisioning.emit('change',{status:'ready',running:false});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));assert.equal(bridge.connections,2);assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().worker.status,'offline');assert.equal(app.snapshot().messages[0].status,'paused');
+ provisioning.emit('change',{status:'ready',running:false});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));assert.equal(bridge.connections,1,'ready events do not reopen an already connected transport');assert.equal(bridge.requests.length,0);assert.equal(app.snapshot().worker.status,'offline');assert.equal(app.snapshot().messages[0].status,'paused');
 });
 
 test('only the explicit Reconnect action authorizes updating running VM work',async t=>{
@@ -267,7 +267,20 @@ test('only the explicit Reconnect action authorizes updating running VM work',as
  const original=bridge.connect.bind(bridge);bridge.connect=async options=>{modes.push(options.updateRunningWork);return original(options);};
  await app.start();assert.deepEqual(modes,[false]);
  const response=await fetch(base+'/api/connect',{method:'POST',headers,body:'{}'});assert.equal(response.status,200);assert.deepEqual(modes,[false,true]);assert.equal(bridge.requests.length,0,'the controller does not independently pause or replay tasks');
- provisioning.emit('change',{status:'ready',running:false});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(modes,[false,true,false]);
+ provisioning.emit('change',{status:'ready',running:false});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(modes,[false,true]);
+});
+
+test('Controller startup exposes pending service upgrade and automatically updates after fresh idle state',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.102');const bridge=new FakeBridge();bridge.generation=0;bridge.serviceUpdate={status:'checking',targetVersion:'0.4.7-beta.6',runningVersion:null,confirmed:false,reason:null};let state={...idleRecoveryState(),worker:{status:'online'},active:{turnId:'running'},messages:[],workTasks:[]},connections=0;
+ bridge.connect=async options=>{assert.equal(options.updateRunningWork,false);assert.equal(options.autoUpdate,true);connections++;bridge.generation++;bridge.status='online';bridge.serviceUpdate={...bridge.serviceUpdate,status:connections===1?'pending':'current',reason:connections===1?'work-active':'source-current',confirmed:true,runningVersion:connections===1?'0.4.7-beta.5':'0.4.7-beta.6'};bridge.cached=state;bridge.emit('state',state);bridge.emit('change');};bridge.refresh=async()=>state;
+ const {app}=await listen(t,dir,bridge);t.mock.timers.enable({apis:['setTimeout']});await app.start();assert.equal(connections,1);assert.equal(app.snapshot().controller.serviceUpdate.status,'pending');assert.equal(app.snapshot().controller.serviceUpdate.runningVersion,'0.4.7-beta.5');
+ t.mock.timers.tick(30000);await settle();assert.equal(connections,1,'cached idle must not bypass fresh active work');state={...state,active:null};t.mock.timers.tick(30000);await settle(()=>connections===2);await settle();assert.equal(app.snapshot().controller.serviceUpdate.status,'current');assert.equal(bridge.requests.length,0,'automatic update must not POST pause or executor recovery');
+ bridge.status='offline';assert.equal(app.snapshot().controller.serviceUpdate.confirmed,false);
+});
+
+test('a failed first automatic Controller connection retries and shutdown cancels future attempts',async t=>{
+ const dir=temporary(t);writeProfile(dir,'192.0.2.103');const bridge=new FakeBridge();let attempts=0;bridge.serviceUpdate={status:'checking',targetVersion:'0.4.7-beta.6',runningVersion:null,confirmed:false,reason:null};bridge.connect=async options=>{assert.equal(options.updateRunningWork,false);if(++attempts===1){bridge.serviceUpdate={...bridge.serviceUpdate,status:'failed',reason:'connection-unavailable'};throw Error('fixture offline');}bridge.status='online';bridge.cached={...idleRecoveryState(),worker:{status:'online'}};bridge.serviceUpdate={...bridge.serviceUpdate,status:'current',runningVersion:'0.4.7-beta.6',confirmed:true,reason:'source-current'};};
+ const {app}=await listen(t,dir,bridge);t.mock.timers.enable({apis:['setTimeout']});await app.start();assert.equal(attempts,1);t.mock.timers.tick(5000);await settle(()=>attempts===2);await settle();assert.equal(app.snapshot().controller.serviceUpdate.status,'current');await app.close();t.mock.timers.tick(60000);assert.equal(attempts,2);
 });
 
 test('explicit executor recovery is blocked by fresh active work, queues, calls, leases or handover state',async t=>{

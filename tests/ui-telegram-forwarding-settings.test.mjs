@@ -44,9 +44,9 @@ test('offline, cached, loading and in-flight states disable forwarding and seria
  const f=fixture(),wait=deferred();f.handler=()=>wait.promise;const combine=f.node('#telegram-combine-replies'),saving=f.mode('all');assert.equal(f.context.pendingActions.has('telegram'),true);assert.equal(f.node('#telegram-forward-mode').disabled,true);assert.equal(f.node('#telegram-combine-replies').disabled,true);combine.checked=false;await combine.onchange();assert.equal(f.requests.length,1);wait.resolve({...f.context.state.telegram,sync:{...f.context.state.telegram.sync,forwardMode:'all'}});await saving;assert.equal(f.context.pendingActions.has('telegram'),false);assert.equal(f.node('#telegram-forward-mode').disabled,false);assert.equal(f.context.state.telegram.sync.combineReplies,true);
 });
 
-test('old services with missing or malformed forwarding capability fields stay disabled with reconnect guidance',async()=>{
+test('old services with missing or malformed forwarding capability fields stay disabled with automatic-update guidance',async()=>{
  for(const language of ['en','zh'])for(const sync of [null,{}, {mode:'old'}, {forwardMode:'all',combineReplies:true},{forwardMode:'unread',combineReplies:'true',readState:'independent'},{forwardMode:'unknown',combineReplies:true,readState:'independent'}]){
-  const f=fixture({language,sync});assert.equal(f.node('#telegram-forward-mode').disabled,true);assert.equal(f.node('#telegram-combine-replies').disabled,true);assert.equal(f.node('#telegram-forward-mode').value,'unread');assert.equal(f.node('#telegram-combine-replies').hasAttribute('checked'),true);assert.match(f.node('.telegram-forwarding-update').textContent,/Reconnect/);await f.mode('all');assert.equal(f.requests.length,0);assert.match(f.toasts.at(-1),/Reconnect/);
+  const f=fixture({language,sync});assert.equal(f.node('#telegram-forward-mode').disabled,true);assert.equal(f.node('#telegram-combine-replies').disabled,true);assert.equal(f.node('#telegram-forward-mode').value,'unread');assert.equal(f.node('#telegram-combine-replies').hasAttribute('checked'),true);assert.match(f.node('.telegram-forwarding-update').textContent,language==='en'?/updates automatically/:/自动更新/);await f.mode('all');assert.equal(f.requests.length,0);assert.match(f.toasts.at(-1),language==='en'?/updates automatically/:/自动更新/);
  }
 });
 

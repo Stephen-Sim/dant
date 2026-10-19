@@ -84,7 +84,7 @@ Reusable skills use their own sidebar page rather than a settings category. It i
 
 ## Telegram forwarding
 
-In **Settings → Telegram → Message forwarding**, choose **Unread replies only (recommended)** or **All replies**. Unread-only avoids forwarding replies already read in dant; All also forwards those read replies. Read/unread status remains independent between dant and Telegram. **Combine consecutive replies**, enabled by default, groups consecutive text replies into fewer Telegram messages; attachments are delivered separately. These controls save automatically without replacing the bot token, changing the pairing or restarting Telegram polling. Older work computer services must be updated through **Settings → Work computer → Reconnect** before these controls are available.
+In **Settings → Telegram → Message forwarding**, choose **Unread replies only (recommended)** or **All replies**. Unread-only avoids forwarding replies already read in dant; All also forwards those read replies. Read/unread status remains independent between dant and Telegram. **Combine consecutive replies**, enabled by default, groups consecutive text replies into fewer Telegram messages; attachments are delivered separately. These controls save automatically without replacing the bot token, changing the pairing or restarting Telegram polling. These controls require the matching work computer service. In **0.4.7-beta.7**, the service updates automatically when connected and idle; **Settings → Work computer** shows pending, updating, confirmed and failed states.
 
 ## Background operation on Windows
 

@@ -6,8 +6,8 @@ Object.assign(copy.en,{cancelTitle:'Cancel this task?',cancelHint:'Stop this tas
 Object.assign(copy.zh,{cancelTitle:'取消这项任务？',cancelHint:'停止这项任务，并在最近的任务中保留“已取消”记录。聊天和结果会保留。',keepWorking:'保留任务',confirmCancel:'确认取消任务',cancelled:'任务已取消',unconfirmed:'尚未确认任务已取消，请检查当前状态后再操作。'});
 Object.assign(copy.en,{paused:'Task paused',pausing:'Waiting for the task to pause safely.',resumed:'Task will continue when the executor is free.',pauseUnconfirmed:'Pause is not confirmed. Check the current task status before trying again.',resumeUnconfirmed:'Resume is not confirmed. Check the current task status before trying again.'});
 Object.assign(copy.zh,{paused:'任务已暂停',pausing:'正在等待任务安全暂停。',resumed:'执行器空闲时会继续这项任务。',pauseUnconfirmed:'尚未确认任务已暂停，请检查当前状态后再操作。',resumeUnconfirmed:'尚未确认任务已继续，请检查当前状态后再操作。'});
-Object.assign(copy.en,{serviceUpdateNeeded:'The work computer service needs an update. Open Settings → Work computer and choose Reconnect, then try again.'});
-Object.assign(copy.zh,{serviceUpdateNeeded:'工作电脑服务需要更新，请打开设置 → 工作电脑，点击刷新连接后再试。'});
+Object.assign(copy.en,{serviceUpdateNeeded:'The work computer service needs an update. It updates automatically when connected and idle. Check its status in Settings → Work computer.'});
+Object.assign(copy.zh,{serviceUpdateNeeded:'工作电脑服务需要更新，连接并空闲时会自动完成。请在设置 → 工作电脑查看状态。'});
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const kinds=new Set(['task','work','completion']),priorities=new Set(['high','normal','low']);
 const identity=item=>item.registered||item.work?{id:item.id,kind:'work'}:item.voice?{id:item.id,kind:'completion'}:{id:item.message?.id,kind:'task'};

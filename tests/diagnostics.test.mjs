@@ -5,7 +5,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {EventEmitter} from 'node:events';
 import {Diagnostics,DiagnosticLogger} from '../src/diagnostics.mjs';
-import {observeHttp} from '../src/diagnostic-events.mjs';
+import {observeHttp,observeBridge} from '../src/diagnostic-events.mjs';
 
 const root=path.resolve('.cache/tests');fs.mkdirSync(root,{recursive:true});
 const DAY=86400000,MiB=1024*1024,epoch=Date.parse('2026-10-17T00:00:00.000Z');
@@ -48,6 +48,13 @@ test('task action route templates survive HTTP observation, persistence and rece
  const linkRes=new EventEmitter();linkRes.statusCode=404;middleware({method:'POST',originalUrl:'/api/messages/private-message/output-link/resolve?token=private-token',body:{href:'file:///private-path'}},linkRes,()=>{});linkRes.emit('finish');expected.push('/api/messages/:id/output-link/resolve');
  assert.deepEqual(logger.recent(100).map(row=>row.route),expected);assert.doesNotMatch(fs.readFileSync(files(logger)[0],'utf8'),/private-/);
  logger.log('http.request',{route:'/api/tasks/private-task/context',method:'GET',status:409});assert.equal(Object.hasOwn(logger.recent().at(-1),'route'),false);
+});
+
+test('VM update failure metadata survives persistence with distinct target, running and logger versions',t=>{
+ const {logger}=setup(t,{role:'controller',version:'0.4.7-beta.7'}),bridge=new EventEmitter(),detach=observeBridge(logger,bridge);t.after(detach);
+ bridge.emit('diagnostic',{event:'vm.service-update',fields:{status:'failed',phase:'pause',reason:'pause-unconfirmed',stage:'post-pause',targetVersion:'0.4.7-beta.7',runningVersion:'0.4.7-beta.6',unknownOutcome:true,stdout:'PRIVATE command result',error:Error('PRIVATE path'),task:{text:'PRIVATE task'}}});
+ assert.deepEqual(logger.recent()[0],{at:new Date(epoch).toISOString(),event:'vm.service-update',status:'failed',reason:'pause-unconfirmed',phase:'pause',stage:'post-pause',unknownOutcome:true,targetVersion:'0.4.7-beta.7',runningVersion:'0.4.7-beta.6',role:'controller',version:'0.4.7-beta.7'});
+ logger.log('vm.service-update',{targetVersion:'PRIVATE version',runningVersion:'1.2.3\nPRIVATE',status:'failed'});assert.deepEqual(Object.keys(logger.recent().at(-1)).sort(),['at','event','role','status','version']);assert.doesNotMatch(fs.readFileSync(files(logger)[0],'utf8'),/PRIVATE|stdout|command result|task/);
 });
 
 test('observer diagnostics retain only fixed item schema metadata and safe IDs',t=>{

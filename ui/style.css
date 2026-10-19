@@ -338,6 +338,10 @@
 .task-detail-files li>div{display:flex;flex-shrink:0;gap:10px}
 .task-detail-files .text-btn{font-size:calc(var(--app-font-size) * 10 / 13);padding:0;white-space:nowrap}
 .task-detail-updated{margin-top:22px;margin-bottom:0}
+.vm-service-update{margin:12px 0;padding:12px;border:1px solid var(--border-soft);border-radius:8px;background:var(--surface)}
+.vm-service-update strong{font-weight:500;color:var(--text)}
+.vm-service-update small{display:block;margin-top:5px}
+.vm-service-update p{margin:6px 0 0;font-size:inherit}
 .task-detail-footer{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-shrink:0;border-top:1px solid var(--border-soft);padding:17px 24px;background:var(--surface)}
 .task-detail-footer p{font-size:calc(var(--app-font-size) * 10 / 13);color:var(--text-muted);line-height:1.8;margin:0;max-width:550px}
 .task-detail-footer button{flex-shrink:0;font-size:calc(var(--app-font-size) * 11 / 13);padding:8px 12px;white-space:nowrap}

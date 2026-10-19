@@ -38,7 +38,7 @@ function run(replies,{mode='pause'}={}){
  return {...result,report:JSON.parse(result.stdout)};
 }
 
-test('manual update pauses beta2 work twice and obtains a current idle witness before replacement',()=>{
+test('manual update pauses beta2 work twice and preserves its authoritative legacy idle witness',()=>{
  const busy={...idle(),active:{workId:'one',turnId:'turn'},queue:['queued'],workTasks:[{id:'one',status:'running'}]};
  const ended={...idle(),workTasks:[{id:'one',status:'continuing'}]};
  const paused={...idle(),workTasks:[{id:'one',status:'paused'}]};
@@ -78,7 +78,7 @@ test('manual update refuses changed call ownership without stopping the replacem
 test('a pause timeout is an unknown result and is never resent',()=>{
  const result=run([session(),state({...idle(),active:{turnId:'work'}}),{...pause(),error:true}]);
  assert.equal(result.status,1);assert.equal(result.report.calls.filter(call=>call.route==='/api/tasks/pause').length,1);
- assert.match(result.stderr,/no action was resent/);assert.doesNotMatch(result.stderr,/PRIVATE RESPONSE/);
+ assert.match(result.stderr,/no unconfirmed action was resent/);assert.doesNotMatch(result.stderr,/PRIVATE RESPONSE/);
 });
 
 test('malformed state, human control and unconfirmed work fail before any mutation',()=>{
@@ -96,16 +96,17 @@ test('new activity or unresolved continuation after pause blocks replacement',()
  }
 });
 
-test('idle witness rejection aborts after confirmed pauses without any executor restart',()=>{
- const result=run([session(),state(idle()),pause(),state(idle()),pause(),{...witness(),error:true}]);
- assert.equal(result.status,1);assert.equal(result.report.calls.at(-1).route,'/api/connect');
- assert.match(result.stderr,/existing service and saved tasks were preserved/);
+test('final state rejection aborts after confirmed pauses and the existing legacy witness',()=>{
+ const result=run([session(),state(idle()),pause(),state(idle()),pause(),witness(),{...state(idle()),error:true}]);
+ assert.equal(result.status,1);assert.equal(result.report.calls.at(-1).route,'/api/state');assert.equal(result.report.calls.filter(call=>call.route==='/api/connect').length,1);
+ assert.match(result.stderr,/^DANT_UPDATE_FAILED:state-unavailable:final$/m);
+ assert.match(result.stderr,/Saved task records were preserved/);
 });
 
-test('rollback idle validation performs no task pause or call stop on newly started work',()=>{
+test('rollback idle validation preserves its legacy witness without task pause or call stop on newly started work',()=>{
  for(const current of [{...idle(),active:{turnId:'new'}},{...idle(),call:{id:'new-call'}},{...idle(),queue:['new']}]){
-  const result=run([session(),state(current),{...witness(),error:true}],{mode:'idle'});
-  assert.equal(result.status,1);assert.ok(result.report.calls.every(call=>!['/api/tasks/pause','/api/call/stop'].includes(call.route)));
+  const result=run([session(),state(idle()),witness(),state(current)],{mode:'idle'});
+  assert.equal(result.status,79);assert.ok(result.report.calls.every(call=>call.method==='GET'||call.route==='/api/connect'));assert.match(result.stderr,/^DANT_UPDATE_DEFERRED:work-still-active:rollback$/m);
  }
 });
 
@@ -113,7 +114,7 @@ test('rollback validates the current online idle executor without starting an of
  const ready=run([session(),state(idle()),witness(),state(idle())],{mode:'idle'});
  assert.equal(ready.status,0,ready.stderr);assert.equal(ready.report.remaining,0);
  const offline=run([session(),state({...idle(),worker:{status:'offline'}})],{mode:'idle'});
- assert.equal(offline.status,1);assert.ok(offline.report.calls.every(call=>call.method==='GET'));
+ assert.equal(offline.status,79);assert.ok(offline.report.calls.every(call=>call.method==='GET'));assert.match(offline.stderr,/^DANT_UPDATE_DEFERRED:executor-offline:rollback$/m);
 });
 
 test('idle automatic check accepts paused or completed work without changing saved records',()=>{
@@ -121,8 +122,71 @@ test('idle automatic check accepts paused or completed work without changing sav
  assert.equal(result.status,0,result.stderr);assert.equal(result.report.calls.length,2);
 });
 
+test('passive checks defer saved runnable work between turns and only accept an explicitly ended user wait',()=>{
+ for(const mode of ['check','final']){
+  for(const record of ['running','queued','accepted','continuing','pausing','unknown'].map(status=>({status})).concat([{}, {executionEndedAt:0},{executionEndedAt:-1},{executionEndedAt:true},{executionEndedAt:'1'}].map(extra=>({status:'waiting_user',...extra})))){
+   const result=run([session(),state({...idle(),workTasks:[record]})],{mode});assert.equal(result.status,79,JSON.stringify({mode,record}));assert.match(result.stderr,new RegExp('^DANT_UPDATE_DEFERRED:work-still-active:'+(mode==='idle'?'rollback':mode==='final'?'final':'initial')+'$','m'));assert.ok(result.report.calls.every(call=>call.method==='GET'));
+  }
+  const ended=run([session(),state({...idle(),workTasks:[{status:'waiting_user',executionEndedAt:1}]})],{mode});assert.equal(ended.status,0,ended.stderr);
+ }
+});
+
+test('passive checks defer every unconfirmed executor status using GET only, including a post-pause offline race',()=>{
+ for(const mode of ['check','final','idle'])for(const worker of [undefined,null,{}, {status:'offline'},{status:'connecting'},{status:'unknown'}]){
+  const current={...idle(),worker},result=run([session(),state(current)],{mode});assert.equal(result.status,79);assert.match(result.stderr,/^DANT_WORK_ACTIVE$/m);assert.match(result.stderr,new RegExp('^DANT_UPDATE_DEFERRED:executor-offline:'+(mode==='idle'?'rollback':mode==='final'?'final':'initial')+'$','m'));assert.ok(result.report.calls.every(call=>call.method==='GET'));
+ }
+ const race=run([session(),state(idle()),pause(),state(idle()),pause(),witness(),state({...idle(),worker:{status:'offline'}})]);assert.equal(race.status,1);assert.match(race.stderr,/^DANT_UPDATE_FAILED:executor-offline:final$/m);assert.equal(race.report.calls.filter(call=>call.method==='POST').length,3);
+});
+
+test('fixed guard reasons identify the failed stage without exposing private responses or replaying requests',()=>{
+ const cases=[
+  [[{...session(),error:true}],'session-unavailable','initial'],
+  [[step('/api/session',{})],'session-invalid','initial'],
+  [[session(),state({})],'state-invalid','initial'],
+  [[session(),state({...idle(),computer:{status:'human'}})],'control-busy','initial'],
+  [[session(),state({...idle(),messages:[{status:'paused',submission:'unknown'}]})],'work-unconfirmed','initial'],
+  [[session(),state({...idle(),call:{id:''}})],'call-owner-invalid','initial'],
+  [[session(),state(idle()),{...pause(),error:true}],'pause-unconfirmed','pause'],
+  [[session(),state(idle()),pause(),{...state(idle()),error:true}],'state-unavailable','post-pause'],
+  [[session(),state({...idle(),call:{id:'old'}}),pause(),state({...idle(),call:{id:'other'}})],'call-owner-changed','post-pause'],
+  [[session(),state({...idle(),call:{id:'old'}}),pause(),state({...idle(),call:{id:'old'}}),step('/api/call/stop',{stopped:false},{method:'POST',body:{callId:'old'}})],'call-stop-unconfirmed','call-stop'],
+  [[session(),state(idle()),pause(),state(idle()),{...pause(),error:true}],'saved-pause-unconfirmed','saved-pause'],
+  [[session(),state(idle()),pause(),state(idle()),pause(),{...witness(),error:true}],'idle-unconfirmed','final'],
+  [[session(),state(idle()),pause(),state(idle()),pause(),witness(),state({...idle(),active:{turnId:'new'}})],'work-still-active','final']
+ ];
+ for(const [replies,reason,stage]of cases){const result=run(replies);assert.equal(result.status,1);assert.match(result.stderr,new RegExp('^DANT_UPDATE_FAILED:'+reason+':'+stage+'$','m'));assert.doesNotMatch(result.stderr,/PRIVATE|fixture-session|Traceback|TimeoutError/);assert.equal(result.report.remaining,0);assert.ok(result.report.calls.filter(call=>call.route==='/api/connect').length<=1);}
+});
+
 const bash=process.platform==='win32'?path.join(process.env.ProgramFiles||'C:/Program Files','Git/bin/bash.exe'):'bash';
 const shellPath=value=>process.platform==='win32'?value.replaceAll('\\','/').replace(/^([A-Za-z]):/,(_,drive)=>'/'+drive.toLowerCase()):value;
+
+test('the same deployed manifest returns current without pausing work or restarting services, including manual reconnect',t=>{
+ const testRoot=path.resolve('.cache/tests');fs.mkdirSync(testRoot,{recursive:true});
+ const root=fs.mkdtempSync(path.join(testRoot,'worker-current-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const home=path.join(root,'home'),stage=path.join(home,'dant/releases/source.fixture');fs.mkdirSync(stage,{recursive:true});
+ fs.writeFileSync(path.join(stage,'deploy-manifest.json'),'same-source');fs.writeFileSync(path.join(home,'dant/deployed-source.json'),'same-source');
+ const current=script.slice(script.indexOf('if [ -f "$HOME/dant/deployed-source.json" ]'),script.indexOf('if [ -e "$HOME/dant/app" ]'));
+ const harness=String.raw`
+set -euo pipefail
+export HOME="$1"
+source_dir="$2"
+update_running_work="$3"
+cd "$source_dir"
+prepare_transcription() { printf 'transcription\n' >> "$HOME/events"; }
+node() { printf 'node:%s\n' "$*" >> "$HOME/events"; }
+systemctl() { printf 'systemctl:%s\n' "$*" >> "$HOME/events"; [[ "$*" == '--user is-active --quiet dant-worker.service dant-guest-local.service' ]]; }
+check_idle_worker() { printf 'pause-check\n' >> "$HOME/events"; exit 9; }
+`;
+ const runFile=path.join(root,'current-fixture.sh');fs.writeFileSync(runFile,harness+'\n'+current);
+ for(const manual of ['false','true']){
+  fs.writeFileSync(path.join(home,'events'),'');
+  const result=spawnSync(bash,['--noprofile','--norc',shellPath(runFile),shellPath(home),shellPath(stage),manual],{encoding:'utf8',shell:false,timeout:10000});
+  if(result.error)throw result.error;
+  assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/^DANT_UPDATE_CURRENT$/m);
+  const events=fs.readFileSync(path.join(home,'events'),'utf8');assert.match(events,/is-active/);assert.doesNotMatch(events,/pause-check|restart|stop/);
+ }
+});
+
 function deployment(t,{failure='',rollbackBusy=false,initialState='active',becomeActive=false,rollbackFailure=''}={}){
  const testRoot=path.resolve('.cache/tests');fs.mkdirSync(testRoot,{recursive:true});
  const root=fs.mkdtempSync(path.join(testRoot,'worker-install-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -159,10 +223,10 @@ readlink() { cat "$1"; }
 check_idle_worker() {
   local mode=check
   if (( $# )); then mode="$1"; fi
-  if [[ "$become_active" == true && "$mode" == check ]]; then printf active > "$HOME/worker-active"; fi
+  if [[ "$become_active" == true && "$mode" == final ]]; then printf active > "$HOME/worker-active"; fi
   worker_checked_state=$(worker_service_state) || return 1
   printf 'check:%s\n' "$mode" >> "$HOME/events"
-  if [[ "$failure" == 'precheck' && "$mode" == 'check' ]]; then return 1; fi
+  if [[ "$failure" == 'precheck' && "$mode" == 'final' ]]; then return 1; fi
   if [[ "$rollback_busy" == 'true' && "$mode" == 'idle' ]]; then return 1; fi
 }
 systemctl() {
@@ -195,7 +259,7 @@ test('installation switches a confirmed idle worker, preserves paused data and c
  assert.equal(fs.readFileSync(path.join(result.home,'dant/app'),'utf8'),shellPath(result.stage));
  assert.equal(fs.readFileSync(path.join(result.home,'dant/deployed-source.json'),'utf8'),'new-source');
  assert.equal(JSON.parse(fs.readFileSync(path.join(result.home,'dant/data/state.json'),'utf8')).tasks[0].status,'paused');
- assert.ok(result.events.indexOf('check:check')<result.events.indexOf('systemctl:--user stop dant-worker.service'));
+ assert.ok(result.events.indexOf('check:final')<result.events.indexOf('systemctl:--user stop dant-worker.service'));
 });
 
 test('a failed new worker restores the previous app, helpers and services without rolling back authoritative data',async t=>{
@@ -230,7 +294,7 @@ test('a new worker with unconfirmed activity is left in place instead of being f
 
 test('an old worker that became active during preparation is stopped after the fresh idle check',t=>{
  const result=deployment(t,{initialState:'inactive',becomeActive:true});assert.equal(result.status,0,result.stderr);
- assert.match(result.events,/check:check[\s\S]*systemctl:--user stop dant-worker.service/);
+ assert.match(result.events,/check:final[\s\S]*systemctl:--user stop dant-worker.service/);
 });
 
 test('transitional or unknown systemd state never permits a live app replacement',async t=>{

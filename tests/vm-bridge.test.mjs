@@ -5,7 +5,7 @@ import path from 'node:path';
 import {EventEmitter, once} from 'node:events';
 import {PassThrough} from 'node:stream';
 import {createHash} from 'node:crypto';
-import {VmBridge} from '../src/vm-bridge.mjs';
+import {VmBridge,vmSourceFingerprint} from '../src/vm-bridge.mjs';
 
 const testRoot = path.resolve('.cache/tests');
 fs.mkdirSync(testRoot, {recursive:true});
@@ -40,7 +40,8 @@ function fixture(t, overrides={}) {
     spawnProcess(command, args, options) { const child = new Child(); calls.push({command, args, options}); children.push(child); return child; },
     fetchImpl:async (url, options) => { requests.push({url, options}); return Response.json(url.endsWith('/api/session') ? {token:'fixture token'} : {messages:[{id:'from-vm'}]}); },
     WebSocketImpl:class extends Socket { constructor(url) { super(url); sockets.push(this); } },
-    ...overrides
+    ...overrides,
+    fetchImpl:async(url,options)=>url.endsWith('/api/version')?(overrides.versionImpl?overrides.versionImpl(url,options):Response.json({version:'0.4.7-beta.6'})):(overrides.fetchImpl?overrides.fetchImpl(url,options):(requests.push({url,options}),Response.json(url.endsWith('/api/session')?{token:'fixture token'}:{messages:[{id:'from-vm'}]})))
   });
   t.after(() => { bridge.close(); fs.rmSync(root, {recursive:true, force:true}); });
   return {bridge, root, dataDir, projectRoot, calls, children, requests, sockets};
@@ -180,7 +181,7 @@ test('event disconnection reconnects after a delay without redeploying or discar
   assert.match(bridge.error, /event connection was lost/);
   const online = new Promise(resolve => bridge.on('change', () => { if (bridge.status === 'online') resolve(); }));
   t.mock.timers.tick(4999); assert.equal(calls.length, 1);
-  t.mock.timers.tick(1); await online;
+  t.mock.timers.tick(1); await online;await bridge.connecting;
   assert.equal(calls.length, 2); assert.equal(preparations, 1); assert.equal(sockets.length, 2);
   sockets[0].emit('close'); assert.equal(bridge.status, 'online');
 });
@@ -322,6 +323,7 @@ test('preparation reports spawn, active-work, missing-input, timeout and close f
 
 function archiveRecorder(bridge, onInstall=()=>{}) {
   const calls = [], migrations = [], manifests = [];
+  let probes=0;bridge.deployedSource=async()=>++probes%2?{sha256:null,active:true}:{sha256:bridge.desiredSource,active:true};
   bridge.run = async (command, args, options={}) => {
     calls.push({command, args, options});
     if (args[0] === '-cf') fs.writeFileSync(args[1], 'source archive fixture');
@@ -358,7 +360,7 @@ test('deployment uses a source allowlist, preserves host data and migrates only 
   assert.equal(recorded.migrations[0].state.settings.language, 'en'); assert.deepEqual(recorded.migrations[0].files, ['result.txt']);
   const digest = createHash('sha256').update(original).digest('hex');
   assert.equal(recorded.migrations[0].manifest.id, digest); assert.equal(recorded.migrations[0].manifest.messages, 1);
-  assert.equal(recorded.manifests[0].sha256, createHash('sha256').update('source archive fixture').digest('hex'));
+  assert.equal(recorded.manifests[0].schemaVersion,2);assert.equal(recorded.manifests[0].sha256,vmSourceFingerprint(projectRoot));
   const backups = fs.readdirSync(path.join(dataDir, 'migration-backups')); assert.equal(backups.length, 1);
   const backup = path.join(dataDir, 'migration-backups', backups[0]); assert.equal(fs.readFileSync(path.join(backup, 'state.json'), 'utf8'), original);
   assert.equal(fs.readFileSync(path.join(backup, 'files/result.txt'), 'utf8'), 'keep this attachment');
@@ -386,4 +388,57 @@ test('missing build resources and invalid legacy state fail before remote instal
   resources(projectRoot); const recorded = archiveRecorder(bridge); fs.writeFileSync(path.join(dataDir, 'state.json'), '{');
   await assert.rejects(bridge.deploy(bridge.binding()), SyntaxError);
   assert.equal(recorded.calls.some(call => call.command === 'ssh'), false); assert.equal(fs.existsSync(path.join(dataDir, 'vm-migration.json')), false);
+});
+
+test('source identity depends on file names and bytes, never filesystem timestamps',t=>{
+ const {projectRoot}=fixture(t);resources(projectRoot);const first=vmSourceFingerprint(projectRoot),file=path.join(projectRoot,'src/server.mjs');fs.utimesSync(file,new Date(1),new Date(2));assert.equal(vmSourceFingerprint(projectRoot),first);fs.appendFileSync(file,'\nchanged');assert.notEqual(vmSourceFingerprint(projectRoot),first);fs.renameSync(file,path.join(projectRoot,'src/renamed.mjs'));assert.notEqual(vmSourceFingerprint(projectRoot),first);
+});
+
+test('already deployed content skips archive upload, installation and pauses',async t=>{
+ const {bridge,projectRoot}=fixture(t);resources(projectRoot);let probes=0;bridge.deployedSource=async()=>{probes++;return {sha256:vmSourceFingerprint(projectRoot),active:true};};bridge.run=()=>assert.fail('Matching source must not run tar or installer');
+ assert.equal((await bridge.deploy(bridge.binding(),{updateRunningWork:true})).current,true);assert.equal(probes,1);
+});
+
+test('a binding change during archive preparation cannot install old source into another VM',async t=>{
+ const {bridge,projectRoot,dataDir}=fixture(t);resources(projectRoot);const recorder=archiveRecorder(bridge),run=bridge.run;bridge.run=async(command,args,options)=>{await run(command,args,options);if(args[0]==='-cf'){const file=path.join(dataDir,'vm.json'),binding=JSON.parse(fs.readFileSync(file));binding.host='192.0.2.99';fs.writeFileSync(file,JSON.stringify(binding));bridge.disconnect();}};
+ await assert.rejects(bridge.deploy(bridge.binding()),/connection changed/);assert.equal(recorder.calls.some(call=>call.command==='ssh'),false);assert.ok(!fs.readdirSync(dataDir).some(name=>name.startsWith('deploy-')));
+});
+
+test('unknown deployment is durable across bridge restart and only read-only remote confirmation clears it',async t=>{
+ const {bridge,dataDir,projectRoot}=fixture(t);resources(projectRoot);archiveRecorder(bridge,()=>{throw Error('SSH disconnected during installation');});await assert.rejects(bridge.deploy(bridge.binding()),error=>error.unknownOutcome===true);
+ const file=path.join(dataDir,'vm-update-attempts.json'),saved=JSON.parse(fs.readFileSync(file));assert.equal(saved.entries.length,1);assert.equal(JSON.stringify(saved).includes('192.0.2.15'),false);
+ const restarted=new VmBridge({dataDir,projectRoot});t.after(()=>restarted.close());restarted.deployedSource=async()=>({sha256:null,active:true});restarted.run=()=>assert.fail('An unknown installation must not be resent after restart');await assert.rejects(restarted.deploy(restarted.binding()),error=>error.unknownOutcome===true);assert.deepEqual(JSON.parse(fs.readFileSync(file)),saved);
+ fs.appendFileSync(path.join(projectRoot,'src/server.mjs'),'new desktop version');await assert.rejects(restarted.deploy(restarted.binding()),error=>error.unknownOutcome===true);assert.deepEqual(JSON.parse(fs.readFileSync(file)),saved,'a new source hash cannot bypass an older unknown update on the same VM');
+ fs.writeFileSync(path.join(projectRoot,'src/server.mjs'),'fixture src/server.mjs');
+ restarted.deployedSource=async()=>({sha256:vmSourceFingerprint(projectRoot),active:true});assert.equal((await restarted.deploy(restarted.binding())).current,true);assert.equal(JSON.parse(fs.readFileSync(file)).entries.length,0);
+});
+
+test('invalid or full unknown-update receipts fail closed without overwriting saved evidence',async t=>{
+ const {bridge,dataDir,projectRoot}=fixture(t);resources(projectRoot);bridge.deployedSource=async()=>({sha256:null,active:true});bridge.run=()=>assert.fail('Invalid receipts must prevent mutation');const file=path.join(dataDir,'vm-update-attempts.json');
+ for(const raw of ['not json',JSON.stringify({schemaVersion:1,entries:[{binding:'private host',source:'bad'}]})]){fs.writeFileSync(file,raw);await assert.rejects(bridge.deploy(bridge.binding()),error=>error.unknownOutcome===true);assert.equal(fs.readFileSync(file,'utf8'),raw);}
+ const entries=Array.from({length:64},(_,i)=>({binding:createHash('sha256').update(String(i)).digest('hex'),source:'a'.repeat(64)}));fs.writeFileSync(file,JSON.stringify({schemaVersion:1,entries}));const raw=fs.readFileSync(file,'utf8');assert.throws(()=>bridge.updateAttempts(bridge.binding(),'b'.repeat(64),'start'),error=>error.unknownOutcome===true);assert.equal(fs.readFileSync(file,'utf8'),raw);
+});
+
+test('a definitely deferred installation permits a later idle attempt and preserves exact guard diagnostics',async t=>{
+ const {bridge,children,projectRoot,dataDir}=fixture(t);resources(projectRoot);let probes=0;bridge.deployedSource=async()=>{probes++;return {sha256:null,active:true};};const run=bridge.run;bridge.run=async(command,args,options)=>{if(command!=='ssh'){if(args[0]==='-cf')fs.writeFileSync(args[1],'fixture');return '';}const pending=run.call(bridge,command,args,options);children.at(-1).stderr.write('PRIVATE DETAIL\nDANT_WORK_ACTIVE\nDANT_UPDATE_DEFERRED:executor-offline:final\n');children.at(-1).emit('close',79);return pending;};
+ await assert.rejects(bridge.deploy(bridge.binding()),error=>error.updateDeferred===true&&error.updateReason==='executor-offline'&&error.updateGuardReason==='executor-offline'&&error.updateStage==='final'&&!error.message.includes('PRIVATE'));assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir,'vm-update-attempts.json'))).entries.length,0);assert.equal(probes,1);
+});
+
+test('automatic deferred deployment keeps the old service connected and confirms its actual remote version',async t=>{
+ const {bridge,requests}=fixture(t,{versionImpl:async(url,options)=>{requests.push({url,options});return Response.json({version:'0.4.7-beta.5'});}});bridge.serviceUpdate.targetVersion='0.4.7-beta.6';bridge.prepare=async()=>{throw Object.assign(Error('busy'),{updateDeferred:true,updateReason:'work-active'});};const notices=[];bridge.on('event',event=>notices.push(event));await bridge.connect({autoUpdate:true});
+ assert.equal(bridge.status,'online');assert.deepEqual(bridge.serviceUpdate,{status:'pending',targetVersion:'0.4.7-beta.6',runningVersion:'0.4.7-beta.5',confirmed:true,reason:'work-active'});assert.equal(requests.filter(value=>value.url.endsWith('/api/version')).length,1);assert.deepEqual(notices,[]);bridge.disconnect();assert.equal(bridge.serviceUpdate.confirmed,false);
+});
+
+test('unknown automatic updates connect to existing chat without treating a matching version as deployment success',async t=>{
+ const {bridge}=fixture(t);bridge.serviceUpdate.targetVersion='0.4.7-beta.6';bridge.prepare=async()=>{throw Object.assign(Error('unconfirmed'),{unknownOutcome:true});};await bridge.connect({autoUpdate:true});assert.equal(bridge.serviceUpdate.status,'failed');assert.equal(bridge.serviceUpdate.reason,'update-unconfirmed');assert.equal(bridge.serviceUpdate.confirmed,true);assert.equal(bridge.status,'online');
+});
+
+test('remote version confirmation can recover without installing and stale replies cannot confirm a new connection',async t=>{
+ let available=false;const {bridge}=fixture(t,{versionImpl:async()=>available?Response.json({version:'0.4.7-beta.6'}):Response.json({}, {status:503})});bridge.serviceUpdate.targetVersion='0.4.7-beta.6';bridge.prepare=async()=>{};await bridge.connect({autoUpdate:true});assert.equal(bridge.serviceUpdate.reason,'version-unconfirmed');available=true;await bridge.confirmServiceVersion();assert.equal(bridge.serviceUpdate.status,'current');assert.equal(bridge.serviceUpdate.confirmed,true);
+ const gate=deferred();bridge.fetchImpl=()=>gate.promise;const pending=bridge.confirmServiceVersion();bridge.disconnect();gate.resolve(Response.json({version:'99.0.0'}));await pending;assert.equal(bridge.serviceUpdate.runningVersion,'0.4.7-beta.6');assert.equal(bridge.serviceUpdate.confirmed,false);
+});
+
+test('read-only deployment probe rejects invalid responses and never uploads source',async t=>{
+ const {bridge}=fixture(t);let calls=0;bridge.run=async(command,args,options)=>{calls++;assert.equal(command,'ssh');assert.equal(options.input,undefined);assert.equal(args.at(-1).includes('/api/connect'),false);return '{"sha256":null,"active":true}';};assert.deepEqual(await bridge.deployedSource(),{sha256:null,active:true});assert.equal(calls,1);
+ for(const raw of ['bad','{}','{"sha256":"bad","active":true}','{"sha256":null,"active":"true"}']){bridge.run=async()=>raw;await assert.rejects(bridge.deployedSource(),error=>error.updateRetryable===true);}
 });

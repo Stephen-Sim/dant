@@ -15,6 +15,8 @@ Locations:
 
 Use the authenticated `GET /api/diagnostics` endpoint for bounded recent metadata and retention status. The Controller includes the Worker report when it is reachable; its own diagnostics remain available while the VM is disconnected. Do not upload an entire application data directory: it also contains personal conversation and connection data.
 
+In **0.4.7-beta.7**, service update diagnostics use fixed status, phase, stage and reason codes, plus validated target and running versions. A failed pause or idle check is distinguishable from a connection failure or unconfirmed activation, including `pause-unconfirmed` and `idle-unconfirmed`. Raw SSH output, installation paths and task content are not retained in these records. User-facing failures show a short localized message instead of the complete installation output.
+
 ## A missing desktop does not always mean the VM crashed
 
 The VM, desktop bridge and Codex executor are separate components. A healthy VM may remain reachable while its executor has stopped. The computer panel keeps a read-only preview in this state and offers an explicit reconnect action. Reconnecting does not automatically replay paused tasks. New computer input stays blocked until the executor and ownership checks permit it.

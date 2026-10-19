@@ -10,6 +10,29 @@ export function serviceVersion(projectRoot){try{const version=JSON.parse(fs.read
 const workerStates=new Set(['offline','connecting','online']);
 const callStates=new Set(['starting','connecting','negotiating','connected','stopping','stop-unconfirmed']);
 export const diagnosticWorkerStatus=status=>workerStates.has(status)?status:'unknown';
+const serviceUpdateStatuses=new Set(['checking','updating','pending','current','failed']);
+const serviceUpdatePhases=new Set(['check','prepare','pause','activate','connect','verify','rollback']);
+const serviceUpdateReasons=new Set(['source-current','work-active','executor-offline','connection-unavailable','update-unconfirmed','update-failed','version-unconfirmed','version-mismatch','configuration-invalid','cancelled','not-configured','session-unavailable','session-invalid','state-unavailable','state-invalid','control-busy','work-unconfirmed','call-owner-invalid','pause-unconfirmed','call-owner-changed','call-stop-unconfirmed','saved-pause-unconfirmed','work-still-active','request-unconfirmed','idle-unconfirmed']);
+const serviceUpdateStages=new Set(['initial','pause','post-pause','call-stop','saved-pause','final','rollback']);
+const metadataValue=(object,key)=>{const field=Object.getOwnPropertyDescriptor(object,key);return field&&Object.hasOwn(field,'value')?field.value:undefined;};
+// Bridge diagnostics are a separate fixed event contract. Never forward the
+// bridge's raw Error, SSH stdout, connection binding or task snapshot to logs.
+export function observeBridge(diagnostics,bridge){
+ const listener=value=>{
+  try{
+   if(!value||typeof value!=='object'||metadataValue(value,'event')!=='vm.service-update')return;
+   const fields=metadataValue(value,'fields');if(!fields||typeof fields!=='object'||Array.isArray(fields))return;
+   const status=metadataValue(fields,'status');if(!serviceUpdateStatuses.has(status))return;
+   const safe={status},phase=metadataValue(fields,'phase'),reason=metadataValue(fields,'reason'),stage=metadataValue(fields,'stage');
+   if(serviceUpdatePhases.has(phase))safe.phase=phase;if(serviceUpdateReasons.has(reason))safe.reason=reason;if(serviceUpdateStages.has(stage))safe.stage=stage;
+   for(const key of ['targetVersion','runningVersion']){const version=metadataValue(fields,key);if(typeof version==='string'&&version.length<=64&&/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version))safe[key]=version;}
+   for(const key of ['durationMs','attempt','exitCode']){const count=metadataValue(fields,key);if(Number.isSafeInteger(count)&&count>=0&&count<=Number.MAX_SAFE_INTEGER)safe[key]=count;}
+   const unknownOutcome=metadataValue(fields,'unknownOutcome');if(typeof unknownOutcome==='boolean')safe.unknownOutcome=unknownOutcome;
+   diagnostics.log('vm.service-update',safe);
+  }catch{} // Diagnostics must never fail connection or update control flow.
+ };
+ bridge.on('diagnostic',listener);return ()=>bridge.removeListener('diagnostic',listener);
+}
 const taskStates=new Set(['draft','accepted','queued','running','waiting_user','pausing','paused','failed','review','completed','cancelled','interrupted']);
 export function observeTasks(diagnostics,store,engine){
  const states=new Map((store.state.messages||[]).filter(message=>message.role==='user').map(message=>[message.id,message.status]));let call=engine.call?{id:engine.call.id,status:engine.call.status,provider:engine.call.provider}:null;

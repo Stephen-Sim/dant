@@ -74,7 +74,7 @@ test('offline snapshots and old services provide honest guidance without request
   const f=fixture();f.state.workTasks[0].projectContext=context();change(f);await f.ui.open(target);assert.equal(f.calls.length,0);assert.match(f.document.body.textContent,/last known records/);assert.match(f.document.body.textContent,/A real recorded result/);assert.equal(f.document.querySelector('[data-task-detail-reply]').disabled,true);assert.equal(f.document.querySelector('[data-task-detail-file]').disabled,true);f.ui.dispose();
  }
  for(const capability of [undefined,false,'true']){
-  const f=fixture();f.state.capabilities=capability===undefined?undefined:{taskReopen:capability};await f.ui.open(target);assert.equal(f.calls.length,0);assert.match(f.document.body.textContent,/Reconnect to update the work computer service/);assert.equal(f.document.querySelector('[data-task-detail-reply]').disabled,true);f.ui.dispose();
+  const f=fixture();f.state.capabilities=capability===undefined?undefined:{taskReopen:capability};await f.ui.open(target);assert.equal(f.calls.length,0);assert.match(f.document.body.textContent,/work computer service updates automatically/);assert.equal(f.document.querySelector('[data-task-detail-reply]').disabled,true);f.ui.dispose();
  }
  const f=fixture();f.state.workTasks[0].status='unknown';await f.ui.open(target);assert.equal(f.document.querySelector('[data-task-detail-reply]').disabled,true);assert.match(f.document.body.textContent,/task status is unconfirmed/);assert.match(f.document.body.textContent,/A real recorded result/);f.ui.dispose();
 });

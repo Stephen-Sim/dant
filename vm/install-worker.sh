@@ -44,37 +44,58 @@ check_idle_worker() {
 worker_checked_state=$(worker_service_state) || return 1
 if [ "$worker_checked_state" = active ]; then
   python3 - "${1:-check}" <<'PY'
-import json, sys, urllib.request
+import json, math, sys, urllib.request
 base = 'http://127.0.0.1:4317'
 manual = sys.argv[1] == 'pause'
 idle_witness = sys.argv[1] == 'idle'
+stage = 'rollback' if sys.argv[1] == 'idle' else 'final' if sys.argv[1] == 'final' else 'initial'
+class UpdateGuardError(Exception):
+    def __init__(self, reason):
+        self.reason = reason
+def reject(reason):
+    raise UpdateGuardError(reason)
+def defer(reason):
+    print('DANT_WORK_ACTIVE', file=sys.stderr)
+    print('DANT_UPDATE_DEFERRED:' + reason + ':' + stage, file=sys.stderr)
+    sys.exit(79)
 try:
-    session = json.load(urllib.request.urlopen(base + '/api/session', timeout=3))
-    token = session['token']
+    try:
+        session = json.load(urllib.request.urlopen(base + '/api/session', timeout=3))
+    except Exception:
+        reject('session-unavailable')
+    token = session.get('token') if isinstance(session, dict) else None
     if not isinstance(token, str) or not token:
-        raise ValueError('Invalid session')
-    def request(route, data=None):
+        reject('session-invalid')
+    def request(route, data=None, reason='request-unconfirmed'):
         headers = {'X-Dant-Token': token}
         if data is not None:
             headers['Content-Type'] = 'application/json'
         req = urllib.request.Request(base + route, data=None if data is None else json.dumps(data).encode(), headers=headers)
-        return json.load(urllib.request.urlopen(req, timeout=60 if data is not None else 3))
+        try:
+            return json.load(urllib.request.urlopen(req, timeout=60 if data is not None else 3))
+        except Exception:
+            reject(reason)
+    def confirmed(route, data, reason):
+        reply = request(route, data, reason)
+        if not isinstance(reply, dict) or reply.get('ok') is not True:
+            reject(reason)
     def snapshot():
-        state = request('/api/state')
+        state = request('/api/state', reason='state-unavailable')
         if not isinstance(state, dict) or not all(key in state for key in ('active', 'queue', 'call', 'takeover')) or not isinstance(state['queue'], list) or not isinstance(state['takeover'], bool) or state['active'] is not None and not isinstance(state['active'], dict) or state['call'] is not None and not isinstance(state['call'], dict):
-            raise ValueError('Invalid worker state')
+            reject('state-invalid')
         if not isinstance(state.get('messages', []), list) or not isinstance(state.get('workTasks', []), list):
-            raise ValueError('Invalid work records')
+            reject('state-invalid')
         computer = state.get('computer')
         if not isinstance(computer, dict) or computer.get('status') not in ('dant', 'human', 'taking-over'):
-            raise ValueError('Invalid computer control state')
+            reject('state-invalid')
         if computer['status'] != 'dant' or computer.get('sessionId') or computer.get('pending') or computer.get('acquiring') or state.get('acquiring'):
-            if not manual and not idle_witness:
-                print('DANT_WORK_ACTIVE: service update deferred; current VM work was preserved', file=sys.stderr)
-                sys.exit(79)
-            raise ValueError('Computer control is not idle')
-        if (manual or idle_witness) and (not isinstance(state.get('worker'), dict) or state['worker'].get('status') != 'online'):
-            raise ValueError('Executor state is not confirmed online')
+            if not manual:
+                defer('control-busy')
+            reject('control-busy')
+        if not isinstance(state.get('worker'), dict) or state['worker'].get('status') != 'online':
+            if not manual:
+                defer('executor-offline')
+            reject('executor-offline')
         return state
     def unresolved(state, final=False):
         for entry in state.get('messages', []) + state.get('workTasks', []):
@@ -83,42 +104,56 @@ try:
             if entry.get('status') not in ('completed', 'cancelled') and (entry.get('unknownOutcome') is True or entry.get('submission') in ('unknown', 'submitting') or entry.get('status') == 'unknown'):
                 return True
             continuation = entry.get('continuation') or {}
-            if not isinstance(continuation, dict) or continuation.get('invalid') or continuation.get('dispatch') and (final or continuation['dispatch'].get('phase') in ('unknown', 'submitting')):
+            dispatch = continuation.get('dispatch') if isinstance(continuation, dict) else None
+            if not isinstance(continuation, dict) or continuation.get('invalid') or dispatch and (not isinstance(dispatch, dict) or final or dispatch.get('phase') in ('unknown', 'submitting')):
                 return True
+        return False
+    def pending_saved_work(state):
+        for entry in state.get('workTasks', []):
+            if entry.get('status') in ('running', 'queued', 'accepted', 'continuing', 'pausing', 'unknown'):
+                return True
+            if entry.get('status') == 'waiting_user':
+                ended = entry.get('executionEndedAt')
+                if type(ended) not in (int, float) or not math.isfinite(ended) or ended <= 0:
+                    return True
         return False
     state = snapshot()
     if manual:
         if state['takeover'] or unresolved(state):
-            raise ValueError('Current work cannot be confirmed')
+            reject('work-unconfirmed')
         call_id = state['call'].get('id') if state['call'] else None
         if state['call'] and (not isinstance(call_id, str) or not call_id or len(call_id) > 256):
-            raise ValueError('Invalid call owner')
-        if request('/api/tasks/pause', {}).get('ok') is not True:
-            raise ValueError('Pause not confirmed')
+            reject('call-owner-invalid')
+        stage = 'pause'
+        confirmed('/api/tasks/pause', {}, 'pause-unconfirmed')
+        stage = 'post-pause'
         state = snapshot()
         if state['call']:
             if not call_id or state['call'].get('id') != call_id:
-                raise ValueError('Call owner changed')
-            if request('/api/call/stop', {'callId': call_id}).get('stopped') is not True:
-                raise ValueError('Call stop not confirmed')
+                reject('call-owner-changed')
+            stage = 'call-stop'
+            result = request('/api/call/stop', {'callId': call_id}, 'call-stop-unconfirmed')
+            if not isinstance(result, dict) or result.get('stopped') is not True:
+                reject('call-stop-unconfirmed')
         # Older workers mark the just-ended active task continuing only after
         # their first pause. This confirmed second operation pauses that record
         # too, preventing its supervisor from starting another turn mid-update.
-        if request('/api/tasks/pause', {}).get('ok') is not True:
-            raise ValueError('Saved task pause not confirmed')
+        stage = 'saved-pause'
+        confirmed('/api/tasks/pause', {}, 'saved-pause-unconfirmed')
     if manual or idle_witness:
-        # The existing endpoint also checks pending handoffs, queue submissions,
-        # finalization and computer leases that are absent from older snapshots.
-        if request('/api/connect', {'idleRecovery': True}).get('ok') is not True:
-            raise ValueError('Worker idle check not confirmed')
+        stage = 'final' if manual else 'rollback'
+        # Legacy snapshots omit pending handoffs and finalization. Preserve the
+        # existing explicit manual/rollback witness; automatic checks use GET only.
+        confirmed('/api/connect', {'idleRecovery': True}, 'idle-unconfirmed')
         state = snapshot()
-    if state['active'] or state['call'] or state['queue'] or state['takeover'] or unresolved(state, final=True) or manual and any(entry.get('status') == 'continuing' for entry in state.get('workTasks', [])):
+    if state['active'] or state['call'] or state['queue'] or state['takeover'] or unresolved(state, final=True) or pending_saved_work(state):
         if manual:
-            raise ValueError('Worker did not stop')
-        print('DANT_WORK_ACTIVE: service update deferred; current VM work was preserved', file=sys.stderr)
-        sys.exit(79)
-except Exception:
-    print('VM update could not confirm that work stopped. The existing service and saved tasks were preserved; no action was resent.', file=sys.stderr)
+            reject('work-still-active')
+        defer('work-still-active')
+except Exception as error:
+    reason = error.reason if isinstance(error, UpdateGuardError) else 'request-unconfirmed'
+    print('DANT_UPDATE_FAILED:' + reason + ':' + stage, file=sys.stderr)
+    print('VM update could not confirm that work stopped. Saved task records were preserved; no unconfirmed action was resent.', file=sys.stderr)
     sys.exit(1)
 PY
 fi
@@ -128,6 +163,7 @@ if [ -f "$HOME/dant/deployed-source.json" ] && \
   systemctl --user is-active --quiet dant-worker.service dant-guest-local.service; then
   prepare_transcription
   node vm/migrate-state.mjs "$source_dir/migration" "$HOME/dant/data"
+  echo 'DANT_UPDATE_CURRENT'
   echo 'The current VM worker is already deployed; running work was preserved.'
   exit 0
 fi
@@ -141,7 +177,7 @@ bash vm/install-speech.sh
 prepare_transcription
 # Dependency downloads leave the old worker running. Check again immediately
 # before changing the live app or restarting services, preserving newly begun work.
-if "$update_running_work"; then check_idle_worker pause; else check_idle_worker; fi
+if "$update_running_work"; then check_idle_worker pause; else check_idle_worker final; fi
 
 # Only an untouched VM data directory can import a host archive. The original
 # Windows files are backed up before upload and are never removed by migration.
@@ -204,7 +240,7 @@ rollback_update() {
 trap rollback_update EXIT
 # Recheck after migration/backups and stop the confirmed idle old service before
 # replacing its app. No unconfirmed running executor is forcibly terminated.
-check_idle_worker
+check_idle_worker final
 if [ "$worker_checked_state" = active ] || [ "$worker_checked_state" = failed ] || [ -f "$HOME/.config/systemd/user/dant-worker.service" ]; then
   systemctl --user stop dant-worker.service
   worker_stopped=true
@@ -268,6 +304,7 @@ for attempt in $(seq 1 60); do
     install -m 600 "$source_dir/deploy-manifest.json" "$rollback_dir/deploy-manifest.next"
     mv -f "$rollback_dir/deploy-manifest.next" "$HOME/dant/deployed-source.json"
     deployment_committed=true
+    echo 'DANT_UPDATE_DEPLOYED'
     echo 'dant authoritative VM service is ready on 127.0.0.1:4317'
     exit 0
   fi

@@ -59,7 +59,7 @@ test('failed pause stays unknown and a queued resume response never claims task 
 test('an old service pause or resume route gives update guidance without pausing other work or retrying',async()=>{
  for(const language of ['en','zh'])for(const status of ['running','paused']){
   const app=setup({language,status,request:()=>{throw Object.assign(Error('Request failed (404)'),{status:404});}}),before=structuredClone(app.state),selector=status==='running'?'[data-task-pause]':'[data-task-work-resume]';
-  await app.document.querySelector(selector).onclick();assert.equal(app.calls.length,1);assert.deepEqual(app.state,before);assert.match(app.toasts.at(-1),language==='en'?/service needs an update.*Reconnect/:/服务需要更新.*刷新连接/);assert.equal(app.calls.some(([,route])=>route==='/tasks/pause'),false);
+  await app.document.querySelector(selector).onclick();assert.equal(app.calls.length,1);assert.deepEqual(app.state,before);assert.match(app.toasts.at(-1),language==='en'?/service needs an update.*updates automatically/:/服务需要更新.*自动完成/);assert.equal(app.calls.some(([,route])=>route==='/tasks/pause'),false);
  }
  for(const error of [Object.assign(Error('The task pause could not be confirmed. Check its current status.'),{status:404}),Object.assign(Error('Request failed (404)'),{status:404,unknownOutcome:true})]){
   const app=setup({request:()=>{throw error;}});await app.document.querySelector('[data-task-pause]').onclick();assert.deepEqual(app.toasts,[error.message]);assert.equal(app.calls.length,1);

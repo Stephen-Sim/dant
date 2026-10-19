@@ -4,6 +4,14 @@ English · [简体中文](zh-CN/verification.md)
 
 Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.7-beta.7 source verification
+
+This candidate automatically checks the bundled work computer service when the desktop connects. A busy service stays connected with a visible pending update; a fresh idle state permits the update to continue without a separate Reconnect action. Stable content fingerprints avoid redeploying unchanged source. The UI distinguishes checking, updating, pending, confirmed and failed states and shows the target and confirmed running versions.
+
+Regression fixtures cover deferred upgrades, bounded connection retry, ordinary transport recovery without redeployment, binding and generation changes, single-flight startup, persistent unknown installation receipts and read-only reconciliation. Automatic checks do not wake a deliberately stopped executor or replay paused work. Manual recovery retains its explicit pause and idle-witness guards. Fixed installer failure markers and structured diagnostics distinguish pause, call-stop and idle-check failures without recording raw output or task content.
+
+At this source checkpoint, focused protocol and UI checks have passed. An obsolete UI assertion requiring manual Reconnect was corrected, and its nine targeted tests passed. A final all-green full-suite result, tag-specific Windows/Linux CI and release artifact acceptance are not recorded by this checkpoint; they must be verified separately during publication. These source checks did not install the application, deploy a live VM service or alter real tasks.
+
 ## 0.4.7-beta.6 source verification
 
 This candidate adds configurable unread-only Telegram forwarding and reply grouping, exact attachment read receipts, saved task context and task reopening, compact task cards, Windows notification sound, inline message timestamps and read-aloud controls in the message menu. Task context preserves bounded, redacted reference records; it does not grant permissions or independently verify previous results. Native speech failures now use stable localized errors and bounded metadata-only diagnostics without spoken text or dictation transcripts.

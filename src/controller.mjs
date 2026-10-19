@@ -12,7 +12,8 @@ import {NotificationHub} from './notifications.mjs';
 import {createSecretStore} from './secrets.mjs';
 import {appearanceDefaults,appearanceKeys,readAppearance,validateAppearancePatch,listSystemFonts} from './appearance.mjs';
 import {Diagnostics} from './diagnostics.mjs';
-import {observeHttp,serviceVersion,diagnosticWorkerStatus} from './diagnostic-events.mjs';
+import {observeHttp,observeBridge,serviceVersion,diagnosticWorkerStatus} from './diagnostic-events.mjs';
+import {VmServiceUpdateLoop} from './vm-service-update.mjs';
 import {UpdateService,installUpdateRoutes} from './updates.mjs';
 import {UpdateInstallLease,installLeaseRoutes,updateSensitiveRequest} from './update-install-lease.mjs';
 
@@ -29,6 +30,7 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  let cached=emptyState();try{cached=parse(cacheFile);}catch{}
  const profiles=profileFactory({dataDir,projectRoot,...profileOptions});let profileError=null;try{profiles.autoImport();}catch(error){profileError=error.message;}
  const bridge=bridgeFactory({dataDir,projectRoot}),provisioning=provisioningFactory({projectRoot,dataDir});
+ bridge.reconnectManaged=true;const stopBridgeDiagnostics=observeBridge(diagnostics,bridge);
  const notifications=new NotificationHub(dataDir),voiceKeys=secretFactory(dataDir);notifications.configure(config.notifications);
  const app=express(),server=http.createServer(app),token=randomBytes(32).toString('hex'),wss=new WebSocketServer({noServer:true,maxPayload:1024*1024}),streams=new Set();let closing=false,lastSaved=0,saveTimer;
  app.disable('x-powered-by');
@@ -76,11 +78,11 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   context.pending=pending;return pending;
  }
  function syncPreferencesAfterEvent(){const context=preferenceConnection();if(!context||context.pending||Date.now()<context.retryAt)return;void syncPreferences().catch(()=>{if(preferenceCurrent(context))broadcast('notice',{message:preferenceFailure().message});});}
- async function connect({recoverExecutor=false}={}){
+ async function connect({recoverExecutor=false,deploy=true,automatic=false}={}){
   const finish=updateLease.enter();let failed;
   try{
   try{const discovery=profiles.autoImport();if(discovery.requiresSelection)throw Object.assign(Error(discovery.error),{status:409});readVmBinding(dataDir);profileError=null;}catch(error){profileError=error.message;throw error;}
-  await bridge.connect({updateRunningWork:recoverExecutor});
+  await bridge.connect({deploy,updateRunningWork:recoverExecutor,...(automatic?{autoUpdate:true}:{})});
   await syncPreferences({retry:true});
   // Reopening SSH after startup or a transport failure must preserve an executor
   // intentionally stopped by voice safety. Only the explicit Reconnect action
@@ -95,15 +97,16 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
   const refreshed=await bridge.refresh(true);if(refreshed?.worker?.status!=='online')throw Object.assign(Error('The VM connected, but its executor is still offline. Check its diagnostics before trying again.'),{status:503});
   }catch(error){failed=error;throw error;}finally{finish(failed);}
  }
- function snapshot(){const state=structuredClone(cached),key=voiceKeys.status();state.mode='vm-controller';state.settings={...emptyState().settings,...state.settings,language:config.language,notifications:config.notifications,showWorkSummary:config.showWorkSummary,...readAppearance(config),vm:{...emptyState().settings.vm,...binding()}};state.worker={...state.worker,status:bridge.status==='online'?state.worker?.status||'connecting':bridge.status,error:profileError||bridge.error||state.worker?.error||null,realtime:{...state.worker?.realtime,key,api:{available:key.configured,billing:'api'}}};state.provisioning=provisioning.snapshot();state.controller={status:bridge.status,authority:'vm',cached:bridge.status!=='online',updatedAt:lastSaved||null,error:profileError||bridge.error||null};return state;}
+ const automaticConnection=new VmServiceUpdateLoop({bridge,connect,binding,allowed:()=>!closing&&!prepareOnly&&!manualConnect&&!!binding().host&&!provisioning.snapshot().running&&!['preparing','creating','installing','awaiting-admin'].includes(provisioning.snapshot().status)});
+ function snapshot(){const state=structuredClone(cached),key=voiceKeys.status();state.mode='vm-controller';state.settings={...emptyState().settings,...state.settings,language:config.language,notifications:config.notifications,showWorkSummary:config.showWorkSummary,...readAppearance(config),vm:{...emptyState().settings.vm,...binding()}};state.worker={...state.worker,status:bridge.status==='online'?state.worker?.status||'connecting':bridge.status,error:profileError||bridge.error||state.worker?.error||null,realtime:{...state.worker?.realtime,key,api:{available:key.configured,billing:'api'}}};state.provisioning=provisioning.snapshot();state.controller={status:bridge.status,authority:'vm',cached:bridge.status!=='online',updatedAt:lastSaved||null,error:profileError||bridge.error||null,...(bridge.serviceUpdate?{serviceUpdate:{...bridge.serviceUpdate,confirmed:bridge.status==='online'&&bridge.serviceUpdate.confirmed===true}}:{})};return state;}
  function broadcast(type,data){if(closing)return;const body=JSON.stringify({type,data});for(const client of wss.clients)if(client.readyState===1)client.send(body);for(const stream of streams)stream.write(`data: ${body}\n\n`);}
  function saveCache(){clearTimeout(saveTimer);saveTimer=null;const temporary=cacheFile+'.tmp';fs.writeFileSync(temporary,JSON.stringify(cached));fs.renameSync(temporary,cacheFile);lastSaved=Date.now();}
  let cachedWorkerStatus=diagnosticWorkerStatus(cached.worker?.status),bridgeStatus=diagnosticWorkerStatus(bridge.status);diagnostics.log('bridge.status',{status:bridgeStatus});diagnostics.log('worker.status',{status:cachedWorkerStatus,cached:true});
- bridge.on('state',state=>{cached=state;const status=diagnosticWorkerStatus(state.worker?.status);if(status!==cachedWorkerStatus){cachedWorkerStatus=status;diagnostics.log('worker.status',{status,cached:true});}notifications.observe(state);if(!saveTimer)saveTimer=setTimeout(()=>{try{saveCache();}catch{broadcast('notice',{message:'The VM state is available, but its Windows cache could not be saved.'});}},2000);broadcast('state',snapshot());syncPreferencesAfterEvent();});
- bridge.on('change',()=>{const status=diagnosticWorkerStatus(bridge.status);if(status!==bridgeStatus){bridgeStatus=status;diagnostics.log('bridge.status',{status});}broadcast('state',snapshot());syncPreferencesAfterEvent();});bridge.on('event',event=>broadcast(event.type,event.data));
+ bridge.on('state',state=>{cached=state;const status=diagnosticWorkerStatus(state.worker?.status);if(status!==cachedWorkerStatus){cachedWorkerStatus=status;diagnostics.log('worker.status',{status,cached:true});}notifications.observe(state);if(!saveTimer)saveTimer=setTimeout(()=>{try{saveCache();}catch{broadcast('notice',{message:'The VM state is available, but its Windows cache could not be saved.'});}},2000);broadcast('state',snapshot());syncPreferencesAfterEvent();automaticConnection.changed();});
+ bridge.on('change',()=>{const status=diagnosticWorkerStatus(bridge.status);if(status!==bridgeStatus){bridgeStatus=status;diagnostics.log('bridge.status',{status});}broadcast('state',snapshot());syncPreferencesAfterEvent();automaticConnection.changed();});bridge.on('event',event=>broadcast(event.type,event.data));
  diagnostics.log('service.started',{version});
  let provisioningStatus=provisioning.snapshot().status;
- provisioning.on('change',progress=>{broadcast('state',snapshot());if(!prepareOnly&&progress.status==='ready'&&provisioningStatus!=='ready')void connect().catch(error=>broadcast('notice',{message:error.message}));provisioningStatus=progress.status;});
+ provisioning.on('change',progress=>{broadcast('state',snapshot());if(!prepareOnly&&progress.status==='ready'&&provisioningStatus!=='ready')void automaticConnection.start();provisioningStatus=progress.status;});
  server.on('upgrade',(req,socket,head)=>{let url;try{url=new URL(req.url,'http://localhost');}catch{socket.destroy();return;}if(url.pathname!=='/events'||url.searchParams.get('token')!==token||!allowedOrigin(req.headers.origin)){socket.destroy();return;}wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));});
  wss.on('connection',ws=>ws.send(JSON.stringify({type:'state',data:snapshot()})));
  app.get('/api/events',(req,res)=>{res.setHeader('Content-Type','text/event-stream');res.setHeader('Cache-Control','no-cache');res.setHeader('Connection','keep-alive');res.flushHeaders();streams.add(res);res.write(`data: ${JSON.stringify({type:'state',data:snapshot()})}\n\n`);const heartbeat=setInterval(()=>res.write(': keepalive\n\n'),15000);heartbeat.unref();req.on('close',()=>{clearInterval(heartbeat);streams.delete(res);});});
@@ -112,12 +115,12 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.all('/api/diagnostics',(req,res)=>res.status(405).json({error:'Diagnostics are read-only.'}));
  app.post('/api/provision',admitted((req,res)=>res.json(provisioning.start(req.body))));
  let manualConnect;
- app.post('/api/connect',admitted(async(req,res)=>{if(!manualConnect){const pending=connect({recoverExecutor:true}).finally(()=>{if(manualConnect===pending)manualConnect=null;});manualConnect=pending;}await manualConnect;res.json({ok:true});}));
+ app.post('/api/connect',admitted(async(req,res)=>{if(!manualConnect){const pending=connect({recoverExecutor:true}).finally(()=>{if(manualConnect===pending)manualConnect=null;automaticConnection.changed();});manualConnect=pending;}await manualConnect;res.json({ok:true});}));
  app.post('/api/prepare',admitted(async(req,res)=>{await bridge.prepare();res.json({ok:true});}));
  app.get('/api/vm/profiles',(req,res)=>res.json(profiles.discover()));
  app.get('/api/vm/providers',(req,res)=>res.json(provisioning.providers()));
  app.get('/api/fonts',async(req,res)=>res.json(await fontsProvider()));
- app.post('/api/vm/import',admitted((req,res)=>{const previous=profiles.discover().current,result=profiles.import(req.body);profileError=null;if(previous?.id!==profiles.discover().current?.id)bridge.disconnect();broadcast('state',snapshot());res.json(result);}));
+ app.post('/api/vm/import',admitted((req,res)=>{const previous=profiles.discover().current,result=profiles.import(req.body);profileError=null;if(previous?.id!==profiles.discover().current?.id){bridge.disconnect();automaticConnection.reset();}broadcast('state',snapshot());res.json(result);}));
  app.get('/api/notifications/pending',(req,res)=>res.json({notifications:notifications.pending().map(notification=>({...notification,language:config.language}))}));
  app.post('/api/notifications/:id/ack',(req,res)=>res.json(notifications.acknowledge(req.params.id)));
  app.post('/api/voice-key',async(req,res)=>{if(cached.call)throw Error('End the call before changing its API key');await voiceKeys.set(req.body.key);broadcast('state',snapshot());res.json({ok:true,key:voiceKeys.status()});});
@@ -125,7 +128,7 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.post('/api/call',async(req,res,next)=>{if(req.body.provider==='api'){const key=await voiceKeys.get();if(!key)throw Error('Configure the optional voice API key first');req.body={...req.body,apiKey:key};}next();});
  app.patch('/api/settings',async(req,res,next)=>{
   const body={...req.body};if(body.vm&&(cached.active||cached.call||cached.takeover||['human','taking-over'].includes(cached.computer?.status)))throw Object.assign(Error('Stop active work and return computer control before changing its connection'),{status:409});const appearance=validateAppearancePatch(body);for(const key of ['language','notifications','showWorkSummary'])if(body[key]!==undefined){if(key==='language'&&!['zh','en'].includes(body[key]))throw Error('Invalid language');if(key==='notifications'&&typeof body[key]!=='boolean')throw Error('Invalid notification preference');if(key==='showWorkSummary'&&typeof body[key]!=='boolean')throw Error('Invalid work summary preference');}
-  if(body.vm){const old=binding(),vm=normalizeVmBinding({...old,...Object.fromEntries(['host','user','port','keyPath','knownHosts'].filter(key=>body.vm[key]!==undefined).map(key=>[key,body.vm[key]]))},dataDir),temporary=path.join(dataDir,`.vm-settings-${randomUUID()}.tmp`);try{fs.writeFileSync(temporary,JSON.stringify(vm,null,2),{flag:'wx',mode:0o600});fs.renameSync(temporary,path.join(dataDir,'vm.json'));}finally{fs.rmSync(temporary,{force:true});}try{profiles.registerCurrent();}catch{}profileError=null;bridge.disconnect();delete body.vm;}
+  if(body.vm){const old=binding(),vm=normalizeVmBinding({...old,...Object.fromEntries(['host','user','port','keyPath','knownHosts'].filter(key=>body.vm[key]!==undefined).map(key=>[key,body.vm[key]]))},dataDir),temporary=path.join(dataDir,`.vm-settings-${randomUUID()}.tmp`);try{fs.writeFileSync(temporary,JSON.stringify(vm,null,2),{flag:'wx',mode:0o600});fs.renameSync(temporary,path.join(dataDir,'vm.json'));}finally{fs.rmSync(temporary,{force:true});}try{profiles.registerCurrent();}catch{}profileError=null;bridge.disconnect();automaticConnection.reset();delete body.vm;}
   Object.assign(config,appearance);for(const key of appearanceKeys)delete body[key];for(const key of ['language','notifications','showWorkSummary'])if(body[key]!==undefined){config[key]=body[key];if(key!=='language'||bridge.status!=='online')delete body[key];}
   fs.writeFileSync(configFile,JSON.stringify(config,null,2));notifications.configure(config.notifications);broadcast('state',snapshot());
   const forwardingScope=JSON.stringify([bridge.generation??null,binding()]);
@@ -160,5 +163,5 @@ export function createControllerApp({dataDir,projectRoot,prepareOnly=false,bridg
  app.use(express.static(path.join(projectRoot,'dist')));
  app.use((error,req,res,next)=>{req.updateInstallDone?.(error);if(res.headersSent)return next(error);res.status(error.status||400).json({error:error.message,...(typeof error.code==='string'&&/^[a-z_]{1,64}$/.test(error.code)?{code:error.code}:{}),...(error.unknownOutcome?{unknownOutcome:true}: {})});});
  let closePromise;
- return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await connect();},close:()=>{if(closePromise)return closePromise;closing=true;preferenceSync?.abort.abort();preferenceSync=null;updateLease.close();updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
+ return {app,server,bridge,provisioning,profiles,notifications,voiceKeys,diagnostics,updates,snapshot,start:async()=>{const progress=provisioning.resumeMonitoring();if(!prepareOnly&&binding().host&&!progress.running&&!['preparing','creating','installing','awaiting-admin'].includes(progress.status))await automaticConnection.start();},close:()=>{if(closePromise)return closePromise;closing=true;automaticConnection.close();stopBridgeDiagnostics();preferenceSync?.abort.abort();preferenceSync=null;updateLease.close();updates.close();clearTimeout(saveTimer);try{if(bridge.cached)saveCache();}catch{}bridge.close();provisioning.close();for(const stream of streams)stream.end();streams.clear();for(const client of wss.clients)client.terminate();wss.close();closePromise=new Promise(resolve=>{if(server.listening)server.close(resolve);else resolve();}).finally(()=>{diagnostics.log('service.closed',{version});diagnostics.close();});return closePromise;}};
 }

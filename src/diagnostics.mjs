@@ -9,6 +9,7 @@ const token=/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$/,identifier=/^[A-Za-z0-9][A-Za-z
 const secretLike=/(?:^|[.:/])(?:sk[-_]|gh[pousr]_|xox[baprs]-|Bearer|eyJ[A-Za-z0-9_-]{10,}\.)/i;
 const semver=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][A-Za-z0-9-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][A-Za-z0-9-]*))*)?(?:\+[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?$/;
 const versionString=value=>typeof value==='string'&&value.length<=64&&semver.test(value)&&!secretLike.test(value);
+const versionKeys=new Set(['version','targetVersion','runningVersion']);
 const textKeys=new Set(['code','status','role','reason','provider','phase','stage','source','operation','signal','transport']);
 const idKeys=new Set(['threadId','turnId','callId','requestId','messageId','taskId','itemId']);
 const itemTypes=new Set(['userMessage','hookPrompt','agentMessage','plan','reasoning','commandExecution','fileChange','mcpToolCall','dynamicToolCall','collabAgentToolCall','webSearch','imageView','imageGeneration','enteredReviewMode','exitedReviewMode','contextCompaction','other']);
@@ -31,9 +32,9 @@ function metadata(value){
  if(value===null||typeof value!=='object'||Array.isArray(value))return {};
  const prototype=Object.getPrototypeOf(value);if(prototype!==Object.prototype&&prototype!==null)return {};
  const result={};
- for(const key of [...textKeys,...idKeys,...numberKeys,...booleanKeys,'method','route','version','itemType','itemStatus']){
+ for(const key of [...textKeys,...idKeys,...numberKeys,...booleanKeys,'method','route',...versionKeys,'itemType','itemStatus']){
   const descriptor=Object.getOwnPropertyDescriptor(value,key);if(!descriptor||!Object.hasOwn(descriptor,'value'))continue;const item=descriptor.value;
-  if(key==='version'){if(versionString(item))result[key]=item;}
+  if(versionKeys.has(key)){if(versionString(item))result[key]=item;}
   else if(key==='itemType'){if(itemTypes.has(item))result[key]=item;}
   else if(key==='itemStatus'){if(itemStatuses.has(item))result[key]=item;}
   else if(key==='route'){if(routes.has(item))result[key]=item;}
