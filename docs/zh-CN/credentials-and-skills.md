@@ -1,6 +1,6 @@
 # 凭据与可复用技能
 
-[English](../credentials-and-skills.md) · 简体中文
+[English](../credentials-and-skills.md) · Chinese
 
 连接工作电脑后，打开**设置 → 凭据保险箱**，或左侧栏 dant logo 下方的**技能**拼图图标。两者由 Ubuntu Worker 持有，与其对话一起管理；不会给 Windows 宿主机或 Codex 桌面应用安装技能。
 

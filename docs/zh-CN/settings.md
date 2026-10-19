@@ -1,6 +1,6 @@
 # 设置
 
-[English](../settings.md) · 简体中文
+[English](../settings.md) · Chinese
 
 设置按菜单分类：通用、外观、语音、工作电脑、ChatGPT、凭据、聊天与数据、Telegram、关于。窗口较窄时使用紧凑菜单。
 

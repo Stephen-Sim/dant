@@ -1,6 +1,6 @@
 # 上下文与 token 管理
 
-[English](../context.md) · 简体中文
+[English](../context.md) · Chinese
 
 ## 由 Codex 管理上下文策略
 

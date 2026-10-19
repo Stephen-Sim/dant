@@ -1,6 +1,6 @@
 # Telegram
 
-English · [简体中文](zh-CN/TELEGRAM.md)
+English · [Chinese](zh-CN/TELEGRAM.md)
 
 The Telegram gateway runs inside the Ubuntu VM and uses the same persistent conversation and serial task engine as the desktop app. It is disabled until configured. The Windows window may close while the VM continues receiving work. The VM needs outbound HTTPS access to Telegram; no public inbound port is required.
 

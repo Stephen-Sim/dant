@@ -1,6 +1,6 @@
 # Context and token management
 
-English · [简体中文](zh-CN/context.md)
+English · [Chinese](zh-CN/context.md)
 
 ## Codex owns the context policy
 

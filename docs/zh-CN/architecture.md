@@ -1,6 +1,6 @@
 # dant Windows 实现架构
 
-[English](../architecture.md) · 简体中文
+[English](../architecture.md) · Chinese
 
 实现依据为用户提供的 Mac / UTM 架构与 15 张界面参考。Windows 版本沿用职责划分，平台部分替换为 Hyper-V、AMD64 Ubuntu、OpenSSH 与 Windows 原生桌面宿主。
 

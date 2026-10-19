@@ -1,6 +1,6 @@
 # 可选语音 API Key
 
-[English](../VOICE-KEY.md) · 简体中文
+[English](../VOICE-KEY.md) · Chinese
 
 本文只说明 dant 的可选独立 API 语音。默认通话使用 ChatGPT 登录、Codex Realtime V3 与 WebRTC，无需单独 API Key，仍受账号订阅额度约束。现有账号已通过静默 WebRTC 连接测试；该测试不代表真人麦克风与扬声器验收。参见 [官方语音说明](https://learn.chatgpt.com/docs/features/voice) 与 [订阅用量说明](https://learn.chatgpt.com/docs/pricing)。
 

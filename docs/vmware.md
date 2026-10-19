@@ -1,6 +1,6 @@
 # VMware Workstation
 
-English · [简体中文](zh-CN/vmware.md)
+English · [Chinese](zh-CN/vmware.md)
 
 dant can create its Ubuntu work computer with an existing Windows VMware Workstation installation. This is separate from connecting an already installed Ubuntu VM through SSH: importing an existing connection never creates a disk, converts a VM, or changes its hypervisor.
 

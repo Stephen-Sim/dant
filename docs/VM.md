@@ -1,6 +1,6 @@
 # Windows VM setup and troubleshooting
 
-English · [简体中文](zh-CN/VM.md)
+English · [Chinese](zh-CN/VM.md)
 
 dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Windows Controller reaches the VM's work API at `127.0.0.1:4317` through an SSH local tunnel. The VM Node service starts Codex over stdio; the desktop bridge is also accessible only inside the VM. New VMs default to 4 CPUs, 6 GB RAM, and a 40 GB disk. Hyper-V uses its Default Switch; VMware Workstation uses NAT. The Worker boundary and SSH connection are the same for both.
 

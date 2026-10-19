@@ -1,6 +1,6 @@
 # Windows / VM verification
 
-English · [简体中文](zh-CN/verification.md)
+English · [Chinese](zh-CN/verification.md)
 
 Date: 2026-10-18, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 

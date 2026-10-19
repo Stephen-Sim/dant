@@ -1,6 +1,6 @@
 # A companion with its own computer
 
-English · [简体中文](zh-CN/companion.md)
+English · [Chinese](zh-CN/companion.md)
 
 dant is a digital companion with a pet-like sense of presence: its own computer, a continuing relationship with the human, shared memories, a recognizable personality, and things it is working on. The human can talk with it, watch its desktop, help when it gets stuck, and entrust it with tasks. Its judgment, ideas and reusable skills should develop through actual experience. Human requests take priority over its own projects.
 

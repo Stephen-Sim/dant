@@ -1,6 +1,6 @@
 # Settings
 
-English · [简体中文](zh-CN/settings.md)
+English · [Chinese](zh-CN/settings.md)
 
 Settings is organized into a category menu: General, Appearance, Voice, Work computer, ChatGPT, Credentials, Chat & data, Telegram, and About. On narrow windows, the menu uses a compact layout.
 

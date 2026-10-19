@@ -1,6 +1,6 @@
 # Credentials and reusable skills
 
-English · [简体中文](zh-CN/credentials-and-skills.md)
+English · [Chinese](zh-CN/credentials-and-skills.md)
 
 Connect the work computer, then open **Settings → Credential vault** or the **Skills** puzzle icon below the dant logo in the left sidebar. Both are owned by the Ubuntu Worker, alongside its conversation. They do not install skills into the Windows host or the Codex desktop app.
 
