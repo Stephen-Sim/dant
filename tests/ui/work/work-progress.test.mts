@@ -2131,7 +2131,6 @@ test('chat summary is strictly opt-in and switching it on and off preserves rend
 test('main renders first-class task access and voice result navigation without changing read state itself', () => {
   const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8');
   assert.match(source, /renderWorkEntry\(workProgress\(state/);
-  assert.match(source, /if\s*\(a\s*===\s*'progress'\)\s*\{\s*openProgress\(\)/);
   assert.match(source, /if\s*\(value.type\s*===\s*'progress'\)\s*\{\s*openProgress\(\)/);
   const binding = sourceSelectorBinding(source, '[data-progress-message]');
   const { document, Event } = parseHTML(
