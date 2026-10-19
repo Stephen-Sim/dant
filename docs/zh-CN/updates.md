@@ -18,6 +18,10 @@ Windows 可点击**下载更新**，在后台下载官方安装包并核对大�
 
 ## 工作电脑服务更新
 
+### 0.4.7-beta.13 的 Go Core 迁移
+
+Windows Controller 和 Ubuntu Worker 改用编译后的 Go 程序，Tauri 继续使用 Rust，界面继续使用 TypeScript。更新会核对实际 Worker 的角色、协议、版本和源码提交。持久安装日志阻止重启或独立启动服务时绕过离线备份与数据准备，只有匹配的成功准备回执才允许启用服务。已有聊天、SQLite 记忆与调度、技能和工作区保留原有保存路径。详见[系统架构](architecture.md)和[迁移设计](go-core-migration.md)。
+
 ### 0.4.7-beta.10 启动兼容修复
 
 Beta 10 修复了桌面状态校验的回归：即使本地 Controller 与 VM 服务均可连接，界面也可能显示 **Invalid application state**。界面现在接受支持的空值和旧版 Worker 元数据，包括普通聊天任务运行时为空的通话 ID，不补造任务归属或执行确认。这项修复位于桌面程序内嵌的前端，仅更新 VM 无法修复旧版内嵌界面。如果该画面导致无法进入设置，请从发布页安装更新的桌面包。

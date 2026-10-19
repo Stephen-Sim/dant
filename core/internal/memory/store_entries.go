@@ -140,7 +140,11 @@ func (s *Store) Entries(ctx context.Context, status contracts.MemoryEntryStatus)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result []Entry
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error { var err error; result, err = entriesAt(ctx, tx, status); return err })
+	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = entriesAt(ctx, tx, status)
+		return err
+	})
 	return result, err
 }
 
@@ -314,7 +318,11 @@ func (s *Store) Update(ctx context.Context, id string, patch EntryPatch) (*Entry
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result *Entry
-	err := s.transaction(ctx, true, func(tx *sql.Tx) error { var err error; result, err = s.updateAt(ctx, tx, id, patch); return err })
+	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+		var err error
+		result, err = s.updateAt(ctx, tx, id, patch)
+		return err
+	})
 	return result, err
 }
 

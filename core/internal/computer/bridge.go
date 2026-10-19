@@ -209,7 +209,10 @@ func (bridge *VMBridge) Prepare(ctx context.Context) error {
 	defer bridge.wg.Done()
 	operation, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(bridge.ctx, cancel)
-	defer func() { stop(); cancel() }()
+	defer func() {
+		stop()
+		cancel()
+	}()
 	binding, err := ReadBinding(bridge.options.DataDir)
 	if err != nil {
 		return err
@@ -272,7 +275,10 @@ func (bridge *VMBridge) Connect(ctx context.Context, deploy bool) error {
 	bridge.options.Changed()
 	ready, cancelReady := context.WithTimeout(ctx, vmSessionReadyTimeout)
 	stop := context.AfterFunc(owner, cancelReady)
-	defer func() { stop(); cancelReady() }()
+	defer func() {
+		stop()
+		cancelReady()
+	}()
 	for {
 		if !bridge.current(session) {
 			return ErrBridgeChanged
@@ -358,7 +364,10 @@ type responseBody struct {
 
 func (body *responseBody) Close() error {
 	err := body.ReadCloser.Close()
-	body.once.Do(func() { body.stop(); body.cancel() })
+	body.once.Do(func() {
+		body.stop()
+		body.cancel()
+	})
 	return err
 }
 

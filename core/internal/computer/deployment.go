@@ -398,7 +398,10 @@ func (deployer *Deployer) Prepare(ctx context.Context, binding Binding) error {
 	defer deployer.operation.Unlock()
 	bounded, stop := context.WithTimeout(ctx, deploymentTimeout)
 	stopOwner := context.AfterFunc(deployer.options.Context, stop)
-	defer func() { stopOwner(); stop() }()
+	defer func() {
+		stopOwner()
+		stop()
+	}()
 	current := func() error {
 		if err := bounded.Err(); err != nil {
 			return err

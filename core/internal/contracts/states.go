@@ -901,6 +901,39 @@ func (value WorkStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(value))
 }
 
+type WorkerInstallationPhase string
+
+const (
+	WorkerInstallationPhaseReserving  WorkerInstallationPhase = "reserving"
+	WorkerInstallationPhaseStopping   WorkerInstallationPhase = "stopping"
+	WorkerInstallationPhasePreparing  WorkerInstallationPhase = "preparing"
+	WorkerInstallationPhaseActivating WorkerInstallationPhase = "activating"
+	WorkerInstallationPhaseCommitted  WorkerInstallationPhase = "committed"
+)
+
+func (value WorkerInstallationPhase) Valid() bool {
+	switch value {
+	case WorkerInstallationPhaseReserving, WorkerInstallationPhaseStopping, WorkerInstallationPhasePreparing, WorkerInstallationPhaseActivating, WorkerInstallationPhaseCommitted:
+		return true
+	default:
+		return false
+	}
+}
+func (value *WorkerInstallationPhase) UnmarshalJSON(data []byte) error {
+	var wire string
+	if err := json.Unmarshal(data, &wire); err != nil || !WorkerInstallationPhase(wire).Valid() {
+		return errors.New("invalid WorkerInstallationPhase")
+	}
+	*value = WorkerInstallationPhase(wire)
+	return nil
+}
+func (value WorkerInstallationPhase) MarshalJSON() ([]byte, error) {
+	if !value.Valid() {
+		return nil, errors.New("invalid WorkerInstallationPhase")
+	}
+	return json.Marshal(string(value))
+}
+
 type WorkerRestorePhase string
 
 const (

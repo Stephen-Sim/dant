@@ -12,6 +12,8 @@ import {
   CORE_GUEST_BINARY,
   CORE_LICENSE,
   CORE_LICENSE_SOURCE,
+  CORE_UNICODE_LICENSE,
+  CORE_UNICODE_LICENSE_SOURCE,
   CORE_BUILD_MANIFEST,
   CORE_RESOURCE_MANIFEST,
   CORE_BUNDLE_MANIFEST,
@@ -89,6 +91,7 @@ function project(root: string): string {
     'src-tauri/tauri.conf.json',
     'src-tauri/Cargo.toml',
     CORE_LICENSE_SOURCE,
+    CORE_UNICODE_LICENSE_SOURCE,
   ])
     file(path.join(root, name));
   const pkg: unknown = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
@@ -209,6 +212,7 @@ function resourceInventory(root: string): string[] {
     ...files,
     CORE_WINDOWS,
     CORE_LICENSE,
+    CORE_UNICODE_LICENSE,
     CORE_RESOURCE_MANIFEST,
     CORE_BUNDLE_MANIFEST,
     hostManifestPath,
@@ -279,6 +283,7 @@ export function validatePreparedResources(
   }
   file(path.join(root, 'dist/index.html'));
   file(path.join(root, CORE_LICENSE));
+  file(path.join(root, CORE_UNICODE_LICENSE));
   const pkg: unknown = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (!isRecord(pkg) || pkg.name !== 'dant' || pkg.version !== version)
     throw Error('Prepared backend version does not match the current dant project.');
@@ -316,6 +321,10 @@ export function prepareResources({
         copyDirectory(path.join(root, name), path.join(staging, name));
       for (const name of files) fs.copyFileSync(path.join(root, name), path.join(staging, name));
       fs.copyFileSync(path.join(root, CORE_LICENSE_SOURCE), path.join(staging, CORE_LICENSE));
+      fs.copyFileSync(
+        path.join(root, CORE_UNICODE_LICENSE_SOURCE),
+        path.join(staging, CORE_UNICODE_LICENSE),
+      );
       for (const name of HOST_HELPERS) copyFile(root, staging, name);
       for (const name of VM_BUNDLE_FILES) {
         if (name === CORE_GUEST_BINARY) {

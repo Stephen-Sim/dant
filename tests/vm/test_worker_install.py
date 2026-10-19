@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import tempfile
+import types
 import urllib.error
 import unittest
 from unittest.mock import patch
@@ -65,6 +66,16 @@ class WorkerInstallFixture(unittest.TestCase):
         if '--role=prepare-worker' in arguments:
             backup = pathlib.Path(next(value[len('--backup='):] for value in arguments if value.startswith('--backup=')))
             self.assertTrue(backup.read_bytes().startswith(b'DANT-BACKUP/1\n'))
+            attempt = json.loads((self.home / 'dant/install-attempt.json').read_bytes())
+            proof = {key: attempt[key] for key in (
+                'schemaVersion', 'attemptId', 'source', 'sourceCommit', 'version', 'directory',
+                'backup', 'backupBytes', 'backupModifiedNS', 'backupIdentity')}
+            proof.update({
+                'dataDir': str(self.home / 'dant/data'),
+                'workspaceRoot': str(self.home / 'dant/workspaces'),
+                'backupSha256': hashlib.sha256(backup.read_bytes()).hexdigest(),
+            })
+            (self.home / 'dant' / installer.PREPARATION_FILE).write_bytes(json.dumps(proof).encode())
 
     def assert_stopped(self, home):
         self.assertEqual(home, self.home)
@@ -94,6 +105,48 @@ class WorkerInstallFixture(unittest.TestCase):
         self.assertEqual(self.configuration['guestHost'], 'localhost')
         self.assertEqual(self.configuration['guestPort'], 5540)
         self.assertEqual(self.configuration['port'], 4317)
+
+    def test_installation_phase_constants_match_shared_contract(self):
+        domains = json.loads((ROOT / 'src/contracts/state-domains.json').read_bytes())['domains']
+        self.assertEqual(domains['WorkerInstallationPhase'], {
+            'Reserving': installer.PHASE_RESERVING,
+            'Stopping': installer.PHASE_STOPPING,
+            'Preparing': installer.PHASE_PREPARING,
+            'Activating': installer.PHASE_ACTIVATING,
+            'Committed': installer.PHASE_COMMITTED,
+        })
+
+    def test_cross_api_ctime_difference_does_not_mask_same_api_changes(self):
+        actual_fstat = os.fstat
+        reads = []
+
+        def different_ctime(descriptor):
+            current = actual_fstat(descriptor)
+            values = {name: getattr(current, name) for name in (
+                'st_dev', 'st_ino', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+            reads.append(descriptor)
+            values['st_ctime_ns'] += 1000
+            return types.SimpleNamespace(**values)
+
+        with patch.object(installer.os, 'fstat', side_effect=different_ctime):
+            self.assertEqual(installer.read_regular(self.state, 4096), self.original)
+        self.assertGreaterEqual(len(reads), 2)
+
+        reads.clear()
+
+        def changed_ctime(descriptor):
+            result = different_ctime(descriptor)
+            result.st_ctime_ns += len(reads)
+            return result
+
+        with patch.object(installer.os, 'fstat', side_effect=changed_ctime):
+            with self.assertRaisesRegex(installer.InstallError, 'file-changed'):
+                installer.read_regular(self.state, 4096)
+
+        with self.assertRaisesRegex(installer.InstallError, 'file-changed'):
+            with installer.regular_file(self.state, 4096):
+                before = self.state.stat()
+                os.utime(self.state, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
 
     def test_modified_binary_rejected_before_any_service_action(self):
         (self.source / installer.BINARY).write_bytes(b'changed resource')
@@ -149,11 +202,49 @@ class WorkerInstallFixture(unittest.TestCase):
         self.assertEqual((self.home / 'dant/deployed-source.json').read_bytes(), (self.source / 'deploy-manifest.json').read_bytes())
         attempt = json.loads((self.home / 'dant/install-attempt.json').read_bytes())
         self.assertEqual(attempt['phase'], 'committed')
+        proof_raw = (self.home / 'dant' / installer.PREPARATION_FILE).read_bytes()
+        proof = json.loads(proof_raw)
+        self.assertEqual(attempt['preparationSha256'], hashlib.sha256(proof_raw).hexdigest())
+        self.assertEqual(attempt['attemptId'], proof['attemptId'])
+        self.assertEqual(attempt['backupSha256'], proof['backupSha256'])
+        self.assertEqual(attempt['sourceCommit'], self.configuration['commit'])
         service = (self.service_directory / 'dant-worker.service').read_text()
         self.assertIn('ExecStart=%h/dant/bin/dant-core --role=worker', service)
         self.assertNotIn('node', service.lower())
         self.assertNotIn('src/server.mts', service)
         self.assertTrue(all('node' not in call and 'npm' not in call for call in self.calls))
+
+    def test_missing_foreign_or_changed_preparation_proof_cannot_start_worker(self):
+        for variant in ('missing', 'other-attempt', 'wrong-root', 'changed-backup', 'unknown-field'):
+            with self.subTest(variant=variant):
+                self.calls.clear()
+                (self.home / 'dant/install-attempt.json').unlink(missing_ok=True)
+
+                def invalidate(arguments, **kwargs):
+                    self.quiet(arguments, **kwargs)
+                    if '--role=prepare-worker' not in arguments:
+                        return
+                    path = self.home / 'dant' / installer.PREPARATION_FILE
+                    proof = json.loads(path.read_bytes())
+                    if variant == 'missing':
+                        path.unlink()
+                        return
+                    if variant == 'other-attempt':
+                        proof['attemptId'] = '00000000-0000-0000-0000-000000000000'
+                    elif variant == 'wrong-root':
+                        proof['dataDir'] += '-other'
+                    elif variant == 'unknown-field':
+                        proof['unverified'] = True
+                    elif variant == 'changed-backup':
+                        backup = self.home / 'dant/installation-backups' / proof['backup']
+                        backup.write_bytes(backup.read_bytes() + b'changed')
+                    path.write_bytes(json.dumps(proof).encode())
+
+                with self.isolated_activation(quiet=invalidate):
+                    with self.assertRaises((installer.InstallError, FileNotFoundError)):
+                        self.activate()
+                self.assertFalse(any(call[1:4] == ['--user', 'start', 'dant-worker.service'] for call in self.calls))
+                self.assertEqual(json.loads((self.home / 'dant/install-attempt.json').read_bytes())['phase'], installer.PHASE_PREPARING)
 
     def test_failed_stop_backup_prepare_or_start_never_restarts_node_or_replays(self):
         for phase in ('stop', 'backup', 'prepare', 'start'):
@@ -189,6 +280,25 @@ class WorkerInstallFixture(unittest.TestCase):
         self.assertEqual(len(stops), 1)
         self.assertFalse((self.home / 'dant/deployed-source.json').exists())
         self.assertEqual(json.loads((self.home / 'dant/install-attempt.json').read_bytes())['phase'], 'activating')
+
+    def test_failed_committed_journal_never_publishes_target_as_current(self):
+        actual_write = installer.atomic_write
+
+        def fail_commit(path, data, mode=0o600):
+            if pathlib.Path(path).name == 'install-attempt.json':
+                value = json.loads(data)
+                if value.get('phase') == installer.PHASE_COMMITTED:
+                    installer.reject('fixture-commit-unconfirmed')
+            return actual_write(path, data, mode)
+
+        with self.isolated_activation():
+            with patch.object(installer, 'atomic_write', side_effect=fail_commit):
+                with self.assertRaisesRegex(installer.InstallError, 'fixture-commit-unconfirmed'):
+                    self.activate()
+        self.assertFalse((self.home / 'dant/deployed-source.json').exists())
+        attempt = json.loads((self.home / 'dant/install-attempt.json').read_bytes())
+        self.assertEqual(attempt['phase'], installer.PHASE_ACTIVATING)
+        self.assertEqual(sum(call[1:4] == ['--user', 'start', 'dant-worker.service'] for call in self.calls), 1)
 
     def test_replaced_verified_binary_before_copy_prevents_prepare(self):
         def replace_before_copy(arguments, **kwargs):

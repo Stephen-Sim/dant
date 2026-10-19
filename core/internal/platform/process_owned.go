@@ -46,5 +46,14 @@ func StartProcess(parent context.Context, executable string, args []string) (*Pr
 }
 
 func (process *Process) Done() <-chan struct{} { return process.done }
-func (process *Process) Err() error            { process.mu.Lock(); defer process.mu.Unlock(); return process.err }
-func (process *Process) Stop()                 { process.cancel(); <-process.done }
+func (process *Process) Err() error {
+	process.mu.Lock()
+	defer process.mu.Unlock()
+
+	return process.err
+}
+
+func (process *Process) Stop() {
+	process.cancel()
+	<-process.done
+}

@@ -57,6 +57,8 @@ The installer owns this boundary because a Go-only mutex or data-root lock canno
 
 A failure preserves data, the private archive and an explicit unconfirmed installation receipt. It does not restart an old Node Worker against prepared data or replay an uncertain action. Recovery requires independent reconciliation and exclusive ownership. Restore likewise validates the archive first, pauses tasks/schedules, disables Telegram and uses the existing target-bound receipt protocol.
 
+The Worker also checks `install-attempt.json` before opening Store or Memory, including independent service starts and reboots. `reserving`, `stopping` and `preparing` cannot start live services. Offline preparation writes `worker-preparation.json` only after archive authentication and all preparation steps succeed; this receipt binds the attempt, version, source commit, verified bundle, exact data/workspace roots and archive identity/hash. `activating` requires that receipt and the unchanged recovery archive. `committed` retains the receipt while allowing normal archive retention, without scanning a multi-gigabyte archive on every boot. The managed `app` symlink must resolve to the exact verified release directory. An absent installation journal remains an explicit fresh/manual-install compatibility case; malformed or partial journals never use that exception.
+
 ## Build, resources and development
 
 Go **1.27.2** is pinned in tooling and CI; automatic toolchain selection is disabled. Production binaries use `CGO_ENABLED=0`, `-trimpath` and explicit version/source build metadata. `buildCore` requires a clean committed tree, validates the expected CI commit, and checks it again after compilation. Dirty source cannot be labeled with an unrelated clean commit.

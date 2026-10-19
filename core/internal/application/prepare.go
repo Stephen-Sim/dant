@@ -2,12 +2,15 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 
 	"github.com/Stephen-Sim/dant/core/internal/backups"
+	"github.com/Stephen-Sim/dant/core/internal/buildinfo"
 	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/files"
 	"github.com/Stephen-Sim/dant/core/internal/memory"
@@ -36,11 +39,18 @@ func prepareDataOffline(ctx context.Context, startup config.Startup, offline fun
 	if err := offline(ctx); err != nil {
 		return err
 	}
+
+	ticket, err := beginPreparation(ctx, startup, buildinfo.Version, buildinfo.Source)
+	if err != nil {
+		return err
+	}
+
 	owner, err := ownership.Acquire(ctx, startup.DataDir)
 	if err != nil {
 		return err
 	}
 	defer owner.Close()
+
 	_, stateErr := os.Lstat(filepath.Join(startup.DataDir, "state.json"))
 	if stateErr != nil && !os.IsNotExist(stateErr) {
 		return stateErr
@@ -48,14 +58,22 @@ func prepareDataOffline(ctx context.Context, startup config.Startup, offline fun
 	if stateErr == nil && startup.Backup == "" {
 		return backups.ErrInvalid
 	}
+
+	backupHash := ""
 	if startup.Backup != "" {
-		if err := validatePreparationBackup(ctx, startup.Backup, stateErr == nil); err != nil {
+		backupHash, err = authenticatePreparationBackup(ctx, startup.Backup, stateErr == nil)
+		if err != nil {
 			return err
 		}
 	}
+
 	if err := offline(ctx); err != nil {
 		return err
 	}
+	if err := ticket.current(ctx); err != nil {
+		return err
+	}
+
 	persistence, err := store.OpenContext(ctx, startup.DataDir, store.Options{})
 	if err != nil {
 		return err
@@ -69,27 +87,45 @@ func prepareDataOffline(ctx context.Context, startup config.Startup, offline fun
 	if err := durable.MigrateLegacy(ctx, persistence); err != nil {
 		return err
 	}
+
 	state := persistence.Snapshot()
 	database, err := schedules.OpenDatabase(ctx, startup.DataDir, state.Schedules, state.DeletedScheduleRequestIDs)
 	if err != nil {
 		return err
 	}
-	return database.Close()
+	if err := database.Close(); err != nil {
+		return err
+	}
+	if err := durable.Close(); err != nil {
+		return err
+	}
+	persistence.Close()
+
+	if err := offline(ctx); err != nil {
+		return err
+	}
+	return ticket.finish(ctx, backupHash)
 }
 
 func validatePreparationBackup(ctx context.Context, name string, requireState bool) error {
+	_, err := authenticatePreparationBackup(ctx, name, requireState)
+	return err
+}
+
+func authenticatePreparationBackup(ctx context.Context, name string, requireState bool) (string, error) {
 	root, err := files.OpenManagedRoot(filepath.Dir(name), false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer root.Close()
+
 	staging, err := os.MkdirTemp("", "dant-prepare-validation-")
 	if err != nil {
-		return err
+		return "", err
 	}
 	before, err := os.Lstat(staging)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		current, err := os.Lstat(staging)
@@ -97,8 +133,10 @@ func validatePreparationBackup(ctx context.Context, name string, requireState bo
 			_ = os.RemoveAll(staging)
 		}
 	}()
-	return root.WithReader(ctx, filepath.Base(name), backups.ArchiveLimit, func(input io.Reader) error {
-		archive, err := backups.ValidateArchive(ctx, input, staging)
+
+	digest := sha256.New()
+	err = root.WithReader(ctx, filepath.Base(name), backups.ArchiveLimit, func(input io.Reader) error {
+		archive, err := backups.ValidateArchive(ctx, io.TeeReader(input, digest), staging)
 		if err != nil {
 			return err
 		}
@@ -116,4 +154,8 @@ func validatePreparationBackup(ctx context.Context, name string, requireState bo
 		}
 		return backups.ValidateWorkerBackup(ctx, archive)
 	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }

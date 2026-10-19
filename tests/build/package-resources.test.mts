@@ -51,6 +51,7 @@ function fixture(t: NodeTestContext) {
   write(root, 'src-tauri/Cargo.toml', '[package]\nname="dant"\nversion="1.2.3"\n');
   write(root, 'LICENSE', 'MIT fixture');
   write(root, 'core/internal/platform/timezones/GO-LICENSE.txt', 'Go Authors BSD license fixture');
+  write(root, 'core/internal/history/assets/UNICODE-LICENSE.txt', 'Unicode license fixture');
   write(root, 'src/server.mts', 'export const current=true;');
   write(root, 'dist/index.html', '<script src="/assets/current.js"></script>');
   write(root, 'dist/assets/current.js', 'current build');
@@ -121,6 +122,10 @@ test('fresh resources remove obsolete hashed assets and deleted source files wit
   assert.equal(
     fs.readFileSync(path.join(f.paths.resources, 'GO-LICENSE.txt'), 'utf8'),
     'Go Authors BSD license fixture',
+  );
+  assert.equal(
+    fs.readFileSync(path.join(f.paths.resources, 'UNICODE-LICENSE.txt'), 'utf8'),
+    'Unicode license fixture',
   );
   write(f.paths.resources, 'dist/assets/stale-old.js', 'stale');
   write(f.paths.resources, 'src/deleted.mjs', 'stale');

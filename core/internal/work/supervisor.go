@@ -118,7 +118,11 @@ func (value *Supervisor) Tick(ctx context.Context) (json.RawMessage, error) {
 	}
 	value.running = true
 	value.mu.Unlock()
-	defer func() { value.mu.Lock(); value.running = false; value.mu.Unlock() }()
+	defer func() {
+		value.mu.Lock()
+		value.running = false
+		value.mu.Unlock()
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

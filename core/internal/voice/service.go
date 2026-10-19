@@ -146,7 +146,11 @@ func (service *Service) StartCall(ctx context.Context, input CallStartRequest) (
 	}
 	service.starting = true
 	service.mu.Unlock()
-	defer func() { service.mu.Lock(); service.starting = false; service.mu.Unlock() }()
+	defer func() {
+		service.mu.Lock()
+		service.starting = false
+		service.mu.Unlock()
+	}()
 	if service.Snapshot() != nil {
 		return CallStartResult{}, ErrVoiceBusy
 	}

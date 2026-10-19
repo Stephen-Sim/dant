@@ -22,8 +22,14 @@ func (gateway *Gateway) Start() {
 	go func() {
 		var workers sync.WaitGroup
 		workers.Add(2)
-		go func() { defer workers.Done(); gateway.pollLoop(ctx) }()
-		go func() { defer workers.Done(); gateway.outboundLoop(ctx) }()
+		go func() {
+			defer workers.Done()
+			gateway.pollLoop(ctx)
+		}()
+		go func() {
+			defer workers.Done()
+			gateway.outboundLoop(ctx)
+		}()
 		workers.Wait()
 		gateway.mu.Lock()
 		if gateway.loopDone == done {

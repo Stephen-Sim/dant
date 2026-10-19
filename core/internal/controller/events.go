@@ -167,7 +167,11 @@ func (app *App) serveWebSocket(writer http.ResponseWriter, request *http.Request
 			}
 		}
 	}()
-	defer func() { cancel(); socket.CloseNow(); <-readerDone }()
+	defer func() {
+		cancel()
+		socket.CloseNow()
+		<-readerDone
+	}()
 	initial, _ := json.Marshal(struct {
 		Type string `json:"type"`
 		Data any    `json:"data"`

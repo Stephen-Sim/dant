@@ -392,7 +392,10 @@ func (vault *Vault) Save(ctx context.Context, input io.Reader, metadata Metadata
 	if err != nil {
 		return ErrInvalid
 	}
-	defer func() { output.Close(); os.Remove(temporary) }()
+	defer func() {
+		output.Close()
+		os.Remove(temporary)
+	}()
 	prefix := make([]byte, len(localMagic)+4)
 	copy(prefix, localMagic)
 	binary.BigEndian.PutUint32(prefix[len(localMagic):], uint32(len(aad)))

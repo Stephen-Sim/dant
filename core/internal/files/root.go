@@ -256,13 +256,20 @@ func (managed *ManagedRoot) read(ctx context.Context, name string, max int64, co
 
 func (managed *ManagedRoot) ReadFile(ctx context.Context, name string, max int64) ([]byte, error) {
 	var data []byte
-	_, err := managed.read(ctx, name, max, func(reader io.Reader) error { var err error; data, err = io.ReadAll(reader); return err })
+	_, err := managed.read(ctx, name, max, func(reader io.Reader) error {
+		var err error
+		data, err = io.ReadAll(reader)
+		return err
+	})
 	return data, err
 }
 
 func (managed *ManagedRoot) Digest(ctx context.Context, name string, max int64) (string, int64, error) {
 	hash := sha256.New()
-	info, err := managed.read(ctx, name, max, func(reader io.Reader) error { _, err := io.Copy(hash, reader); return err })
+	info, err := managed.read(ctx, name, max, func(reader io.Reader) error {
+		_, err := io.Copy(hash, reader)
+		return err
+	})
 	if err != nil {
 		return "", 0, err
 	}

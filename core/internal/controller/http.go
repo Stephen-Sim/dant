@@ -123,7 +123,10 @@ func (app *App) serve(writer http.ResponseWriter, request *http.Request) {
 			_ = body.Close()
 		}
 	})
-	defer func() { stop(); cancel() }()
+	defer func() {
+		stop()
+		cancel()
+	}()
 	request = request.WithContext(owner)
 	app.mu.Lock()
 	closed := app.closed

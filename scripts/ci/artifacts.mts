@@ -10,6 +10,7 @@ import { resolveGoToolchain, GO_VERSION } from '../core/go.mts';
 import {
   CORE_WINDOWS,
   CORE_LICENSE,
+  CORE_UNICODE_LICENSE,
   CORE_BUNDLE_MANIFEST,
   CORE_BUILD_MANIFEST,
   CORE_RESOURCE_MANIFEST,
@@ -71,6 +72,7 @@ async function describe(name: string): Promise<{ name: string; bytes: number; sh
 const requiredFiles = [
   'LICENSE',
   CORE_LICENSE,
+  CORE_UNICODE_LICENSE,
   'package.json',
   'dist/index.html',
   CORE_WINDOWS,

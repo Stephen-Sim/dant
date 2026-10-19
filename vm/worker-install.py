@@ -46,6 +46,13 @@ VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\Z')
 SHA256 = re.compile(r'[a-f0-9]{64}\Z')
 COMMIT = re.compile(r'[a-f0-9]{40}\Z')
 LEASE = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z')
+PHASE_RESERVING = 'reserving'
+PHASE_STOPPING = 'stopping'
+PHASE_PREPARING = 'preparing'
+PHASE_ACTIVATING = 'activating'
+PHASE_COMMITTED = 'committed'
+PREPARATION_FILE = 'worker-preparation.json'
+BACKUP_LIMIT = 10 * 1024 * 1024 * 1024 * 3 // 2 + 64 * 1024 * 1024
 
 
 class InstallError(Exception):
@@ -73,6 +80,13 @@ def file_identity(info):
     return (info.st_dev, info.st_ino, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def shared_file_identity(info):
+    # Windows Python 3.12 can report different ctime epochs through stat and
+    # fstat. Compare common fields across APIs, while retaining full same-API
+    # before/after comparisons, including ctime, throughout each read.
+    return file_identity(info)[:-1]
+
+
 @contextlib.contextmanager
 def regular_file(path, limit):
     path = pathlib.Path(path)
@@ -82,13 +96,13 @@ def regular_file(path, limit):
         reject('file-invalid')
     with path.open('rb') as stream:
         opened = os.fstat(stream.fileno())
-        if file_identity(opened) != file_identity(before):
+        if shared_file_identity(opened) != shared_file_identity(before):
             reject('file-changed')
         yield stream
         after = path.lstat()
         if (
             file_identity(after) != file_identity(before) or
-            file_identity(os.fstat(stream.fileno())) != file_identity(before)
+            file_identity(os.fstat(stream.fileno())) != file_identity(opened)
         ):
             reject('file-changed')
 
@@ -513,24 +527,53 @@ def activate(configuration, manual=False):
         _activate_locked(configuration, manual, service_directory)
 
 
+def validate_previous_attempt(previous):
+    legacy_fields = {'schemaVersion', 'source', 'phase', 'backup', 'maintenanceId'}
+    proof_fields = {
+        'attemptId', 'sourceCommit', 'version', 'directory', 'backupBytes',
+        'backupModifiedNS', 'backupIdentity', 'backupSha256', 'preparationSha256',
+    }
+    if (
+        set(previous) - (legacy_fields | proof_fields) or
+        type(previous.get('schemaVersion')) is not int or previous['schemaVersion'] != 1 or
+        not isinstance(previous.get('source'), str) or not SHA256.fullmatch(previous['source']) or
+        previous.get('phase') != PHASE_COMMITTED or
+        not isinstance(previous.get('backup'), str) or
+        re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.raw', previous['backup']) is None or
+        'maintenanceId' in previous and (
+            not isinstance(previous['maintenanceId'], str) or not LEASE.fullmatch(previous['maintenanceId'])
+        )
+    ):
+        reject('previous-install-unconfirmed')
+    # A committed legacy installer receipt can be upgraded. A partial modern
+    # receipt cannot masquerade as that legacy format to replay a failed update.
+    if not proof_fields.intersection(previous):
+        return
+    if (
+        not proof_fields <= set(previous) or
+        not isinstance(previous['attemptId'], str) or not LEASE.fullmatch(previous['attemptId']) or
+        not isinstance(previous['sourceCommit'], str) or not COMMIT.fullmatch(previous['sourceCommit']) or
+        not isinstance(previous['version'], str) or not VERSION.fullmatch(previous['version']) or
+        not isinstance(previous['directory'], str) or
+        re.fullmatch(r'source\.[A-Za-z0-9._-]{1,160}', previous['directory']) is None or
+        type(previous['backupBytes']) is not int or not 0 < previous['backupBytes'] <= BACKUP_LIMIT or
+        not isinstance(previous['backupModifiedNS'], str) or
+        re.fullmatch(r'-?[0-9]{1,20}', previous['backupModifiedNS']) is None or
+        not isinstance(previous['backupIdentity'], str) or
+        re.fullmatch(r'[a-f0-9]{1,16}:[a-f0-9]{1,16}', previous['backupIdentity']) is None or
+        not isinstance(previous['backupSha256'], str) or not SHA256.fullmatch(previous['backupSha256']) or
+        not isinstance(previous['preparationSha256'], str) or not SHA256.fullmatch(previous['preparationSha256'])
+    ):
+        reject('previous-install-unconfirmed')
+
+
 def _activate_locked(configuration, manual, service_directory):
     home, source = configuration['home'], configuration['source']
     root = home / 'dant'
     attempt_path = root / 'install-attempt.json'
     if attempt_path.exists() or attempt_path.is_symlink():
         previous = json_object(read_regular(attempt_path, MANIFEST_LIMIT))
-        if (
-            set(previous) - {'schemaVersion', 'source', 'phase', 'backup', 'maintenanceId'} or
-            type(previous.get('schemaVersion')) is not int or previous['schemaVersion'] != 1 or
-            not isinstance(previous.get('source'), str) or not SHA256.fullmatch(previous['source']) or
-            previous.get('phase') != 'committed' or
-            not isinstance(previous.get('backup'), str) or
-            re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.raw', previous['backup']) is None or
-            'maintenanceId' in previous and (
-                not isinstance(previous['maintenanceId'], str) or not LEASE.fullmatch(previous['maintenanceId'])
-            )
-        ):
-            reject('previous-install-unconfirmed')
+        validate_previous_attempt(previous)
 
     # Validate busy-work policy again while owning the installation lock.
     arguments = ['bash', str(source / 'vm/install-worker.sh'), str(source), '--guard-only']
@@ -538,14 +581,19 @@ def _activate_locked(configuration, manual, service_directory):
         arguments.append('--update-running-work')
     run_quiet(arguments, timeout=PREPARE_TIMEOUT)
     observed_service = service_state()
-    attempt = {'schemaVersion': 1, 'source': configuration['digest'], 'phase': 'reserving'}
+    attempt = {
+        'schemaVersion': 1, 'attemptId': str(uuid.uuid4()),
+        'source': configuration['digest'], 'sourceCommit': configuration['commit'],
+        'version': configuration['version'], 'directory': source.name,
+        'phase': PHASE_RESERVING,
+    }
     atomic_write(attempt_path, json.dumps(attempt).encode())
     # The new Worker atomically rejects task/Telegram admission while held. A
     # confirmed old-Node 404 retains its legacy guard plus stopped-process proof.
     lease = reserve_maintenance(configuration) if observed_service['ActiveState'] == 'active' else None
     if lease is not None:
         attempt['maintenanceId'] = lease
-    attempt['phase'] = 'stopping'
+    attempt['phase'] = PHASE_STOPPING
     atomic_write(attempt_path, json.dumps(attempt).encode())
 
     state = service_state()
@@ -579,17 +627,37 @@ def _activate_locked(configuration, manual, service_directory):
                   timeout=PREPARE_TIMEOUT, environment=environment, output=output)
         output.flush()
         os.fsync(output.fileno())
-    if backup.stat().st_size == 0:
+    backup_info = backup.lstat()
+    if backup_info.st_size == 0:
         reject('backup-unconfirmed')
 
-    attempt['phase'] = 'preparing'
+    attempt['phase'] = PHASE_PREPARING
     attempt['backup'] = backup.name
+    attempt['backupBytes'] = backup_info.st_size
+    attempt['backupModifiedNS'] = str(backup_info.st_mtime_ns)
+    attempt['backupIdentity'] = f'{backup_info.st_dev:x}:{backup_info.st_ino:x}'
     atomic_write(attempt_path, json.dumps(attempt).encode())
     assert_stopped(home)
     run_quiet([str(binary_path), '--role=prepare-worker', '--root=' + str(source),
                '--data-dir=' + str(root / 'data'), '--workspace-root=' + str(root / 'workspaces'),
                '--backup=' + str(backup)], timeout=PREPARE_TIMEOUT, environment=environment)
     assert_stopped(home)
+    proof_raw = read_regular(root / PREPARATION_FILE, MANIFEST_LIMIT)
+    proof = json_object(proof_raw)
+    expected_proof = {key: attempt[key] for key in (
+        'schemaVersion', 'attemptId', 'source', 'sourceCommit', 'version', 'directory',
+        'backup', 'backupBytes', 'backupModifiedNS', 'backupIdentity')}
+    expected_proof.update({'dataDir': str(root / 'data'), 'workspaceRoot': str(root / 'workspaces')})
+    expected_proof['backupSha256'] = proof.get('backupSha256')
+    if (
+        proof != expected_proof or type(proof.get('schemaVersion')) is not int or
+        type(proof.get('backupBytes')) is not int or
+        not isinstance(proof.get('backupSha256'), str) or not SHA256.fullmatch(proof['backupSha256']) or
+        file_identity(backup.lstat()) != file_identity(backup_info)
+    ):
+        reject('preparation-unconfirmed')
+    attempt['backupSha256'] = proof['backupSha256']
+    attempt['preparationSha256'] = hashlib.sha256(proof_raw).hexdigest()
 
     for name in HELPERS:
         relative = 'vm/' + name
@@ -607,14 +675,14 @@ def _activate_locked(configuration, manual, service_directory):
     run_quiet(['systemctl', '--user', 'daemon-reload'])
     run_quiet(['systemctl', '--user', 'enable', 'dant-guest-local.service', 'dant-worker.service'])
     run_quiet(['systemctl', '--user', 'restart', 'dant-guest-local.service'])
-    attempt['phase'] = 'activating'
+    attempt['phase'] = PHASE_ACTIVATING
     atomic_write(attempt_path, json.dumps(attempt).encode())
     run_quiet(['systemctl', '--user', 'start', 'dant-worker.service'])
     for _ in range(READY_ATTEMPTS):
         if ready(configuration):
-            atomic_write(root / 'deployed-source.json', read_regular(source / 'deploy-manifest.json', MANIFEST_LIMIT))
-            attempt['phase'] = 'committed'
+            attempt['phase'] = PHASE_COMMITTED
             atomic_write(attempt_path, json.dumps(attempt).encode())
+            atomic_write(root / 'deployed-source.json', read_regular(source / 'deploy-manifest.json', MANIFEST_LIMIT))
             print('DANT_UPDATE_DEPLOYED')
             return
         time.sleep(1)

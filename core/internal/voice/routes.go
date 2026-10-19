@@ -173,7 +173,11 @@ func RegisterRoutes(mux *http.ServeMux, options RouteOptions) {
 			return err
 		}
 		var status security.KeyStatus
-		err = service.changeKey(func() error { var err error; status, err = options.Keys.Set(request.Context(), key); return err })
+		err = service.changeKey(func() error {
+			var err error
+			status, err = options.Keys.Set(request.Context(), key)
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -184,7 +188,11 @@ func RegisterRoutes(mux *http.ServeMux, options RouteOptions) {
 	}))
 	httpapi.Register(mux, "DELETE /api/voice-key", wrap(func(writer http.ResponseWriter, request *http.Request) error {
 		var status security.KeyStatus
-		err := service.changeKey(func() error { var err error; status, err = options.Keys.Clear(request.Context()); return err })
+		err := service.changeKey(func() error {
+			var err error
+			status, err = options.Keys.Clear(request.Context())
+			return err
+		})
 		if err != nil {
 			return err
 		}

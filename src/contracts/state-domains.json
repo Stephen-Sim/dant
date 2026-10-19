@@ -194,6 +194,13 @@
       "Completed": "completed",
       "Cancelled": "cancelled"
     },
+    "WorkerInstallationPhase": {
+      "Reserving": "reserving",
+      "Stopping": "stopping",
+      "Preparing": "preparing",
+      "Activating": "activating",
+      "Committed": "committed"
+    },
     "WorkerRestorePhase": {
       "Prepared": "prepared",
       "Installing": "installing",

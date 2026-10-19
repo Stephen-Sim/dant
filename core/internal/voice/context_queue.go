@@ -67,7 +67,10 @@ func NewContextQueue(ctx context.Context, options ContextQueueOptions) (*Context
 func (q *ContextQueue) result(item *pendingContext, status contracts.LiveContextStatus, reason string) ContextResult {
 	value := ContextResult{q.options.CallID, item.input.ContextID, item.input.MessageID, item.input.Kind, status, reason}
 	if q.options.OnResult != nil {
-		func() { defer func() { _ = recover() }(); q.options.OnResult(value) }()
+		func() {
+			defer func() { _ = recover() }()
+			q.options.OnResult(value)
+		}()
 	}
 	item.done <- value
 	close(item.done)

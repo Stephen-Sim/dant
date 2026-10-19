@@ -110,7 +110,11 @@ func (s *Store) Notes(ctx context.Context) ([]Note, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result []Note
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error { var err error; result, err = notesAt(ctx, tx); return err })
+	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = notesAt(ctx, tx)
+		return err
+	})
 	for index := range result {
 		result[index].Text = SanitizeText(result[index].Text)
 	}

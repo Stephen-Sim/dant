@@ -312,7 +312,10 @@ func (api *API) finishSession(s *apiSession, reason string) {
 		_ = socket.Close()
 	}
 	joined := make(chan struct{})
-	go func() { s.workers.Wait(); close(joined) }()
+	go func() {
+		s.workers.Wait()
+		close(joined)
+	}()
 	select {
 	case <-joined:
 	case <-bounded.Done():

@@ -213,7 +213,10 @@ func (s *TokenUsageStore) apply(ctx context.Context, operation func(*TokenState)
 		var fields contracts.RawObject
 		fields, err = contracts.DecodeObject(raw, maxUsageJSONBytes)
 		if err == nil {
-			err = s.store.Mutate(ctx, func(state *contracts.State) error { state.TokenUsage = fields; return nil })
+			err = s.store.Mutate(ctx, func(state *contracts.State) error {
+				state.TokenUsage = fields
+				return nil
+			})
 		}
 	}
 	if err == nil {

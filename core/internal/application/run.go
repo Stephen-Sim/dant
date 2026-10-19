@@ -113,6 +113,12 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 
 func assembleService(ctx context.Context, startup config.Startup, executable string) (service, error) {
 	if startup.Role == config.RoleWorker {
+		root, err := checkWorkerActivation(ctx, startup, buildinfo.Version, buildinfo.Source)
+		if err != nil {
+			return nil, err
+		}
+		startup.Root = root
+
 		return app.NewWorker(ctx, app.WorkerOptions{
 			Startup: startup,
 			Version: buildinfo.Version,
@@ -191,19 +197,25 @@ func serve(ctx context.Context, instance service, listener net.Listener, output 
 	}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
+
 	if _, err := fmt.Fprintf(output, "dant listening at http://%s\n", listener.Addr().String()); err != nil {
 		instance.Close()
 		_ = server.Close()
 		<-done
 		return err
 	}
+
 	instance.Start()
 	var managedDone <-chan struct{}
 	if managed {
 		finished := make(chan struct{})
 		managedDone = finished
-		go func() { _, _ = io.Copy(io.Discard, input); close(finished) }()
+		go func() {
+			_, _ = io.Copy(io.Discard, input)
+			close(finished)
+		}()
 	}
+
 	var result error
 	select {
 	case <-owner.Done():
@@ -211,8 +223,10 @@ func serve(ctx context.Context, instance service, listener net.Listener, output 
 	case result = <-done:
 		done = nil
 	}
+
 	cancel()
 	instance.Close()
+
 	closing, stop := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer stop()
 	if err := server.Shutdown(closing); err != nil {

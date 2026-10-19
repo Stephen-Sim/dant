@@ -358,7 +358,10 @@ func (value *LocalWorker) CloseContext(ctx context.Context) error {
 		return ErrStopUnconfirmed
 	}
 	finished := make(chan struct{})
-	go func() { value.monitors.Wait(); close(finished) }()
+	go func() {
+		value.monitors.Wait()
+		close(finished)
+	}()
 	select {
 	case <-finished:
 	case <-ctx.Done():

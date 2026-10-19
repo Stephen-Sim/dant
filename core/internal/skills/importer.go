@@ -93,7 +93,12 @@ func (importer *Importer) Preview(ctx context.Context, input ImportInput) (Previ
 	importer.inflight++
 	importer.workers.Add(1)
 	importer.mu.Unlock()
-	defer func() { importer.mu.Lock(); importer.inflight--; importer.mu.Unlock(); importer.workers.Done() }()
+	defer func() {
+		importer.mu.Lock()
+		importer.inflight--
+		importer.mu.Unlock()
+		importer.workers.Done()
+	}()
 	deadline, cancel := context.WithTimeout(ctx, ImportDeadline)
 	defer cancel()
 	stop := context.AfterFunc(importer.ctx, cancel)

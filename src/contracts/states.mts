@@ -253,6 +253,16 @@ export const WorkStatus = Object.freeze({
 } as const);
 export type WorkStatusValue = (typeof WorkStatus)[keyof typeof WorkStatus];
 
+export const WorkerInstallationPhase = Object.freeze({
+  Reserving: 'reserving',
+  Stopping: 'stopping',
+  Preparing: 'preparing',
+  Activating: 'activating',
+  Committed: 'committed',
+} as const);
+export type WorkerInstallationPhaseValue =
+  (typeof WorkerInstallationPhase)[keyof typeof WorkerInstallationPhase];
+
 export const WorkerRestorePhase = Object.freeze({
   Prepared: 'prepared',
   Installing: 'installing',

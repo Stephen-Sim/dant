@@ -18,6 +18,10 @@ A failed or rate-limited request shows a retry message rather than claiming the 
 
 ## Work computer service updates
 
+### Go Core migration in 0.4.7-beta.13
+
+The Windows Controller and Ubuntu Worker now use compiled Go programs; Tauri remains Rust and the interface remains TypeScript. Updates verify the running Worker role, protocol, version and source commit. A durable installation journal prevents a reboot or an independent service start from bypassing offline backup and preparation. Only a matching successful preparation receipt permits activation. Existing chats, SQLite memory/schedules, skills and workspace keep their saved paths. See [architecture](architecture.md) and [migration](go-core-migration.md).
+
 ### Startup compatibility in 0.4.7-beta.10
 
 Beta 10 fixes a desktop state-validation regression that could show **Invalid application state** even while the local Controller and VM service were reachable. The UI now accepts supported empty values and older Worker metadata, including the null call ID of an ordinary active chat task, without inventing task ownership or execution confirmation. The fix is in the desktop executable's embedded frontend, so updating only the VM cannot repair an older embedded frontend. If that screen prevents opening Settings, install the newer desktop package from the release page.

@@ -114,7 +114,11 @@ func (session *ComputerSession) begin(ctx context.Context) (context.Context, fun
 	session.mu.Unlock()
 	owner, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(session.ctx, cancel)
-	return owner, func() { stop(); cancel(); session.operations.Done() }, nil
+	return owner, func() {
+		stop()
+		cancel()
+		session.operations.Done()
+	}, nil
 }
 
 func (session *ComputerSession) guestJSON(ctx context.Context, route string, body json.RawMessage) (contracts.RawObject, error) {
