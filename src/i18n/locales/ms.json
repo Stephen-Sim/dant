@@ -1054,5 +1054,10 @@
   "Open": "Buka",
   "Connect the work computer to pin or star messages.": "Sambungkan komputer kerja untuk menyemat atau membintangkan mesej.",
   "Could not update this message. Check its saved status before trying again.": "Mesej ini tidak dapat dikemas kini. Semak status tersimpannya sebelum mencuba lagi.",
-  "The message update is unconfirmed. Check its saved status before trying again.": "Kemas kini mesej belum disahkan. Semak status tersimpannya sebelum mencuba lagi."
+  "The message update is unconfirmed. Check its saved status before trying again.": "Kemas kini mesej belum disahkan. Semak status tersimpannya sebelum mencuba lagi.",
+  "Preserved supporting files": "Fail sokongan yang dikekalkan",
+  "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "Fail ini dikekalkan bait demi bait dan disertakan dalam ZIP. Fail teks besar dan format lain adalah baca sahaja dalam penyunting ini.",
+  "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "Kemahiran ini melebihi had yang disokong (128 fail sokongan, setiap satu 8 MiB dan jumlah 9 MiB). Kurangkan bilangan atau saiz fail pada komputer kerja, kemudian cuba lagi. Fail sedia ada tidak diubah.",
+  "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Gunakan laluan scripts/, references/ atau assets/, atau fail README.md, LICENSE dan NOTICE di akar. Sunting sehingga 128 fail teks, setiap satu 256 KiB dan jumlah 1 MiB. Fail teks yang lebih besar dan format lain dikekalkan sebagai fail sokongan baca sahaja.",
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Pilih SKILL.md atau ZIP yang mengandungi satu kemahiran, sehingga 10 MiB."
 }

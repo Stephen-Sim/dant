@@ -74,6 +74,8 @@ import { SKILL_SUPPORT_FILE_LIMIT, SKILL_TREE_ENTRY_LIMIT } from './skill-limits
 const MAX_ARCHIVE = SKILL_ARCHIVE_BYTES,
   MAX_FILE = SKILL_FILE_BYTES,
   MAX_TOTAL = SKILL_TOTAL_BYTES,
+  // A GitHub blob carries base64, escaped line separators and JSON metadata.
+  MAX_BLOB_RESPONSE = MAX_FILE * 2,
   TTL = 10 * 60 * 1000;
 const sha = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -526,7 +528,7 @@ export class SkillImporter {
     for (const [id, item] of this.previews)
       if (item.expiresAt <= this.now()) this.previews.delete(id);
   }
-  async request(route: string, signal: AbortSignal, limit = MAX_FILE * 2) {
+  async request(route: string, signal: AbortSignal, limit = MAX_BLOB_RESPONSE) {
     let response;
     try {
       response = await withSignal(
@@ -664,10 +666,11 @@ export class SkillImporter {
       )
         throw remoteFailure();
       const encoded = blob.content.replaceAll('\n', '');
-      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded))
+      if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded))
         throw remoteFailure();
       const data = Buffer.from(encoded, 'base64');
       if (
+        data.toString('base64') !== encoded ||
         data.length !== entry.size ||
         createHash('sha1')
           .update('blob ' + data.length + '\0')

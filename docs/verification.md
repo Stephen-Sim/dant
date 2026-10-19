@@ -4,6 +4,14 @@ English · [Chinese](zh-CN/verification.md)
 
 Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
 
+## 0.4.7-beta.11 candidate source verification
+
+Read-only inspection before publishing Beta 10 found that the real skill had grown to 81 supporting files, about 3.79 MB in total, including a 1,557,774-byte PNG. Beta 10 remained unpublished because its previous file limits could not export that bundle. Beta 11 accepts arbitrary-format supporting files up to 8 MiB each, 9 MiB total and 10 MiB per ZIP, matching the existing bounded attachment download path. Its editor has separate 256 KiB per-file, 1 MiB decoded-text and 2 MiB encoded-JSON budgets; larger text and opaque files remain read-only assets whose original bytes survive text edits. The shared API request budget remains 3 MiB.
+
+The complete Node 22 run passed **2,488 of 2,490 tests**, with zero failures and **two Linux-only kernel-lock probes skipped on Windows**. All 174 application modules loaded; coverage is **97.90% lines, 90.63% branches and 93.67% functions**, with no gate failures. Strict Node/UI/test types, formatting, **26 adopted state modules**, **78 Python VM-helper tests**, **58 native Windows tests**, **11 CI-helper tests**, prerequisite/syntax/version checks and the frontend production build passed. All ten architecture diagrams parsed under both Mermaid 10.9.5 and 11.12.0, for **20 successful parser checks**.
+
+Isolated regressions cover the current 81-file bundle shape, complete 8 MiB GitHub blobs, exact maximum skill content through Controller/Worker export and download, and byte-preserving edits of large text and opaque assets. Installation, VM source confirmation and complete authenticated backup remain separate publication gates. Native editor UI acceptance still requires access to the installed application; source regressions alone cannot establish that the reported Notepad dialog is resolved.
+
 ## 0.4.7-beta.10 candidate source verification
 
 This candidate moves backup capture into a bounded background worker, preserves opaque workspace database bundles and arbitrary-format skill files, and adds SQLite memory management, windowed chat rendering, message pins/stars, docked Work progress and configurable assistant call captions. Read-only operational inspection reproduced an ordinary active task's valid `callId: null` being rejected by both UI decoders; the compatible fix preserves the exact task and turn. Late connection errors cannot overwrite a newer successful connection.

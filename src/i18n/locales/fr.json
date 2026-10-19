@@ -1054,5 +1054,10 @@
   "Open": "Ouvrir",
   "Connect the work computer to pin or star messages.": "Connectez l’ordinateur de travail pour épingler des messages ou les ajouter aux favoris.",
   "Could not update this message. Check its saved status before trying again.": "Impossible de mettre à jour ce message. Vérifiez son état enregistré avant de réessayer.",
-  "The message update is unconfirmed. Check its saved status before trying again.": "La mise à jour du message n’est pas confirmée. Vérifiez son état enregistré avant de réessayer."
+  "The message update is unconfirmed. Check its saved status before trying again.": "La mise à jour du message n’est pas confirmée. Vérifiez son état enregistré avant de réessayer.",
+  "Preserved supporting files": "Fichiers complémentaires conservés",
+  "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "Ces fichiers sont conservés octet par octet et inclus dans le ZIP. Les fichiers texte volumineux et les autres formats sont en lecture seule dans cet éditeur.",
+  "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "Cette compétence dépasse les limites prises en charge (128 fichiers complémentaires, de 8 MiB chacun et 9 MiB au total). Réduisez le nombre ou la taille des fichiers sur l’ordinateur de travail, puis réessayez. Les fichiers existants n’ont pas été modifiés.",
+  "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Utilisez les chemins scripts/, references/ ou assets/, ou les fichiers README.md, LICENSE et NOTICE à la racine. Modifiez jusqu’à 128 fichiers texte, de 256 KiB chacun et 1 MiB au total. Les fichiers texte plus volumineux et les autres formats sont conservés comme fichiers complémentaires en lecture seule.",
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Choisissez SKILL.md ou un ZIP contenant une compétence, de 10 MiB maximum."
 }

@@ -3,6 +3,9 @@ import {
   SKILL_INSTRUCTION_BYTES,
   SKILL_FILE_BYTES,
   SKILL_TOTAL_BYTES,
+  SKILL_EDITOR_FILE_BYTES,
+  SKILL_EDITOR_TOTAL_BYTES,
+  SKILL_EDITOR_JSON_BYTES,
   SKILL_MAX_DEPTH,
   SKILL_RELATIVE_PATH_CHARACTERS,
   SKILL_NAME_PATTERN,
@@ -67,7 +70,7 @@ function snapshotBytes(library: SkillLibrary, directory: string, relative: strin
       opened.ino !== before.ino
     )
       throw exportFailure();
-    const buffer = Buffer.alloc(SKILL_FILE_BYTES + 1);
+    const buffer = Buffer.alloc(opened.size + 1);
     let length = 0,
       read;
     while (
@@ -94,6 +97,34 @@ function snapshotBytes(library: SkillLibrary, directory: string, relative: strin
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+/** Omitted text is exposed as a preserved asset, never silently dropped by the JSON editor. */
+function editableFiles(snapshot: Pick<SkillSnapshot, 'files' | 'instructions'>) {
+  const files: Record<string, string> = Object.create(null),
+    preserved: Record<string, string> = Object.create(null);
+  let total = Buffer.byteLength(snapshot.instructions),
+    encoded = Buffer.byteLength(JSON.stringify({ instructions: snapshot.instructions, files: {} })),
+    count = 0;
+  for (const [relative, value] of Object.entries(snapshot.files)) {
+    const size = Buffer.byteLength(value);
+    if (size > SKILL_EDITOR_FILE_BYTES || total + size > SKILL_EDITOR_TOTAL_BYTES) {
+      preserved[relative] = value;
+      continue;
+    }
+    const entryBytes =
+      Buffer.byteLength(JSON.stringify(relative)) +
+      1 +
+      Buffer.byteLength(JSON.stringify(value)) +
+      (count ? 1 : 0);
+    if (encoded + entryBytes <= SKILL_EDITOR_JSON_BYTES) {
+      files[relative] = value;
+      total += size;
+      encoded += entryBytes;
+      count++;
+    } else preserved[relative] = value;
+  }
+  return { files, preserved };
 }
 
 /** Only dant-owned folders are editable. Enabled skills use Codex's workspace discovery path. */
@@ -182,12 +213,20 @@ export class SkillLibrary {
   }
   get(name: unknown): SkillView {
     const { binaryFiles, ...snapshot } = this.exportSnapshot(name),
-      assets = Object.entries(binaryFiles ?? {}).map(([relative, value]) => ({
-        path: relative,
-        mediaType: value.mediaType,
-        size: Buffer.from(value.data, 'base64').length,
-      }));
-    return { ...snapshot, files: { ...snapshot.files }, ...(assets.length ? { assets } : {}) };
+      editable = editableFiles(snapshot),
+      assets = [
+        ...Object.entries(binaryFiles ?? {}).map(([relative, value]) => ({
+          path: relative,
+          mediaType: value.mediaType,
+          size: Buffer.from(value.data, 'base64').length,
+        })),
+        ...Object.entries(editable.preserved).map(([relative, value]) => ({
+          path: relative,
+          mediaType: 'application/octet-stream' as const,
+          size: Buffer.byteLength(value),
+        })),
+      ];
+    return { ...snapshot, files: { ...editable.files }, ...(assets.length ? { assets } : {}) };
   }
   exportSnapshot(name: unknown): SkillSnapshot {
     const found = this.locate(name);
@@ -280,7 +319,8 @@ export class SkillLibrary {
       throw Object.assign(Error('A skill with this name already exists.'), { code: 'EEXIST' });
     if (input.preserveBinaryFiles && (!existing || input.binaryFiles !== undefined))
       throw Error('Invalid supporting skill preservation request.');
-    // Omitted files preserve all content. Editors explicitly retain read-only binary assets.
+    // Omitted files preserve all content. The compatibility flag retains every
+    // read-only asset returned by get(), including text outside the JSON budget.
     // A complete replacement without that flag keeps the legacy replacement contract.
     const snapshot =
       existing && (input.files === undefined || input.preserveBinaryFiles)
@@ -290,7 +330,15 @@ export class SkillLibrary {
       binaryFiles =
         input.binaryFiles === undefined ? (snapshot?.binaryFiles ?? {}) : input.binaryFiles;
     if (!isRecord(files) || !isRecord(binaryFiles)) throw Error('Invalid supporting skill files.');
-    const entries = [...Object.entries(files), ...Object.entries(binaryFiles)];
+    const preservedText =
+      snapshot && input.files !== undefined && input.preserveBinaryFiles
+        ? editableFiles(snapshot).preserved
+        : {};
+    const entries = [
+      ...Object.entries(files),
+      ...Object.entries(preservedText),
+      ...Object.entries(binaryFiles),
+    ];
     if (entries.length > SKILL_SUPPORT_FILE_LIMIT) throw countFailure();
     const output = new Map<string, Buffer>(),
       paths = new Set(['skill.md']),

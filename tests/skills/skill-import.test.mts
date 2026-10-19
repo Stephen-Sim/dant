@@ -536,6 +536,30 @@ test('GitHub imports retain 128 supporting files and reject 129 before any blob 
   assert.deepEqual(second.skills.list(), []);
 });
 
+test('a full eight-megabyte GitHub binary blob passes bounded multiline base64 JSON and pinned-hash verification', async (t) => {
+  const data = '\0'.repeat(8 * 1024 * 1024),
+    network = github({
+      files: { 'SKILL.md': source, 'assets/large.arbitrary': data },
+      blobChange: (blob) => ({ ...blob, content: blob.content.replace(/.{64}/g, '$&\n') }),
+    }),
+    { importer } = fixture(t, { fetchImpl: network.fetchImpl }),
+    preview = await importer.preview({ url: 'https://github.com/owner/repo' });
+  assert.equal(
+    preview.files.find((file) => file.path === 'assets/large.arbitrary')?.size,
+    SKILL_FILE_BYTES,
+  );
+  const saved = importer.commit({ id: preview.id });
+  assert.equal(saved.assets?.[0]?.size, data.length);
+  assert.equal(saved.files['assets/large.arbitrary'], undefined);
+  assert.equal(
+    createHash('sha256')
+      .update(fs.readFileSync(path.join(path.dirname(saved.path), 'assets/large.arbitrary')))
+      .digest('hex'),
+    createHash('sha256').update(data).digest('hex'),
+  );
+  assert.equal(network.calls.filter((call) => call.url.includes('/git/blobs/')).length, 2);
+});
+
 test('slash-bearing branches and tags resolve their longest existing prefix before path traversal', async (t) => {
   for (const url of [
     'https://github.com/owner/repo/tree/codex/windows-vm/skills/example',
@@ -634,7 +658,7 @@ test('remote truncation, unsupported entries, excessive data, changed blob hashe
     },
     {
       fetchChange: async () =>
-        new Response('large', { headers: { 'content-length': String(2 * 1024 * 1024) } }),
+        new Response('large', { headers: { 'content-length': String(SKILL_FILE_BYTES * 2 + 1) } }),
     },
     {
       fetchChange: async () => {

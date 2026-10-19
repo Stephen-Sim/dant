@@ -1054,5 +1054,10 @@
   "Open": "खोलें",
   "Connect the work computer to pin or star messages.": "संदेशों को पिन या स्टार करने के लिए वर्क कंप्यूटर से कनेक्ट करें।",
   "Could not update this message. Check its saved status before trying again.": "इस संदेश को अपडेट नहीं किया जा सका। फिर से कोशिश करने से पहले इसकी सहेजी गई स्थिति जाँचें।",
-  "The message update is unconfirmed. Check its saved status before trying again.": "संदेश के अपडेट की पुष्टि नहीं हुई है। फिर से कोशिश करने से पहले इसकी सहेजी गई स्थिति जाँचें।"
+  "The message update is unconfirmed. Check its saved status before trying again.": "संदेश के अपडेट की पुष्टि नहीं हुई है। फिर से कोशिश करने से पहले इसकी सहेजी गई स्थिति जाँचें।",
+  "Preserved supporting files": "संरक्षित सहायक फ़ाइलें",
+  "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "ये फ़ाइलें बाइट दर बाइट जस की तस रखी जाती हैं और ZIP में शामिल होती हैं। बड़ी टेक्स्ट फ़ाइलें और अन्य फ़ॉर्मैट इस संपादक में केवल पढ़ने योग्य हैं।",
+  "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "यह स्किल समर्थित सीमाओं से अधिक है (128 सहायक फ़ाइलें, प्रत्येक 8 MiB और कुल 9 MiB)। काम वाले कंप्यूटर पर फ़ाइलों की संख्या या आकार घटाएँ, फिर दोबारा कोशिश करें। मौजूदा फ़ाइलें बदली नहीं गईं।",
+  "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "scripts/, references/ या assets/ पथ, या रूट में README.md, LICENSE और NOTICE फ़ाइलें इस्तेमाल करें। अधिकतम 128 टेक्स्ट फ़ाइलें संपादित करें, प्रत्येक 256 KiB और कुल 1 MiB तक। बड़ी टेक्स्ट फ़ाइलें और अन्य फ़ॉर्मैट की फ़ाइलें केवल पढ़ने योग्य सहायक फ़ाइलों के रूप में सुरक्षित रखी जाती हैं।",
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md या एक स्किल वाली ZIP चुनें, जिसका आकार अधिकतम 10 MiB हो।"
 }

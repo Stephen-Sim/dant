@@ -239,9 +239,7 @@ test('opaque assets share the named text limits and cannot collide by case or di
   assert.deepEqual(skills.get(saved.name), saved);
   const bounded = {
     'assets/one.txt': 'a'.repeat(SKILL_FILE_BYTES),
-    'assets/two.txt': 'b'.repeat(SKILL_FILE_BYTES),
-    'assets/three.txt': 'c'.repeat(SKILL_FILE_BYTES),
-    'assets/four.txt': 'd'.repeat(SKILL_TOTAL_BYTES - 1 - 3 * SKILL_FILE_BYTES - data.length),
+    'assets/two.txt': 'b'.repeat(SKILL_TOTAL_BYTES - 1 - SKILL_FILE_BYTES - data.length),
   };
   skills.save({ ...sample, instructions: 'i', files: bounded, binaryFiles });
   const maximum = skills.get(saved.name),
@@ -252,7 +250,7 @@ test('opaque assets share the named text limits and cannot collide by case or di
       skills.save({
         ...sample,
         instructions: 'i',
-        files: { ...bounded, 'assets/four.txt': bounded['assets/four.txt'] + 'x' },
+        files: { ...bounded, 'assets/two.txt': bounded['assets/two.txt'] + 'x' },
         binaryFiles,
       }),
     (error) => errorCode(error) === 'size_limit',

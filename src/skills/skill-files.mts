@@ -92,7 +92,8 @@ export function skillFileFromValue(relative: string, value: unknown): DecodedSki
     value.mediaType !== 'application/octet-stream' ||
     typeof value.data !== 'string' ||
     value.data.length > 4 * Math.ceil(SKILL_FILE_BYTES / 3) ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.data)
+    value.data.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value.data)
   )
     throw skillFileFailure(SkillExportFailure.Encoding);
   const data = Buffer.from(value.data, 'base64');

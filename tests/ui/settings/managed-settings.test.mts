@@ -16,7 +16,12 @@ import type {
   UiSettings,
 } from '../../../ui/shared/contracts.mts';
 import { observedRecord, observedString } from '../../support/service-fixtures.mts';
-import { SKILL_SUPPORT_FILE_LIMIT, SKILL_FILE_BYTES } from '../../../src/skills/skill-limits.mts';
+import {
+  SKILL_SUPPORT_FILE_LIMIT,
+  SKILL_EDITOR_FILE_BYTES,
+  SKILL_EDITOR_TOTAL_BYTES,
+  SKILL_ARCHIVE_BYTES,
+} from '../../../src/skills/skill-limits.mts';
 import { languages } from '../../../src/i18n/languages.mts';
 import { localizeMessages } from '../../../src/i18n/i18n.mts';
 import { loadLanguage } from '../../../ui/i18n/localization.mts';
@@ -316,8 +321,11 @@ test('all supported languages describe opaque assets and the current skill capac
         assert.notEqual(words[key], managedMessages.en[key], language.code + ':' + key);
     }
     assert.match(words.skillFilesHint, new RegExp(String(SKILL_SUPPORT_FILE_LIMIT)));
-    assert.match(words.skillFilesHint, new RegExp(String(SKILL_FILE_BYTES / 1024)));
-    assert.match(words.skillImportFileHint, /1[.,]25/);
+    assert.match(words.skillFilesHint, new RegExp(String(SKILL_EDITOR_FILE_BYTES / 1024)));
+    assert.match(
+      words.skillImportFileHint,
+      new RegExp(String(SKILL_ARCHIVE_BYTES / (1024 * 1024))),
+    );
   }
 });
 
@@ -550,7 +558,7 @@ test('skills create, load, edit, toggle and remove real supporting text files wi
   );
 });
 
-test('skill editor preserves read-only binary assets while replacing its text JSON', async () => {
+test('skill editor preserves large text and opaque assets while replacing its bounded text JSON', async () => {
   for (const language of ['en', 'zh']) {
     const f = fixture({
       language,
@@ -563,6 +571,11 @@ test('skill editor preserves read-only binary assets while replacing its text JS
             files: { 'scripts/check.py': '# Current helper' },
             assets: [
               { path: 'scripts/reference.png', mediaType: 'application/octet-stream', size: 5726 },
+              {
+                path: 'references/large.md',
+                mediaType: 'application/octet-stream',
+                size: SKILL_EDITOR_FILE_BYTES + 1,
+              },
             ],
           },
         ],
@@ -572,9 +585,10 @@ test('skill editor preserves read-only binary assets while replacing its text JS
     const metadata = defined(f.document.querySelector<HTMLElement>('.skill-asset-files'));
     assert.match(metadata.textContent, /scripts\/reference\.png/);
     assert.match(metadata.textContent, /5726 B/);
+    assert.match(metadata.textContent, /references\/large\.md/);
     assert.equal(metadata.querySelector('input,textarea'), null);
     const files = defined(f.document.querySelector<HTMLTextAreaElement>('[name="files"]'));
-    assert.doesNotMatch(files.value, /reference\.png|base64/);
+    assert.doesNotMatch(files.value, /reference\.png|large\.md|base64/);
     f.input('files', '{"scripts/new.py":"# Updated text"}');
     await f.submit('#skill-form');
     const patch = defined(f.calls.find((call) => call.method === 'PATCH')),
@@ -642,17 +656,30 @@ test('support-file validation enforces text, containment, UTF-8 byte and count l
   assert.deepEqual(parseSkillFiles(JSON.stringify(boundary)), boundary);
   assert.throws(() => parseSkillFiles(JSON.stringify({ ...boundary, 'scripts/overflow': 'x' })));
   assert.throws(() =>
-    parseSkillFiles(JSON.stringify({ 'scripts/a': '中'.repeat(Math.ceil(SKILL_FILE_BYTES / 3)) })),
+    parseSkillFiles(
+      JSON.stringify({ 'scripts/a': '中'.repeat(Math.ceil(SKILL_EDITOR_FILE_BYTES / 3)) }),
+    ),
   );
   assert.throws(() =>
     parseSkillFiles(
       JSON.stringify(
         Object.fromEntries(
-          Array.from({ length: 5 }, (_, i) => ['scripts/' + i, 'x'.repeat(SKILL_FILE_BYTES)]),
+          Array.from({ length: 5 }, (_, i) => [
+            'scripts/' + i,
+            'x'.repeat(SKILL_EDITOR_FILE_BYTES),
+          ]),
         ),
       ),
     ),
   );
+  assert.throws(() => parseSkillFiles('{}', 'i'.repeat(SKILL_EDITOR_TOTAL_BYTES + 1)));
+  const escapedFiles = Object.fromEntries(
+    Array.from({ length: 4 }, (_, index) => [
+      `assets/${index}.txt`,
+      '\u0001'.repeat(SKILL_EDITOR_FILE_BYTES),
+    ]),
+  );
+  assert.throws(() => parseSkillFiles(JSON.stringify(escapedFiles)));
 });
 
 test('a complete thirty-file skill opens and saves every helper without partial maps or automatic writes', async () => {

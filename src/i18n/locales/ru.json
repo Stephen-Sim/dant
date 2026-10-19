@@ -1054,5 +1054,10 @@
   "Open": "Открыть",
   "Connect the work computer to pin or star messages.": "Подключите рабочий компьютер, чтобы закреплять сообщения или добавлять их в избранное.",
   "Could not update this message. Check its saved status before trying again.": "Не удалось обновить сообщение. Проверьте сохранённое состояние перед повторной попыткой.",
-  "The message update is unconfirmed. Check its saved status before trying again.": "Обновление сообщения не подтверждено. Проверьте сохранённое состояние перед повторной попыткой."
+  "The message update is unconfirmed. Check its saved status before trying again.": "Обновление сообщения не подтверждено. Проверьте сохранённое состояние перед повторной попыткой.",
+  "Preserved supporting files": "Сохраняемые вспомогательные файлы",
+  "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "Эти файлы сохраняются без изменения байтов и включаются в ZIP. Крупные текстовые файлы и другие форматы в этом редакторе доступны только для чтения.",
+  "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "Навык превышает допустимые ограничения (128 вспомогательных файлов, по 8 MiB каждый и 9 MiB суммарно). Уменьшите количество или размер файлов на рабочем компьютере и повторите попытку. Существующие файлы не изменены.",
+  "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Используйте пути scripts/, references/ или assets/, а также файлы README.md, LICENSE и NOTICE в корневой папке. Можно редактировать до 128 текстовых файлов, по 256 KiB каждый и 1 MiB суммарно. Более крупные текстовые файлы и другие форматы сохраняются как вспомогательные файлы только для чтения.",
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Выберите SKILL.md или ZIP с одним навыком размером до 10 MiB."
 }

@@ -142,10 +142,15 @@ import {
   SKILL_FILE_BYTES,
   SKILL_TOTAL_BYTES,
   SKILL_ARCHIVE_BYTES,
+  SKILL_EDITOR_FILE_BYTES,
+  SKILL_EDITOR_TOTAL_BYTES,
+  SKILL_EDITOR_JSON_BYTES,
 } from '../../src/skills/skill-limits.mts';
-const skillFileKiB = SKILL_FILE_BYTES / 1024,
+const skillFileMiB = SKILL_FILE_BYTES / (1024 * 1024),
   skillTotalMiB = SKILL_TOTAL_BYTES / (1024 * 1024),
-  skillArchiveMiB = SKILL_ARCHIVE_BYTES / (1024 * 1024);
+  skillArchiveMiB = SKILL_ARCHIVE_BYTES / (1024 * 1024),
+  skillEditorFileKiB = SKILL_EDITOR_FILE_BYTES / 1024,
+  skillEditorTotalMiB = SKILL_EDITOR_TOTAL_BYTES / (1024 * 1024);
 
 const baseCopy = {
   zh: {
@@ -187,9 +192,10 @@ const baseCopy = {
     skillDescription: '说明',
     skillInstructions: '使用说明（SKILL.md）',
     skillFiles: '支持文件（JSON）',
-    skillFilesHint: `支持 scripts/、references/、assets/ 及根目录 README.md、LICENSE、NOTICE 文件。支持所有文件格式；最多 ${SKILL_SUPPORT_FILE_LIMIT} 个文件，每个 ${skillFileKiB} KiB，总计 ${skillTotalMiB} MiB。`,
-    skillAssets: '二进制支持文件',
-    skillAssetsHint: '这些文件会原样保留并包含在 ZIP 中；此编辑器只编辑文本文件。',
+    skillFilesHint: `支持 scripts/、references/、assets/ 及根目录 README.md、LICENSE、NOTICE 文件。最多编辑 ${SKILL_SUPPORT_FILE_LIMIT} 个文本文件，每个 ${skillEditorFileKiB} KiB，总计 ${skillEditorTotalMiB} MiB。较大文本和其他格式的文件会作为只读支持文件保留。`,
+    skillAssets: '只读支持文件',
+    skillAssetsHint:
+      '这些文件会原样保留并包含在 ZIP 中。较大文本和其他格式的文件在此编辑器中只读。',
     skillEnabled: '启用此技能',
     skillSave: '保存技能',
     skillSaved: '技能已保存；未执行支持脚本。',
@@ -247,10 +253,10 @@ const baseCopy = {
     skillDescription: 'Description',
     skillInstructions: 'Instructions (SKILL.md)',
     skillFiles: 'Supporting text files (JSON)',
-    skillFilesHint: `Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. All file formats are supported; up to ${SKILL_SUPPORT_FILE_LIMIT} files, ${skillFileKiB} KiB each, ${skillTotalMiB} MiB total.`,
-    skillAssets: 'Binary supporting files',
+    skillFilesHint: `Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to ${SKILL_SUPPORT_FILE_LIMIT} text files, ${skillEditorFileKiB} KiB each, ${skillEditorTotalMiB} MiB total. Larger text and other file formats are preserved as read-only supporting files.`,
+    skillAssets: 'Preserved supporting files',
     skillAssetsHint:
-      'These files are preserved byte for byte and included in the ZIP. This editor changes text files only.',
+      'These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.',
     skillEnabled: 'Enable this skill',
     skillSave: 'Save skill',
     skillSaved: 'Skill saved. Supporting scripts have not been executed.',
@@ -321,7 +327,7 @@ export const managedMessages = {
         'This skill contains a saved credential. Remove the credential from the skill before exporting; existing files were preserved.',
     },
     {
-      skillReadLimit: `This skill exceeds the supported limits (${SKILL_SUPPORT_FILE_LIMIT} supporting files, ${skillFileKiB} KiB each, ${skillTotalMiB} MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.`,
+      skillReadLimit: `This skill exceeds the supported limits (${SKILL_SUPPORT_FILE_LIMIT} supporting files, ${skillFileMiB} MiB each, ${skillTotalMiB} MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.`,
     },
   ),
   zh: Object.assign(
@@ -368,7 +374,7 @@ export const managedMessages = {
       skillExportCredentials: '技能包含已保存的凭据。请先移除技能中的凭据再导出；现有文件已保留。',
     },
     {
-      skillReadLimit: `技能超过支持范围（最多 ${SKILL_SUPPORT_FILE_LIMIT} 个支持文件、每个 ${skillFileKiB} KiB、总计 ${skillTotalMiB} MiB）。请在工作电脑中减少文件数量或大小，再重试；现有文件未被更改。`,
+      skillReadLimit: `技能超过支持范围（最多 ${SKILL_SUPPORT_FILE_LIMIT} 个支持文件、每个 ${skillFileMiB} MiB、总计 ${skillTotalMiB} MiB）。请在工作电脑中减少文件数量或大小，再重试；现有文件未被更改。`,
     },
   ),
 };
@@ -392,12 +398,16 @@ export function parseSkillFiles(text: string, instructions = ''): Record<string,
         .some((part) => !part || part === '.' || part === '..' || part.includes(':')) ||
       typeof value !== 'string' ||
       value.includes('\0') ||
-      bytes(value) > SKILL_FILE_BYTES
+      bytes(value) > SKILL_EDITOR_FILE_BYTES
     )
       throw Error('skillFilesInvalid');
     total += bytes(value);
   }
-  if (total > SKILL_TOTAL_BYTES) throw Error('skillFilesInvalid');
+  if (
+    total > SKILL_EDITOR_TOTAL_BYTES ||
+    bytes(JSON.stringify({ instructions, files })) > SKILL_EDITOR_JSON_BYTES
+  )
+    throw Error('skillFilesInvalid');
   return files as Record<string, string>;
 }
 

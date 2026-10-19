@@ -13,6 +13,8 @@ import {
   SKILL_TREE_ENTRY_LIMIT,
   SKILL_FILE_BYTES,
   SKILL_TOTAL_BYTES,
+  SKILL_ARCHIVE_BYTES,
+  SKILL_RELATIVE_PATH_CHARACTERS,
 } from '../../src/skills/skill-limits.mts';
 
 const base = path.resolve('.cache/tests');
@@ -153,16 +155,14 @@ test('a managed skill exports and imports repeatedly without synthetic source fo
 });
 
 test('maximum managed instruction and aggregate byte budgets roundtrip at their named limits', async (t) => {
-  const { skills, importer } = fixture(t),
+  const { skills, importer, destination } = fixture(t),
     input = {
       name: 'maximum-skill',
       description: 'A boundary fixture.',
       instructions: 'i'.repeat(49152),
       files: {
         'assets/one.txt': 'a'.repeat(SKILL_FILE_BYTES),
-        'assets/two.txt': 'b'.repeat(SKILL_FILE_BYTES),
-        'assets/three.txt': 'c'.repeat(SKILL_FILE_BYTES),
-        'assets/four.txt': 'd'.repeat(SKILL_TOTAL_BYTES - 49152 - 3 * SKILL_FILE_BYTES),
+        'assets/two.txt': 'b'.repeat(SKILL_TOTAL_BYTES - 49152 - SKILL_FILE_BYTES),
       },
     };
   assert.equal(
@@ -174,9 +174,49 @@ test('maximum managed instruction and aggregate byte budgets roundtrip at their 
   const exported = exportSkillZip(skills, input.name),
     preview = await importer.preview({ name: exported.name, data: exported.data }),
     saved = importer.commit({ id: preview.id });
+  assert.ok(exported.data.length > SKILL_TOTAL_BYTES);
+  assert.ok(exported.data.length < SKILL_ARCHIVE_BYTES, 'the full payload remains downloadable');
   assert.equal(saved.instructions, input.instructions);
-  assert.deepEqual({ ...saved.files }, input.files);
-  assert.equal(storedEntries(exported.data).size, 5);
+  assert.deepEqual(saved.files, {}, 'large text stays out of the bounded JSON editor');
+  assert.equal(saved.assets?.length, 2);
+  const restoredFiles = destination.exportSnapshot(saved.name).files;
+  for (const [relative, text] of Object.entries(input.files)) {
+    assert.equal(
+      fs.readFileSync(path.join(path.dirname(saved.path), relative)).equals(Buffer.from(text)),
+      true,
+      relative,
+    );
+    assert.equal(restoredFiles[relative] === text, true, relative);
+  }
+  assert.equal(storedEntries(exported.data).size, 3);
+});
+
+test('maximum Unicode path headers and metadata leave room for the entire skill within its downloadable ZIP cap', (t) => {
+  const { skills } = fixture(t),
+    name = 'm'.repeat(64),
+    instructions = 'i'.repeat(49152),
+    files = Object.fromEntries(
+      Array.from({ length: SKILL_SUPPORT_FILE_LIMIT }, (_, index) => {
+        const suffix = '-' + String(index).padStart(3, '0') + '.bin';
+        return [
+          'assets/' + '界'.repeat(SKILL_RELATIVE_PATH_CHARACTERS - 7 - suffix.length) + suffix,
+          '',
+        ];
+      }),
+    ),
+    exported = exportSkillZip(
+      {
+        exportSnapshot: () => ({ name, description: 'd'.repeat(1000), instructions, files }),
+        fileName: (relative) => skills.fileName(relative),
+      },
+      name,
+    ),
+    framingBytes = exported.data.length - Buffer.byteLength(instructions);
+  assert.equal(storedEntries(exported.data).size, SKILL_SUPPORT_FILE_LIMIT + 1);
+  assert.ok(
+    SKILL_TOTAL_BYTES + framingBytes < SKILL_ARCHIVE_BYTES,
+    'even all longest UTF-8 paths and full metadata fit beside the maximum decoded contents',
+  );
 });
 
 test('all 128 supporting files are exported and remain importable', async (t) => {

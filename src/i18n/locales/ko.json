@@ -1054,5 +1054,10 @@
   "Open": "열기",
   "Connect the work computer to pin or star messages.": "메시지를 고정하거나 별표를 추가하려면 작업 컴퓨터에 연결하세요.",
   "Could not update this message. Check its saved status before trying again.": "메시지를 업데이트하지 못했습니다. 저장된 상태를 확인한 후 다시 시도하세요.",
-  "The message update is unconfirmed. Check its saved status before trying again.": "메시지 업데이트 결과가 확인되지 않았습니다. 저장된 상태를 확인한 후 다시 시도하세요."
+  "The message update is unconfirmed. Check its saved status before trying again.": "메시지 업데이트 결과가 확인되지 않았습니다. 저장된 상태를 확인한 후 다시 시도하세요.",
+  "Preserved supporting files": "보존되는 보조 파일",
+  "These files are preserved byte for byte and included in the ZIP. Large text files and other file formats are read-only in this editor.": "이 파일은 바이트 그대로 보존되어 ZIP에 포함됩니다. 큰 텍스트 파일과 다른 형식의 파일은 이 편집기에서 읽기 전용입니다.",
+  "This skill exceeds the supported limits (128 supporting files, 8 MiB each, 9 MiB total). Reduce the file count or size on the work computer, then retry. Existing files were not changed.": "이 스킬은 지원 한도를 초과합니다(보조 파일 128개, 파일당 8 MiB, 총 9 MiB). 작업용 컴퓨터에서 파일 수나 크기를 줄인 후 다시 시도하세요. 기존 파일은 변경되지 않았습니다.",
+  "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "scripts/, references/, assets/ 경로 또는 루트의 README.md, LICENSE, NOTICE 파일을 사용하세요. 텍스트 파일은 최대 128개까지 편집할 수 있으며 파일당 256 KiB, 총 1 MiB입니다. 더 큰 텍스트 파일과 다른 형식의 파일은 읽기 전용 보조 파일로 보존됩니다.",
+  "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md 또는 스킬 하나가 포함된 ZIP을 선택하세요. 최대 크기는 10 MiB입니다."
 }
