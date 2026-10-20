@@ -150,7 +150,10 @@ func TestLifecycleRejectsMalformedCommandProofAndRevokesOnlyItsOwnIntent(t *test
 }
 
 func TestOwnedVMwareLifecycleRequiresManifestAndAnnotationAndPreservesItsDisk(t *testing.T) {
-	for _, variant := range []string{"owned", "bad owner", "unknown phase", "missing vmx", "foreign annotation"} {
+	for _, variant := range []string{
+		"owned", "bad owner", "unknown phase", "missing vmx", "missing disk", "foreign annotation",
+		"foreign vmx", "foreign disk", "hardlinked vmx reference", "hardlinked disk reference",
+	} {
 		t.Run(variant, func(t *testing.T) {
 			calls := 0
 			lifecycle, directory := ownedLifecycleFixture(t, func(context.Context, string, []string, io.Reader) ([]byte, error) {
@@ -177,8 +180,6 @@ func TestOwnedVMwareLifecycleRequiresManifestAndAnnotationAndPreservesItsDisk(t 
 			if variant == "unknown phase" {
 				manifest["phase"] = "unknown"
 			}
-			raw, _ = json.Marshal(manifest)
-			_ = os.WriteFile(filepath.Join(directory, "manifest.json"), raw, 0600)
 			if variant != "missing vmx" {
 				annotation := `annotation = "dant-vmware-v1:` + binding.VMwareID + `"`
 				if variant == "foreign annotation" {
@@ -186,7 +187,41 @@ func TestOwnedVMwareLifecycleRequiresManifestAndAnnotationAndPreservesItsDisk(t 
 				}
 				_ = os.WriteFile(binding.VMXPath, []byte(annotation+"\n"), 0600)
 			}
-			_ = os.WriteFile(filepath.Join(directory, "dant.vmdk"), []byte("preserved owned disk"), 0600)
+			disk := filepath.Join(directory, "dant.vmdk")
+			if variant != "missing disk" {
+				if err := os.WriteFile(disk, []byte("preserved owned disk"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, file := range []struct {
+				field string
+				owned string
+			}{
+				{"vmx", binding.VMXPath},
+				{"disk", disk},
+			} {
+				foreign := filepath.Join(directory, "foreign-"+filepath.Base(file.owned))
+				if variant == "foreign "+file.field {
+					data, err := os.ReadFile(file.owned)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(foreign, data, 0600); err != nil {
+						t.Fatal(err)
+					}
+					manifest[file.field] = foreign
+				} else if variant == "hardlinked "+file.field+" reference" {
+					if err := os.Link(file.owned, foreign); err != nil {
+						t.Fatal(err)
+					}
+					manifest[file.field] = foreign
+				}
+			}
+			raw, _ = json.Marshal(manifest)
+			if err := os.WriteFile(filepath.Join(directory, "manifest.json"), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+
 			result, err := lifecycle.Suspend(t.Context())
 			if variant == "owned" {
 				if err != nil || !result.Supported || !result.VMSuspended || calls != 1 {
@@ -195,7 +230,11 @@ func TestOwnedVMwareLifecycleRequiresManifestAndAnnotationAndPreservesItsDisk(t 
 			} else if err != nil || result.Supported || calls != 0 {
 				t.Fatal("unowned VMware metadata authorized a power action", err)
 			}
-			if raw, err := os.ReadFile(filepath.Join(directory, "dant.vmdk")); err != nil || string(raw) != "preserved owned disk" {
+			if variant == "missing disk" {
+				if _, err := os.Stat(disk); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("identity validation created the absent managed disk", err)
+				}
+			} else if raw, err := os.ReadFile(disk); err != nil || string(raw) != "preserved owned disk" {
 				t.Fatal("power ownership validation modified the guest disk", err)
 			}
 		})

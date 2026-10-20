@@ -241,7 +241,7 @@ test(
 );
 
 test(
-  'VMware helper suspends and restores its exact annotated VM with confirmed vmrun state',
+  'VMware helper confirms its canonical key, manifest and vmrun aliases before suspend and resume',
   { skip: process.platform !== 'win32' },
   (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dant-vmware-power-'));
@@ -270,7 +270,7 @@ test(
     const raw = JSON.stringify({
       provider: 'vmware',
       vmwareId: vmId,
-      keyPath: path.join(base, 'vm-key'),
+      keyPath: fs.realpathSync.native(path.join(base, 'vm-key')),
       host: '192.0.2.2',
       user: 'dant',
     });
@@ -285,6 +285,15 @@ test(
       `
 $ErrorActionPreference='Stop'
 $env:ProgramFiles=${literal(path.join(dir, 'programs'))}; [Environment]::SetEnvironmentVariable('ProgramFiles(x86)',$env:ProgramFiles)
+function Start-Process { throw 'No elevation or real VM process may start in this fixture' }
+function Import-Module { throw 'No hypervisor module may load in this fixture' }
+# Keep the manifest paths as supplied while the binding uses the real path.
+# Windows PowerShell 5 must expand DOS aliases before comparing ownership.
+$pathProof=@{
+  vmx=([IO.Path]::GetFullPath(${literal(vmx)}) -eq ${literal(fs.realpathSync.native(vmx))})
+  disk=([IO.Path]::GetFullPath(${literal(path.join(base, 'dant.vmdk'))}) -eq ${literal(fs.realpathSync.native(path.join(base, 'dant.vmdk')))})
+  mixed=(${literal(path.join(base, 'vm-key'))} -cne ${literal(fs.realpathSync.native(path.join(base, 'vm-key')))})
+}
 # Exercise equivalent path spelling, including the 8.3 temp paths used by Windows runners.
 $env:DANT_FIXTURE_VMX=${literal(path.dirname(vmx) + path.sep + '.' + path.sep + path.basename(vmx))}; $env:DANT_FIXTURE_STATE=${literal(state)}
 Add-Type -OutputType ConsoleApplication -OutputAssembly ${literal(path.join(tools, 'vmrun.exe'))} -TypeDefinition @'
@@ -319,7 +328,7 @@ $resumedError = if (!$resumed.ok -and $Error.Count) {
   $detail = $failure.FullyQualifiedErrorId + ': ' + $failure.Exception.Message
   $detail.Substring(0, [Math]::Min(512, $detail.Length))
 } else { '' }
-@{paused=$paused;resumed=$resumed;pausedError=$pausedError;resumedError=$resumedError}|ConvertTo-Json -Compress
+@{paused=$paused;resumed=$resumed;pausedError=$pausedError;resumedError=$resumedError;pathProof=$pathProof}|ConvertTo-Json -Compress
 `,
     );
     const result = observedRecord(
@@ -340,7 +349,14 @@ $resumedError = if (!$resumed.ok -and $Error.Count) {
       ),
     );
     const paused = observedRecord(result.paused),
-      resumed = observedRecord(result.resumed);
+      resumed = observedRecord(result.resumed),
+      pathProof = observedRecord(result.pathProof);
+    assert.equal(pathProof.vmx, true);
+    assert.equal(pathProof.disk, true);
+    assert.equal(
+      pathProof.mixed,
+      path.join(base, 'vm-key') !== fs.realpathSync.native(path.join(base, 'vm-key')),
+    );
     assert.equal(
       paused.ok,
       true,
@@ -355,5 +371,7 @@ $resumedError = if (!$resumed.ok -and $Error.Count) {
     );
     assert.equal(resumed.state, 'running');
     assert.equal(resumed.changed, true);
+    assert.equal(fs.readFileSync(path.join(base, 'dant.vmdk'), 'utf8'), 'fixture');
+    assert.equal(fs.readFileSync(vmx, 'utf8'), `annotation = "dant-vmware-v1:${vmId}"\n`);
   },
 );

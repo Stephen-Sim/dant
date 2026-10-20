@@ -140,6 +140,10 @@ func TestControllerProfileSelectionRetiresOldBindingWithoutConnecting(t *testing
 	if err := os.WriteFile(key, []byte("isolated key"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	canonicalKey, err := filepath.EvalSymlinks(key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	binding := computer.Binding{Host: "isolated.invalid", User: "dant", Port: 22, KeyPath: key}
 	raw, _ := json.Marshal(binding)
 	if err := os.WriteFile(filepath.Join(directory, "vm.json"), raw, 0600); err != nil {
@@ -162,7 +166,7 @@ func TestControllerProfileSelectionRetiresOldBindingWithoutConnecting(t *testing
 		t.Fatal("partial VM patch did not retain existing key and identity")
 	}
 	retained, err := computer.ReadBinding(app.options.DataDir)
-	if err != nil || retained.Port != 2222 || retained.KeyPath != key || retained.Host != binding.Host {
+	if err != nil || retained.Port != 2222 || retained.KeyPath != canonicalKey || retained.Host != binding.Host {
 		t.Fatal("partial VM patch discarded an existing binding field")
 	}
 }

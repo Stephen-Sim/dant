@@ -186,6 +186,10 @@ func TestProfileImportPreservesInvalidOriginalBytesAndHonorsCancellation(t *test
 func TestProfileRegistryValidationAndBoundedRegistration(t *testing.T) {
 	root := t.TempDir()
 	source := profileFixture(t, "current.invalid")
+	canonicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
 	registry := filepath.Join(root, "registry.json")
 	for _, raw := range []string{`{`, `[]`, `{"version":2,"owner":"fixture","profiles":[]}`, `{"version":1,"owner":"fixture","profiles":null}`} {
 		_ = os.WriteFile(registry, []byte(raw), 0600)
@@ -221,7 +225,7 @@ func TestProfileRegistryValidationAndBoundedRegistration(t *testing.T) {
 	}
 	raw, _ = os.ReadFile(registry)
 	var registered profileRegistry
-	if json.Unmarshal(raw, &registered) != nil || len(registered.Profiles) != profileLimit || registered.Profiles[0].Directory != source || string(registered.Profiles[0].RegisteredAt) != "123456789" {
+	if json.Unmarshal(raw, &registered) != nil || len(registered.Profiles) != profileLimit || registered.Profiles[0].Directory != canonicalSource || string(registered.Profiles[0].RegisteredAt) != "123456789" {
 		t.Fatal("registration was not bounded or did not prioritize the current profile")
 	}
 	ctx, cancel := context.WithCancel(t.Context())

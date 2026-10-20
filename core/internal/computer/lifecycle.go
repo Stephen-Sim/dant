@@ -178,7 +178,10 @@ func (lifecycle *VMLifecycle) managed(binding *lifecycleBinding) contracts.VmPro
 			return ""
 		}
 		vmx := filepath.Join(base, "dant.vmx")
-		if manifest.Owner != "dant-vmware-v1" || manifest.Provider != string(contracts.VmProviderIdVMware) || manifest.Version != 1 || manifest.ID != binding.VMwareID || !vmIdentity.MatchString(manifest.ID) || filepath.Clean(manifest.VMX) != vmx || filepath.Clean(manifest.Disk) != filepath.Join(base, "dant.vmdk") {
+		if manifest.Owner != "dant-vmware-v1" || manifest.Provider != string(contracts.VmProviderIdVMware) || manifest.Version != 1 || manifest.ID != binding.VMwareID || !vmIdentity.MatchString(manifest.ID) {
+			return ""
+		}
+		if !sameManagedVMwareFile(manifest.VMX, vmx) || !sameManagedVMwareFile(manifest.Disk, filepath.Join(base, "dant.vmdk")) {
 			return ""
 		}
 		switch manifest.Phase {

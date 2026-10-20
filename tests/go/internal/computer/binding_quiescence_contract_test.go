@@ -24,14 +24,27 @@ func bindingContractInput(t *testing.T) (string, map[string]any) {
 func TestBindingNormalizationRetainsSupportedLegacyPortsAndRelativeReferences(t *testing.T) {
 	for _, port := range []any{nil, 22, " 2202 ", "2.2e1", 65535} {
 		directory, input := bindingContractInput(t)
+		key := filepath.Join(directory, "fixture-key")
+		canonicalKey, err := filepath.EvalSymlinks(key)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if port != nil {
 			input["port"] = port
 		}
 		raw, _ := json.Marshal(input)
 		raw = append([]byte{0xef, 0xbb, 0xbf}, raw...)
 		binding, err := NormalizeBinding(raw, directory)
-		if err != nil || binding.KeyPath != filepath.Join(directory, "fixture-key") || binding.KnownHosts != filepath.Join(directory, "known_hosts") || binding.Port < 1 || binding.Port > 65535 {
+		if err != nil || binding.KeyPath != canonicalKey || binding.KnownHosts != filepath.Join(directory, "known_hosts") || binding.Port < 1 || binding.Port > 65535 {
 			t.Fatal("a supported legacy connection changed identity", err)
+		}
+		original, err := os.Stat(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := os.Stat(binding.KeyPath)
+		if err != nil || !os.SameFile(original, resolved) {
+			t.Fatal("canonical normalization replaced the referenced key", err)
 		}
 		if _, err := os.Stat(binding.KnownHosts); !errors.Is(err, os.ErrNotExist) {
 			t.Fatal("normalization created or copied a known-hosts file", err)

@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
@@ -12,6 +13,11 @@ import (
 )
 
 func (value *Engine) prepareInput(active *execution, message *contracts.ChatMessage) (json.RawMessage, error) {
+	message, err := value.resolveInputAttachments(active.prepare, message)
+	if err != nil {
+		return nil, err
+	}
+
 	speech := make(map[string]string)
 	call := value.CallSnapshot()
 	query := []string{message.Text}
@@ -57,6 +63,42 @@ func (value *Engine) prepareInput(active *execution, message *contracts.ChatMess
 	input := []contracts.RawObject{{"type": raw("text"), "text": raw(text), "text_elements": json.RawMessage("[]")}}
 	input = append(input, images...)
 	return json.Marshal(input)
+}
+
+func (value *Engine) resolveInputAttachments(ctx context.Context, message *contracts.ChatMessage) (*contracts.ChatMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if message == nil {
+		return nil, store.ErrInvalidState
+	}
+
+	// Restore preserves historical message metadata. Resolve only this input copy
+	// before recognition or model submission, never from its recorded paths.
+	copy := *message
+	copy.Attachments = make([]contracts.Attachment, len(message.Attachments))
+	for index, historical := range message.Attachments {
+		if value.options.Attachments == nil || historical.ID == "" {
+			return nil, runtime.ErrRequestFailed
+		}
+		current, _, err := value.options.Attachments.Read(ctx, historical.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		path := current.GuestPath
+		if path == "" {
+			path = current.Path
+		}
+		if current.ID != historical.ID || !filepath.IsAbs(path) || strings.ContainsRune(path, 0) {
+			return nil, runtime.ErrInvalidProtocol
+		}
+		copy.Attachments[index] = current
+	}
+	return &copy, nil
 }
 
 func (value *Engine) MemoryReference(ctx context.Context, message *contracts.ChatMessage, workID, query string) (string, error) {

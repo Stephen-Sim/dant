@@ -308,7 +308,7 @@ func (app *WorkerApp) assembleExecution() error {
 			return app.memory.AgentContext(ctx, query, memory.Scope{ConversationID: conversationID, WorkID: workIdentity}, nil, app.redact)
 		}),
 		DurableMemory: app.memory, DesktopPath: app.worker.DesktopPath(),
-		Usage: app.usage, Deliverables: app.deliverables, Calls: app.calls,
+		Usage: app.usage, Deliverables: app.deliverables, Attachments: app.attachments, Calls: app.calls,
 		Redact:     func(ctx context.Context, text string) string { return app.redactContext(ctx, text) },
 		OwnerEnded: app.credentials.CancelOwner,
 		Transcribe: func(ctx context.Context, file contracts.Attachment) (string, error) {

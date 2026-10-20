@@ -79,7 +79,7 @@ func PauseRestoredState(raw []byte) ([]byte, error) {
 					continue
 				}
 			}
-			if err := pauseRestoredRecord(entry); err != nil {
+			if err := pauseRestoredRecord(entry, key == "workTasks"); err != nil {
 				return nil, err
 			}
 			entries[index], err = json.Marshal(entry)
@@ -108,22 +108,43 @@ func PauseRestoredState(raw []byte) ([]byte, error) {
 	return json.Marshal(object)
 }
 
-func pauseRestoredRecord(entry contracts.RawObject) error {
-	status, _ := rawString(entry["status"])
-	submission, _ := rawString(entry["submission"])
-	unknown := bytes.Equal(bytes.TrimSpace(entry["unknownOutcome"]), []byte("true"))
-	if status == string(contracts.TaskStatusUnknown) || unknown || submission == string(contracts.SubmissionStatusUnknown) || submission == string(contracts.SubmissionStatusSubmitting) {
+func pauseRestoredRecord(entry contracts.RawObject, work bool) error {
+	rawStatus, hasStatus := entry["status"]
+	status, statusText := rawString(rawStatus)
+	validStatus := contracts.MessageStatus(status).Valid()
+	if work {
+		validStatus = contracts.WorkStatus(status).Valid()
+	}
+	unknownStatus := hasStatus && (!statusText || !validStatus)
+
+	rawSubmission, hasSubmission := entry["submission"]
+	submission, submissionText := rawString(rawSubmission)
+	unknownSubmission := hasSubmission && !bytes.Equal(bytes.TrimSpace(rawSubmission), []byte("null")) &&
+		(!submissionText || !contracts.SubmissionStatus(submission).Valid())
+	rawOutcome, hasOutcome := entry["unknownOutcome"]
+	outcome := bytes.TrimSpace(rawOutcome)
+	unknown := bytes.Equal(outcome, []byte("true")) || (hasOutcome &&
+		!bytes.Equal(outcome, []byte("false")) && !bytes.Equal(outcome, []byte("null")))
+	unconfirmedSubmission := submission == string(contracts.SubmissionStatusUnknown) ||
+		submission == string(contracts.SubmissionStatusSubmitting)
+	unconfirmed := status == string(contracts.TaskStatusUnknown) || unknown ||
+		unknownSubmission || unconfirmedSubmission
+
+	if unknownStatus {
+		// Keep unfamiliar wire values as evidence, without granting safe replay.
+		entry["unknownOutcome"] = json.RawMessage("true")
+	} else if unconfirmed {
 		entry["status"] = json.RawMessage(`"unknown"`)
 		entry["unknownOutcome"] = json.RawMessage("true")
-		if submission == string(contracts.SubmissionStatusSubmitting) {
-			entry["submission"] = json.RawMessage(`"unknown"`)
-		}
 	} else {
 		switch contracts.TaskStatus(status) {
 		case contracts.TaskStatusCompleted, contracts.TaskStatusCancelled, contracts.TaskStatusFailed, contracts.TaskStatusReview:
 		default:
 			entry["status"] = json.RawMessage(`"paused"`)
 		}
+	}
+	if submission == string(contracts.SubmissionStatusSubmitting) {
+		entry["submission"] = json.RawMessage(`"unknown"`)
 	}
 	if raw, exists := entry["continuation"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		continuation, err := contracts.DecodeObject(raw, MaxStateBytes)
@@ -139,7 +160,9 @@ func pauseRestoredRecord(entry contracts.RawObject) error {
 			phase, _ := rawString(dispatch["phase"])
 			if phase != string(contracts.ContinuationDispatchPhaseAcknowledged) {
 				dispatch["phase"] = json.RawMessage(`"unknown"`)
-				entry["status"] = json.RawMessage(`"unknown"`)
+				if !unknownStatus {
+					entry["status"] = json.RawMessage(`"unknown"`)
+				}
 				entry["unknownOutcome"] = json.RawMessage("true")
 			}
 			continuation["dispatch"], _ = json.Marshal(dispatch)

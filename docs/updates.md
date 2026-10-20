@@ -18,6 +18,12 @@ A failed or rate-limited request shows a retry message rather than claiming the 
 
 ## Work computer service updates
 
+### Cross-VM recovery in 0.4.7-beta.17
+
+Restored messages resolve attachments by immutable ID against the destination store before model input or transcription. This permits a different VM home directory without reusing obsolete file paths; missing, changed or unconfirmed files prevent a turn from starting. Unknown restored status/submission values retain their uncertainty fence and original metadata. Memory, skills and schedules are covered by a complete isolated backup/restore into a different root.
+
+Windows connection and VMware ownership checks also distinguish a canonical path from its 8.3 alias while retaining ordinary-file, exact-file, manifest and annotation checks. This fixes the Windows CI reproduction without accepting another file or following a junction. Beta 16 remains an unpublished source checkpoint; these changes use a new candidate tag.
+
 ### Source retirement in 0.4.7-beta.16
 
 The Beta 16 source retires the former `src/` backend. Go owns the Controller, Worker and explicit legacy manifest/file importer; the browser stays TypeScript. Canonical contracts, protocol defaults and language data live under `resources/`, with generated Go/browser consumers checked for drift. Saved data locations and public routes remain compatible.

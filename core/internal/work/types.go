@@ -66,6 +66,12 @@ type Deliverables interface {
 	Archive(context.Context, string, string, json.RawMessage) ([]contracts.Attachment, error)
 }
 
+// AttachmentReader resolves immutable saved IDs in the current managed root and
+// verifies their bounded bytes before an execution can receive a local path.
+type AttachmentReader interface {
+	Read(context.Context, string) (contracts.Attachment, []byte, error)
+}
+
 type TokenUsage interface {
 	ObserveCodex(context.Context, string, json.RawMessage) (bool, error)
 }
@@ -110,6 +116,7 @@ type Options struct {
 	DesktopPath         string
 	Usage               TokenUsage
 	Deliverables        Deliverables
+	Attachments         AttachmentReader
 	Calls               CallService
 	Redact              func(context.Context, string) string
 	OwnerEnded          func(string)

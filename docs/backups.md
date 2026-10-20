@@ -43,6 +43,8 @@ The original local and portable AES-GCM byte formats are retained. A short-lived
 
 ## Restore deliberately
 
+The destination may use a different Linux username and home directory. Archive domains are restored under the destination's data and workspace roots; memory and schedule databases open there, and managed skill paths are derived from the current workspace. Before preparing a model input, the Engine resolves each immutable attachment ID through the destination AttachmentStore and verifies its bytes. Saved paths from another VM are never used as a fallback. A missing or changed attachment prevents the turn from starting. User-authored text, scripts and their absolute paths are preserved rather than rewritten.
+
 On first use, dant asks whether you already have a backup. Import a portable backup first, or choose to create a new work computer. Importing does not require an online VM and does not restore or start tasks. Connect or create the destination VM afterward, then preview the imported backup before restoring it.
 
 Use **Export backup** to share or move dant between supported clients, computers and VMs. Enter and confirm a passphrase, then save the portable file. On the destination computer choose **Import backup**, select that file and enter its passphrase. The Controller verifies authentication and archive structure before saving it under that computer's local protection. Wrong passwords, tampering and interrupted uploads cannot become successful imports. The Windows file picker streams large files; the browser fallback has a 64 MiB transfer limit.
