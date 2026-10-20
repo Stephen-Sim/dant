@@ -10,6 +10,7 @@ for (const scenario of [
   'chat-actions',
   'voice-message',
   'settings-operations',
+  'settings-performance',
   'telegram-settings',
   'voice-settings',
   'computer-controls',

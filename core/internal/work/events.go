@@ -436,15 +436,23 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 	}
 	ids := append([]string{}, active.messageIDs...)
 	assistantIDs := append([]string{}, active.assistantIDs...)
-	knownUnsubmitted := !active.startAcknowledged && !active.unknown && (!active.startSubmitted || active.startRejected)
+	conversationID := active.conversationID
+	unknownOutcome := active.unknown
+	voiceTask := active.voiceTask
+	voiceFence := voiceTaskFence{
+		ID: active.messageID, CallID: active.callID,
+		ConversationID: conversationID, TurnID: active.turnID,
+		Submission: contracts.SubmissionStatusUnknown,
+	}
+	knownUnsubmitted := !active.startAcknowledged && !unknownOutcome && (!active.startSubmitted || active.startRejected)
 	value.mu.Unlock()
+
 	err := value.store.Mutate(value.ctx, func(state *contracts.State) error {
-		if state.ConversationID != active.conversationID {
+		if state.ConversationID != conversationID {
 			return ErrStaleOwner
 		}
-		if active.voiceTask {
-			submission := contracts.SubmissionStatusUnknown
-			if err := setVoiceTaskFence(state, voiceTaskFence{ID: active.messageID, CallID: active.callID, ConversationID: active.conversationID, Submission: submission, TurnID: active.turnID}, !active.unknown); err != nil {
+		if voiceTask {
+			if err := setVoiceTaskFence(state, voiceFence, !unknownOutcome); err != nil {
 				return err
 			}
 		}
@@ -462,7 +470,7 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 			if final == contracts.TaskStatusPaused {
 				message.PauseReason = contracts.Some(reason)
 			}
-			if active.unknown {
+			if unknownOutcome {
 				message.Submission = contracts.Some(contracts.SubmissionStatusUnknown)
 				message.UnknownOutcome = true
 			}

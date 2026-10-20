@@ -47,6 +47,7 @@ var bundleAllowlist = map[string]bool{
 	"vm/desktop_mcp.py":                 true,
 	"vm/desktop.py":                     true,
 	"vm/guest.py":                       true,
+	"vm/guest_service.py":               true,
 	"vm/install-speech.sh":              true,
 	"vm/install-speech.py":              true,
 	"vm/install-transcription.sh":       true,

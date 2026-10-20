@@ -129,14 +129,12 @@ function mainFixture() {
       sync: noop,
       isVisible: () => false,
       bind: noop,
-      render: (
-        sections: Partial<
-          Record<import('../../../ui/settings/settings-navigation.mts').SettingsCategory, string>
-        >,
-      ) => sections.general ?? '',
+      preservePanelChildren: () => false,
+      render: (sections: import('../../../ui/settings/settings-navigation.mts').SettingsSections) =>
+        sections.general?.() ?? '',
     } as Pick<
       ReturnType<typeof createSettingsNavigation>,
-      'sync' | 'isVisible' | 'render' | 'bind'
+      'sync' | 'isVisible' | 'render' | 'bind' | 'preservePanelChildren'
     >,
     memorySettings: { setVisible: noop },
     vmBackups: { setVisible: noop, render: empty, renderImport: empty } satisfies Pick<

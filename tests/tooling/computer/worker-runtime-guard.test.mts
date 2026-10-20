@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { PROTOCOL } from '../../../scripts/config/protocol.mts';
 import {
   verifyWorkerInstall,
   workerInstallFixture,
@@ -28,7 +29,7 @@ test('the Go bundle verifies exact build resources before executing its runtime 
   assert.equal(verified.status, 0, verified.stderr);
   assert.equal(
     verified.stdout.trim(),
-    `127.0.0.1\t4320\t4317\t${bundle.version}\t${bundle.digest}`,
+    `127.0.0.1\t${PROTOCOL.guestPort}\t4317\t${bundle.version}\t${bundle.digest}`,
   );
   const binary = path.join(bundle.source, 'resources/core/dant-core-linux-amd64');
   fs.writeFileSync(binary, 'PRIVATE_INCOMPATIBLE_RUNTIME');
@@ -60,7 +61,7 @@ variants += [dict(session, **changed) for changed in [
     {'mode':'controller'}, {'runtime':'node'}, {'protocol':True}, {'protocol':2},
     {'source':'b'*40}, {'version':'0.0.0'}]]
 results = []
-for current in variants:
+for index, current in enumerate(variants + [session]):
     calls = []
     def opened(request, timeout):
         calls.append('session' if isinstance(request, str) else 'version')
@@ -68,8 +69,10 @@ for current in variants:
         return io.BytesIO(json.dumps(value).encode())
     class Opener:
         open = staticmethod(opened)
-    with patch.object(installer, 'local_opener', return_value=Opener()):
-        results.append({'ready':installer.ready(target),'calls':calls})
+    with patch.object(installer, 'local_opener', return_value=Opener()), \
+         patch.object(installer, 'guest_ready', return_value=index < len(variants)) as guest:
+        ready = installer.ready(target)
+        results.append({'ready':ready,'calls':calls,'guestChecks':guest.call_count})
 print(json.dumps(results))
 `;
   const result = spawnSync(process.env.PYTHON || 'python', ['-c', harness], {
@@ -80,7 +83,8 @@ print(json.dumps(results))
   if (result.error) throw result.error;
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), [
-    { ready: true, calls: ['session', 'version'] },
-    ...Array.from({ length: 7 }, () => ({ ready: false, calls: ['session'] })),
+    { ready: true, calls: ['session', 'version'], guestChecks: 1 },
+    ...Array.from({ length: 7 }, () => ({ ready: false, calls: ['session'], guestChecks: 0 })),
+    { ready: false, calls: ['session', 'version'], guestChecks: 1 },
   ]);
 });

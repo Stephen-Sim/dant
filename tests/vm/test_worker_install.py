@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import shutil
+import sys
 import tempfile
 import types
 import urllib.error
@@ -15,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'vm'))
 SPEC = importlib.util.spec_from_file_location('worker_install', ROOT / 'vm/worker-install.py')
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
@@ -187,6 +189,7 @@ class WorkerInstallFixture(unittest.TestCase):
             stack.enter_context(patch.object(installer, 'service_state', return_value={
                 'LoadState': 'loaded', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': ''}))
             stack.enter_context(patch.object(installer, 'assert_stopped', side_effect=self.assert_stopped))
+            stack.enter_context(patch.object(installer, 'assert_guest_endpoint'))
             stack.enter_context(patch.object(installer, 'ready', return_value=ready))
             stack.enter_context(patch.object(installer, 'reserve_maintenance', return_value=None))
             stack.enter_context(patch.object(installer, 'unix_username', return_value='fixture'))
@@ -881,7 +884,8 @@ class WorkerInstallFixture(unittest.TestCase):
                 class Opener:
                     open = staticmethod(opened)
 
-                with patch.object(installer, 'local_opener', return_value=Opener()):
+                with patch.object(installer, 'local_opener', return_value=Opener()), \
+                        patch.object(installer, 'guest_ready', return_value=True):
                     self.assertEqual(installer.ready(self.configuration), name == 'matching')
                 self.assertEqual(calls, ['/api/session', '/api/version'] if name == 'matching' else ['/api/session'])
 

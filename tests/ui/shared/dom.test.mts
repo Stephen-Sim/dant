@@ -13,14 +13,57 @@ function fixture(html: string) {
     document,
     Event,
     parent,
-    update(html: string) {
+    update(html: string, options?: Parameters<typeof reconcile>[2]) {
       const next = document.createElement('main');
       next.innerHTML = html;
-      reconcile(defined(parent), next);
+      reconcile(defined(parent), next, options);
       return next;
     },
   };
 }
+
+test('an explicit feature-owned root retains live children while attributes update and resumes ordinary patching when active', () => {
+  const f = fixture(
+      '<section id="feature"><input id="draft" value="model"><input id="key" type="password"></section><aside id="ordinary"><b>old</b></aside>',
+    ),
+    root = defined(f.document.querySelector('#feature')),
+    draft = defined(f.document.querySelector('#draft')),
+    secret = defined(f.document.querySelector('#key')),
+    live = liveProperty(draft, 'value', 'unsaved'),
+    password = liveProperty(secret, 'value', 'private fixture');
+  const preserveChildren = (current: Element, desired: Element) =>
+    current === root && desired.id === 'feature' && desired.hasAttribute('hidden');
+  f.update(
+    '<section id="feature" hidden aria-label="retained"></section><aside id="ordinary" hidden></aside>',
+    { preserveChildren },
+  );
+  assert.equal(root.hasAttribute('hidden'), true);
+  assert.equal(root.getAttribute('aria-label'), 'retained');
+  assert.equal(f.document.querySelector('#draft'), draft);
+  assert.equal(f.document.querySelector('#key'), secret);
+  assert.equal(live.writes, 0);
+  assert.equal(password.writes, 0);
+  assert.equal(
+    f.document.querySelector('#ordinary')?.childNodes.length,
+    0,
+    'ordinary hidden content is not implicitly preserved',
+  );
+  f.update(
+    '<section id="feature"><input id="draft" value="confirmed"><input id="key" type="password"></section>',
+    { preserveChildren },
+  );
+  assert.equal(root.hasAttribute('hidden'), false);
+  assert.equal(live.value, 'confirmed');
+  assert.equal(live.writes, 1);
+  assert.equal(password.value, 'private fixture');
+  assert.equal(password.writes, 0);
+  f.update('<section id="feature" hidden></section>');
+  assert.equal(
+    f.document.querySelector('#draft'),
+    null,
+    'default reconciliation still removes absent children',
+  );
+});
 // LinkeDOM does not implement dirty input/checked state or a select.value setter.
 // Model those browser IDL properties on real elements, retaining their real DOM,
 // attributes, cloning, reconciliation and event dispatch for the tests below.

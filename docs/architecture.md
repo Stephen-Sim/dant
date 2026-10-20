@@ -238,7 +238,7 @@ Codex owns the model thread, context window, compaction and provider token accou
 
 Tool schemas and handlers support desktop operations, plans, schedules, credentials and Skills, including `dant_desktop` MCP. Web pages, files and memory are reference data rather than permissions. Go and browser boundary decoders validate consumed fields from unknown disk/transport data; static types do not replace runtime validation.
 
-The Controller and Worker each default to their own `127.0.0.1:4317`; the guest desktop service defaults to `127.0.0.1:4320`. Shared configuration validates deployment options. Development `.env` is optional, and installers have defaults. See [configuration](configuration.md).
+The Controller and Worker each default to their own `127.0.0.1:4317`; the guest desktop service defaults to `127.0.0.1:4321`. Shared configuration validates deployment options. Development `.env` is optional, and installers have defaults. See [configuration](configuration.md).
 
 API authentication uses `X-Dant-Token`, host/origin checks and a fixed native endpoint descriptor. **Tokens authenticate; they do not encrypt HTTP.** Controller/Worker traffic travels through SSH local forwarding; model/Telegram connections use their respective encrypted transports. The API is not exposed on the guest network adapter. Tokens and secrets stay out of public snapshots, logs and memory; VM vault and Windows DPAPI serve their separate credential roles.
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import type { SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isRecord } from '../core/manifest-json.mts';
 import { projectRoot } from './version.mts';
@@ -10,6 +11,14 @@ export const pythonCoverageThresholds = Object.freeze({ lines: 95, branches: 90 
 const TOOL_TIMEOUT_MS = 10_000;
 const TEST_TIMEOUT_MS = 600_000;
 const OUTPUT_DIRECTORY = '.cache/coverage/python';
+const MAX_TOOL_METADATA_BYTES = 16 * 1024;
+const MAX_REPORT_BYTES = 64 * 1024 * 1024;
+
+export type PythonCoverageRunner = (
+  executable: string,
+  args: readonly string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+) => { status: number | null; stdout?: string; error?: Error };
 
 export interface PythonCounts {
   coveredLines: number;
@@ -184,24 +193,58 @@ coverage.xml_report(morfs=names, outfile=str(pathlib.Path(output) / 'coverage.xm
 coverage.html_report(morfs=names, directory=str(pathlib.Path(output) / 'html'))
 `;
 
-export function runPythonCoverage(python = 'python', root = projectRoot): number {
-  const names = discoverPythonSources(root);
+export function runPythonCoverage(
+  python = 'python',
+  root = projectRoot,
+  {
+    run = spawnSync,
+    environment = process.env,
+    write = console.log,
+    writeError = console.error,
+  }: {
+    run?: PythonCoverageRunner;
+    environment?: NodeJS.ProcessEnv;
+    write?: (message: string) => void;
+    writeError?: (message: string) => void;
+  } = {},
+): number {
   const output = path.join(root, OUTPUT_DIRECTORY);
   if (path.relative(root, output).replaceAll('\\', '/') !== OUTPUT_DIRECTORY)
     throw Error('Invalid Python coverage output directory.');
   fs.rmSync(output, { recursive: true, force: true });
   fs.mkdirSync(output, { recursive: true });
+  const names = discoverPythonSources(root);
 
-  const env = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' };
-  const version = spawnSync(
+  const env = { ...environment, PYTHONDONTWRITEBYTECODE: '1' };
+  const version = run(
     python,
     [
       '-c',
       "import importlib.metadata,json,pathlib,site; print(json.dumps({'version':importlib.metadata.version('coverage'),'subprocessBootstrap':any((pathlib.Path(p)/'a1_coverage.pth').is_file() for p in [*site.getsitepackages(),site.getusersitepackages()])}))",
     ],
-    { cwd: root, env, encoding: 'utf8', timeout: TOOL_TIMEOUT_MS, windowsHide: true },
+    {
+      cwd: root,
+      env,
+      encoding: 'utf8',
+      timeout: TOOL_TIMEOUT_MS,
+      maxBuffer: MAX_TOOL_METADATA_BYTES,
+      windowsHide: true,
+      shell: false,
+    },
   );
-  const tool: unknown = version.status === 0 ? JSON.parse(version.stdout) : null;
+  let tool: unknown = null;
+  if (
+    !version.error &&
+    version.status === 0 &&
+    typeof version.stdout === 'string' &&
+    Buffer.byteLength(version.stdout) <= MAX_TOOL_METADATA_BYTES
+  ) {
+    try {
+      tool = JSON.parse(version.stdout);
+    } catch {
+      // A broken interpreter must not copy arbitrary tool output into diagnostics.
+    }
+  }
   if (
     version.error ||
     !isRecord(tool) ||
@@ -222,7 +265,7 @@ export function runPythonCoverage(python = 'python', root = projectRoot): number
   const log = fs.openSync(path.join(output, 'tests.txt'), 'w');
   let status: number | null;
   try {
-    const result = spawnSync(
+    const result = run(
       python,
       [
         '-m',
@@ -241,37 +284,46 @@ export function runPythonCoverage(python = 'python', root = projectRoot): number
       {
         cwd: root,
         env,
+        encoding: 'utf8',
         stdio: ['ignore', log, log],
         timeout: TEST_TIMEOUT_MS,
         windowsHide: true,
         shell: false,
       },
     );
-    if (result.error) throw result.error;
+    if (result.error) throw Error('Python coverage test process failed.');
     status = result.status;
   } finally {
     fs.closeSync(log);
   }
-  const result = spawnSync(python, ['-c', REPORT, configuration, inventory, output], {
+  const result = run(python, ['-c', REPORT, configuration, inventory, output], {
     cwd: root,
     env,
+    encoding: 'utf8',
     stdio: 'inherit',
     timeout: TOOL_TIMEOUT_MS,
     windowsHide: true,
     shell: false,
   });
   if (result.error || result.status !== 0) throw Error('Python coverage report generation failed.');
-  const report = parsePythonCoverage(
-    JSON.parse(fs.readFileSync(path.join(output, 'coverage.json'), 'utf8')) as unknown,
-    names,
-  );
+  const raw = path.join(output, 'coverage.json');
+  const info = fs.lstatSync(raw);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_REPORT_BYTES)
+    throw Error('Python coverage report is not a bounded regular file.');
+  let input: unknown;
+  try {
+    input = JSON.parse(fs.readFileSync(raw, 'utf8'));
+  } catch {
+    throw Error('Python coverage report is invalid JSON.');
+  }
+  const report = parsePythonCoverage(input, names);
   const markdown = pythonCoverageMarkdown(report);
   fs.writeFileSync(path.join(output, 'coverage.md'), markdown);
-  if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
-  console.log(markdown.split('<details>')[0]);
+  if (environment.GITHUB_STEP_SUMMARY) fs.appendFileSync(environment.GITHUB_STEP_SUMMARY, markdown);
+  write(markdown.split('<details>')[0] ?? '');
   const failures = pythonCoverageFailures(report);
-  for (const failure of failures) console.error(failure);
-  console.log(`Python tests exit: ${status}; complete reports: ${OUTPUT_DIRECTORY}`);
+  for (const failure of failures) writeError(failure);
+  write(`Python tests exit: ${status}; complete reports: ${OUTPUT_DIRECTORY}`);
   return status === 0 && failures.length === 0 ? 0 : 1;
 }
 

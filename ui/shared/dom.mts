@@ -15,7 +15,13 @@ const key = (node: Node): string | null =>
 const compatible = (a: Node, b: Node): boolean =>
   a.nodeType === b.nodeType && a.nodeName === b.nodeName && key(a) === key(b);
 
-export function reconcile(parent: Node, next: Node): void {
+export interface ReconcileOptions {
+  // A feature may retain children of a stable root it owns while its inactive
+  // view is represented by an empty shell. Attributes still follow the view.
+  preserveChildren?: (current: Element, desired: Element) => boolean;
+}
+
+export function reconcile(parent: Node, next: Node, options: ReconcileOptions = {}): void {
   const old = [...parent.childNodes];
   const keyed = new Map<string, Map<string, Node[]>>();
   for (const node of old) {
@@ -39,7 +45,7 @@ export function reconcile(parent: Node, next: Node): void {
     if (!node) node = desired.cloneNode(true);
     else {
       used.add(node);
-      patch(node, desired);
+      patch(node, desired, options);
     }
     if (node !== cursor) parent.insertBefore(node, cursor);
     cursor = node.nextSibling;
@@ -48,7 +54,21 @@ export function reconcile(parent: Node, next: Node): void {
     if (!used.has(node) && node.parentNode === parent) parent.removeChild(node);
 }
 
-function patch(node: Node, desired: Node): void {
+function attributes(node: Element, desired: Element): void {
+  for (const attribute of [...node.attributes]) {
+    if (!desired.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
+  }
+  for (const attribute of [...desired.attributes]) {
+    if (node.getAttribute(attribute.name) !== attribute.value)
+      node.setAttribute(attribute.name, attribute.value);
+  }
+}
+
+function patch(node: Node, desired: Node, options: ReconcileOptions): void {
+  if (element(node) && element(desired) && options.preserveChildren?.(node, desired)) {
+    attributes(node, desired);
+    return;
+  }
   // DOM equality ignores a form control's dirty live value. Even unchanged
   // markup must reach controls so a failed settings change can roll back.
   if (
@@ -61,13 +81,7 @@ function patch(node: Node, desired: Node): void {
     if (node.nodeValue !== desired.nodeValue) node.nodeValue = desired.nodeValue;
     return;
   }
-  for (const attribute of [...node.attributes]) {
-    if (!desired.hasAttribute(attribute.name)) node.removeAttribute(attribute.name);
-  }
-  for (const attribute of [...desired.attributes]) {
-    if (node.getAttribute(attribute.name) !== attribute.value)
-      node.setAttribute(attribute.name, attribute.value);
-  }
+  attributes(node, desired);
   if (textControl(node) && textControl(desired)) {
     // Passwords live only in the user's current field, never in render templates.
     if (
@@ -79,6 +93,6 @@ function patch(node: Node, desired: Node): void {
     if (input(node) && input(desired) && node.type === 'checkbox') node.checked = desired.checked;
     return;
   }
-  reconcile(node, desired);
+  reconcile(node, desired, options);
   if (select(node) && select(desired) && node.value !== desired.value) node.value = desired.value;
 }

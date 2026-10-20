@@ -254,25 +254,23 @@ export function renderUsageActivity({
     locale = languageInfo(language).locale,
     model = buildUsageActivity({ ...(usage === undefined ? {} : { usage }), provider, now });
   const mode: UsageMode = isMode(requestedMode) ? requestedMode : 'daily';
-  const number = (value: unknown) =>
-    integer(value) ? new Intl.NumberFormat(locale).format(value) : tr.unavailable;
-  const compact = (value: unknown) =>
-    integer(value)
-      ? new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(
-          value,
-        )
-      : '—';
-  const date = (value: number | null) =>
-    new Intl.DateTimeFormat(locale, {
+  const integerFormat = new Intl.NumberFormat(locale),
+    compactFormat = new Intl.NumberFormat(locale, {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }),
+    dateFormat = new Intl.DateTimeFormat(locale, {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
       timeZone: 'UTC',
-    }).format(new Date(value ?? 0));
-  const month = (value: number) =>
-    new Intl.DateTimeFormat(locale, { month: 'short', timeZone: 'UTC' }).format(
-      new Date(value ?? 0),
-    );
+    }),
+    monthFormat = new Intl.DateTimeFormat(locale, { month: 'short', timeZone: 'UTC' });
+  const number = (value: unknown) =>
+    integer(value) ? integerFormat.format(value) : tr.unavailable;
+  const compact = (value: unknown) => (integer(value) ? compactFormat.format(value) : '—');
+  const date = (value: number | null) => dateFormat.format(new Date(value ?? 0));
+  const month = (value: number) => monthFormat.format(new Date(value ?? 0));
   const valueLabel = (value: number | null) =>
     value === null ? tr.missing : `${number(value)} ${tr.tokens}`;
   const summary = (key: string, label: string, value: number | null, streak = false) =>

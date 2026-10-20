@@ -35,7 +35,7 @@ ALLOWLIST = frozenset({
     'vm/desktop.py', 'vm/desktop_mcp.py', 'vm/guest.py', 'vm/install-speech.sh',
     'vm/install-transcription.sh', 'vm/install-worker.sh', 'vm/worker-install.py',
     'vm/install-speech.py', 'vm/install-transcription.py', 'vm/worker-update-guard.py',
-    'vm/start-codex.sh', 'vm/transcribe_audio.py', 'vm/network_config.py',
+    'vm/start-codex.sh', 'vm/transcribe_audio.py', 'vm/network_config.py', 'vm/guest_service.py',
     'vm/transcription-requirements.txt', 'vm/voice_message.py',
 })
 REQUIRED = frozenset({
@@ -688,6 +688,25 @@ def reserve_maintenance(configuration):
         reject('maintenance-unconfirmed')
 
 
+def assert_guest_endpoint(configuration):
+    from guest_service import GuestProofError, GuestServiceObserver
+    try:
+        GuestServiceObserver().system_available(configuration)
+    except GuestProofError as error:
+        reject(str(error))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        reject('guest-endpoint-unconfirmed')
+
+
+def guest_ready(configuration):
+    from guest_service import GuestProofError, GuestServiceObserver
+    try:
+        GuestServiceObserver().user_ready(configuration)
+        return True
+    except (GuestProofError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        return False
+
+
 def ready(configuration):
     base = f"http://127.0.0.1:{configuration['port']}"
     opener = local_opener()
@@ -696,7 +715,7 @@ def ready(configuration):
         request = urllib.request.Request(base + '/api/version', headers={'X-Dant-Token': token})
         with opener.open(request, timeout=2) as response:
             version = json_object(response.read(MANIFEST_LIMIT + 1))
-        return version.get('version') == configuration['version']
+        return version.get('version') == configuration['version'] and guest_ready(configuration)
     except Exception:
         return False
 
@@ -884,6 +903,7 @@ def _activate_locked(configuration, manual, service_directory, reconciliation=No
     elif reconciliation is not None:
         reject('reconciliation-unconfirmed')
 
+    assert_guest_endpoint(configuration)
     # Validate busy-work policy again while owning the installation lock.
     arguments = ['bash', str(source / 'vm/install-worker.sh'), str(source), '--guard-only']
     if manual:
@@ -906,6 +926,7 @@ def _activate_locked(configuration, manual, service_directory, reconciliation=No
         preserve_reconciliation(root, previous_raw, reconciliation, previous)
         if read_regular(attempt_path, MANIFEST_LIMIT) != previous_raw:
             reject('reconciliation-unconfirmed')
+    assert_guest_endpoint(configuration)
     attempt = {
         'schemaVersion': 1, 'attemptId': str(uuid.uuid4()),
         'source': configuration['digest'], 'sourceCommit': configuration['commit'],

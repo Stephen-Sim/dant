@@ -70,7 +70,7 @@ test('the Usage category is searchable in English and Chinese without loading ac
     let navigation: ReturnType<typeof createSettingsNavigation>;
     const render = () => {
       defined(document.querySelector<HTMLElement>('main')).innerHTML = navigation.render({
-        usage: renderUsageSettings(),
+        usage: () => renderUsageSettings(),
       });
       navigation.bind();
     };

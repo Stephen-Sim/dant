@@ -2,7 +2,7 @@ import type { OverlayState } from '../../../ui/call/overlay-state.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import { stripTypeScriptTypes } from 'node:module';
-import { sourceIndex, compactCss } from '../../support/source-fixtures.mts';
+import { sourceIndex, sourceCallStatement, compactCss } from '../../support/source-fixtures.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -322,7 +322,10 @@ test('main render reapplies the controller after DOM reconciliation and fixed st
     sourceIndex(source, 'function render(){'),
     sourceIndex(source, 'function renderRail(){'),
   );
-  assert.match(render, /reconcile\(app,\s*template\.content\)/);
+  assert.match(
+    sourceCallStatement(render, 'reconcile'),
+    /^reconcile\(app,\s*template\.content\s*[,)]/,
+  );
   assert.ok(
     render.indexOf('floatingCall.sync') > render.indexOf('resizeComposer()'),
     'floating call geometry is rebound after DOM and composer layout',

@@ -1019,11 +1019,66 @@ try {
     assert.equal(page.document.querySelector<HTMLTextAreaElement>('#composer')?.value, '');
     assert.equal(requests.filter((value) => value === 'POST /api/messages').length, sentCount);
     assert.deepEqual(unexpected, []);
-  } else if (['settings-operations', 'telegram-settings', 'voice-settings'].includes(scenario)) {
+  } else if (
+    ['settings-operations', 'settings-performance', 'telegram-settings', 'voice-settings'].includes(
+      scenario,
+    )
+  ) {
     FixtureEvents.instances[0]?.onopen?.();
     await settle();
     await click('[data-action="settings"]');
-    if (scenario === 'settings-operations') {
+    if (scenario === 'settings-performance') {
+      assert.ok(page.document.querySelector('#showWorkSummary'));
+      assert.equal(page.document.querySelector('[data-usage-activity]'), null);
+      assert.equal(page.document.querySelector('#telegram-token'), null);
+      await click('[data-settings-category="usage"]');
+      assert.equal(page.document.querySelectorAll('[data-usage-point]').length, 365);
+      const point = page.document.querySelector<HTMLElement>('[data-usage-point]');
+      assert.ok(point);
+      let visits = 0;
+      const equal = point.isEqualNode.bind(point);
+      point.isEqualNode = (other) => {
+        visits++;
+        return equal(other);
+      };
+      await click('[data-settings-category="telegram"]');
+      const secret = page.document.querySelector<HTMLInputElement>('#telegram-token');
+      assert.ok(secret);
+      secret.value = 'synthetic-unsaved-token';
+      await click('[data-settings-category="general"]');
+      const date = point.dataset.usageDate,
+        oldLabel = point.getAttribute('aria-label');
+      assert.ok(date);
+      state.usage = {
+        subscription: { available: true, totals: { inputTokens: 1, outputTokens: 2 } },
+        activity: {
+          timeZone: 'UTC',
+          days: [{ date, subscription: { inputTokens: 1, outputTokens: 2 } }],
+        },
+      };
+      FixtureEvents.instances[0]?.emit('state', state);
+      await settle();
+      assert.equal(page.document.querySelector('[data-usage-point]'), point);
+      assert.equal(visits, 0, 'hidden calendar descendants are not reconciled');
+      assert.equal(point.getAttribute('aria-label'), oldLabel);
+      assert.equal(page.document.querySelector('#telegram-token'), secret);
+      assert.equal(secret.value, 'synthetic-unsaved-token');
+      const search = page.document.querySelector<HTMLInputElement>('#settings-search');
+      assert.ok(search);
+      search.value = 'app version';
+      search.dispatchEvent(new page.Event('input', { bubbles: true }));
+      await settle();
+      await click('[data-settings-result="version"]');
+      assert.equal(page.document.querySelector('#settings-about')?.hasAttribute('hidden'), false);
+      assert.ok(page.document.querySelector('[data-app-version]'));
+      assert.equal(visits, 0);
+      await click('[data-settings-category="usage"]');
+      assert.equal(page.document.querySelector('[data-usage-point]'), point);
+      assert.equal(page.document.querySelector('#settings-usage')?.hasAttribute('hidden'), false);
+      assert.ok(visits > 0, 'active calendar refreshes current state');
+      assert.match(point.getAttribute('aria-label') ?? '', /3 tokens/);
+      assert.equal(point.dataset.usageLevel, '4');
+    } else if (scenario === 'settings-operations') {
       await click('[data-settings-category="appearance"]');
       await click('[data-accent="#8660D9"]');
       assert.equal(state.settings.accentColor, '#8660D9');

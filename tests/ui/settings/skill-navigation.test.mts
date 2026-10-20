@@ -366,6 +366,8 @@ test('the sidebar skill entry opens its own bilingual page and loads only skills
     );
     assert.ok(f.document.querySelector<HTMLInputElement>('#file-input'));
     await f.click('.rail [data-action="settings"]');
+    assert.equal(f.document.querySelector('.credentials-settings'), null);
+    await f.click('[data-settings-category="credentials"]');
     assert.ok(f.document.querySelector<HTMLElement>('.credentials-settings'));
     assert.equal(
       f.document.querySelector<HTMLButtonElement>('[data-skill-add]'),
@@ -385,13 +387,18 @@ test('the real settings renderer separates Chat & data backups and Work computer
     '<section class="settings-section vm-backups vm-backup-import" data-setting-card="backup-import">Import controls</section>';
   backups.setVisible = (value, surface) => visible.push({ value: Boolean(value), surface });
   await f.click('.rail [data-action="settings"]');
-  assert.ok(f.document.querySelector('[data-settings-panel="history"] .vm-backups'));
-  assert.ok(f.document.querySelector('[data-settings-panel="computer"] .vm-backup-import'));
+  assert.equal(f.document.querySelector('[data-settings-panel="history"] .vm-backups'), null);
+  assert.equal(
+    f.document.querySelector('[data-settings-panel="computer"] .vm-backup-import'),
+    null,
+  );
   assert.equal(f.document.querySelector('[data-settings-panel="history"] .vm-backup-import'), null);
   assert.equal(visible.at(-1)?.value, false);
   await f.click('[data-settings-category="history"]');
+  assert.ok(f.document.querySelector('[data-settings-panel="history"] .vm-backups'));
   assert.deepEqual(visible.at(-1), { value: true, surface: 'backups' });
   await f.click('[data-settings-category="computer"]');
+  assert.ok(f.document.querySelector('[data-settings-panel="computer"] .vm-backup-import'));
   assert.deepEqual(visible.at(-1), { value: true, surface: 'import' });
   await f.click('[data-settings-category="usage"]');
   assert.equal(visible.at(-1)?.value, false);
@@ -425,6 +432,16 @@ test('the real Usage page keeps a just-opened disclosure through state renders b
   f.c.state.usage = { ...f.c.state.usage, recordedSince: 1000 };
   f.c.render();
   assert.equal(details().hasAttribute('open'), false);
+  details().setAttribute('open', '');
+  await f.click('[data-settings-category="general"]');
+  f.c.state.conversationId = 'changed-while-usage-hidden';
+  f.c.render();
+  await f.click('[data-settings-category="usage"]');
+  assert.equal(
+    details().hasAttribute('open'),
+    false,
+    'a hidden stale disclosure cannot adopt a new scope',
+  );
   defined(f.c.callDuration).dispose();
 });
 

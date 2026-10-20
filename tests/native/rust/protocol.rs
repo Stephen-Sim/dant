@@ -3,6 +3,10 @@ use super::*;
 #[test]
 fn all_native_addresses_paths_and_readiness_use_the_validated_canonical_resource() {
     let raw: serde_json::Value = serde_json::from_str(SOURCE).unwrap();
+    assert_eq!(raw["apiPort"], 4317);
+    assert_eq!(raw["devPort"], 4318);
+    assert_eq!(raw["bootstrapGuestPort"], 4319);
+    assert_eq!(raw["guestPort"], 4321);
     let host = raw["loopbackHost"].as_str().unwrap();
     assert_eq!(controller_endpoint().ip(), Ipv4Addr::LOCALHOST);
     assert_eq!(

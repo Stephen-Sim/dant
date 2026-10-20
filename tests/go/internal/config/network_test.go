@@ -14,12 +14,35 @@ func TestEmbeddedProtocolMatchesCanonicalUIAndNativeSource(t *testing.T) {
 		t.Fatal("generated network protocol drifted")
 	}
 	protocol := DefaultProtocol()
-	if protocol.APIPort != 4317 || protocol.BootstrapGuestPort != 4319 || protocol.GuestPort != 4320 || protocol.Paths.Session != "/api/session" {
+	if protocol.APIPort != 4317 || protocol.DevPort != 4318 || protocol.BootstrapGuestPort != 4319 || protocol.GuestPort != 4321 || protocol.Paths.Session != "/api/session" {
 		t.Fatal("native transport contract changed")
 	}
 	protocol.LoopbackHosts[0] = "attacker.invalid"
 	if DefaultProtocol().LoopbackHosts[0] != "127.0.0.1" {
 		t.Fatal("protocol mutation escaped its caller")
+	}
+}
+
+func TestGuestDefaultUsesTheCanonicalListenerAndPreservesAnExplicitLegacyPort(t *testing.T) {
+	for _, item := range []struct {
+		name        string
+		environment map[string]string
+		port        int
+	}{
+		{"omitted", map[string]string{}, DefaultProtocol().GuestPort},
+		{"empty", map[string]string{"DANT_GUEST_PORT": ""}, DefaultProtocol().GuestPort},
+		{"explicit legacy", map[string]string{"DANT_GUEST_PORT": "4320"}, 4320},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			network, err := ReadNetwork(item.environment)
+			if err != nil || network.Guest.Port != item.port {
+				t.Fatal("guest configuration changed the canonical default or an explicit port", err)
+			}
+			public, err := PublicVMConfiguration(item.environment)
+			if err != nil || public.GuestPort != strconv.Itoa(item.port) {
+				t.Fatal("deployment did not preserve the selected guest listener", err)
+			}
+		})
 	}
 }
 

@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler,HTTPServer
 from desktop import act,screenshot
 from control import command
 from network_config import guest_bind as protocol_guest_bind, load_protocol as read_network_protocol
-ROOT=pathlib.Path('/home/dant/work')
+ROOT=pathlib.Path.home()/'work'
 
 def load_protocol():
     return read_network_protocol(__file__)

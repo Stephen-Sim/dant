@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """VM-only desktop control. CLI used by dant and the local guest HTTP service."""
-import argparse, os, json, subprocess, sys, time, tempfile
+import argparse, os, json, pathlib, subprocess, sys, time, tempfile
 from control import desktop_access
 os.environ.setdefault('DISPLAY', ':0')
 def run(*args, data=None):
@@ -62,7 +62,7 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description='dant desktop: screenshot PATH | click X Y | drag X1 Y1 X2 Y2 | text TEXT | key ctrl+l | scroll N')
     p.add_argument('action',choices=['screenshot','click','drag','text','key','scroll']);p.add_argument('args',nargs='*');a=p.parse_args()
     if a.action=='screenshot':
-        target=a.args[0] if a.args else '/home/dant/work/screen.png'
+        target=a.args[0] if a.args else str(pathlib.Path.home()/'work/screen.png')
         with desktop_access():
             with open(target, 'wb') as output:
                 output.write(screenshot())

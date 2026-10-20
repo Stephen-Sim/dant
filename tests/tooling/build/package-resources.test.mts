@@ -2,6 +2,7 @@ import {
   CORE_WINDOWS,
   CORE_LINUX,
   CORE_BUILD_MANIFEST,
+  CORE_BUNDLE_MANIFEST,
   VM_BUNDLE_FILES,
   HOST_HELPERS,
   HOST_CONFIG_FILES,
@@ -19,6 +20,7 @@ import {
   prepareResources,
   stageReleaseResources,
   assertGeneratedPath,
+  validatePreparedResources,
 } from '../../../scripts/package-resources.mts';
 import { resolveBuildPaths } from '../../../scripts/ci/build-paths.mts';
 
@@ -117,6 +119,45 @@ function link(t: NodeTestContext, target: string, destination: string) {
     throw error;
   }
 }
+
+test('current resources authenticate the guest observer and refuse an incomplete source inventory', (t) => {
+  const f = fixture(t);
+  const observer = 'vm/guest_service.py';
+  prepareResources(f.options);
+  const bundle: unknown = JSON.parse(
+    fs.readFileSync(path.join(f.paths.resources, CORE_BUNDLE_MANIFEST), 'utf8'),
+  );
+  assert.ok(bundle && typeof bundle === 'object' && 'files' in bundle);
+  assert.ok(Array.isArray(bundle.files));
+  assert.deepEqual(
+    bundle.files.filter(
+      (file: unknown) =>
+        file && typeof file === 'object' && 'path' in file && file.path === observer,
+    ),
+    [describeFile(f.paths.resources, observer)],
+  );
+  assert.equal(
+    fs.readFileSync(path.join(f.paths.resources, observer), 'utf8'),
+    fs.readFileSync(path.join(f.root, observer), 'utf8'),
+  );
+  write(f.paths.resources, observer, 'changed observer');
+  assert.throws(() => validatePreparedResources(f.paths.resources, '1.2.3'));
+
+  const missing = fixture(t);
+  fs.unlinkSync(path.join(missing.root, observer));
+  let builds = 0;
+  assert.throws(() =>
+    prepareResources({
+      ...missing.options,
+      build() {
+        builds++;
+        return missing.options.build();
+      },
+    }),
+  );
+  assert.equal(builds, 0, 'Incomplete helpers fail before compiling or publishing resources.');
+  assert.equal(fs.existsSync(missing.paths.resources), false);
+});
 
 test('fresh resources remove obsolete hashed assets and deleted source files without copying local data or caches', (t) => {
   const f = fixture(t);

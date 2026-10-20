@@ -19,8 +19,16 @@ spec.loader.exec_module(voice)
 
 
 class VoiceMessageCLITests(unittest.TestCase):
+    def output_directory(self):
+        # Runner TEMP can have a junction or an 8.3 ancestor. Keep these output
+        # fixtures in the canonical workspace instead of relaxing the VM guard.
+        parent = ROOT / '.cache/tests'
+        parent.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix='voice-cli-', dir=parent.resolve())
+
     def test_invalid_text_language_and_missing_engine_never_synthesize(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with self.output_directory() as folder:
+            folder = str(pathlib.Path(folder).resolve())
             for text, language in (('', None), (None, None), ('x' * 2501, None), ('hello', 'foreign')):
                 with self.subTest(language=language), patch.object(voice.subprocess, 'run') as process, self.assertRaises(ValueError):
                     voice.create(text, folder, language)
@@ -30,7 +38,8 @@ class VoiceMessageCLITests(unittest.TestCase):
             process.assert_not_called()
 
     def test_cli_creates_valid_wav_and_oversized_or_malformed_input_has_no_speech_effect(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with self.output_directory() as folder:
+            folder = str(pathlib.Path(folder).resolve())
             for body, success in ((json.dumps({'text': 'hello', 'language': 'en'}).encode(), True),
                     (b'x' * 20001, False), (b'invalid json', False)):
                 output, errors = io.StringIO(), io.StringIO()

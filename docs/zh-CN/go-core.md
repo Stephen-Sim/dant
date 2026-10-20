@@ -27,7 +27,7 @@ Controller 不在宿主创建任务 Engine，也不执行 Agent 工作。Worker 
 
 `resources/contracts/state-domains.json` 生成 Go 和 TypeScript 状态域；协议默认值位于 `resources/config/`，语言资源位于 `resources/i18n/`。`npm run check:contracts` 检查生成漂移。解码器校验实际消费字段，并区分缺失、显式 null 和零。共享文字边界明确 Unicode 规范化、trim 和 UTF-16 限额。
 
-应用 API 使用本机 `4317` 端口、会话令牌及 host/origin 校验；SSH 提供宿主到 VM 的已鉴权隧道。Worker 桌面 bridge 使用本机 `4320`。切换语言、读取记忆或收到定时事件均不能授予执行权限。
+应用 API 使用本机 `4317` 端口、会话令牌及 host/origin 校验；SSH 提供宿主到 VM 的已鉴权隧道。Worker 桌面 bridge 默认使用本机 `4321`。切换语言、读取记忆或收到定时事件均不能授予执行权限。
 
 | 持久数据权威                 | 契约                                                       |
 | ---------------------------- | ---------------------------------------------------------- |

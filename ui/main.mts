@@ -1140,7 +1140,7 @@ function render() {
   document.documentElement.dir = languageInfo(language()).direction;
   const template = document.createElement('template');
   template.innerHTML = `${renderRail()}<main class="${page === 'chat' ? 'chat-main' : 'settings-main'}">${renderHeader(status)}${page === 'chat' ? `<div class="workspace ${showComputer ? 'computer-visible' : ''} ${progressPanel.visible ? 'progress-visible' : ''}" data-key="workspace"><section class="conversation" data-key="conversation">${renderCall()}${chatMode === 'voice' && !pc && !callStarting ? renderCallReady() : renderChat()}</section>${progressPanel.render()}${showComputer ? renderComputer() : ''}</div>` : ['skills', 'schedules'].includes(page) ? `<div class="full-page skills-full-page" data-key="page-${page}">${page === 'skills' ? managedSettings.renderSkillPage() : renderSchedules()}</div>` : `<div class="full-page" data-key="page-${page}"><div class="settings-stack">${page === 'settings' ? renderSettings() : renderMemory()}</div></div>`}</main><input type="file" id="file-input" hidden multiple>${renderModal()}`;
-  reconcile(app, template.content);
+  reconcile(app, template.content, { preserveChildren: settingsNavigation.preservePanelChildren });
   bind();
   resizeComposer();
   for (const node of app.querySelectorAll<HTMLButtonElement>(':scope > nav,:scope > main'))
@@ -1541,26 +1541,31 @@ function renderSettings() {
   const settings = currentState().settings,
     existing = !!settings.vm.host || !!currentState().provisioning?.connection;
   const sections = {
-    general: `<section class="settings-section setting-card language-card"><div class="card-label"><h2>${t('language')}</h2><p>${t('languageHint')}</p></div><div class="card-content"><select id="language" data-language class="language-select" aria-label="${t('language')}" dir="ltr" ${pendingActions.has('setting:language') ? 'disabled aria-busy="true"' : ''}>${languages.map((item) => `<option value="${item.code}" lang="${item.locale}" dir="${item.direction}" ${settings.language === item.code ? 'selected' : ''}>${item.label}</option>`).join('')}</select></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('notify')}</h2></div><div class="card-content"><div class="setting-row"><div>${t('notifySub')}</div><input type="checkbox" id="notifications" ${settings.notifications ? 'checked' : ''} aria-label="${t('notify')}"></div></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('progress')}</h2></div><div class="card-content"><div class="setting-row"><label for="showWorkSummary">${t('showWorkSummary')}</label><input type="checkbox" id="showWorkSummary" ${settings.showWorkSummary === true ? 'checked' : ''} ${pendingActions.has('setting:showWorkSummary') ? 'disabled' : ''} aria-label="${t('showWorkSummary')}"></div><p class="card-description">${t('showWorkSummaryHint')}</p></div></section>${textEditor.renderSettings()}`,
-    appearance: renderAppearance(),
-    voice: renderVoiceSettings(settings),
-    computer: `${renderVMSettings()}${vmBackups.renderImport()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing ? `<p class="card-description">${t('currentPermissions')}</p>${button('computer', 'monitor', t('viewComputer'), 'text-btn')}` : `<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo ? 'permissionsAdminHint' : 'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
-    account: `<section class="settings-section setting-card" data-setting-card="account"><div class="card-label"><h2>${t('accountSubscription')}</h2></div><div class="card-content"><div class="setting-row"><div><strong>${esc(currentState().worker.account?.email || 'ChatGPT')}</strong><small>${esc(currentState().worker.account?.planType || t('offline'))}</small></div><button type="button" class="text-btn ${currentState().worker.account ? '' : 'primary'}" data-action="${currentState().worker.account ? 'logout' : 'login'}">${t(currentState().worker.account ? 'logout' : 'login')}</button></div><p class="card-description">${t('subscriptionTasks')}</p><div id="login-details">${renderLoginDetails()}</div><div class="setting-row model-setting"><span>${t('model')}</span><select id="model" aria-label="${t('model')}"><option value="">${t('default')}</option>${currentState()
-      .worker.models.map(
-        (model) =>
-          `<option value="${esc(model.model)}" ${model.model === settings.model ? 'selected' : ''}>${esc(model.displayName || model.model)}</option>`,
-      )
-      .join('')}</select></div></div></section>`,
-    usage: renderUsageSettings({
-      ...(currentState().usage === undefined ? {} : { usage: currentState().usage }),
-      language: language(),
-      cached: currentState().controller?.cached === true,
-      ...usageActivity.state,
-    }),
-    credentials: managedSettings.renderCredentials(),
-    history: `${chatHistory.renderSettings()}${vmBackups.render()}<div class="settings-links">${button('memory', 'brain', t('memory'), 'text-btn')}</div>`,
-    telegram: renderTelegramSettings(),
-    about: appUpdates.render(),
+    general: () =>
+      `<section class="settings-section setting-card language-card"><div class="card-label"><h2>${t('language')}</h2><p>${t('languageHint')}</p></div><div class="card-content"><select id="language" data-language class="language-select" aria-label="${t('language')}" dir="ltr" ${pendingActions.has('setting:language') ? 'disabled aria-busy="true"' : ''}>${languages.map((item) => `<option value="${item.code}" lang="${item.locale}" dir="${item.direction}" ${settings.language === item.code ? 'selected' : ''}>${item.label}</option>`).join('')}</select></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('notify')}</h2></div><div class="card-content"><div class="setting-row"><div>${t('notifySub')}</div><input type="checkbox" id="notifications" ${settings.notifications ? 'checked' : ''} aria-label="${t('notify')}"></div></div></section><section class="settings-section setting-card"><div class="card-label"><h2>${t('progress')}</h2></div><div class="card-content"><div class="setting-row"><label for="showWorkSummary">${t('showWorkSummary')}</label><input type="checkbox" id="showWorkSummary" ${settings.showWorkSummary === true ? 'checked' : ''} ${pendingActions.has('setting:showWorkSummary') ? 'disabled' : ''} aria-label="${t('showWorkSummary')}"></div><p class="card-description">${t('showWorkSummaryHint')}</p></div></section>${textEditor.renderSettings()}`,
+    appearance: () => renderAppearance(),
+    voice: () => renderVoiceSettings(settings),
+    computer: () =>
+      `${renderVMSettings()}${vmBackups.renderImport()}<section class="settings-section setting-card" data-setting-card="permissions"><div class="card-label"><h2>${t('adminPermissions')}</h2></div><div class="card-content">${existing ? `<p class="card-description">${t('currentPermissions')}</p>${button('computer', 'monitor', t('viewComputer'), 'text-btn')}` : `<div class="segmented permission-options" role="group" aria-label="${t('adminPermissions')}"><button type="button" data-permission="standard" class="${!provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${!provisionDraft.adminSudo}">${t('standardPermissions')}</button><button type="button" data-permission="admin" class="${provisionDraft.adminSudo ? 'selected' : ''}" aria-pressed="${provisionDraft.adminSudo}">${t('fullPermissions')}</button></div><p class="card-description">${t(provisionDraft.adminSudo ? 'permissionsAdminHint' : 'permissionsStandardHint')}</p><small class="muted">${t('permissionsForNew')}</small>`}</div></section>`,
+    account: () =>
+      `<section class="settings-section setting-card" data-setting-card="account"><div class="card-label"><h2>${t('accountSubscription')}</h2></div><div class="card-content"><div class="setting-row"><div><strong>${esc(currentState().worker.account?.email || 'ChatGPT')}</strong><small>${esc(currentState().worker.account?.planType || t('offline'))}</small></div><button type="button" class="text-btn ${currentState().worker.account ? '' : 'primary'}" data-action="${currentState().worker.account ? 'logout' : 'login'}">${t(currentState().worker.account ? 'logout' : 'login')}</button></div><p class="card-description">${t('subscriptionTasks')}</p><div id="login-details">${renderLoginDetails()}</div><div class="setting-row model-setting"><span>${t('model')}</span><select id="model" aria-label="${t('model')}"><option value="">${t('default')}</option>${currentState()
+        .worker.models.map(
+          (model) =>
+            `<option value="${esc(model.model)}" ${model.model === settings.model ? 'selected' : ''}>${esc(model.displayName || model.model)}</option>`,
+        )
+        .join('')}</select></div></div></section>`,
+    usage: () =>
+      renderUsageSettings({
+        ...(currentState().usage === undefined ? {} : { usage: currentState().usage }),
+        language: language(),
+        cached: currentState().controller?.cached === true,
+        ...usageActivity.state,
+      }),
+    credentials: () => managedSettings.renderCredentials(),
+    history: () =>
+      `${chatHistory.renderSettings()}${vmBackups.render()}<div class="settings-links">${button('memory', 'brain', t('memory'), 'text-btn')}</div>`,
+    telegram: () => renderTelegramSettings(),
+    about: () => appUpdates.render(),
   };
   return settingsNavigation.render(sections);
 }
@@ -3005,8 +3010,8 @@ function bind() {
   if (document.querySelector<HTMLElement>('.memory-page')) memorySettings.bind();
   if (document.querySelector<HTMLElement>('.settings-layout')) {
     settingsNavigation.bind();
-    textEditor.bind();
-    usageActivity.bind();
+    if (settingsNavigation.isVisible('general')) textEditor.bind();
+    if (settingsNavigation.isVisible('usage')) usageActivity.bind();
   }
   const callView = document.querySelector<HTMLElement>('.call-view');
   if (callView) callView.onclick = () => audio?.play().catch(() => {});

@@ -12,6 +12,10 @@ test('the canonical protocol validates once and exposes immutable values to ever
   assert.deepEqual(protocol, canonical);
   assert.deepEqual(parseProtocolJSON(JSON.stringify(canonical)), protocol);
   assert.deepEqual(PROTOCOL, protocol);
+  assert.deepEqual(
+    [protocol.apiPort, protocol.devPort, protocol.bootstrapGuestPort, protocol.guestPort],
+    [4317, 4318, 4319, 4321],
+  );
   assert.equal(Object.isFrozen(protocol), true);
   assert.equal(Object.isFrozen(protocol.paths), true);
   assert.equal(Object.isFrozen(protocol.loopbackHosts), true);

@@ -17,6 +17,7 @@ function fixture({ language = 'en' } = {}) {
     errors: unknown[] = [],
     focus: HTMLElement[] = [],
     scroll: { node: HTMLElement; options: boolean | ScrollIntoViewOptions | undefined }[] = [];
+  const renderCounts = new Map<string, number>();
   let host = '',
     fontOpen = false,
     voiceDisabled = false,
@@ -33,41 +34,54 @@ function fixture({ language = 'en' } = {}) {
   });
   function sections() {
     return {
-      general:
+      general: () =>
         '<section class="settings-section"><button data-language="zh">中文</button><input type="checkbox" id="notifications"><input type="checkbox" id="showWorkSummary"></section><section class="settings-section text-editor-settings"><button data-editor-choose>Choose editor</button></section>',
-      appearance: `<section class="settings-section"><button data-theme="light">Light</button><details id="appearance-font-picker" ${fontOpen ? 'open' : ''}><summary>System font</summary><input id="font-local-search" value="Arial"></details><details id="appearance-advanced"><summary>Advanced</summary><input id="appearance-size" type="number" value="13"></details></section>`,
-      voice: `<section class="settings-section"><input type="checkbox" id="showCallCaptions"><select id="nativeVoice" ${voiceDisabled ? 'disabled' : ''}><option>Ember</option></select><details><summary>API</summary><input type="password" id="voice-api-key"></details></section>`,
-      computer: `<section class="settings-section vm-settings"><input id="vm-host-draft" value="${host}"></section><section class="settings-section vm-backups vm-backup-import" data-setting-card="backup-import">Import backup file</section>`,
-      account:
+      appearance: () =>
+        `<section class="settings-section"><button data-theme="light">Light</button><details id="appearance-font-picker" ${fontOpen ? 'open' : ''}><summary>System font</summary><input id="font-local-search" value="Arial"></details><details id="appearance-advanced"><summary>Advanced</summary><input id="appearance-size" type="number" value="13"></details></section>`,
+      voice: () =>
+        `<section class="settings-section"><input type="checkbox" id="showCallCaptions"><select id="nativeVoice" ${voiceDisabled ? 'disabled' : ''}><option>Ember</option></select><details><summary>API</summary><input type="password" id="voice-api-key"></details></section>`,
+      computer: () =>
+        `<section class="settings-section vm-settings"><input id="vm-host-draft" value="${host}"></section><section class="settings-section vm-backups vm-backup-import" data-setting-card="backup-import">Import backup file</section>`,
+      account: () =>
         '<section class="settings-section" data-setting-card="account">private-account@example.test<select id="model"><option>Default</option></select></section>',
-      credentials:
+      credentials: () =>
         '<section class="settings-section credentials-settings"><input type="password" id="private-vault">Private credential nickname</section>',
-      history:
+      history: () =>
         '<section class="settings-section conversation-settings">Private conversation text<button data-action="memory">Memory</button></section><section class="settings-section vm-backups">Backups</section>',
-      telegram:
+      telegram: () =>
         '<section class="settings-section telegram-settings"><input type="password" id="telegram-token"></section>',
-      about:
+      about: () =>
         '<section class="settings-section"><strong data-app-version>1.0.0</strong><button data-check-updates>Check for updates</button></section>',
     };
   }
   function render() {
     const template = document.createElement('template');
-    template.innerHTML = ui.render(sections());
-    reconcile(defined(app), template.content);
+    const factories = sections();
+    for (const key of Object.keys(factories) as (keyof typeof factories)[]) {
+      const factory = factories[key];
+      factories[key] = () => {
+        renderCounts.set(key, (renderCounts.get(key) || 0) + 1);
+        return factory();
+      };
+    }
+    template.innerHTML = ui.render(factories);
+    reconcile(defined(app), template.content, { preserveChildren: ui.preservePanelChildren });
     for (const node of document.querySelectorAll<HTMLElement>(
       'button,input,select,summary,[tabindex],.settings-section,[data-settings-panel]',
     )) {
       node.focus = () => focus.push(node);
       node.scrollIntoView = (options) => scroll.push({ node, options });
     }
-    const hostInput = defined(document.querySelector<HTMLInputElement>('#vm-host-draft'));
-    hostInput.oninput = () => {
-      host = hostInput.value;
-    };
-    const picker = defined(document.querySelector<HTMLDetailsElement>('#appearance-font-picker'));
-    picker.ontoggle = () => {
-      fontOpen = picker.open;
-    };
+    const hostInput = document.querySelector<HTMLInputElement>('#vm-host-draft');
+    if (hostInput)
+      hostInput.oninput = () => {
+        host = hostInput.value;
+      };
+    const picker = document.querySelector<HTMLDetailsElement>('#appearance-font-picker');
+    if (picker)
+      picker.ontoggle = () => {
+        fontOpen = picker.open;
+      };
     ui.bind();
   }
   render();
@@ -80,6 +94,7 @@ function fixture({ language = 'en' } = {}) {
     errors,
     focus,
     scroll,
+    renderCounts,
     render,
     disableVoice() {
       voiceDisabled = true;
@@ -116,6 +131,95 @@ const visiblePanels = (f: ReturnType<typeof fixture>) =>
   [...f.document.querySelectorAll<HTMLButtonElement>('[data-settings-panel]')]
     .filter((node) => !node.hidden)
     .map((node) => node.dataset.settingsPanel);
+
+test('only the active category factory runs and searches build no hidden content', async () => {
+  const f = fixture();
+  assert.deepEqual([...f.renderCounts], [['general', 1]]);
+  assert.equal(f.document.querySelector('#telegram-token'), null);
+  assert.equal(f.document.querySelector('#appearance-font-picker'), null);
+  await f.click('[data-settings-category="appearance"]');
+  assert.deepEqual(
+    [...f.renderCounts],
+    [
+      ['general', 1],
+      ['appearance', 1],
+    ],
+  );
+  assert.ok(f.document.querySelector('#appearance-font-picker'));
+  const beforeSearch = [...f.renderCounts];
+  await f.search('voice');
+  await f.search('voice key');
+  assert.deepEqual([...f.renderCounts], beforeSearch);
+  assert.equal(f.document.querySelector('#voice-api-key'), null);
+  await f.click('[data-settings-result="voice-key"]');
+  assert.equal(f.renderCounts.get('voice'), 1);
+  assert.equal(f.focus.at(-1), f.document.querySelector('#voice-api-key'));
+  assert.ok(f.document.querySelector('#voice-api-key')?.closest('details')?.open);
+});
+
+test('inactive owned panel children stay untouched until becoming active and refresh with current state', async () => {
+  const f = fixture();
+  await f.click('[data-settings-category="voice"]');
+  const voice = defined(f.document.querySelector<HTMLSelectElement>('#nativeVoice')),
+    panel = defined(f.document.querySelector<HTMLElement>('#settings-voice'));
+  let visited = 0;
+  const original = voice.isEqualNode.bind(voice);
+  voice.isEqualNode = (node) => {
+    visited++;
+    return original(node);
+  };
+  await f.click('[data-settings-category="general"]');
+  assert.equal(panel.hidden, true);
+  f.disableVoice();
+  assert.equal(voice.disabled, false, 'hidden content is not patched');
+  assert.equal(visited, 0, 'hidden descendants are not traversed');
+  assert.equal(f.renderCounts.get('voice'), 1);
+  await f.click('[data-settings-category="voice"]');
+  assert.equal(f.document.querySelector('#nativeVoice'), voice);
+  assert.equal(panel.hidden, false);
+  assert.equal(voice.disabled, true, 'active category refreshes current metadata');
+  assert.ok(visited > 0);
+  assert.equal(f.renderCounts.get('voice'), 2);
+});
+
+test('preserved children require a known fixed category root and its owned parent', () => {
+  const f = fixture();
+  const root = defined(f.document.querySelector<HTMLElement>('#settings-general'));
+  const desired = root.cloneNode(false) as HTMLElement;
+  desired.hidden = true;
+  assert.equal(f.ui.preservePanelChildren(root, desired), false, 'detached impostor');
+  const owner = f.document.createElement('div');
+  owner.className = 'settings-category-panels';
+  owner.setAttribute('data-key', 'settings-category-panels');
+  const layout = f.document.createElement('div'),
+    content = f.document.createElement('div');
+  layout.setAttribute('data-key', 'settings-layout');
+  content.className = 'settings-category-content';
+  layout.append(content);
+  content.append(owner);
+  owner.append(desired);
+  assert.equal(f.ui.preservePanelChildren(root, desired), true);
+  for (const [attribute, value] of [
+    ['data-key', 'other'],
+    ['data-settings-panel', 'unknown'],
+    ['id', 'other'],
+    ['class', 'other'],
+  ] as const) {
+    const old = desired.getAttribute(attribute);
+    desired.setAttribute(attribute, value);
+    assert.equal(f.ui.preservePanelChildren(root, desired), false, attribute);
+    desired.setAttribute(attribute, defined(old));
+  }
+  desired.hidden = false;
+  assert.equal(f.ui.preservePanelChildren(root, desired), false, 'active content must refresh');
+  desired.hidden = true;
+  f.ui.sync(false);
+  assert.equal(
+    f.ui.preservePanelChildren(root, desired),
+    false,
+    'other pages cannot retain forged settings markup',
+  );
+});
 
 test('settings default to General, render a bilingual category menu, and load only the chosen category', async () => {
   for (const [language, labels] of [
@@ -292,6 +396,7 @@ test('work summary search finds its General preference and focuses the actual ch
 
 test('category switches and settings search preserve real DOM nodes, unsaved VM and secret inputs, and an open font picker', async () => {
   const f = fixture();
+  await f.click('[data-settings-category="telegram"]');
   await f.click('[data-settings-category="computer"]');
   const host = f.document.querySelector<HTMLInputElement>('#vm-host-draft');
   defined(host).value = '192.0.2.123';
@@ -326,6 +431,9 @@ test('category switches and settings search preserve real DOM nodes, unsaved VM 
 
 test('search indexes only the fixed labels, never account, credential, input or conversation contents', async () => {
   const f = fixture();
+  for (const category of ['account', 'history', 'credentials'])
+    await f.click(`[data-settings-category="${category}"]`);
+  const loadsBeforeSearch = [...f.loads];
   defined(f.document.querySelector<HTMLInputElement>('#private-vault')).value =
     'super-private-secret';
   for (const query of [
@@ -344,7 +452,7 @@ test('search indexes only the fixed labels, never account, credential, input or 
       /No matching settings/,
     );
   }
-  assert.deepEqual(f.loads, ['general']);
+  assert.deepEqual(f.loads, loadsBeforeSearch);
   await f.search('<img src=x onerror=alert(1)>');
   assert.equal(f.document.querySelector<HTMLImageElement>('img'), null);
   assert.equal(

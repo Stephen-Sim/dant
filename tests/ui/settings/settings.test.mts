@@ -467,11 +467,13 @@ test('computer setup entry points open Work computer and clear search while keep
     template.innerHTML =
       c.page === 'settings'
         ? c.settingsNavigation.render({
-            computer: c.renderVMSettings(),
-            appearance: '<p>Appearance</p>',
+            computer: () => c.renderVMSettings(),
+            appearance: () => '<p>Appearance</p>',
           })
         : '<p>Chat</p>';
-    reconcile(defined(main), template.content);
+    reconcile(defined(main), template.content, {
+      preserveChildren: c.settingsNavigation.preservePanelChildren,
+    });
     if (c.page === 'settings') c.settingsNavigation.bind();
   };
   c.settingsNavigation.select('appearance');

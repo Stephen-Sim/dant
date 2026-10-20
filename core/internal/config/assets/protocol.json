@@ -4,7 +4,7 @@
   "apiPort": 4317,
   "devPort": 4318,
   "bootstrapGuestPort": 4319,
-  "guestPort": 4320,
+  "guestPort": 4321,
   "paths": {
     "api": "/api",
     "events": "/events",

@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { PROTOCOL } from '../../scripts/config/protocol.mts';
 
 const fixtureResources = [
   'resources/core/dant-core-linux-amd64',
   'vm/install-worker.sh',
   'vm/worker-install.py',
   'vm/guest.py',
+  'vm/guest_service.py',
   'vm/control.py',
   'vm/desktop.py',
   'vm/desktop_mcp.py',
@@ -58,7 +60,10 @@ export function workerInstallFixture(t: TestContext) {
       }),
     );
   }
-  writeDeployment({ DANT_GUEST_HOST: '127.0.0.1', DANT_GUEST_PORT: '4320' });
+  writeDeployment({
+    DANT_GUEST_HOST: PROTOCOL.loopbackHost,
+    DANT_GUEST_PORT: String(PROTOCOL.guestPort),
+  });
 
   return { root, home, source, version, commit, digest, writeDeployment };
 }

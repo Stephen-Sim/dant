@@ -27,7 +27,7 @@ Entrypoints stay small. Narrow interfaces belong to consumers, and blocking oper
 
 `resources/contracts/state-domains.json` generates Go states and TypeScript state domains. Protocol defaults live in `resources/config/`; language resources live in `resources/i18n/`. `npm run check:contracts` rejects generated drift. Decoders validate consumed fields and distinguish absence, explicit null and zero. Shared text boundaries specify Unicode normalization, trimming and UTF-16 limits explicitly.
 
-The application API uses loopback port `4317`, session tokens and validated host/origin headers. SSH provides the authenticated host-to-VM tunnel. The Worker's desktop bridge uses loopback port `4320`. Changing language, reading memory or receiving a timer event cannot grant execution permission.
+The application API uses loopback port `4317`, session tokens and validated host/origin headers. SSH provides the authenticated host-to-VM tunnel. The Worker's desktop bridge defaults to loopback port `4321`. Changing language, reading memory or receiving a timer event cannot grant execution permission.
 
 | Durable authority            | Contract                                                                                         |
 | ---------------------------- | ------------------------------------------------------------------------------------------------ |

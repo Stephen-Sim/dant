@@ -14,6 +14,7 @@ const categories = [
   ['about', 'About dant', '关于 dant'],
 ] as const;
 export type SettingsCategory = (typeof categories)[number][0];
+export type SettingsSections = Partial<Record<SettingsCategory, () => string>>;
 // Search this fixed catalogue only. Never read rendered form values, credential
 // metadata, account details, conversation text, or any other user data.
 const entries: readonly (readonly [string, SettingsCategory, string, string, string, string])[] = [
@@ -315,11 +316,28 @@ export function createSettingsNavigation({
     if (wasVisible && changed) load();
     return true;
   }
-  function render(sections: Partial<Record<SettingsCategory, string>>) {
+  function preservePanelChildren(current: Element, desired: Element): boolean {
+    const name = desired.getAttribute('data-settings-panel');
+    if (!visible || !desired.hasAttribute('hidden') || !categories.some((item) => item[0] === name))
+      return false;
+    const owned = (node: Element) =>
+      node.tagName === 'DIV' &&
+      node.id === `settings-${name}` &&
+      node.getAttribute('data-settings-panel') === name &&
+      node.getAttribute('data-key') === `settings-panel-${name}` &&
+      node.classList.contains('settings-category-panel') &&
+      node.parentElement?.getAttribute('data-key') === 'settings-category-panels' &&
+      node.parentElement.classList.contains('settings-category-panels') &&
+      node.parentElement.parentElement?.classList.contains('settings-category-content') === true &&
+      node.parentElement.parentElement.parentElement?.getAttribute('data-key') ===
+        'settings-layout';
+    return owned(current) && owned(desired);
+  }
+  function render(sections: SettingsSections) {
     const text = tr(),
       searching = Boolean(query.trim()),
       results = searching ? matches() : [];
-    return `<div class="settings-layout" data-key="settings-layout"><aside class="settings-sidebar"><div class="settings-search-box"><label for="settings-search">${text.search}</label><div><input type="search" id="settings-search" placeholder="${text.search}" value="${escape(query)}" autocomplete="off">${query ? `<button type="button" data-settings-clear aria-label="${text.clear}" title="${text.clear}">×</button>` : ''}</div></div><nav class="settings-category-nav" aria-label="${text.menu}">${categories.map((item) => `<button type="button" data-settings-category="${item[0]}" ${!searching && item[0] === category ? 'aria-current="page"' : ''}>${label(item)}</button>`).join('')}</nav></aside><div class="settings-category-content"><section class="settings-search-results" ${searching ? '' : 'hidden'} aria-labelledby="settings-results-title"><h2 id="settings-results-title">${text.results}</h2><div aria-live="polite" aria-relevant="additions text">${results.map((entry) => `<button type="button" class="settings-search-result" data-settings-result="${entry[0]}"><small>${label(categories.find((item) => item[0] === entry[1]))}</small><strong>${entryLabel(entry)}</strong></button>`).join('')}${searching && !results.length ? `<p class="settings-search-empty">${text.none}</p>` : ''}</div></section><div class="settings-category-panels">${categories.map((item) => `<div class="settings-category-panel" id="settings-${item[0]}" data-settings-panel="${item[0]}" data-key="settings-panel-${item[0]}" ${!searching && category === item[0] ? '' : 'hidden'}>${sections[item[0]] || ''}</div>`).join('')}</div></div></div>`;
+    return `<div class="settings-layout" data-key="settings-layout"><aside class="settings-sidebar"><div class="settings-search-box"><label for="settings-search">${text.search}</label><div><input type="search" id="settings-search" placeholder="${text.search}" value="${escape(query)}" autocomplete="off">${query ? `<button type="button" data-settings-clear aria-label="${text.clear}" title="${text.clear}">×</button>` : ''}</div></div><nav class="settings-category-nav" aria-label="${text.menu}">${categories.map((item) => `<button type="button" data-settings-category="${item[0]}" ${!searching && item[0] === category ? 'aria-current="page"' : ''}>${label(item)}</button>`).join('')}</nav></aside><div class="settings-category-content"><section class="settings-search-results" ${searching ? '' : 'hidden'} aria-labelledby="settings-results-title"><h2 id="settings-results-title">${text.results}</h2><div aria-live="polite" aria-relevant="additions text">${results.map((entry) => `<button type="button" class="settings-search-result" data-settings-result="${entry[0]}"><small>${label(categories.find((item) => item[0] === entry[1]))}</small><strong>${entryLabel(entry)}</strong></button>`).join('')}${searching && !results.length ? `<p class="settings-search-empty">${text.none}</p>` : ''}</div></section><div class="settings-category-panels" data-key="settings-category-panels">${categories.map((item) => `<div class="settings-category-panel" id="settings-${item[0]}" data-settings-panel="${item[0]}" data-key="settings-panel-${item[0]}" ${!searching && category === item[0] ? '' : 'hidden'}>${!searching && category === item[0] ? sections[item[0]]?.() || '' : ''}</div>`).join('')}</div></div></div>`;
   }
   function focusTarget() {
     if (!pendingFocus || !visible) return;
@@ -412,6 +430,7 @@ export function createSettingsNavigation({
   }
   return {
     render,
+    preservePanelChildren,
     bind,
     sync,
     select,

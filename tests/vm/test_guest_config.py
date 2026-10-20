@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import pathlib
+import runpy
 import sys
 import tempfile
 import unittest
@@ -17,14 +18,15 @@ spec.loader.exec_module(guest)
 class GuestConfigurationTests(unittest.TestCase):
     def test_shared_protocol_defaults_match_worker_endpoint_and_paths(self):
         protocol = json.loads((ROOT / 'resources/config/protocol.json').read_text(encoding='utf-8'))
-        self.assertEqual(guest.guest_bind({}), ('127.0.0.1', 4320))
+        self.assertEqual(guest.guest_bind({}), ('127.0.0.1', protocol['guestPort']))
         self.assertEqual(guest.PROTOCOL, protocol)
         self.assertEqual(guest.PATHS['health'], '/health')
         self.assertEqual(guest.PATHS['screen'], '/screen')
 
     def test_environment_overrides_accept_only_exact_loopback_and_valid_ports(self):
         self.assertEqual(guest.guest_bind({'DANT_GUEST_HOST': 'localhost', 'DANT_GUEST_PORT': '5480'}), ('localhost', 5480))
-        self.assertEqual(guest.guest_bind({'DANT_GUEST_HOST': '', 'DANT_GUEST_PORT': ''}), ('127.0.0.1', 4320))
+        self.assertEqual(guest.guest_bind({'DANT_GUEST_HOST': '', 'DANT_GUEST_PORT': ''}), ('127.0.0.1', guest.PROTOCOL['guestPort']))
+        self.assertEqual(guest.guest_bind({'DANT_GUEST_PORT': '4320'}), ('127.0.0.1', 4320))
         for host in ('0.0.0.0', '192.0.2.1', 'localhost.evil', 'localhost.', '127.1', 'http://localhost', '::1', ' localhost', False, None, {}):
             with self.subTest(host=host), self.assertRaisesRegex(ValueError, 'DANT_GUEST_HOST must be'):
                 guest.guest_bind({'DANT_GUEST_HOST': host})
@@ -53,6 +55,12 @@ class GuestConfigurationTests(unittest.TestCase):
             config.write_text(json.dumps(guest.PROTOCOL), encoding='utf-8')
             with patch.object(guest, '__file__', str(helper)):
                 self.assertEqual(guest.load_protocol(), guest.PROTOCOL)
+
+    def test_guest_file_root_uses_current_home_without_changing_seed_account_contract(self):
+        for home in (pathlib.Path('/home/dant'), pathlib.Path('/home/another-user')):
+            with self.subTest(default=home.name == 'dant'), patch.object(pathlib.Path, 'home', return_value=home):
+                namespace = runpy.run_path(str(ROOT / 'vm/guest.py'), run_name='guest_home_fixture')
+            self.assertEqual(namespace['ROOT'], home / 'work')
 
 
 if __name__ == '__main__':

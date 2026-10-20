@@ -2,6 +2,7 @@ package computer
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +18,8 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/security"
 )
 
+const guestServiceFixturePath = "vm/guest_service.py"
+
 func deploymentBundleFixture(t *testing.T) (string, BundleManifest, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -26,6 +29,7 @@ func deploymentBundleFixture(t *testing.T) (string, BundleManifest, string) {
 		"vm/install-worker.sh",
 		"vm/worker-install.py",
 		"vm/guest.py",
+		guestServiceFixturePath,
 		"vm/control.py",
 		"vm/desktop.py",
 		"vm/desktop_mcp.py",
@@ -101,9 +105,16 @@ func TestDeploymentTransfersOnlyVerifiedGoBundleAndConfirmsExactSource(t *testin
 			if strings.Contains(header.Name, "node") || strings.Contains(header.Name, ".env") {
 				t.Fatal("legacy runtime or credentials entered bundle")
 			}
-			io.Copy(io.Discard, archive)
+			if header.Name == guestServiceFixturePath {
+				content, err := io.ReadAll(archive)
+				if err != nil || !bytes.Equal(content, []byte("isolated bundle "+guestServiceFixturePath+"\x00\xff")) || header.Mode != 0600 {
+					t.Fatal("guest observer bytes or private file mode changed in transit", err)
+				}
+			} else {
+				io.Copy(io.Discard, archive)
+			}
 		}
-		if !seen[GuestBinaryPath] || !seen[BundleManifestPath] || !seen["deploy-manifest.json"] {
+		if !seen[GuestBinaryPath] || !seen[BundleManifestPath] || !seen["deploy-manifest.json"] || !seen[guestServiceFixturePath] {
 			t.Fatal("bundle provenance missing")
 		}
 		installed = true
@@ -124,6 +135,37 @@ func TestDeploymentTransfersOnlyVerifiedGoBundleAndConfirmsExactSource(t *testin
 
 	if err := deployer.Prepare(context.Background(), binding); err != nil || uploads != 1 {
 		t.Fatal("current source was installed again")
+	}
+}
+
+func TestGuestObserverVerificationPreservesOldBundleCompatibilityAndRejectsChangedBytes(t *testing.T) {
+	root, manifest, _ := deploymentBundleFixture(t)
+	if _, _, err := VerifyBundle(context.Background(), root, manifest.Version, manifest.SourceCommit); err != nil {
+		t.Fatal("current bundle did not authenticate the guest observer", err)
+	}
+	observer := filepath.Join(root, filepath.FromSlash(guestServiceFixturePath))
+	if err := os.WriteFile(observer, []byte("changed guest observer"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyBundle(context.Background(), root, manifest.Version, manifest.SourceCommit); !errors.Is(err, ErrDeploymentUnavailable) {
+		t.Fatal("changed observer passed exact bundle provenance", err)
+	}
+	legacy := manifest
+	legacy.Files = nil
+	for _, file := range manifest.Files {
+		if file.Path != guestServiceFixturePath {
+			legacy.Files = append(legacy.Files, file)
+		}
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(BundleManifestPath)), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyBundle(context.Background(), root, legacy.Version, legacy.SourceCommit); err != nil {
+		t.Fatal("a verified older bundle was required to contain the new observer", err)
 	}
 }
 

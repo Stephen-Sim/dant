@@ -85,9 +85,13 @@ class SeedPermissionTests(unittest.TestCase):
                         destination.write_text(entry['content'], encoding='utf-8')
                 modules = {name: sys.modules.pop(name) for name in ('network_config', 'desktop', 'control')
                            if name in sys.modules}
+                fixture_home = pathlib.Path(temporary) / 'home/dant'
                 try:
-                    with patch.object(sys, 'path', [str(seed_root), *sys.path]), patch.dict(os.environ, bootstrap_environment, clear=True):
+                    with patch.object(sys, 'path', [str(seed_root), *sys.path]), \
+                            patch.dict(os.environ, bootstrap_environment, clear=True), \
+                            patch.object(pathlib.Path, 'home', return_value=fixture_home):
                         namespace = runpy.run_path(str(seed_root / 'guest.py'), run_name='seed_guest_fixture')
+                        self.assertEqual(namespace['ROOT'], fixture_home / 'work')
                         self.assertEqual(namespace['guest_bind'](), (protocol['loopbackHost'], protocol['bootstrapGuestPort']))
                         server = Mock()
                         factory = Mock(return_value=server)

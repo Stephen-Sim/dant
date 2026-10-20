@@ -43,6 +43,61 @@ const usage = {
 };
 const dom = (html: string) => parseHTML(`<html><body>${html}</body></html>`);
 
+test('usage charts reuse a bounded set of Intl formatters while preserving localized point labels', (context) => {
+  const NativeDate = Intl.DateTimeFormat,
+    NativeNumber = Intl.NumberFormat;
+  let dates = 0,
+    numbers = 0;
+  context.mock.method(
+    Intl,
+    'DateTimeFormat',
+    new Proxy(NativeDate, {
+      construct(target, args) {
+        dates++;
+        return Reflect.construct(target, args);
+      },
+    }),
+  );
+  context.mock.method(
+    Intl,
+    'NumberFormat',
+    new Proxy(NativeNumber, {
+      construct(target, args) {
+        numbers++;
+        return Reflect.construct(target, args);
+      },
+    }),
+  );
+  for (const language of ['en', 'zh', 'ar']) {
+    for (const mode of ['daily', 'weekly', 'cumulative']) {
+      dates = 0;
+      numbers = 0;
+      const html = renderUsageActivity({ usage, now, language, mode });
+      assert.ok(dates <= 4, `${language}/${mode}: ${dates} date formatters`);
+      assert.ok(numbers <= 6, `${language}/${mode}: ${numbers} number formatters`);
+      const document = dom(html).document,
+        locale = language === 'zh' ? 'zh-CN' : language === 'ar' ? 'ar' : 'en-US',
+        date = new NativeDate(locale, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          timeZone: 'UTC',
+        }),
+        number = new NativeNumber(locale),
+        point = document.querySelector<HTMLElement>('[data-usage-date="2026-10-15"]');
+      if (mode === 'daily' || mode === 'cumulative') {
+        assert.ok(point);
+        assert.ok(
+          defined(point)
+            .getAttribute('aria-label')
+            ?.includes(date.format(new Date('2026-10-15T00:00:00Z'))),
+        );
+        assert.ok(defined(point).getAttribute('aria-label')?.includes(number.format(15)));
+      } else assert.ok(document.querySelector('.usage-week-bar'));
+    }
+  }
+});
+
 test('activity uses dated input plus output exactly once and preserves unknown days and provider separation', () => {
   const model = buildUsageActivity({ usage, now });
   assert.equal(model.timeZone, 'Asia/Kuala_Lumpur');

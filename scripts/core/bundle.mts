@@ -27,6 +27,7 @@ export const VM_BUNDLE_FILES = Object.freeze(
     'vm/desktop.py',
     'vm/desktop_mcp.py',
     'vm/guest.py',
+    'vm/guest_service.py',
     'vm/install-speech.sh',
     'vm/install-speech.py',
     'vm/install-transcription.sh',

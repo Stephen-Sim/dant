@@ -10,7 +10,7 @@ Copy [`.env.example`](../.env.example) to `.env` at the repository root. The dev
 | `DANT_PORT`       | `4317`      | Local development API port.       |
 | `DANT_DEV_PORT`   | `4318`      | Vite development port.            |
 | `DANT_GUEST_HOST` | `127.0.0.1` | VM graphical desktop bridge host. |
-| `DANT_GUEST_PORT` | `4320`      | VM graphical desktop bridge port. |
+| `DANT_GUEST_PORT` | `4321`      | VM graphical desktop bridge port. |
 
 Hosts accept only `127.0.0.1` or `localhost`; ports must be integers from 1 to 65535. The deployed guest port cannot equal the VM API or bootstrap bridge port. A malformed value stops configuration rather than silently falling back. Go [`config`](../core/internal/config/network.go) owns runtime endpoint validation and VM deployment settings; [`scripts/config`](../scripts/config/network.mts) validates only build/development endpoints. Health, screen and action URLs use the runtime values.
 
@@ -32,7 +32,11 @@ The canonical protocol requires the fixed primary loopback address, the exact lo
 
 New computers default to 4 CPUs, 8GiB memory and 64GiB disk. Each resource has one `default`, `min` and `max` in the computer resource file. Creation validates selected sizes before invoking a provider. These are creation defaults, not a request to resize an existing VM, and seed descriptions are not proof of a running VM's actual resources.
 
-The seed image's system service uses the canonical `bootstrapGuestPort` (`4319`), while the installed user's desktop bridge defaults to `guestPort` (`4320`). They share the same control lease and use separate listeners, so installing the Worker does not need permission to stop the system service. Bootstrap readiness probes use the bootstrap endpoint; deployed Worker probes use the configured guest endpoint. `scripts/check-vm.ps1` verifies the initial seed services and is not a replacement for deployed Worker acceptance checks.
+The seed image's system service uses the canonical `bootstrapGuestPort` (`4319`), while the installed user's desktop bridge defaults to `guestPort` (`4321`). Older seed services may still occupy `4320`; the separate Worker default avoids requiring permission to stop them. The bridges share the same control lease and use separate listeners. An explicit `DANT_GUEST_PORT=4320` remains supported when that port is available; installation preflight rejects a conflicting listener instead of stopping an unrelated system service or selecting another port automatically. Bootstrap readiness probes use the bootstrap endpoint; deployed Worker probes use the configured guest endpoint. `scripts/check-vm.ps1` verifies the initial seed services and is not a replacement for deployed Worker acceptance checks.
+
+The installer checks desktop service and listener ownership before creating a new installation journal or stopping the Worker. An occupied target endpoint is accepted only when it belongs to the confirmed user desktop service that installation will restart. Ambiguous service, process or socket identity stops installation with a fixed error. Readiness then requires the candidate helper's verified bytes, expected unit and process environment, stable process ownership, and a listener reachable in the installer's network namespace; an API version response alone cannot mark the desktop bridge ready. These checks use bounded read-only metadata and never stop a system service or choose a fallback port.
+
+Installed desktop file access uses the runtime user's `~/work/`, and default screenshots use that user's home directory. These paths are resolved for the current account rather than assuming `/home/dant`; the seed image's fixed account remains part of its separate bootstrap contract. Changing a user or storage setting does not move existing files.
 
 See [code conventions](code-style.md) for the distinction between configuration, domain enums and fixed security constants.
 

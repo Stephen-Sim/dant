@@ -70,6 +70,29 @@ class DesktopBoundaryTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), b'synthetic PNG')
             self.assertEqual(output.getvalue().strip(), str(target))
 
+    def test_default_screenshot_uses_current_home_without_moving_old_artifacts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = pathlib.Path(folder) / 'different-user'
+            (home / 'work').mkdir(parents=True)
+            preserved = home / 'work/existing.png'
+            preserved.write_bytes(b'original artifact')
+
+            def capture(arguments, **options):
+                if arguments[0] == 'scrot':
+                    pathlib.Path(arguments[-1]).write_bytes(b'synthetic PNG')
+                return types.SimpleNamespace(stdout=b'')
+
+            with patch.object(pathlib.Path, 'home', return_value=home), \
+                    patch.object(control, 'desktop_access', return_value=contextlib.nullcontext()), \
+                    patch('subprocess.run', side_effect=capture), \
+                    patch.object(sys, 'argv', ['desktop.py', 'screenshot']), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                runpy.run_path(str(ROOT / 'vm/desktop.py'), run_name='__main__')
+
+            self.assertEqual((home / 'work/screen.png').read_bytes(), b'synthetic PNG')
+            self.assertEqual(output.getvalue().strip(), str(home / 'work/screen.png'))
+            self.assertEqual(preserved.read_bytes(), b'original artifact')
+
 
 if __name__ == '__main__':
     unittest.main()
