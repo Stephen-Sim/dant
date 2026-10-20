@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   appearanceDefaults,
   appearanceKeys,
+  appearanceFontRanges,
+  MAX_APPEARANCE_IMPORT_BYTES,
   readAppearance,
   validateAppearancePatch,
   exportAppearance,
@@ -10,6 +12,27 @@ import {
 } from '../../../ui/settings/appearance-preferences.mts';
 import { observedRecord } from '../../support/service-fixtures.mts';
 import { errorMessage } from '../../../ui/shared/json.mts';
+
+test('appearance import accepts exactly its byte budget and rejects one more byte before parsing', () => {
+  const document = exportAppearance(appearanceDefaults);
+  const remaining = MAX_APPEARANCE_IMPORT_BYTES - new TextEncoder().encode(document).byteLength;
+  const bounded = document + ' '.repeat(remaining);
+  assert.deepEqual(importAppearance(bounded), appearanceDefaults);
+  assert.throws(() => importAppearance(bounded + ' '), /at most 64 KiB/);
+  assert.ok(Object.isFrozen(appearanceFontRanges));
+  for (const [key, [minimum, maximum]] of Object.entries(appearanceFontRanges)) {
+    assert.equal(
+      validateAppearancePatch({ [key]: minimum })[key as keyof typeof appearanceFontRanges],
+      minimum,
+    );
+    assert.equal(
+      validateAppearancePatch({ [key]: maximum })[key as keyof typeof appearanceFontRanges],
+      maximum,
+    );
+    assert.throws(() => validateAppearancePatch({ [key]: minimum - 1 }));
+    assert.throws(() => validateAppearancePatch({ [key]: maximum + 1 }));
+  }
+});
 test('appearance validation is strict for patches and tolerant per field on disk', () => {
   assert.deepEqual(readAppearance(null), appearanceDefaults);
   assert.deepEqual(readAppearance([]), appearanceDefaults);

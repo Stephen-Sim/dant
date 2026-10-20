@@ -186,6 +186,7 @@ test('tray initialization failures are bounded and disposal during initializatio
 });
 test('native lifecycle installs one instance first, hides only after successful tray setup, and uses graceful exit', () => {
   const main = fs.readFileSync(new URL('../../src-tauri/src/main.rs', import.meta.url), 'utf8'),
+    backend = fs.readFileSync(new URL('../../src-tauri/src/backend.rs', import.meta.url), 'utf8'),
     tray = fs.readFileSync(new URL('../../src-tauri/src/tray.rs', import.meta.url), 'utf8'),
     overlay = fs.readFileSync(
       new URL('../../src-tauri/src/call_overlay.rs', import.meta.url),
@@ -202,7 +203,8 @@ test('native lifecycle installs one instance first, hides only after successful 
     /if !tray::on_window_event\(window,\s*event\)\s*\{\s*call_overlay::on_window_event/,
   );
   assert.match(main, /RunEvent::Exit\s*=\s*event/);
-  assert.match(main, /drop\(child\.stdin\.take\(\)\)/);
+  assert.match(main, /state\.stop\(\)/);
+  assert.match(backend, /drop\(child\.stdin\.take\(\)\)/);
   assert.match(tray, /window\.hide\(\)\.is_ok\(\)[\s\S]*api\.prevent_close\(\)/);
   assert.match(tray, /state\.ready\.store\(true/);
   assert.match(tray, /fn exit\(app:[\s\S]*crate::lifecycle::request_exit\(app\)/);

@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 
@@ -88,6 +89,7 @@ func (value *Engine) ContinueRegisteredWork(ctx context.Context, workID string, 
 	}
 	prepare, cancel := context.WithCancel(value.ctx)
 	active := &execution{epoch: epoch, conversationID: state.ConversationID, threadID: state.ThreadID.Value, workID: workID, attemptID: attemptID, fromTurnID: record.TurnID, record: claimed, startedAt: value.Timestamp(), updatedAt: value.Timestamp(), step: contracts.TaskProgressStagePreparing, outputs: make(map[string]string), items: make(map[string]string), stopped: make(chan struct{}), prepare: prepare, cancelPreparation: cancel, humanResponse: human}
+	active.runtimeID = state.ThreadRuntime.Value
 	if human {
 		active.messageID = options.Message.ID
 		active.messageIDs = []string{options.Message.ID}
@@ -265,6 +267,7 @@ func (value *Engine) ContinueRegisteredWork(ctx context.Context, workID string, 
 }
 
 func (value *Engine) failContinuation(active *execution, cause error, unknown bool) error {
+	value.mu.Lock()
 	status := contracts.WorkStatusFailed
 	if active.stopRequested || active.humanResponse {
 		status = contracts.WorkStatusPaused
@@ -272,7 +275,25 @@ func (value *Engine) failContinuation(active *execution, cause error, unknown bo
 	if unknown {
 		status = contracts.WorkStatusUnknown
 	}
-	_, err := value.store.SettleWorkContinuation(value.ctx, active.workID, active.attemptID, store.SettleContinuationOptions{Status: status, Submitted: unknown})
+	var rejected *store.RejectedContinuationStart
+	var operation *runtime.OperationError
+	unacknowledged := active.startSubmitted && !active.startAcknowledged && !active.unknown && active.turnID == ""
+	knownRejection := errors.As(cause, &operation) && !operation.UnknownOutcome
+	if status == contracts.WorkStatusFailed && unacknowledged && value.currentLocked(active) && knownRejection {
+		rejected = &store.RejectedContinuationStart{
+			ConversationID: active.conversationID,
+			FromTurnID:     active.fromTurnID,
+			RuntimeID:      active.runtimeID,
+			ThreadID:       active.threadID,
+		}
+	}
+	value.mu.Unlock()
+
+	_, err := value.store.SettleWorkContinuation(value.ctx, active.workID, active.attemptID, store.SettleContinuationOptions{
+		Status:        status,
+		Submitted:     unknown,
+		RejectedStart: rejected,
+	})
 	value.mu.Lock()
 	active.unknown = unknown
 	if unknown || err != nil {

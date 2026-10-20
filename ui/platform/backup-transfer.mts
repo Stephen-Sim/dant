@@ -1,3 +1,4 @@
+import { apiPath } from './native-protocol.mts';
 import type { BackupMetadata } from '../settings/backup-types.ts';
 import { backupId, isBackupMetadata } from '../settings/backup-contracts.mts';
 import { isRecord } from '../shared/json.mts';
@@ -6,6 +7,7 @@ import type { CoreModule } from '../shared/contracts.mts';
 export const WEB_BACKUP_MAX_BYTES = 64 * 1024 * 1024;
 export const BACKUP_PASSPHRASE_MIN_BYTES = 12;
 export const BACKUP_PASSPHRASE_MAX_BYTES = 1024;
+export const BACKUP_TRANSFER_TIMEOUT_MS = 30 * 60_000;
 const RESPONSE_JSON_LIMIT = 64 * 1024;
 const TRANSFER_CODES = new Set([
   'backup_passphrase_invalid',
@@ -128,13 +130,13 @@ export function createBackupTransfer({
         if (typeof result !== 'boolean') throw failure('backup_transfer_unconfirmed');
         return result;
       }
-      const response = await fetchRequest(`/api/backups/${id}/export`, {
+      const response = await fetchRequest(apiPath(`/backups/${id}/export`), {
         method: 'POST',
         headers: { 'X-Dant-Token': session, 'Content-Type': 'application/json' },
         body: JSON.stringify({ passphrase: value }),
         redirect: 'error',
         credentials: 'omit',
-        signal: AbortSignal.timeout(30 * 60_000),
+        signal: AbortSignal.timeout(BACKUP_TRANSFER_TIMEOUT_MS),
       });
       if (!response.ok) return responseFailure(response);
       if (response.headers.get('Content-Type')?.split(';')[0] !== 'application/octet-stream')
@@ -159,7 +161,7 @@ export function createBackupTransfer({
       const encoded = new TextEncoder().encode(value);
       let binary = '';
       for (const byte of encoded) binary += String.fromCharCode(byte);
-      const response = await fetchRequest('/api/backups/import', {
+      const response = await fetchRequest(apiPath('/backups/import'), {
         method: 'POST',
         headers: {
           'X-Dant-Token': session,
@@ -169,7 +171,7 @@ export function createBackupTransfer({
         body: file,
         redirect: 'error',
         credentials: 'omit',
-        signal: AbortSignal.timeout(30 * 60_000),
+        signal: AbortSignal.timeout(BACKUP_TRANSFER_TIMEOUT_MS),
       });
       if (!response.ok) return responseFailure(response);
       const result: unknown = JSON.parse(

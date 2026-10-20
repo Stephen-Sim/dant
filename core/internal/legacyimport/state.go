@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
 
@@ -180,7 +181,7 @@ func (value *source) transform(mapped map[string]contracts.Attachment, warnings 
 		Port       int    `json:"port"`
 		KeyPath    string `json:"keyPath"`
 		KnownHosts string `json:"knownHosts"`
-	}{User: "dant", Port: 22})
+	}{User: "dant", Port: config.DefaultSSHPort})
 	state["settings"] = wire(settings)
 	migration := copyObject(value.manifest)
 	if warnings == nil {

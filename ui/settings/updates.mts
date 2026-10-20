@@ -1,3 +1,4 @@
+import { MAX_UPDATE_BYTES } from './update-limits.mts';
 import { localizeMessages } from '../i18n/messages.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord, isSafeInteger } from '../shared/contracts.mts';
@@ -61,7 +62,6 @@ interface UpdatesOptions {
 }
 const isChannel = (value: unknown): value is UpdateChannel =>
   value === 'stable' || value === 'beta';
-const MAX_UPDATE_BYTES = 512 * 1024 * 1024;
 const words = {
   en: {
     about: 'About dant',

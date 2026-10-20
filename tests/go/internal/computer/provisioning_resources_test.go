@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/Stephen-Sim/dant/core/internal/config"
 )
 
 func TestProvisioningResourceDefaultsAndExplicitLargerSizesReachEachProvider(t *testing.T) {
@@ -58,6 +60,34 @@ func TestProvisioningResourceDefaultsAndExplicitLargerSizesReachEachProvider(t *
 					t.Fatal("isolated provider helper was not called")
 				}
 			})
+		}
+	}
+}
+
+func TestProvisioningConsumesChangedCanonicalDefaultsAndInclusiveRanges(t *testing.T) {
+	resources, err := config.ParseComputerResources([]byte(`{"cpu":{"default":7,"min":3,"max":11},"memoryGB":{"default":19,"min":5,"max":29},"diskGB":{"default":137,"min":73,"max":257}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := parseSetupRequest([]byte(`{}`), resources)
+	if err != nil || request.CPU != 7 || request.MemoryGB != 19 || request.DiskGB != 137 || request.Provider != "auto" {
+		t.Fatal("provisioning did not consume changed canonical defaults")
+	}
+	for _, raw := range []string{
+		`{"cpu":3,"memoryGB":5,"diskGB":73}`,
+		`{"cpu":11,"memoryGB":29,"diskGB":257}`,
+	} {
+		if _, err := parseSetupRequest([]byte(raw), resources); err != nil {
+			t.Fatal("inclusive configured limit was rejected")
+		}
+	}
+	for _, raw := range []string{
+		`{"cpu":2}`, `{"cpu":12}`, `{"memoryGB":4}`, `{"memoryGB":30}`,
+		`{"diskGB":72}`, `{"diskGB":258}`, `{"cpu":null}`, `{"cpu":7.5}`,
+		`{"cpu":true}`, `{"cpu":"7"}`, `{"cpu":7,"cpu":8}`, `{"unknown":1}`,
+	} {
+		if _, err := parseSetupRequest([]byte(raw), resources); err == nil {
+			t.Fatal("invalid or out-of-policy provisioning request accepted")
 		}
 	}
 }

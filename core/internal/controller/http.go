@@ -232,7 +232,7 @@ func (app *App) route(writer http.ResponseWriter, request *http.Request) error {
 		binding, _ := computer.ReadBinding(app.options.DataDir)
 		if binding.User == "" {
 			binding.User = "dant"
-			binding.Port = 22
+			binding.Port = config.DefaultSSHPort
 		}
 		providers, _ := app.provisioning.Providers(ctx)
 		var deployment *computer.DeploymentStatus

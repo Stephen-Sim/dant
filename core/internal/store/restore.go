@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	workstate "github.com/Stephen-Sim/dant/core/internal/work/state"
 )
@@ -185,7 +186,7 @@ func restore(
 	if err != nil {
 		return contracts.State{}, ErrInvalidState
 	}
-	state := contracts.State{Version: 2, Messages: []*contracts.ChatMessage{}, Completions: []contracts.Completion{}, WorkTasks: []contracts.WorkRecord{}, DeletedClientMessageIDs: []string{}, Settings: contracts.Settings{Language: "zh", Voice: "marin", Notifications: true, ShowCallCaptions: true, VM: contracts.VMSettings{User: "dant", Port: 22}}}
+	state := contracts.State{Version: 2, Messages: []*contracts.ChatMessage{}, Completions: []contracts.Completion{}, WorkTasks: []contracts.WorkRecord{}, DeletedClientMessageIDs: []string{}, Settings: contracts.Settings{Language: "zh", Voice: "marin", Notifications: true, ShowCallCaptions: true, VM: contracts.VMSettings{User: "dant", Port: config.DefaultSSHPort}}}
 	outer := make(contracts.RawObject)
 	for key, value := range fields {
 		outer[key] = value
@@ -260,8 +261,8 @@ func restore(
 			state.WorkTasks = append(state.WorkTasks, *value)
 		}
 	}
-	if len(state.WorkTasks) > 300 {
-		state.WorkTasks = state.WorkTasks[len(state.WorkTasks)-300:]
+	if len(state.WorkTasks) > MaxWorkRecords {
+		state.WorkTasks = state.WorkTasks[len(state.WorkTasks)-MaxWorkRecords:]
 	}
 	state.Version = 2
 	return state, nil

@@ -6,7 +6,8 @@ import {
   isEnumValue,
 } from '../shared/states.mts';
 import type { ConnectionStatusValue } from '../shared/api-types.ts';
-import { MAX_PORT } from '../platform/native-protocol.mts';
+import { MAX_PORT, apiPath } from '../platform/native-protocol.mts';
+import { DEFAULT_SSH_PORT } from '../computer/connection-config.mts';
 import { isLanguage, normalizeLanguage, languageInfo } from '../i18n/languages.mts';
 import type { LanguageCode } from '../i18n/languages.mts';
 import { localizeMessages } from '../i18n/messages.mts';
@@ -20,7 +21,6 @@ import { loadLanguage } from '../i18n/localization.mts';
 
 const MAX_CONFIGURATION_TEXT = 4096;
 const MAX_PROFILES = 1000;
-const DEFAULT_SSH_PORT = 22;
 const RELEASE_PAGE = 'https://github.com/Stephen-Sim/dant/releases/tag/v';
 const version = (value: unknown): value is string =>
   typeof value === 'string' &&
@@ -224,7 +224,7 @@ export function createRecoverySettings({
     notice = '';
     render();
     try {
-      const result = readRecoveryConfiguration(await request('/api/controller/settings'));
+      const result = readRecoveryConfiguration(await request(apiPath('/controller/settings')));
       await loadLanguage(result.language);
       if (!current(run)) return;
       settings = result;
@@ -276,7 +276,7 @@ export function createRecoverySettings({
     updateVersion = '';
     render();
     try {
-      const value = await request('/api/updates?channel=beta');
+      const value = await request(apiPath('/updates?channel=beta'));
       if (!current(run)) return;
       if (
         !isRecord(value) ||
@@ -330,14 +330,14 @@ export function createRecoverySettings({
     notice = '';
     render();
     try {
-      const latest = readRecoveryConfiguration(await request('/api/controller/settings'));
+      const latest = readRecoveryConfiguration(await request(apiPath('/controller/settings')));
       if (!current(run)) return;
       if (JSON.stringify(latest.vm) !== JSON.stringify(settings.vm)) {
         consent = false;
         notice = words().changed;
         return;
       }
-      const backup = readBackupStatus(await request('/api/backups'));
+      const backup = readBackupStatus(await request(apiPath('/backups')));
       if (!current(run)) return;
       if (
         backup.phase === BackupPhase.BackingUp ||
@@ -359,7 +359,7 @@ export function createRecoverySettings({
       }
       const once = cannotProtect && confirmed ? { skipBackupOnce: true } : {};
       submitted = true;
-      const response = await request(useProfile ? '/api/vm/import' : '/api/settings', {
+      const response = await request(apiPath(useProfile ? '/vm/import' : '/settings'), {
         method: useProfile ? 'POST' : 'PATCH',
         body: useProfile
           ? { id: profileId, replaceCurrent: true, ...once }

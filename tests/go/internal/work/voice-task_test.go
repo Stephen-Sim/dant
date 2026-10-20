@@ -20,9 +20,7 @@ func TestAPIVoiceTaskRetainsItsExecutionAfterMediaWaiterEnds(t *testing.T) {
 		result <- err
 	}()
 	acceptThreadAndTurn(t, worker, "voice-owned-turn")
-	waitSnapshot(t, engine, func(snapshot Snapshot) bool {
-		return snapshot.Active != nil && snapshot.Active.TurnID.Value == "voice-owned-turn"
-	})
+	waitToolScope(t, engine, "voice-owned-turn")
 	if err := engine.ContinueVoiceTasks("owned-call"); err != nil {
 		t.Fatal(err)
 	}

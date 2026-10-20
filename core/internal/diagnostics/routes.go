@@ -1,5 +1,7 @@
 package diagnostics
 
+import "github.com/Stephen-Sim/dant/core/internal/config"
+
 // Route templates contain no user identifiers or query strings.
 var routes = func() map[string]bool {
 	result := map[string]bool{}
@@ -24,8 +26,11 @@ var routes = func() map[string]bool {
 		"/api/schedules", "/api/schedules/:id", "/api/updates", "/api/backups", "/api/backups/settings",
 		"/api/backups/run", "/api/backups/import", "/api/backups/export", "/api/backups/info",
 		"/api/backups/:id/preview", "/api/backups/:id/restore", "/api/backups/:id/export",
-		"/health", "/screen", "/input", "/control",
 	} {
+		result[route] = true
+	}
+	paths := config.DefaultProtocol().Paths
+	for _, route := range []string{paths.Health, paths.Screen, paths.Input, paths.Control} {
 		result[route] = true
 	}
 	return result

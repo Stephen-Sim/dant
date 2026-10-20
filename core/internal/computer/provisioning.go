@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/files"
 	"github.com/Stephen-Sim/dant/core/internal/platform"
@@ -237,24 +238,38 @@ type setupRequest struct {
 	Provider  string `json:"provider"`
 }
 
-func (provisioning *Provisioning) Start(ctx context.Context, raw []byte) (ProvisioningState, error) {
+func parseSetupRequest(raw []byte, resources config.ComputerResources) (setupRequest, error) {
 	object, err := contracts.DecodeObject(raw, bindingMaxBytes)
 	if err != nil {
-		return ProvisioningState{}, ErrBinding
+		return setupRequest{}, ErrBinding
 	}
 	for key, value := range object {
 		switch key {
 		case "cpu", "memoryGB", "diskGB", "adminSudo", "provider":
 		default:
-			return ProvisioningState{}, ErrBinding
+			return setupRequest{}, ErrBinding
 		}
 		if string(value) == "null" {
-			return ProvisioningState{}, ErrBinding
+			return setupRequest{}, ErrBinding
 		}
 	}
-	request := setupRequest{CPU: 4, MemoryGB: 8, DiskGB: 64, Provider: "auto"}
-	if json.Unmarshal(raw, &request) != nil || request.CPU < 1 || request.CPU > 64 || request.MemoryGB < 2 || request.MemoryGB > 128 || request.DiskGB < 32 || request.DiskGB > 2048 {
-		return ProvisioningState{}, ErrBinding
+	request := setupRequest{
+		CPU:      resources.CPU.Default,
+		MemoryGB: resources.MemoryGB.Default,
+		DiskGB:   resources.DiskGB.Default,
+		Provider: "auto",
+	}
+	if json.Unmarshal(raw, &request) != nil || !resources.CPU.Contains(request.CPU) ||
+		!resources.MemoryGB.Contains(request.MemoryGB) || !resources.DiskGB.Contains(request.DiskGB) {
+		return setupRequest{}, ErrBinding
+	}
+	return request, nil
+}
+
+func (provisioning *Provisioning) Start(ctx context.Context, raw []byte) (ProvisioningState, error) {
+	request, err := parseSetupRequest(raw, config.DefaultComputerResources())
+	if err != nil {
+		return ProvisioningState{}, err
 	}
 
 	if !provisioning.options.Host.Capabilities.ManagedVM {

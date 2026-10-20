@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"strconv"
 	"testing"
 )
 
@@ -13,12 +14,36 @@ func TestEmbeddedProtocolMatchesCanonicalUIAndNativeSource(t *testing.T) {
 		t.Fatal("generated network protocol drifted")
 	}
 	protocol := DefaultProtocol()
-	if protocol.APIPort != 4317 || protocol.GuestPort != 4320 || protocol.Paths.Session != "/api/session" {
+	if protocol.APIPort != 4317 || protocol.BootstrapGuestPort != 4319 || protocol.GuestPort != 4320 || protocol.Paths.Session != "/api/session" {
 		t.Fatal("native transport contract changed")
 	}
 	protocol.LoopbackHosts[0] = "attacker.invalid"
 	if DefaultProtocol().LoopbackHosts[0] != "127.0.0.1" {
 		t.Fatal("protocol mutation escaped its caller")
+	}
+}
+
+func TestWorkerGuestConfigurationReservesOnlyPortsOwnedInsideTheVM(t *testing.T) {
+	protocol := DefaultProtocol()
+	for _, port := range []int{protocol.APIPort, protocol.BootstrapGuestPort} {
+		environment := map[string]string{"DANT_GUEST_PORT": strconv.Itoa(port)}
+		if _, err := ReadNetwork(environment); err != ErrNetwork {
+			t.Fatal("guest configuration accepted a VM listener collision", port, err)
+		}
+		if _, err := PublicVMConfiguration(environment); err != ErrNetwork {
+			t.Fatal("deployment exported a VM listener collision", port, err)
+		}
+	}
+	for _, port := range []int{protocol.DevPort, protocol.GuestPort, 65535} {
+		environment := map[string]string{"DANT_GUEST_PORT": strconv.Itoa(port)}
+		actual, err := ReadNetwork(environment)
+		if err != nil || actual.Guest.Port != port {
+			t.Fatal("unreserved custom guest port rejected", port, err)
+		}
+		public, err := PublicVMConfiguration(environment)
+		if err != nil || public.GuestPort != strconv.Itoa(port) {
+			t.Fatal("valid deployment guest setting lost", public, err)
+		}
 	}
 }
 
@@ -43,6 +68,11 @@ func TestNetworkRejectsUnknownBindingAndOnlyExportsPublicVMConfiguration(t *test
 	for _, value := range []string{"0", "65536", "4317x", "04317", "-1", "1.5"} {
 		if _, err := Port(value, 4317); err == nil {
 			t.Fatal("invalid transport port accepted")
+		}
+	}
+	for _, fallback := range []int{-1, 0, MaxPort + 1} {
+		if _, err := Port("", fallback); err == nil {
+			t.Fatal("invalid default transport port accepted")
 		}
 	}
 	if _, err := Loopback("0.0.0.0", "127.0.0.1"); err == nil {

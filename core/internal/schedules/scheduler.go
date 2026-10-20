@@ -17,6 +17,8 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/i18n"
 )
 
+const schedulerPollInterval = time.Second
+
 type Persistence interface {
 	Snapshot() contracts.State
 	Mutate(context.Context, func(*contracts.State) error) error
@@ -717,7 +719,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.done = make(chan struct{})
 	go func() {
 		defer close(s.done)
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(schedulerPollInterval)
 		defer ticker.Stop()
 		for {
 			select {

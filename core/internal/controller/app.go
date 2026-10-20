@@ -380,7 +380,7 @@ func (app *App) Snapshot() contracts.WorkerSnapshot {
 		bindingRaw, _ := json.Marshal(binding)
 		_ = json.Unmarshal(bindingRaw, &state.Settings.VM)
 	} else {
-		state.Settings.VM = contracts.VMSettings{User: "dant", Port: 22}
+		state.Settings.VM = contracts.VMSettings{User: "dant", Port: config.DefaultSSHPort}
 	}
 	status := contracts.ConnectionStatusOffline
 	if app.bridge != nil {

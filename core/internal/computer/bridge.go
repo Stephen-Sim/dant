@@ -14,12 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/platform"
 	"github.com/coder/websocket"
 )
 
-const workerAPIPort = 4317
 const vmSessionReadyTimeout = 30 * time.Second
 const vmSessionRequestTimeout = 2 * time.Second
 const vmSessionRetryDelay = 300 * time.Millisecond
@@ -132,7 +132,7 @@ func NewBridge(options BridgeOptions) (*VMBridge, error) {
 			Completions: []contracts.Completion{},
 			Settings: contracts.Settings{
 				Language: "zh", Voice: "marin", ShowCallCaptions: true,
-				VM: contracts.VMSettings{User: "dant", Port: 22},
+				VM: contracts.VMSettings{User: "dant", Port: config.DefaultSSHPort},
 			},
 		},
 	}, nil
@@ -146,7 +146,8 @@ func openSSHTunnel(ctx context.Context, binding Binding) (Tunnel, error) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
 	args := SSHArgs(binding)
-	args = append(args, "-N", "-L", strconv.Itoa(port)+":127.0.0.1:"+strconv.Itoa(workerAPIPort), "-o", "ExitOnForwardFailure=yes", binding.User+"@"+binding.Host)
+	worker := config.NativeEndpoint()
+	args = append(args, "-N", "-L", strconv.Itoa(port)+":"+worker.Host+":"+strconv.Itoa(worker.Port), "-o", "ExitOnForwardFailure=yes", binding.User+"@"+binding.Host)
 	process, err := platform.StartProcess(ctx, "ssh", args)
 	if err != nil {
 		return nil, ErrSessionUnavailable

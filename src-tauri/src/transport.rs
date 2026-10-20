@@ -2,23 +2,24 @@ use serde::Serialize;
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpStream,
+    net::{SocketAddr, TcpStream},
     path::Path,
     time::Duration,
 };
 
-// Matches the Controller and Worker JSON parser limit in config/network.mts.
-const API_JSON_BODY_BYTES: usize = 3 * 1024 * 1024;
+// Matches the Controller and Worker JSON parser limit in core/internal/config.
+const API_JSON_BODY_BYTES: usize = crate::protocol::JSON_BODY_MAX_BYTES;
+const API_RESPONSE_BYTES: usize = crate::protocol::API_RESPONSE_MAX_BYTES;
+const LOCAL_JSON_RESPONSE_BYTES: u64 = 256 * 1024;
+const ROUTE_MAX_BYTES: usize = 2048;
+const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
+const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const API_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 const WORKER_DEPLOYMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(48 * 60);
 
 fn api_request_timeout(method: &str, route: &str) -> Duration {
-    if method == "POST"
-        && matches!(
-            route,
-            "/api/connect" | "/api/prepare" | "/api/service-update"
-        )
-    {
+    let action = route.strip_prefix(crate::protocol::api_prefix());
+    if method == "POST" && matches!(action, Some("/connect" | "/prepare" | "/service-update")) {
         WORKER_DEPLOYMENT_REQUEST_TIMEOUT
     } else {
         API_REQUEST_TIMEOUT
@@ -40,6 +41,52 @@ pub struct ApiResponse {
     body: String,
 }
 
+struct LocalRequest<'a> {
+    route: &'a str,
+    method: &'a str,
+    body: Option<&'a str>,
+    token: &'a str,
+}
+
+fn local_endpoint() -> SocketAddr {
+    crate::protocol::controller_endpoint()
+}
+
+fn validate_request<'a>(
+    window: &str,
+    route: &'a str,
+    method: Option<&'a str>,
+    body: Option<&'a str>,
+    token: Option<&'a str>,
+) -> Result<LocalRequest<'a>, &'static str> {
+    if window != "main" {
+        return Err("Local API requests require the main window");
+    }
+    if !route.starts_with(&format!("{}/", crate::protocol::api_prefix()))
+        || route.len() > ROUTE_MAX_BYTES
+        || route.contains(['\r', '\n', '#', '\\'])
+    {
+        return Err("Invalid local API route");
+    }
+    let method = method.unwrap_or("GET");
+    if !matches!(method, "GET" | "POST" | "PATCH" | "DELETE") {
+        return Err("Unsupported local API method");
+    }
+    validate_json_body(body)?;
+    let token = token.unwrap_or_default();
+    if token.len() > crate::protocol::SESSION_TOKEN_MAX_BYTES
+        || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Invalid local API session");
+    }
+    Ok(LocalRequest {
+        route,
+        method,
+        body,
+        token,
+    })
+}
+
 #[tauri::command]
 pub async fn api_request(
     window: tauri::WebviewWindow,
@@ -48,32 +95,35 @@ pub async fn api_request(
     body: Option<String>,
     token: Option<String>,
 ) -> Result<ApiResponse, String> {
-    if window.label() != "main" {
-        return Err("Local API requests require the main window".into());
-    }
-    if !route.starts_with("/api/") || route.len() > 2048 || route.contains(['\r', '\n', '#', '\\'])
-    {
-        return Err("Invalid local API route".into());
-    }
-    let method = method.unwrap_or_else(|| "GET".into());
-    if !matches!(method.as_str(), "GET" | "POST" | "PATCH" | "DELETE") {
-        return Err("Unsupported local API method".into());
-    }
-    validate_json_body(body.as_deref())?;
-    let token = token.unwrap_or_default();
-    if token.len() > 256 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Invalid local API session".into());
-    }
+    let request = validate_request(
+        window.label(),
+        &route,
+        method.as_deref(),
+        body.as_deref(),
+        token.as_deref(),
+    )?;
+    request_at(local_endpoint(), request).await
+}
+
+// Only the native wrapper chooses the production address. Tests supply their
+// own bound loopback socket; no caller-controlled endpoint crosses IPC.
+async fn request_at(endpoint: SocketAddr, input: LocalRequest<'_>) -> Result<ApiResponse, String> {
+    let LocalRequest {
+        route,
+        method,
+        body,
+        token,
+    } = input;
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(api_request_timeout(&method, &route))
+        .timeout(api_request_timeout(method, route))
         .retry(reqwest::retry::never())
         .build()
         .map_err(|_| "Local API transport is unavailable")?;
     let mut request = client.request(
         method.parse().map_err(|_| "Invalid method")?,
-        format!("http://127.0.0.1:4317{route}"),
+        format!("http://{endpoint}{route}"),
     );
     if !token.is_empty() {
         request = request.header("X-Dant-Token", token);
@@ -81,7 +131,7 @@ pub async fn api_request(
     if let Some(body) = body {
         request = request
             .header("Content-Type", "application/json")
-            .body(body);
+            .body(body.to_owned());
     }
     let mut response = request.send().await.map_err(|_| {
         if method == "GET" {
@@ -103,7 +153,7 @@ pub async fn api_request(
         .await
         .map_err(|_| "Local API response was interrupted")?
     {
-        if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
+        if bytes.len() + chunk.len() > API_RESPONSE_BYTES {
             return Err("Local API response is too large".into());
         }
         bytes.extend_from_slice(&chunk);
@@ -121,24 +171,36 @@ pub fn local_json(
     token: Option<&str>,
     body: Option<&str>,
 ) -> Option<serde_json::Value> {
-    let mut stream =
-        TcpStream::connect_timeout(&"127.0.0.1:4317".parse().ok()?, Duration::from_millis(400))
-            .ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .ok()?;
+    local_json_at(local_endpoint(), route, token, body)
+}
+
+fn local_json_at(
+    endpoint: SocketAddr,
+    route: &str,
+    token: Option<&str>,
+    body: Option<&str>,
+) -> Option<serde_json::Value> {
+    let mut stream = TcpStream::connect_timeout(&endpoint, LOCAL_CONNECT_TIMEOUT).ok()?;
+    stream.set_read_timeout(Some(LOCAL_IO_TIMEOUT)).ok()?;
+    stream.set_write_timeout(Some(LOCAL_IO_TIMEOUT)).ok()?;
     let method = if body.is_some() { "POST" } else { "GET" };
     let body = body.unwrap_or("");
     let header = token
         .map(|value| format!("X-Dant-Token: {value}\r\n"))
         .unwrap_or_default();
-    write!(stream, "{method} {route} HTTP/1.0\r\nHost: 127.0.0.1:4317\r\nConnection: close\r\nContent-Type: application/json\r\n{header}Content-Length: {}\r\n\r\n{body}", body.len()).ok()?;
+    write!(stream, "{method} {route} HTTP/1.0\r\nHost: {endpoint}\r\nConnection: close\r\nContent-Type: application/json\r\n{header}Content-Length: {}\r\n\r\n{body}", body.len()).ok()?;
     let mut response = Vec::new();
-    stream.take(256 * 1024).read_to_end(&mut response).ok()?;
+    stream
+        .take(LOCAL_JSON_RESPONSE_BYTES + 1)
+        .read_to_end(&mut response)
+        .ok()?;
+    if response.len() as u64 > LOCAL_JSON_RESPONSE_BYTES {
+        return None;
+    }
     let text = String::from_utf8(response).ok()?;
     let (headers, body) = text.split_once("\r\n\r\n")?;
-    if !headers.lines().next()?.contains(" 200 ") {
+    let mut status = headers.lines().next()?.split_whitespace();
+    if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1")) || status.next() != Some("200") {
         return None;
     }
     serde_json::from_str(body).ok()
@@ -186,100 +248,28 @@ fn compatible_controller(value: &serde_json::Value, source: &str) -> bool {
         && value.get("source").and_then(|value| value.as_str()) == Some(source)
 }
 
+fn unidentified_controller_error() -> &'static str {
+    static MESSAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MESSAGE.get_or_init(|| format!("The local service could not be identified. Close the application using port {} before starting dant.", crate::protocol::controller_endpoint().port()))
+}
+
 pub fn existing_controller(source: &str) -> Result<bool, &'static str> {
-    if let Some(value) = local_json("/api/session", None, None) {
+    existing_controller_at(local_endpoint(), source)
+}
+
+fn existing_controller_at(endpoint: SocketAddr, source: &str) -> Result<bool, &'static str> {
+    if let Some(value) = local_json_at(endpoint, crate::protocol::session_path(), None, None) {
         if compatible_controller(&value, source) {
             return Ok(true);
         }
         return Err("A different dant service is running. Close the old dant application before starting this version.");
     }
-    if TcpStream::connect_timeout(
-        &"127.0.0.1:4317".parse().unwrap(),
-        Duration::from_millis(400),
-    )
-    .is_ok()
-    {
-        return Err("The local service could not be identified. Close the application using port 4317 before starting dant.");
+    if TcpStream::connect_timeout(&endpoint, LOCAL_CONNECT_TIMEOUT).is_ok() {
+        return Err(unidentified_controller_error());
     }
     Ok(false)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        api_request_timeout, compatible_controller, validate_json_body, API_JSON_BODY_BYTES,
-        API_REQUEST_TIMEOUT, CORE_PROTOCOL_VERSION, WORKER_DEPLOYMENT_REQUEST_TIMEOUT,
-    };
-
-    #[test]
-    fn deployment_requests_keep_the_full_upgrade_budget_without_extending_other_requests() {
-        for route in ["/api/connect", "/api/prepare", "/api/service-update"] {
-            assert_eq!(
-                api_request_timeout("POST", route),
-                WORKER_DEPLOYMENT_REQUEST_TIMEOUT
-            );
-            assert_eq!(api_request_timeout("GET", route), API_REQUEST_TIMEOUT);
-        }
-
-        for route in [
-            "/api/state",
-            "/api/chat",
-            "/api/desktop/exit",
-            "/api/connect/other",
-            "/api/connect?unexpected=true",
-        ] {
-            assert_eq!(api_request_timeout("POST", route), API_REQUEST_TIMEOUT);
-        }
-    }
-
-    #[test]
-    fn controller_reuse_requires_the_same_go_build_and_role() {
-        let source = "a".repeat(40);
-        let session = serde_json::json!({
-            "product": "dant", "mode": "controller", "runtime": "go",
-            "protocol": CORE_PROTOCOL_VERSION, "version": env!("CARGO_PKG_VERSION"),
-            "source": source
-        });
-        assert!(compatible_controller(&session, &source));
-        for (key, value) in [
-            ("product", serde_json::json!("other")),
-            ("mode", serde_json::json!("worker")),
-            ("runtime", serde_json::json!("node")),
-            ("protocol", serde_json::json!(0)),
-            ("version", serde_json::json!("0.0.0")),
-            ("source", serde_json::json!("b".repeat(40))),
-        ] {
-            let mut changed = session.clone();
-            changed[key] = value;
-            assert!(!compatible_controller(&changed, &source), "{key}");
-        }
-        assert!(!compatible_controller(
-            &serde_json::json!({"product":"dant"}),
-            &source
-        ));
-    }
-
-    #[test]
-    fn json_body_accepts_absence_and_the_exact_byte_limit() {
-        assert_eq!(validate_json_body(None), Ok(()));
-        assert_eq!(validate_json_body(Some("")), Ok(()));
-        let maximum = "x".repeat(API_JSON_BODY_BYTES);
-        assert_eq!(validate_json_body(Some(&maximum)), Ok(()));
-        let unicode_maximum = "é".repeat(API_JSON_BODY_BYTES / 2);
-        assert_eq!(validate_json_body(Some(&unicode_maximum)), Ok(()));
-    }
-
-    #[test]
-    fn json_body_rejects_overflow_by_bytes_including_multibyte_text() {
-        let oversized = "x".repeat(API_JSON_BODY_BYTES + 1);
-        assert_eq!(
-            validate_json_body(Some(&oversized)),
-            Err("Local API request is too large")
-        );
-        let unicode_oversized = "é".repeat(API_JSON_BODY_BYTES / 2 + 1);
-        assert_eq!(
-            validate_json_body(Some(&unicode_oversized)),
-            Err("Local API request is too large")
-        );
-    }
-}
+#[path = "../../tests/native/rust/transport.rs"]
+mod tests;

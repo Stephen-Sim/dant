@@ -145,6 +145,9 @@ func (app *WorkerApp) exportBackup(writer http.ResponseWriter, request *http.Req
 			return err
 		}
 		defer archive.Close()
+		if err := backups.ValidateWorkerBackup(ctx, archive.Archive); err != nil {
+			return err
+		}
 		manifest := archive.Archive.Manifest
 		metadata := backups.Metadata{
 			ID: backups.NewID(), CreatedAt: manifest.CreatedAt, AppVersion: manifest.AppVersion,

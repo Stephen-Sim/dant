@@ -208,7 +208,7 @@ func (gateway *Gateway) send(ctx context.Context, token string, items []*OutboxI
 		return "", "", &OperationError{Reason: "attachment"}
 	}
 	method, partName := "sendDocument", "document"
-	if !first.DocumentFallback && len(data) <= 10000000 && (typeName == "image/jpeg" || typeName == "image/png") {
+	if !first.DocumentFallback && len(data) <= maxPhotoUploadBytes && (typeName == "image/jpeg" || typeName == "image/png") {
 		method, partName = "sendPhoto", "photo"
 	}
 	var body bytes.Buffer

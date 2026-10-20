@@ -14,6 +14,7 @@ import urllib.request
 from desktop import act, screenshot
 from control import desktop_access
 from voice_message import create as create_voice
+from network_config import api_origin, CREDENTIAL_BRIDGE_PATH
 
 def tool(name, description, properties, required=()):
     return {'name': name, 'description': description, 'inputSchema': {'type': 'object', 'properties': properties, 'required': list(required), 'additionalProperties': False}}
@@ -104,7 +105,7 @@ def credential_bridge(name, args):
     payload = json.dumps({'tool': name, 'arguments': args}, ensure_ascii=False).encode('utf-8')
     if len(payload) > 512 * 1024:
         raise ValueError('Private tool input exceeds its size limit')
-    request = urllib.request.Request('http://127.0.0.1:4317/api/internal/credentials', data=payload,
+    request = urllib.request.Request(api_origin() + CREDENTIAL_BRIDGE_PATH, data=payload,
                                      headers={'Content-Type': 'application/json', 'X-Dant-Credential-Token': token}, method='POST')
     # Ignore host proxies and refuse redirects: secrets never leave this fixed
     # loopback route. The HTTP endpoint authenticates a separate ephemeral token

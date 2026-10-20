@@ -10,6 +10,12 @@ use std::{
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
+const NOTIFICATION_ID_MAX_BYTES: usize = 128;
+const SUBMITTED_RECEIPT_LIMIT: usize = 1024;
+const PREVIEW_MAX_CHARACTERS: usize = 240;
+const POLL_INTERVAL_STEPS: usize = 40;
+const POLL_SLEEP: Duration = Duration::from_millis(100);
+
 pub struct NotificationPump(pub Arc<AtomicBool>);
 
 // notify-rust maps a missing Windows sound to an explicitly silent toast.
@@ -40,7 +46,7 @@ impl NotificationDelivery {
     ) -> Option<&'a str> {
         let id = notification.get("id").and_then(|value| value.as_str())?;
         if id.is_empty()
-            || id.len() > 128
+            || id.len() > NOTIFICATION_ID_MAX_BYTES
             || !id
                 .bytes()
                 .all(|value| value.is_ascii_alphanumeric() || value == b'-')
@@ -55,7 +61,7 @@ impl NotificationDelivery {
             self.order.push_back(id.into());
             // The Controller retains 1,000 notification receipts. Bound this
             // additional session cache without storing their message contents.
-            if self.order.len() > 1024 {
+            if self.order.len() > SUBMITTED_RECEIPT_LIMIT {
                 if let Some(old) = self.order.pop_front() {
                     self.submitted.remove(&old);
                 }
@@ -71,7 +77,7 @@ fn notification_body(notification: &serde_json::Value) -> String {
         .get("body")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    let plain: String = preview.chars().filter(|value| !value.is_control() && !matches!(*value, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')).take(240).collect();
+    let plain: String = preview.chars().filter(|value| !value.is_control() && !matches!(*value, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')).take(PREVIEW_MAX_CHARACTERS).collect();
     if !plain.trim().is_empty() {
         return plain;
     }
@@ -93,11 +99,13 @@ pub fn start(app: &tauri::App) {
     std::thread::spawn(move || {
         let mut delivery = NotificationDelivery::default();
         while running.load(Ordering::Relaxed) {
-            if let Some(session) = local_json("/api/session", None, None) {
+            if let Some(session) = local_json(crate::protocol::session_path(), None, None) {
                 if let Some(token) = session.get("token").and_then(|value| value.as_str()) {
-                    if let Some(pending) =
-                        local_json("/api/notifications/pending", Some(token), None)
-                    {
+                    if let Some(pending) = local_json(
+                        &format!("{}/notifications/pending", crate::protocol::api_prefix()),
+                        Some(token),
+                        None,
+                    ) {
                         if let Some(notifications) = pending
                             .get("notifications")
                             .and_then(|value| value.as_array())
@@ -112,7 +120,10 @@ pub fn start(app: &tauri::App) {
                                     banner.show().is_ok()
                                 }) {
                                     let _ = local_json(
-                                        &format!("/api/notifications/{id}/ack"),
+                                        &format!(
+                                            "{}/notifications/{id}/ack",
+                                            crate::protocol::api_prefix()
+                                        ),
                                         Some(token),
                                         Some("{}"),
                                     );
@@ -122,116 +133,16 @@ pub fn start(app: &tauri::App) {
                     }
                 }
             }
-            for _ in 0..40 {
+            for _ in 0..POLL_INTERVAL_STEPS {
                 if !running.load(Ordering::Relaxed) {
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(POLL_SLEEP);
             }
         }
     });
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{notification_body, NotificationDelivery};
-    use serde_json::json;
-
-    #[test]
-    fn banners_use_the_delivered_message_and_keep_localized_fallbacks() {
-        assert_eq!(
-            notification_body(&json!({"body":"请在电脑上输入验证码。","language":"zh"})),
-            "请在电脑上输入验证码。"
-        );
-        assert_eq!(
-            notification_body(&json!({"body":"","language":"en"})),
-            "You have an unread message from dant."
-        );
-        assert_eq!(
-            notification_body(&json!({"body":42})),
-            "你有来自 dant 的未读消息。"
-        );
-    }
-
-    #[test]
-    fn banners_strip_controls_and_bound_unicode_without_splitting_it() {
-        assert_eq!(
-            notification_body(&json!({"body":"Done\u{0}\u{202e}!"})),
-            "Done!"
-        );
-        let body = notification_body(&json!({"body":"😀".repeat(300)}));
-        assert_eq!(body.chars().count(), 240);
-    }
-
-    #[test]
-    fn a_lost_ack_retries_the_receipt_without_replaying_the_system_sound() {
-        let mut delivery = NotificationDelivery::default();
-        let first = json!({"id":"completion-a", "body":"Your result is ready.", "language":"en"});
-        let mut shown = Vec::new();
-        let id = delivery.dispatch(&first, |body, sound| {
-            shown.push((body, sound));
-            true
-        });
-        assert_eq!(id, Some("completion-a"));
-        // The Controller may return this same ID again if its ACK was lost.
-        let repeat = json!({"id":"completion-a", "body":"An edited preview."});
-        assert_eq!(
-            delivery.dispatch(&repeat, |_, _| panic!(
-                "must only retry the acknowledgement"
-            )),
-            id
-        );
-        assert_eq!(shown.len(), 1);
-        assert_eq!(shown[0].0, "Your result is ready.");
-        #[cfg(windows)]
-        assert_eq!(shown[0].1, Some("Default"));
-        #[cfg(not(windows))]
-        assert_eq!(shown[0].1, None);
-        let second = json!({"id":"completion-b", "body":"Another task needs your reply."});
-        assert_eq!(
-            delivery.dispatch(&second, |_, _| {
-                shown.push((String::new(), None));
-                true
-            }),
-            Some("completion-b")
-        );
-        assert_eq!(
-            shown.len(),
-            2,
-            "different completion IDs remain separate notifications"
-        );
-    }
-
-    #[test]
-    fn failed_submissions_retry_and_malformed_ids_never_show_or_ack() {
-        let mut delivery = NotificationDelivery::default();
-        let message = json!({"id":"retry-a", "body":"Done"});
-        assert_eq!(delivery.dispatch(&message, |_, _| false), None);
-        assert_eq!(delivery.dispatch(&message, |_, _| true), Some("retry-a"));
-        for id in ["", "../private", "a/b", "two words", &"a".repeat(129)] {
-            assert_eq!(
-                delivery.dispatch(&json!({"id":id}), |_, _| panic!("invalid notification ID")),
-                None
-            );
-        }
-        assert_eq!(
-            delivery.dispatch(&json!({"id":42}), |_, _| panic!("invalid notification ID")),
-            None
-        );
-    }
-
-    #[test]
-    fn the_session_receipt_cache_is_bounded_and_keeps_only_ids() {
-        let mut delivery = NotificationDelivery::default();
-        for number in 0..1030 {
-            delivery.dispatch(
-                &json!({"id":format!("receipt-{number}"),"body":"not retained"}),
-                |_, _| true,
-            );
-        }
-        assert_eq!(delivery.submitted.len(), 1024);
-        assert_eq!(delivery.order.len(), 1024);
-        assert!(!delivery.submitted.contains("receipt-0"));
-        assert!(delivery.submitted.contains("receipt-1029"));
-    }
-}
+#[path = "../../tests/native/rust/notifications.rs"]
+mod tests;

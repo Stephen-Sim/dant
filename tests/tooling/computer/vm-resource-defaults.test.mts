@@ -16,12 +16,17 @@ test(
     skip: process.platform !== 'win32',
   },
   (t) => {
+    const entry = fs.readFileSync(path.join(root, 'scripts/create-vm.ps1'), 'utf8');
+    assert.match(entry, /^#Requires -RunAsAdministrator\r?\n/);
+    assert.match(entry, /computer\/hyperv-create\.ps1/);
+    assert.match(entry, /Invoke-DantHyperVCreate .*@PSBoundParameters/);
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dant-vm-defaults-'));
     t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
     const program = `
 $ErrorActionPreference = 'Stop'
 $fixtureDirectory = ${literal(fixture)}
 $scriptDirectory = ${literal(path.join(root, 'scripts'))}
+. (Join-Path $scriptDirectory 'computer/resource-config.ps1')
 $defaults = @()
 foreach ($name in @('create-vm.ps1', 'launch-vm.ps1', 'create-vmware.ps1')) {
     $tokens = $null
@@ -29,14 +34,18 @@ foreach ($name in @('create-vm.ps1', 'launch-vm.ps1', 'create-vmware.ps1')) {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptDirectory $name), [ref]$tokens, [ref]$parseErrors)
     if ($parseErrors.Count) { throw 'fixture_parse_failed' }
     # Invoke only the real parameter block, never a launcher or its Requires directive.
-    $body = $ast.ParamBlock.Extent.Text + '\n[pscustomobject]@{memory=$MemoryGB;disk=$DiskGB;cpu=$Cpu}'
+    $body = $ast.ParamBlock.Extent.Text + '\n$resources=Get-DantComputerResources
+$MemoryGB=Resolve-DantComputerResource $resources.memoryGB $MemoryGB ($PSBoundParameters.ContainsKey("MemoryGB"))
+$Cpu=Resolve-DantComputerResource $resources.cpu $Cpu ($PSBoundParameters.ContainsKey("Cpu"))
+$DiskGB=Resolve-DantComputerResource $resources.diskGB $DiskGB ($PSBoundParameters.ContainsKey("DiskGB"))
+[pscustomobject]@{memory=$MemoryGB;disk=$DiskGB;cpu=$Cpu}'
     $parameters = [scriptblock]::Create($body)
     $defaults += & $parameters -DataDirectory $fixtureDirectory
     $custom = & $parameters -DataDirectory $fixtureDirectory -MemoryGB 16 -DiskGB 128 -Cpu 12
     if ($custom.memory -ne 16 -or $custom.disk -ne 128 -or $custom.cpu -ne 12) { throw 'fixture_custom_size_lost' }
 }
 
-$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptDirectory 'create-vm.ps1'), [ref]$tokens, [ref]$parseErrors)
+$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptDirectory 'computer/hyperv-create.ps1'), [ref]$tokens, [ref]$parseErrors)
 $guard = $ast.Find({ param($node)
     $node -is [System.Management.Automation.Language.IfStatementAst] -and
     $node.Clauses[0].Item1.Extent.Text -match 'Get-VHD' -and

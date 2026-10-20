@@ -30,6 +30,7 @@ type execution struct {
 	conversationID string
 	messageID      string
 	threadID       string
+	runtimeID      string
 	turnID         string
 	workID         string
 	attemptID      string
@@ -42,6 +43,7 @@ type execution struct {
 
 	startSubmitted      bool
 	startAcknowledged   bool
+	startRejected       bool
 	terminal            bool
 	finishing           bool
 	stopRequested       bool
@@ -524,6 +526,9 @@ func unconfirmedState(state contracts.State) bool {
 func (value *Engine) ensureEvents() error {
 	value.mu.Lock()
 	defer value.mu.Unlock()
+	if value.closed {
+		return ErrClosed
+	}
 	if value.eventCancel != nil {
 		return nil
 	}
@@ -584,7 +589,7 @@ func (value *Engine) disconnected() {
 		active.unknown = active.startSubmitted && !active.terminal
 		active.stopRequested = true
 	}
-	value.paused = active != nil
+	value.paused = value.paused || active != nil
 	value.changeLocked()
 	value.mu.Unlock()
 	if cancel != nil {
@@ -606,6 +611,8 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 		var operation *runtime.OperationError
 		if errors.As(err, &operation) && !operation.UnknownOutcome {
 			unknown = false
+			// Only an explicit rejection proves a submitted start was not accepted.
+			active.startRejected = active.startSubmitted && !active.startAcknowledged
 		}
 		active.unknown = unknown
 		value.mu.Unlock()

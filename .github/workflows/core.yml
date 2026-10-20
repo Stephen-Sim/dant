@@ -52,6 +52,7 @@ jobs:
           path: |
             .cache/core/coverage.out
             .cache/core/coverage.json
+            .cache/core/coverage.md
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

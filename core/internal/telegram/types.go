@@ -19,6 +19,11 @@ const (
 	MaxTextUnits     = 4096
 	maxReceipts      = 1000
 	apiOrigin        = "https://api.telegram.org"
+
+	maxIncomingTextUnits      = 100000
+	maxIncomingImageDimension = 100000
+	maxPhotoUploadBytes       = 10000000
+	receiptWriteTimeout       = 5 * time.Second
 )
 
 var (

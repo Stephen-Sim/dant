@@ -363,6 +363,34 @@ test('Connect without binding discovers existing configurations and opens manual
   assert.doesNotMatch(f.c.renderVMProfiles(), /data-action="import-vm-profile"[^>]*disabled/);
 });
 
+test('manual and saved-profile ports display the standard default without replacing custom connections', () => {
+  const f = fixture();
+  f.c.vmDraft = { host: '', user: 'dant', keyPath: '' };
+  const form = parseHTML(f.c.renderVMSettings()).document.querySelector<HTMLInputElement>(
+    '[name="port"]',
+  );
+  assert.ok(form);
+  assert.equal(form.value, '22');
+  assert.equal(form.getAttribute('max'), '65535');
+  f.c.vmDraft = { host: '', user: 'dant', port: 2222, keyPath: '' };
+  assert.equal(
+    parseHTML(f.c.renderVMSettings()).document.querySelector<HTMLInputElement>('[name="port"]')
+      ?.value,
+    '2222',
+  );
+  f.c.vmProfiles = {
+    current: null,
+    candidates: [
+      { id: 'default-profile', host: '192.0.2.21', user: 'fixture' },
+      { id: 'custom-profile', host: '192.0.2.22', user: 'fixture', port: 2222 },
+    ],
+  };
+  const profiles = f.c.renderVMProfiles();
+  assert.match(profiles, /fixture@192\.0\.2\.21:22/);
+  assert.match(profiles, /fixture@192\.0\.2\.22:2222/);
+  assert.equal(f.requests.length, 0);
+});
+
 test('computer setup entry points open Work computer and clear search while keeping drafts and generic Settings navigation', async () => {
   const f = fixture(),
     { c } = f,

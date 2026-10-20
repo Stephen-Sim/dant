@@ -1,8 +1,6 @@
 package config
 
 import (
-	_ "embed"
-	"encoding/json"
 	"errors"
 	"net/url"
 	"regexp"
@@ -12,6 +10,7 @@ import (
 const (
 	ProtocolResourcePath                 = "resources/config/protocol.json"
 	MaxPort                              = 65535
+	DefaultSSHPort                       = 22
 	APIJSONBodyBytes                     = 3 * 1024 * 1024
 	InstallLeaseTTLMilliseconds          = 30000
 	DesktopTransitionTimeoutMilliseconds = 150000
@@ -20,42 +19,6 @@ const (
 )
 
 var ErrNetwork = errors.New("invalid_network_configuration")
-
-//go:embed assets/protocol.json
-var protocolJSON []byte
-
-type ProtocolPaths struct {
-	API      string `json:"api"`
-	Events   string `json:"events"`
-	Session  string `json:"session"`
-	Version  string `json:"version"`
-	State    string `json:"state"`
-	Health   string `json:"health"`
-	Screen   string `json:"screen"`
-	Input    string `json:"input"`
-	Control  string `json:"control"`
-	File     string `json:"file"`
-	ReadFile string `json:"readFile"`
-}
-
-type Protocol struct {
-	LoopbackHost  string        `json:"loopbackHost"`
-	LoopbackHosts []string      `json:"loopbackHosts"`
-	APIPort       int           `json:"apiPort"`
-	DevPort       int           `json:"devPort"`
-	GuestPort     int           `json:"guestPort"`
-	Paths         ProtocolPaths `json:"paths"`
-}
-
-// DefaultProtocol returns a copy of generated, embedded protocol data. The
-// source is resources/config/protocol.json; contract generation verifies drift.
-func DefaultProtocol() Protocol {
-	var protocol Protocol
-	if err := json.Unmarshal(protocolJSON, &protocol); err != nil {
-		panic("invalid embedded protocol")
-	}
-	return protocol
-}
 
 type Endpoint struct {
 	Host       string
@@ -74,6 +37,9 @@ var portPattern = regexp.MustCompile(`^[1-9][0-9]{0,4}$`)
 
 func Port(value string, fallback int) (int, error) {
 	if value == "" {
+		if fallback < 1 || fallback > MaxPort {
+			return 0, ErrNetwork
+		}
 		return fallback, nil
 	}
 	if !portPattern.MatchString(value) {
@@ -127,8 +93,8 @@ func ReadNetwork(environment map[string]string) (Network, error) {
 		return Network{}, err
 	}
 	guest, err := Port(environment["DANT_GUEST_PORT"], defaults.GuestPort)
-	if err != nil {
-		return Network{}, err
+	if err != nil || !workerGuestPort(guest, defaults) {
+		return Network{}, ErrNetwork
 	}
 	return Network{API: endpoint(host, api), Development: endpoint(host, dev), Guest: endpoint(guestHost, guest)}, nil
 }
@@ -158,8 +124,14 @@ func PublicVMConfiguration(environment map[string]string) (PublicVMEnvironment, 
 		return PublicVMEnvironment{}, err
 	}
 	port, err := Port(environment["DANT_GUEST_PORT"], defaults.GuestPort)
-	if err != nil {
-		return PublicVMEnvironment{}, err
+	if err != nil || !workerGuestPort(port, defaults) {
+		return PublicVMEnvironment{}, ErrNetwork
 	}
 	return PublicVMEnvironment{GuestHost: host, GuestPort: strconv.Itoa(port)}, nil
+}
+
+// These listeners share the VM's loopback interface. Host development ports
+// belong to another machine and do not reserve a port in the guest.
+func workerGuestPort(port int, protocol Protocol) bool {
+	return port != protocol.APIPort && port != protocol.BootstrapGuestPort
 }

@@ -118,9 +118,16 @@ func (value *Engine) ContinueNativeWork(owner ToolContext) error {
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	active := value.active
-	if active == nil || !value.currentLocked(active) || active.turnID != owner.TurnID || active.threadID != owner.ThreadID || active.callID != owner.CallID || active.stopRequested || active.finishing {
+	if active == nil || !value.currentLocked(active) {
 		return ErrStaleOwner
 	}
+	if active.conversationID != owner.ConversationID || active.turnID != owner.TurnID || active.threadID != owner.ThreadID || active.callID != owner.CallID {
+		return ErrStaleOwner
+	}
+	if active.stopRequested || active.finishing || active.unknown {
+		return ErrStaleOwner
+	}
+
 	active.nativeBackground = true
 	value.changeLocked()
 	return nil

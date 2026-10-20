@@ -2,7 +2,7 @@
 
 English · [Chinese](zh-CN/testing.md)
 
-Tests follow the production owner: Go for Core behavior, TypeScript for browser and build tools, Rust for native behavior, and Python/PowerShell for VM helpers. They use synthetic data and injected services rather than a configured VM, real model, microphone or Telegram account.
+Tests follow the production owner: Go for Core behavior, TypeScript for browser and build tools, Rust for native behavior, and Python/PowerShell/Bash for VM helpers. They use synthetic data and injected services rather than a configured VM, real model, microphone or Telegram account.
 
 ## Layout and entrypoints
 
@@ -12,10 +12,14 @@ Tests follow the production owner: Go for Core behavior, TypeScript for browser 
 | `tests/ui/<feature>/`            | Browser rendering, interaction and wire validation, mirroring `ui/<feature>/`.          |
 | `tests/tooling/<module>/`        | Build, configuration, generated contracts, Go tooling and CI scripts.                   |
 | `tests/native/`                  | Browser/native integration contracts; Rust behavioral tests also run through Cargo.     |
+| `tests/native/rust/`             | Native Rust behavioral modules, included through private `#[cfg(test)]` paths.          |
+| `tests/powershell/`              | Pester behavior and command coverage with mocked host/VM/device boundaries.             |
 | `tests/vm/`                      | Isolated Python and PowerShell VM helper checks.                                        |
 | `tests/support/`, `tests/types/` | Shared synthetic fixtures and compile-time contracts.                                   |
 
 Keep discovery recursive. `npm test` and `npm run test:coverage` use the same maintained TypeScript test inventory. Go commands validate every mirrored test mapping and pass Go's explicit `-overlay` option. This preserves package-private access and platform suffixes without exporting internals for tests. Bare `go test ./...` from `core/` does not discover `tests/go/`.
+
+Rust runtime modules include their external test modules only under `#[cfg(test)]` and explicit `#[path]`, preserving private access. Native LLVM coverage measures `src-tauri/` runtime/build source; test modules do not inflate its denominator.
 
 ## Go Core behavior
 
@@ -37,7 +41,9 @@ Assert public results, persisted state and bounded side effects. Failure fixture
 
 `npm run check:core` runs pinned formatting, vet and all Go package tests with atomic statement coverage. Every feature package must have actual executed statements. Controller, Computer and Telegram each require at least **90%**; missing packages, stale profiles or failed test processes cannot reuse prior results. Linux CI also runs `npm run test:core:race` with a working C compiler.
 
-Browser coverage requires **90% lines, 80% branches and 80% functions**, with appearance individually at 90% lines. Every maintained UI helper must appear. Go statements and browser lines are separate metrics and must not be combined. The browser entrypoint also has DOM/render/handler fixtures; percentage coverage alone does not validate layout or a packaged native window.
+Browser coverage requires **90% lines, 80% branches and 80% functions**, with appearance individually at 90% lines. Every maintained UI helper must appear. Go statements, TypeScript lines/branches/functions, Rust LLVM lines/functions/regions and Python lines/branch arcs have different denominators and must not be combined. A test count, including a successful `cargo test` or Python unittest run, does not establish a coverage percentage. The browser entrypoint also has DOM/render/handler fixtures; percentage coverage alone does not validate layout or a packaged native window.
+
+`npm run test:native:coverage` measures Rust through LLVM instrumentation and saves JSON, LCOV and Markdown under `.cache/coverage/rust/`. `npm run test:python:coverage` instruments all maintained Python helpers, including subprocesses, embedded Go probe resources and zero-hit files, and requires at least **95% lines and 90% branches** with no excluded lines. `npm run test:powershell:coverage` measures executable commands with Pester 5.9.0, including unexecuted scripts, and requires at least **95% command coverage**; commands are not branches. It does not instrument C# bodies compiled by `Add-Type`: the speech P/Invoke and computer resource file-identity adapters remain separately identified as unmeasured embedded code, even when exercised by behavior fixtures. `npm run test:bash:coverage` measures original VM shell scripts with pinned kcov 43 on Linux; parsing alone is not coverage, and Windows cannot supply this measurement. Keep unmeasured scopes explicit. Aim close to 100% with meaningful behavior and failure tests; do not shrink the inventory or relax gates to raise a percentage. See [CI coverage reports](ci.md#coverage-reports).
 
 Use exactly Go **1.27.2**, the declared Rust toolchain, locked npm dependencies and the supported Node native-TypeScript baseline. Full checks:
 
@@ -50,6 +56,10 @@ npm run check:core
 npm run test:coverage
 python -m unittest discover -s tests/vm -p "test_*.py" -v
 cargo test --manifest-path src-tauri/Cargo.toml --locked
+npm run test:native:coverage
+npm run test:python:coverage
+npm run test:powershell:coverage
+npm run coverage:inventory
 node scripts/ci/preflight.mts
 pwsh -File scripts/ci/check-powershell.ps1
 node scripts/ci/version.mts

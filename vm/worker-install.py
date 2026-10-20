@@ -34,7 +34,8 @@ ALLOWLIST = frozenset({
     BINARY, PROTOCOL_PATH, LEGACY_PROTOCOL_PATH, 'vm/bootstrap.sh', 'vm/control.py',
     'vm/desktop.py', 'vm/desktop_mcp.py', 'vm/guest.py', 'vm/install-speech.sh',
     'vm/install-transcription.sh', 'vm/install-worker.sh', 'vm/worker-install.py',
-    'vm/start-codex.sh', 'vm/transcribe_audio.py',
+    'vm/install-speech.py', 'vm/install-transcription.py', 'vm/worker-update-guard.py',
+    'vm/start-codex.sh', 'vm/transcribe_audio.py', 'vm/network_config.py',
     'vm/transcription-requirements.txt', 'vm/voice_message.py',
 })
 REQUIRED = frozenset({
@@ -45,8 +46,9 @@ REQUIRED = frozenset({
 })
 HELPERS = (
     'guest.py', 'desktop.py', 'control.py', 'voice_message.py',
-    'transcribe_audio.py', 'desktop_mcp.py',
+    'transcribe_audio.py', 'desktop_mcp.py', 'network_config.py',
 )
+OPTIONAL_HELPERS = frozenset({'network_config.py'})
 VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\Z')
 SHA256 = re.compile(r'[a-f0-9]{64}\Z')
 COMMIT = re.compile(r'[a-f0-9]{40}\Z')
@@ -210,6 +212,14 @@ def verify_bundle(source, home):
         reject('network-invalid')
     host, port = environment['DANT_GUEST_HOST'], environment['DANT_GUEST_PORT']
     worker_port = protocol['apiPort']
+    # Verified historical bundles do not declare a bootstrap port. Do not
+    # invent one for those releases; new bundles carry the canonical field.
+    bootstrap_port = protocol.get('bootstrapGuestPort')
+    if 'bootstrapGuestPort' in protocol and (
+        type(bootstrap_port) is not int or not 1 <= bootstrap_port <= 65535 or
+        bootstrap_port == worker_port
+    ):
+        reject('network-invalid')
     if (
         not isinstance(host, str) or host not in ('127.0.0.1', 'localhost') or
         host not in protocol['loopbackHosts'] or
@@ -217,6 +227,8 @@ def verify_bundle(source, home):
         not 1 <= int(port) <= 65535 or
         type(worker_port) is not int or not 1 <= worker_port <= 65535
     ):
+        reject('network-invalid')
+    if int(port) == worker_port or int(port) == bootstrap_port:
         reject('network-invalid')
     return {'source': source, 'home': home, 'version': version, 'commit': commit,
             'entries': {entry['path']: entry for entry in normalized},
@@ -967,6 +979,8 @@ def _activate_locked(configuration, manual, service_directory, reconciliation=No
 
     for name in HELPERS:
         relative = 'vm/' + name
+        if name in OPTIONAL_HELPERS and relative not in configuration['entries']:
+            continue
         verified_copy(source / relative, root / 'vm' / name, configuration['entries'][relative], 0o700)
         os.chmod(root / 'vm' / name, 0o700)
     atomic_write(service_directory / 'dant-guest-local.service', units['dant-guest-local.service'])

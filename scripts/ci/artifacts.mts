@@ -16,6 +16,7 @@ import {
   CORE_RESOURCE_MANIFEST,
   VM_BUNDLE_FILES,
   HOST_HELPERS,
+  HOST_CONFIG_FILES,
 } from '../core/bundle.mts';
 
 if (process.platform !== 'win32' || process.arch !== 'x64')
@@ -80,6 +81,7 @@ const requiredFiles = [
   CORE_BUNDLE_MANIFEST,
   'resources/core/' + CORE_BUILD_MANIFEST,
   ...HOST_HELPERS,
+  ...HOST_CONFIG_FILES,
   ...VM_BUNDLE_FILES,
 ];
 validatePreparedResources(resources, version, commit);

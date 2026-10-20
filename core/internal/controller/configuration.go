@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 
+	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/files"
 	"github.com/Stephen-Sim/dant/core/internal/i18n"
@@ -144,7 +145,7 @@ func emptyWorkerSnapshot() contracts.WorkerSnapshot {
 		},
 		Settings: contracts.Settings{
 			Language: "zh", Voice: "marin", ShowCallCaptions: true,
-			VM: contracts.VMSettings{User: "dant", Port: 22},
+			VM: contracts.VMSettings{User: "dant", Port: config.DefaultSSHPort},
 		},
 		Extra: contracts.RawObject{
 			"schedules": json.RawMessage("[]"),

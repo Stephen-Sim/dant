@@ -31,13 +31,13 @@ func NewNative(ctx context.Context, options NativeOptions) (*Native, error) {
 		options.Redact = func(text string) string { return text }
 	}
 	if options.ConnectTimeout == 0 {
-		options.ConnectTimeout = 15 * time.Second
+		options.ConnectTimeout = defaultConnectTimeout
 	}
 	if options.StopTimeout == 0 {
-		options.StopTimeout = 10 * time.Second
+		options.StopTimeout = defaultMediaStopTimeout
 	}
 	if options.ContextTimeout == 0 {
-		options.ContextTimeout = 5 * time.Second
+		options.ContextTimeout = defaultContextTimeout
 	}
 	for _, limit := range []time.Duration{options.ConnectTimeout, options.StopTimeout, options.ContextTimeout} {
 		if limit < time.Millisecond || limit > time.Minute {

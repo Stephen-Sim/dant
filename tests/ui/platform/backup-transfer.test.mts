@@ -8,6 +8,7 @@ import {
   WEB_BACKUP_MAX_BYTES,
   BACKUP_PASSPHRASE_MIN_BYTES,
   BACKUP_PASSPHRASE_MAX_BYTES,
+  BACKUP_TRANSFER_TIMEOUT_MS,
 } from '../../../ui/platform/backup-transfer.mts';
 import type { CoreModule } from '../../../ui/shared/contracts.mts';
 import type { BackupMetadata } from '../../../ui/settings/backup-types.ts';
@@ -17,6 +18,34 @@ const ID = '00000000-0000-4000-8000-000000000009',
   PASSWORD = 'isolated passphrase';
 const metadata: BackupMetadata = portableFixture.metadata;
 const portableBytes = Buffer.from(portableFixture.base64, 'base64');
+
+test('browser import and export apply the same bounded transfer deadline', async () => {
+  const timeout = AbortSignal.timeout,
+    deadlines: number[] = [];
+  AbortSignal.timeout = (duration) => {
+    deadlines.push(duration);
+    return new AbortController().signal;
+  };
+  try {
+    const port = createBackupTransfer({
+      getToken: () => TOKEN,
+      saveBlob() {},
+      fetchRequest: async (url) =>
+        url.endsWith('/export')
+          ? new Response(portableBytes, { headers: { 'Content-Type': 'application/octet-stream' } })
+          : Response.json({ backup: metadata }),
+    });
+    assert.equal(await port.exportBackup(ID, PASSWORD), true);
+    assert.deepEqual(
+      await port.importBackup(PASSWORD, new File([portableBytes], 'fixture.dant')),
+      metadata,
+    );
+    assert.equal(BACKUP_TRANSFER_TIMEOUT_MS, 1_800_000);
+    assert.deepEqual(deadlines, [BACKUP_TRANSFER_TIMEOUT_MS, BACKUP_TRANSFER_TIMEOUT_MS]);
+  } finally {
+    AbortSignal.timeout = timeout;
+  }
+});
 test('Go, browser and native portable limits agree without importing Node runtime into the browser', () => {
   assert.ok(portableBytes.subarray(0, 22).toString().startsWith('DANT-PORTABLE-BACKUP/1'));
   const source = fs.readFileSync(

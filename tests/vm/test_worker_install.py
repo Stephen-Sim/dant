@@ -68,6 +68,66 @@ class WorkerInstallFixture(unittest.TestCase):
         self.assertIn(installer.PROTOCOL_PATH, verified['entries'])
         self.assertNotIn(installer.LEGACY_PROTOCOL_PATH, verified['entries'])
 
+    def test_new_bootstrap_and_native_ports_cannot_be_reused_by_the_deployed_guest(self):
+        protocol = json.loads((ROOT / 'resources/config/protocol.json').read_bytes())
+
+        def save_protocol(value):
+            raw = json.dumps(value).encode()
+            (self.source / installer.PROTOCOL_PATH).write_bytes(raw)
+            for entry in self.manifest['files']:
+                if entry['path'] == installer.PROTOCOL_PATH:
+                    entry.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+            self.write_manifests()
+
+        save_protocol(protocol)
+        for port in (protocol['apiPort'], protocol['bootstrapGuestPort']):
+            deployment = dict(self.deployment, publicEnvironment={
+                'DANT_GUEST_HOST': 'localhost', 'DANT_GUEST_PORT': str(port)})
+            (self.source / 'deploy-manifest.json').write_text(json.dumps(deployment))
+            with self.subTest(port=port), self.assertRaisesRegex(installer.InstallError, '^network-invalid$'):
+                installer.verify_bundle(self.source, self.home)
+
+        deployment['publicEnvironment']['DANT_GUEST_PORT'] = str(protocol['devPort'])
+        (self.source / 'deploy-manifest.json').write_text(json.dumps(deployment))
+        self.assertEqual(installer.verify_bundle(self.source, self.home)['guestPort'], protocol['devPort'])
+        for port in (None, True, 0, 65536, '4319', protocol['apiPort']):
+            save_protocol(dict(protocol, bootstrapGuestPort=port))
+            with self.subTest(port=port), self.assertRaisesRegex(installer.InstallError, '^network-invalid$'):
+                installer.verify_bundle(self.source, self.home)
+
+        legacy = dict(protocol)
+        legacy.pop('bootstrapGuestPort')
+        save_protocol(legacy)
+        self.assertEqual(installer.verify_bundle(self.source, self.home)['guestPort'], 5540)
+        self.assertEqual(self.calls, [])
+
+    def test_network_helper_is_verified_in_new_bundle_but_legacy_target_may_omit_it(self):
+        relative = 'vm/network_config.py'
+        self.assertIn(relative, self.configuration['entries'])
+        self.assertNotIn(relative, installer.REQUIRED)
+        self.manifest['files'] = [entry for entry in self.manifest['files'] if entry['path'] != relative]
+        (self.source / relative).unlink()
+        self.write_manifests()
+        verified = installer.verify_bundle(self.source, self.home)
+        self.assertNotIn(relative, verified['entries'])
+
+    def test_activation_installs_the_verified_shared_network_helper(self):
+        with self.isolated_activation():
+            self.activate()
+        self.assertEqual((self.home / 'dant/vm/network_config.py').read_bytes(),
+                         (self.source / 'vm/network_config.py').read_bytes())
+
+    def test_legacy_activation_keeps_optional_missing_network_helper_compatible(self):
+        relative = 'vm/network_config.py'
+        self.manifest['files'] = [entry for entry in self.manifest['files'] if entry['path'] != relative]
+        (self.source / relative).unlink()
+        self.write_manifests()
+        self.configuration = installer.verify_bundle(self.source, self.home)
+        with self.isolated_activation():
+            self.activate()
+        self.assertFalse((self.home / 'dant/vm/network_config.py').exists())
+        self.assertTrue((self.home / 'dant/vm/guest.py').is_file())
+
     def test_legacy_target_protocol_is_verified_without_changing_its_manifest(self):
         previous, _, _ = self.stopped_attempt(legacy_protocol=True)
         target = self.home / 'dant/releases' / previous['directory']

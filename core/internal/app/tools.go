@@ -19,7 +19,7 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/work"
 )
 
-const maxToolText = 100000
+const maxToolText = work.MaxDeliveredTextUnits
 
 func toolString(args contracts.RawObject, name string, required bool) (string, error) {
 	value, err := httpapi.String(args, name, required)

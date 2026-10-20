@@ -254,7 +254,7 @@ func (gateway *Gateway) Flush(ctx context.Context) (int64, error) {
 				gateway.config.LastError = item.Error
 			}
 		}
-		bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), receiptWriteTimeout)
 		saveErr := gateway.saveLocked(bounded)
 		cancel()
 		gateway.mu.Unlock()

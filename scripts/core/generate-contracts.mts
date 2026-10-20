@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { format } from 'prettier';
+import { nativeProtocolOutputs } from '../config/native-protocol.mts';
+import { parseComputerResources } from '../../ui/computer/resource-config.mts';
 import { isRecord } from './manifest-json.mts';
 
 const SCHEMA_VERSION = 1;
@@ -166,6 +168,13 @@ export async function languageResourceOutputs(
   return outputs;
 }
 
+/** Keep the native/Go copy byte-identical to the validated provisioning policy. */
+export async function computerResourceOutputs(root: string): Promise<[string, string][]> {
+  const raw = await fs.readFile(path.join(root, 'resources/config/computer.json'), 'utf8');
+  parseComputerResources(raw);
+  return [['core/internal/config/assets/computer.json', raw]];
+}
+
 export async function generateContracts(root: string, check: boolean): Promise<void> {
   const schema = stateSchema(
     JSON.parse(
@@ -198,6 +207,8 @@ export async function generateContracts(root: string, check: boolean): Promise<v
       await fs.readFile(path.join(root, 'resources/config/protocol.json'), 'utf8'),
     ],
     ...(await languageResourceOutputs(root)),
+    ...(await computerResourceOutputs(root)),
+    ...(await nativeProtocolOutputs(root)),
   ] as const;
   for (const [relative, contents] of outputs) {
     const destination = path.join(root, relative);

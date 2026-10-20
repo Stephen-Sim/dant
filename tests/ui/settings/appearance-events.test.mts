@@ -16,6 +16,7 @@ import {
   exportAppearance,
   importAppearance,
 } from '../../../ui/settings/appearance.mts';
+import { appearanceFontRanges } from '../../../ui/settings/appearance-preferences.mts';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8');
 const part = (start: string, end: string) => sourceSection(source, start, end);
@@ -107,6 +108,20 @@ function fixture({ defer = false } = {}) {
   }
   return { c, document, requests, pending, click };
 }
+
+test('appearance input ranges use the same accepted boundaries as imported and persisted preferences', () => {
+  const f = fixture();
+  for (const [id, key] of [
+    ['appearance-size', 'fontSize'],
+    ['appearance-content-size', 'contentFontSize'],
+    ['appearance-code-size', 'codeFontSize'],
+  ] as const) {
+    const input = defined(f.document.querySelector<HTMLInputElement>(`#${id}`));
+    assert.equal(input.getAttribute('min'), String(appearanceFontRanges[key][0]));
+    assert.equal(input.getAttribute('max'), String(appearanceFontRanges[key][1]));
+    assert.equal(input.value, String(appearanceDefaults[key]));
+  }
+});
 
 test('a real bubbling font selection survives html appearance attributes and later unrelated clicks', async () => {
   const f = fixture();

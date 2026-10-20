@@ -15,7 +15,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::Manager;
 use tauri::State;
 
 #[derive(Clone, Default)]
@@ -48,6 +47,13 @@ const PHASES: &[&str] = &[
     "finished",
 ];
 static DIAGNOSTIC_LOCK: Mutex<()> = Mutex::new(());
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_SPEECH_CHARACTERS: usize = 10_000;
+const DIAGNOSTIC_RETENTION_MS: u64 = 3 * 24 * 60 * 60 * 1000;
+const DIAGNOSTIC_RECORD_LIMIT: usize = 128;
+const SPEAK_TIMEOUT: Duration = Duration::from_secs(120);
+const RECOGNITION_TIMEOUT: Duration = Duration::from_secs(25);
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_DIAGNOSTIC_BYTES: u64 = 65_536;
 const DIAGNOSTIC_PERSIST_ATTEMPTS: usize = 6;
 const DIAGNOSTIC_RETRY_DELAY_MS: u64 = 20;
@@ -86,7 +92,7 @@ fn failed(code: &'static str, phase: &'static str) -> SpeechFailure {
     }
 }
 fn response_result(success: bool, bytes: &[u8]) -> Result<String, SpeechFailure> {
-    if bytes.len() > 65536 {
+    if bytes.len() > MAX_RESPONSE_BYTES {
         return Err(failed("speech-response-invalid", "process-response"));
     }
     let value: serde_json::Value = serde_json::from_slice(bytes)
@@ -115,7 +121,7 @@ fn response_result(success: bool, bytes: &[u8]) -> Result<String, SpeechFailure>
         return Err(failed("speech-response-invalid", "process-response"));
     }
     let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    if text.chars().count() > 10000 {
+    if text.chars().count() > MAX_SPEECH_CHARACTERS {
         return Err(failed("speech-response-invalid", "process-response"));
     }
     Ok(text.to_string())
@@ -312,16 +318,7 @@ fn ordinary_parent(parent: &Path) -> std::io::Result<()> {
     Ok(())
 }
 fn diagnostic_file(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let data = if let Some(value) = std::env::var_os("DANT_DATA") {
-        PathBuf::from(value)
-    } else if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()?
-            .join("data")
-    } else {
-        app.path().app_data_dir().ok()?.join("data")
-    };
-    let data = crate::runtime_path(data);
+    let data = crate::runtime::data_directory(app)?;
     Some(
         if data.is_absolute() {
             data
@@ -371,7 +368,7 @@ fn append_diagnostic(
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) {
                 if let Some(at) = value.get("at").and_then(|v| v.as_u64()) {
                     if at <= now
-                        && now - at < 3 * 86400000
+                        && now - at < DIAGNOSTIC_RETENTION_MS
                         && value.get("schema").and_then(|v| v.as_str())
                             == Some("dant.native-speech.v1")
                     {
@@ -396,8 +393,8 @@ fn append_diagnostic(
     let error = outcome.as_ref().err();
     let row = serde_json::json!({"schema":"dant.native-speech.v1","event":"speech.operation","at":now,"mode":mode,"language":language,"phase":error.map(|e|e.phase).unwrap_or("finished"),"status":if outcome.is_ok(){"completed"}else{"failed"},"reason":error.map(|e|e.code).unwrap_or("ok"),"numericCode":error.and_then(|e|e.numeric_code)});
     records.push(row);
-    if records.len() > 128 {
-        records.drain(..records.len() - 128);
+    if records.len() > DIAGNOSTIC_RECORD_LIMIT {
+        records.drain(..records.len() - DIAGNOSTIC_RECORD_LIMIT);
     }
     let mut bytes = Vec::new();
     for value in records {
@@ -444,46 +441,120 @@ pub async fn speech_start(
     }
     if text
         .as_ref()
-        .is_some_and(|value| value.chars().count() > 10000)
+        .is_some_and(|value| value.chars().count() > MAX_SPEECH_CHARACTERS)
     {
         return Err("speech-too-long".into());
     }
     let shared = process.inner().clone();
     let diagnostic_path = diagnostic_file(&app);
     tauri::async_runtime::spawn_blocking(move || {
-      let outcome=(|| -> Result<String,SpeechFailure> {
-        let input = serde_json::json!({"mode": mode, "language": language, "locale": crate::l10n::speech_locale(&language), "text": text}).to_string();
-        let script = include_str!("../../native/speech.ps1");
-        let encoded = STANDARD.encode(script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>());
-        let executable = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let mut command = Command::new(executable);
-        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        #[cfg(windows)] command.creation_flags(0x08000000);
-        let generation;
-        {
-            let mut slot = shared.0.lock().map_err(|_|failed("speech-unavailable","process-start"))?;
-            if slot.is_some() { return Err(failed("speech-busy","process-start")); }
-            generation=shared.1.fetch_add(1,Ordering::SeqCst)+1;
-            let mut child = command.spawn().map_err(|_|failed("speech-unavailable","process-start"))?;
-            if let Some(mut input_pipe) = child.stdin.take() { if input_pipe.write_all(input.as_bytes()).is_err() { let _ = child.kill(); let _ = child.wait(); return Err(failed("speech-unavailable","request-write")); } }
-            *slot = Some(child);
-        }
-        let deadline = Instant::now() + Duration::from_secs(if mode == "speak" {120} else {25});
-        loop {
-            let mut slot = shared.0.lock().map_err(|_|failed("speech-unavailable","process-wait"))?;
-            if shared.1.load(Ordering::SeqCst)!=generation { return Err(failed("speech-cancelled","process-wait")); }
-            let Some(child) = slot.as_mut() else { return Err(failed("speech-cancelled","process-wait")); };
-            if Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); *slot = None; return Err(failed("speech-timeout","process-wait")); }
-            if child.try_wait().map_err(|_|failed("speech-unavailable","process-wait"))?.is_some() {
-                let completed = slot.take().unwrap().wait_with_output().map_err(|_|failed("speech-response-invalid","process-response"))?;
-                return response_result(completed.status.success(),&completed.stdout);
+        let outcome = (|| -> Result<String, SpeechFailure> {
+            let input = serde_json::json!({
+                "mode": mode,
+                "language": language,
+                "locale": crate::l10n::speech_locale(&language),
+                "text": text,
+            })
+            .to_string();
+            let script = include_str!("../../native/speech.ps1");
+            let encoded = STANDARD.encode(
+                script
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            );
+            let executable = std::path::PathBuf::from(
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+            )
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+            let mut command = Command::new(executable);
+            command
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    &encoded,
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            command.creation_flags(crate::runtime::CREATE_NO_WINDOW);
+
+            let generation;
+            {
+                let mut slot = shared
+                    .0
+                    .lock()
+                    .map_err(|_| failed("speech-unavailable", "process-start"))?;
+                if slot.is_some() {
+                    return Err(failed("speech-busy", "process-start"));
+                }
+                generation = shared.1.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut child = command
+                    .spawn()
+                    .map_err(|_| failed("speech-unavailable", "process-start"))?;
+                if let Some(mut input_pipe) = child.stdin.take() {
+                    if input_pipe.write_all(input.as_bytes()).is_err() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(failed("speech-unavailable", "request-write"));
+                    }
+                }
+                *slot = Some(child);
             }
-            drop(slot);std::thread::sleep(Duration::from_millis(100));
+
+            let deadline = Instant::now()
+                + if mode == "speak" {
+                    SPEAK_TIMEOUT
+                } else {
+                    RECOGNITION_TIMEOUT
+                };
+            loop {
+                let mut slot = shared
+                    .0
+                    .lock()
+                    .map_err(|_| failed("speech-unavailable", "process-wait"))?;
+                if shared.1.load(Ordering::SeqCst) != generation {
+                    return Err(failed("speech-cancelled", "process-wait"));
+                }
+                let Some(child) = slot.as_mut() else {
+                    return Err(failed("speech-cancelled", "process-wait"));
+                };
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    *slot = None;
+                    return Err(failed("speech-timeout", "process-wait"));
+                }
+                if child
+                    .try_wait()
+                    .map_err(|_| failed("speech-unavailable", "process-wait"))?
+                    .is_some()
+                {
+                    let completed = slot
+                        .take()
+                        .unwrap()
+                        .wait_with_output()
+                        .map_err(|_| failed("speech-response-invalid", "process-response"))?;
+                    return response_result(completed.status.success(), &completed.stdout);
+                }
+                drop(slot);
+                std::thread::sleep(PROCESS_POLL_INTERVAL);
+            }
+        })();
+        if let Some(path) = diagnostic_path {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let _ = append_diagnostic(&path, &mode, &language, &outcome, now);
         }
-      })();
-      if let Some(path)=diagnostic_path{let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;let _=append_diagnostic(&path,&mode,&language,&outcome,now);}
-      outcome.map_err(|error|error.code.to_string())
-    }).await.map_err(|_| "speech-unavailable".to_string())?
+        outcome.map_err(|error| error.code.to_string())
+    })
+    .await
+    .map_err(|_| "speech-unavailable".to_string())?
 }
 
 pub fn stop(process: &SpeechProcess) {
@@ -508,265 +579,5 @@ pub fn speech_stop(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::RefCell;
-    fn fixture() -> tempfile::TempDir {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join(".cache/tests");
-        fs::create_dir_all(&root).unwrap();
-        tempfile::tempdir_in(root).unwrap()
-    }
-    fn rotation_fixture() -> (
-        tempfile::TempDir,
-        PathBuf,
-        tempfile::NamedTempFile,
-        DiagnosticPathIdentity,
-    ) {
-        let directory = fixture();
-        let parent = directory.path().join("data");
-        fs::create_dir(&parent).unwrap();
-        let path = parent.join("native-speech.jsonl");
-        fs::write(&path, b"previous metadata").unwrap();
-        let identity = diagnostic_identity(&path).unwrap();
-        let mut temporary = tempfile::NamedTempFile::new_in(&parent).unwrap();
-        temporary.write_all(b"replacement metadata").unwrap();
-        temporary.as_file().sync_all().unwrap();
-        (directory, path, temporary, identity)
-    }
-    #[test]
-    fn diagnostic_rotation_retries_only_the_same_metadata_after_windows_sharing_failures() {
-        let (_directory, path, temporary, identity) = rotation_fixture();
-        let mut attempts = 0;
-        let mut waits = Vec::new();
-        let committed = RefCell::new(Vec::new());
-        persist_diagnostic_with(
-            &path,
-            temporary,
-            identity,
-            true,
-            |file, _target| {
-                attempts += 1;
-                assert_eq!(fs::read(file.path()).unwrap(), b"replacement metadata");
-                if attempts <= 2 {
-                    return Err(tempfile::PersistError {
-                        error: std::io::Error::from_raw_os_error(WINDOWS_SHARING_VIOLATION),
-                        file,
-                    });
-                }
-                // The injected commit records the payload; the existing 140-write
-                // retention test separately exercises the real atomic rename.
-                committed.replace(fs::read(file.path()).unwrap());
-                Ok(file.into_file())
-            },
-            |delay| waits.push(delay),
-        )
-        .unwrap();
-        assert_eq!(attempts, 3);
-        assert_eq!(
-            waits,
-            [Duration::from_millis(20), Duration::from_millis(40)]
-        );
-        assert_eq!(*committed.borrow(), b"replacement metadata");
-        assert_eq!(fs::read(&path).unwrap(), b"previous metadata");
-    }
-    #[test]
-    fn diagnostic_rotation_never_retries_other_errors_or_platforms_and_has_a_fixed_attempt_limit() {
-        for (windows, code, expected_attempts) in [
-            (false, WINDOWS_ACCESS_DENIED, 1),
-            (false, WINDOWS_SHARING_VIOLATION, 1),
-            (true, 13, 1),
-            (true, 112, 1),
-            (true, WINDOWS_ACCESS_DENIED, DIAGNOSTIC_PERSIST_ATTEMPTS),
-            (true, WINDOWS_SHARING_VIOLATION, DIAGNOSTIC_PERSIST_ATTEMPTS),
-        ] {
-            let (_directory, path, temporary, identity) = rotation_fixture();
-            let mut attempts = 0;
-            let mut waits = Vec::new();
-            let result = persist_diagnostic_with(
-                &path,
-                temporary,
-                identity,
-                windows,
-                |file, _target| {
-                    attempts += 1;
-                    Err(tempfile::PersistError {
-                        error: std::io::Error::from_raw_os_error(code),
-                        file,
-                    })
-                },
-                |delay| waits.push(delay),
-            );
-            assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
-            assert_eq!(attempts, expected_attempts);
-            assert_eq!(waits.len(), expected_attempts - 1);
-            assert!(waits.iter().sum::<Duration>() <= Duration::from_millis(300));
-            assert_eq!(fs::read(&path).unwrap(), b"previous metadata");
-            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
-        }
-    }
-    #[test]
-    fn diagnostic_rotation_refuses_rebound_targets_parents_links_and_modified_temporary_files_before_retry(
-    ) {
-        for change in ["target", "replacement", "hardlink", "temporary"] {
-            let (directory, path, temporary, identity) = rotation_fixture();
-            let temporary_path = temporary.path().to_path_buf();
-            let protected = directory.path().join("protected.txt");
-            fs::write(&protected, b"protected").unwrap();
-            let mut attempts = 0;
-            let result = persist_diagnostic_with(
-                &path,
-                temporary,
-                identity,
-                true,
-                |file, _target| {
-                    attempts += 1;
-                    Err(tempfile::PersistError {
-                        error: std::io::Error::from_raw_os_error(WINDOWS_SHARING_VIOLATION),
-                        file,
-                    })
-                },
-                |_delay| match change {
-                    "target" => {
-                        fs::write(&path, b"changed metadata with a different length").unwrap()
-                    }
-                    "replacement" => {
-                        fs::rename(&path, directory.path().join("previous-kept.jsonl")).unwrap();
-                        fs::write(&path, b"previous metadata").unwrap();
-                    }
-                    "hardlink" => {
-                        fs::remove_file(&path).unwrap();
-                        fs::hard_link(&protected, &path).unwrap();
-                    }
-                    "temporary" => fs::write(
-                        &temporary_path,
-                        b"modified temporary payload with a different length",
-                    )
-                    .unwrap(),
-                    _ => unreachable!(),
-                },
-            );
-            assert_eq!(
-                result.unwrap_err().kind(),
-                std::io::ErrorKind::InvalidInput,
-                "{change}"
-            );
-            assert_eq!(attempts, 1, "{change}");
-            assert_eq!(fs::read(&protected).unwrap(), b"protected");
-        }
-        // Windows prevents moving a directory while its staging file is open.
-        // Model a real parent rebind between the initial identity capture and
-        // staging-file creation instead, retaining the exact same target inode.
-        let directory = fixture();
-        let parent = directory.path().join("data");
-        fs::create_dir(&parent).unwrap();
-        let path = parent.join("native-speech.jsonl");
-        fs::write(&path, b"previous metadata").unwrap();
-        let identity = diagnostic_identity(&path).unwrap();
-        let previous = directory.path().join("previous-data");
-        fs::rename(&parent, &previous).unwrap();
-        fs::create_dir(&parent).unwrap();
-        fs::rename(previous.join("native-speech.jsonl"), &path).unwrap();
-        assert_eq!(diagnostic_target(&path).unwrap(), identity.target);
-        let mut temporary = tempfile::NamedTempFile::new_in(&parent).unwrap();
-        temporary.write_all(b"replacement metadata").unwrap();
-        temporary.as_file().sync_all().unwrap();
-        let result = persist_diagnostic_with(
-            &path,
-            temporary,
-            identity,
-            true,
-            |_file, _target| panic!("A rebound parent must never reach the rename operation"),
-            |_delay| panic!("Identity rejection must never be retried"),
-        );
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-        assert_eq!(fs::read(&path).unwrap(), b"previous metadata");
-    }
-    #[test]
-    fn responses_accept_only_stable_metadata_never_raw_exceptions() {
-        let error=response_result(false,br#"{"errorCode":"speech-output-unavailable","phase":"speak-run","numericCode":2,"error":"PRIVATE secret transcript /path"}"#).unwrap_err();
-        assert_eq!(
-            error,
-            SpeechFailure {
-                code: "speech-output-unavailable",
-                phase: "speak-run",
-                numeric_code: Some(2)
-            }
-        );
-        let untrusted=response_result(false,br#"{"errorCode":"PRIVATE transcript","phase":"/private/path","numericCode":"secret","error":"raw secret"}"#).unwrap_err();
-        assert_eq!(untrusted, failed("speech-unavailable", "process-response"));
-        assert_eq!(
-            response_result(true, br#"{"text":"recognized text"}"#).unwrap(),
-            "recognized text"
-        );
-        assert!(response_result(true, b"invalid").is_err());
-        assert!(response_result(true, &vec![b'a'; 65537]).is_err());
-    }
-    #[test]
-    fn diagnostics_are_bounded_metadata_with_retention_and_no_text() {
-        let directory = fixture();
-        let file = directory.path().join("data/native-speech.jsonl");
-        let outcome = Err(SpeechFailure {
-            code: "speech-output-unavailable",
-            phase: "speak-run",
-            numeric_code: Some(2),
-        });
-        append_diagnostic(&file, "speak", "zh", &outcome, 100).unwrap();
-        let mut row: serde_json::Value =
-            serde_json::from_str(fs::read_to_string(&file).unwrap().trim()).unwrap();
-        row["raw"] = serde_json::json!("PRIVATE spoken text /path");
-        fs::write(&file, format!("{row}\n")).unwrap();
-        append_diagnostic(&file, "speak", "zh", &outcome, 200).unwrap();
-        assert!(!fs::read_to_string(&file).unwrap().contains("PRIVATE"));
-        for index in 0..140 {
-            append_diagnostic(&file, "speak", "en", &outcome, 300 + index).unwrap();
-        }
-        let text = fs::read_to_string(&file).unwrap();
-        assert_eq!(text.lines().count(), 128);
-        assert!(text.len() <= 65536);
-        assert!(!text.contains("transcript"));
-        append_diagnostic(
-            &file,
-            "speak",
-            "zh",
-            &Ok("PRIVATE successful spoken text".into()),
-            3 * 86400000 + 1000,
-        )
-        .unwrap();
-        let lines = fs::read_to_string(&file).unwrap();
-        assert_eq!(lines.lines().count(), 1);
-        assert!(!lines.contains("PRIVATE"));
-        assert!(lines.contains("completed"));
-    }
-    #[test]
-    fn diagnostics_reject_hardlinks_symlinks_and_oversize_without_affecting_result() {
-        let directory = fixture();
-        let original = directory.path().join("original");
-        let linked_file = directory.path().join("linked");
-        fs::write(&original, b"preserve").unwrap();
-        fs::hard_link(&original, &linked_file).unwrap();
-        let outcome = Err(failed("speech-output-unavailable", "speak-output"));
-        assert!(append_diagnostic(&linked_file, "speak", "zh", &outcome, 100).is_err());
-        assert_eq!(fs::read(&original).unwrap(), b"preserve");
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::symlink_file;
-            if symlink_file(&original, directory.path().join("symlink")).is_ok() {
-                assert!(append_diagnostic(
-                    &directory.path().join("symlink"),
-                    "speak",
-                    "zh",
-                    &outcome,
-                    100
-                )
-                .is_err());
-            }
-        }
-        let oversized = directory.path().join("oversized");
-        fs::write(&oversized, vec![b'a'; 65537]).unwrap();
-        assert!(append_diagnostic(&oversized, "speak", "zh", &outcome, 100).is_err());
-        assert_eq!(outcome.unwrap_err().code, "speech-output-unavailable");
-    }
-}
+#[path = "../../tests/native/rust/speech.rs"]
+mod tests;

@@ -277,8 +277,8 @@ func (value *Engine) boundOutput(active *execution, itemID, text string) string 
 			other += contracts.UTF16Length(value)
 		}
 	}
-	limit := max(0, 120000-other)
-	text = workstate.SliceText(text, min(120000, limit))
+	limit := max(0, runtimeOutputCharacters-other)
+	text = workstate.SliceText(text, min(runtimeOutputCharacters, limit))
 	active.outputs[itemID] = text
 	return text
 }
@@ -436,6 +436,7 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 	}
 	ids := append([]string{}, active.messageIDs...)
 	assistantIDs := append([]string{}, active.assistantIDs...)
+	knownUnsubmitted := active.startRejected && active.startSubmitted && !active.startAcknowledged && !active.unknown
 	value.mu.Unlock()
 	err := value.store.Mutate(value.ctx, func(state *contracts.State) error {
 		if state.ConversationID != active.conversationID {
@@ -455,6 +456,9 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 			message.Status = contracts.Some(contracts.MessageStatus(final))
 			message.Error = contracts.Null[string]()
 			message.PauseReason = contracts.Null[string]()
+			if knownUnsubmitted {
+				message.Submission = contracts.Some(contracts.SubmissionStatusNotSubmitted)
+			}
 			if final == contracts.TaskStatusPaused {
 				message.PauseReason = contracts.Some(reason)
 			}

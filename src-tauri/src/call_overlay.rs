@@ -12,6 +12,11 @@ use tauri::{
 };
 
 const LABEL: &str = "call-overlay";
+const DOCUMENT_PATH: &str = "/call-overlay.html";
+const IDENTIFIER_MAX_BYTES: usize = 128;
+const WINDOW_WIDTH: f64 = 360.0;
+const WINDOW_HEIGHT: f64 = 76.0;
+const WORK_AREA_INSET: f64 = 16.0;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallState {
@@ -94,7 +99,7 @@ struct Action {
 
 fn identifier(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 128
+        && value.len() <= IDENTIFIER_MAX_BYTES
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_: .".contains(&byte))
@@ -137,7 +142,7 @@ fn position(
     height: u32,
     desired: Option<(i32, i32)>,
 ) -> PhysicalPosition<i32> {
-    let inset = (16.0 * area.scale).round().max(0.0) as i64;
+    let inset = (WORK_AREA_INSET * area.scale).round().max(0.0) as i64;
     let left = i64::from(area.x);
     let top = i64::from(area.y);
     let right = left + i64::from(area.width.saturating_sub(width));
@@ -171,6 +176,17 @@ fn clamp(window: &WebviewWindow, area: Area, initial: bool) -> Result<(), String
     }
     Ok(())
 }
+// Tauri's packaged origins are fixed SDK origins. Development navigation must
+// match the canonical local origin; caller-provided ports never reach this gate.
+fn allowed_navigation(url: &tauri::Url) -> bool {
+    url.path() == DOCUMENT_PATH
+        && ((url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+            || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
+            || (url.scheme() == "http"
+                && url.host_str() == Some(crate::protocol::loopback_host())
+                && url.port_or_known_default() == Some(crate::protocol::dev_endpoint().port())))
+}
+
 fn sync(app: &AppHandle) -> Result<(), String> {
     let managed = app.state::<CallOverlay>();
     let _operation = managed
@@ -207,7 +223,7 @@ fn sync(app: &AppHandle) -> Result<(), String> {
         // function only runs on an async-runtime worker, never the UI thread.
         WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("call-overlay.html".into()))
             .title("dant call")
-            .inner_size(360.0, 76.0)
+            .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
             .decorations(false)
             .resizable(false)
             .maximizable(false)
@@ -219,14 +235,7 @@ fn sync(app: &AppHandle) -> Result<(), String> {
             .focused(false)
             .transparent(true)
             .shadow(true)
-            .on_navigation(|url| {
-                url.path() == "/call-overlay.html"
-                    && ((url.scheme() == "tauri" && url.host_str() == Some("localhost"))
-                        || (url.scheme() == "http"
-                            && (url.host_str() == Some("tauri.localhost")
-                                || (url.host_str() == Some("127.0.0.1")
-                                    && url.port() == Some(4318)))))
-            })
+            .on_navigation(allowed_navigation)
             .build()
             .map_err(|_| "Call window could not be created")?
     };
@@ -540,128 +549,5 @@ pub async fn call_overlay_drag(app: AppHandle, window: WebviewWindow) -> Result<
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn call(id: &str) -> CallState {
-        CallState {
-            call_id: id.into(),
-            status: "talking".into(),
-            connected_at: Some(123),
-            seconds: 10,
-            confirmed: true,
-            running: true,
-            muted: false,
-            can_mute: true,
-            language: "en".into(),
-            theme: "dark".into(),
-        }
-    }
-    #[test]
-    fn hidden_call_survives_metadata_refresh_without_changing_media_state() {
-        let mut inner = Inner::default();
-        inner.update(Some(call("call-a")));
-        inner.hide("call-a").unwrap();
-        assert!(inner.visible_call().is_none());
-        assert_eq!(inner.call, Some(call("call-a")));
-        let mut refreshed = call("call-a");
-        refreshed.seconds = 25;
-        refreshed.muted = true;
-        refreshed.language = "zh".into();
-        inner.update(Some(refreshed.clone()));
-        assert!(inner.visible_call().is_none());
-        assert!(inner.show("call-a"));
-        assert_eq!(inner.visible_call(), Some(refreshed));
-    }
-    #[test]
-    fn new_call_is_visible_and_stale_hide_or_show_cannot_affect_it() {
-        let mut inner = Inner::default();
-        inner.update(Some(call("call-a")));
-        inner.hide("call-a").unwrap();
-        inner.update(Some(call("call-b")));
-        assert_eq!(inner.visible_call(), Some(call("call-b")));
-        assert!(inner.hide("call-a").is_err());
-        assert_eq!(inner.visible_call(), Some(call("call-b")));
-        inner.hide("call-b").unwrap();
-        assert!(!inner.show("call-a"));
-        assert!(inner.visible_call().is_none());
-        assert!(inner.show("call-b"));
-        assert_eq!(inner.visible_call(), Some(call("call-b")));
-    }
-    #[test]
-    fn ended_or_closing_calls_cannot_be_restored_or_hidden_by_late_controls() {
-        let mut inner = Inner::default();
-        inner.update(Some(call("call-a")));
-        inner.hide("call-a").unwrap();
-        inner.update(None);
-        assert!(inner.hidden_for.is_none());
-        assert!(!inner.show("call-a"));
-        assert!(inner.hide("call-a").is_err());
-        assert!(inner.call.is_none());
-        inner.update(Some(call("call-b")));
-        inner.closing = true;
-        assert!(!inner.show("call-b"));
-        assert!(inner.hide("call-b").is_err());
-        assert!(inner.visible_call().is_none());
-    }
-    #[test]
-    fn work_area_placement_respects_taskbars_negative_monitors_and_dpi() {
-        let area = Area {
-            x: -1920,
-            y: -80,
-            width: 1920,
-            height: 1040,
-            scale: 1.5,
-        };
-        assert_eq!(
-            position(area, 540, 114, None),
-            PhysicalPosition::new(-564, 822)
-        );
-        assert_eq!(
-            position(area, 540, 114, Some((-4000, 4000))),
-            PhysicalPosition::new(-1896, 822)
-        );
-        assert_eq!(
-            position(area, 540, 114, Some((-1000, 200))),
-            PhysicalPosition::new(-1000, 200)
-        );
-    }
-    #[test]
-    fn oversized_or_tiny_work_areas_never_panic_or_place_the_origin_outside() {
-        let area = Area {
-            x: 10,
-            y: 20,
-            width: 100,
-            height: 40,
-            scale: 2.0,
-        };
-        assert_eq!(position(area, 360, 76, None), PhysicalPosition::new(10, 20));
-        assert!(!identifier("call\nprivate"));
-        assert!(!identifier(""));
-        assert!(identifier("call-a:1"));
-    }
-    #[test]
-    fn metadata_validation_rejects_unbounded_or_unknown_context() {
-        let mut value = CallState {
-            call_id: "call-a".into(),
-            status: "talking".into(),
-            connected_at: Some(123),
-            seconds: 10,
-            confirmed: true,
-            running: true,
-            muted: false,
-            can_mute: true,
-            language: "en".into(),
-            theme: "dark".into(),
-        };
-        assert!(valid(&value));
-        value.status = "private transcript".into();
-        assert!(!valid(&value));
-        value.status = "talking".into();
-        value.connected_at = Some(u64::MAX);
-        assert!(!valid(&value));
-        assert!(serde_json::from_value::<CallState>(
-            serde_json::json!({"callId":"a","token":"secret"})
-        )
-        .is_err());
-    }
-}
+#[path = "../../tests/native/rust/call_overlay.rs"]
+mod tests;

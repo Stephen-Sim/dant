@@ -50,7 +50,7 @@ type ContextQueue struct {
 
 func NewContextQueue(ctx context.Context, options ContextQueueOptions) (*ContextQueue, error) {
 	if options.Timeout == 0 {
-		options.Timeout = 5 * time.Second
+		options.Timeout = defaultContextTimeout
 	}
 	if options.MaxPending == 0 {
 		options.MaxPending = 32

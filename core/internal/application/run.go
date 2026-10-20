@@ -53,12 +53,12 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 		switch args[0] {
 		case "--role=" + string(config.RoleLegacyImport):
 			return legacyimport.RunCLI(ctx, args[1:], output)
-		case "--role=backup-transform":
+		case "--role=" + string(config.RoleBackupTransform):
 			if len(args) != 1 {
 				return config.ErrStartup
 			}
 			return backups.RunTransform(ctx, input, output)
-		case "--role=backup-cli":
+		case "--role=" + string(config.RoleBackupCLI):
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return config.ErrStartup

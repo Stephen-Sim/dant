@@ -28,9 +28,13 @@ export const VM_BUNDLE_FILES = Object.freeze(
     'vm/desktop_mcp.py',
     'vm/guest.py',
     'vm/install-speech.sh',
+    'vm/install-speech.py',
     'vm/install-transcription.sh',
+    'vm/install-transcription.py',
     'vm/install-worker.sh',
     'vm/worker-install.py',
+    'vm/worker-update-guard.py',
+    'vm/network_config.py',
     'vm/start-codex.sh',
     'vm/transcribe_audio.py',
     'vm/transcription-requirements.txt',
@@ -40,6 +44,9 @@ export const VM_BUNDLE_FILES = Object.freeze(
 
 export const HOST_HELPERS = Object.freeze([
   'scripts/check-vm.ps1',
+  'scripts/computer/hyperv-create.ps1',
+  'scripts/computer/resource-config.ps1',
+  'scripts/computer/resource-config.py',
   'scripts/create-vm.ps1',
   'scripts/create-vmware.ps1',
   'scripts/launch-vm.ps1',
@@ -51,6 +58,8 @@ export const HOST_HELPERS = Object.freeze([
   'scripts/vm-lifecycle.ps1',
   'scripts/vmware.py',
 ]);
+
+export const HOST_CONFIG_FILES = Object.freeze(['resources/config/computer.json']);
 
 export interface BundleFile {
   path: string;

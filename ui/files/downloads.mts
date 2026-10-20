@@ -1,7 +1,7 @@
 import { isRecord } from '../shared/contracts.mts';
 import type { NativeInvoke } from '../platform/transport.mts';
 import { MAX_ATTACHMENT_BYTES } from './attachment-limits.mts';
-import { NATIVE_PROTOCOL } from '../platform/native-protocol.mts';
+import { NATIVE_PROTOCOL, apiPath } from '../platform/native-protocol.mts';
 import type { ScheduleTimer, CancelTimer } from '../shared/contracts.mts';
 const MAX_BYTES = MAX_ATTACHMENT_BYTES;
 import type { Attachment, Timer } from '../shared/contracts.mts';
@@ -96,7 +96,7 @@ export function createDownloads({
     let reader: ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined;
     try {
       const response = await fetchImpl(
-        base + '/api/files/' + encodeURIComponent(file.id) + '?download=1',
+        base + apiPath('/files/' + encodeURIComponent(file.id)) + '?download=1',
         {
           headers: { 'X-Dant-Token': token },
           redirect: 'error',

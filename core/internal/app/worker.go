@@ -48,6 +48,7 @@ type WorkerOptions struct {
 	VoiceHTTP     voice.HTTPDoer
 	VoiceDial     voice.VoiceDial
 	TelegramHTTP  telegram.HTTPDoer
+	UpdateHTTP    updates.HTTPDoer
 }
 
 type WorkerApp struct {

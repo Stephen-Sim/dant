@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { parseHTML } from 'linkedom';
 import { createTextEditor } from '../../../ui/platform/text-editor.mts';
+import canonical from '../../../resources/config/protocol.json' with { type: 'json' };
+import { validateProtocol } from '../../../ui/shared/network-protocol.mts';
 import { reconcile } from '../../../ui/shared/dom.mts';
 const id = '10b72b2a-346f-48c0-a243-1cb22871d91d',
   token = 'a'.repeat(64),
@@ -491,11 +493,30 @@ test('Chinese settings and browser availability are localized and do not contact
 });
 test('native editor opens only safe cached text with a fixed Notepad or picked editor, never a shell or file association', () => {
   const source = fs.readFileSync(
-    new URL('../../../src-tauri/src/text_editor.rs', import.meta.url),
-    'utf8',
-  );
+      new URL('../../../src-tauri/src/text_editor.rs', import.meta.url),
+      'utf8',
+    ),
+    protocolSource = fs.readFileSync(
+      new URL('../../../src-tauri/src/protocol.rs', import.meta.url),
+      'utf8',
+    ),
+    protocol = validateProtocol(canonical);
   assert.match(source, /window\.label\(\) == "main"/);
-  assert.match(source, /127\.0\.0\.1:4317\/api\/files\/\{file_id\}/);
+  assert.match(source, /crate::protocol::api_url\(&format!\(\s*"files\/\{file_id\}"\s*\)\)/);
+  assert.equal(protocol.loopbackHost, '127.0.0.1');
+  assert.equal(protocol.apiPort, canonical.apiPort);
+  assert.match(
+    protocolSource,
+    /include_str!\(\s*"\.\.\/\.\.\/resources\/config\/protocol\.json"\s*\)/,
+  );
+  assert.match(protocolSource, /api_port\s*:\s*u16\b/);
+  assert.match(protocolSource, /let\s+host\s*:\s*Ipv4Addr\s*=\s*value\.loopback_host\.parse\(\)/);
+  assert.match(protocolSource, /host\s*!=\s*Ipv4Addr::LOCALHOST/);
+  assert.match(protocolSource, /SocketAddrV4::new\(\s*host\s*,\s*value\.api_port\s*\)/);
+  assert.doesNotMatch(
+    source,
+    /pub\s+async\s+fn\s+open_attachment_in_editor\s*\([^)]*\b(?:url|endpoint|destination|path)\s*:/,
+  );
   assert.match(source, /no_proxy\(\)\s*\.redirect\(reqwest::redirect::Policy::none\(\)\)/);
   assert.match(source, /Command::new\(crate::runtime_path\(executable\.to_path_buf\(\)\)\)/);
   assert.match(source, /command\s*\.arg\(target\)/);

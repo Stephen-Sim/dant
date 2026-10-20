@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
 
@@ -21,6 +22,8 @@ const (
 	GuestTimeout        = 15 * time.Second
 	HealthMaxBytes      = 1024 * 1024
 )
+
+var desktopPaths = config.DefaultProtocol().Paths
 
 var (
 	ErrWorkerRole         = errors.New("executor_requires_ordinary_linux_vm")
@@ -43,7 +46,10 @@ type RuntimeVerification struct {
 
 func ValidateGuestOrigin(origin string) error {
 	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Scheme != "http" || (parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return ErrVMUnavailable
+	}
+	if _, err := config.Loopback(parsed.Hostname(), ""); err != nil {
 		return ErrVMUnavailable
 	}
 	return nil
@@ -68,7 +74,7 @@ func VerifyVMRuntime(ctx context.Context, options RuntimeVerification) error {
 		options.Client = &http.Client{Timeout: GuestTimeout}
 	}
 	probe, cancel := context.WithTimeout(ctx, RuntimeProbeTimeout)
-	request, err := http.NewRequestWithContext(probe, http.MethodGet, strings.TrimSuffix(options.GuestOrigin, "/")+"/health", nil)
+	request, err := http.NewRequestWithContext(probe, http.MethodGet, strings.TrimSuffix(options.GuestOrigin, "/")+desktopPaths.Health, nil)
 	if err != nil {
 		cancel()
 		return ErrVMUnavailable
@@ -94,7 +100,7 @@ func VerifyVMRuntime(ctx context.Context, options RuntimeVerification) error {
 	}
 	probe, cancel = context.WithTimeout(ctx, ScreenProbeTimeout)
 	defer cancel()
-	request, err = http.NewRequestWithContext(probe, http.MethodGet, strings.TrimSuffix(options.GuestOrigin, "/")+"/screen", nil)
+	request, err = http.NewRequestWithContext(probe, http.MethodGet, strings.TrimSuffix(options.GuestOrigin, "/")+desktopPaths.Screen, nil)
 	if err != nil {
 		return ErrDesktopUnavailable
 	}

@@ -16,7 +16,7 @@ jobs:
   checks:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -48,8 +48,8 @@ jobs:
         run: |
           npm run typecheck
           npm run check:states
-      - name: Install VM test dependency
-        run: python -m pip install --disable-pip-version-check pycdlib==1.14.0
+      - name: Install pinned Python test and coverage dependencies
+        run: python -m pip install --disable-pip-version-check -r scripts/ci/python-coverage-requirements.txt
       - name: Require VM test tools and check Bash syntax
         run: node scripts/ci/preflight.mts
       - name: Check PowerShell syntax without running VM scripts
@@ -61,6 +61,38 @@ jobs:
         run: node --test tests/tooling/build/version.test.mts tests/tooling/build/coverage.test.mts tests/tooling/build/test-files.test.mts
       - name: Test application and enforce coverage
         run: npm run test:coverage
+      - name: Test and measure all Python VM helpers
+        run: npm run test:python:coverage
+      - name: Install the pinned PowerShell coverage tool
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .tools/powershell/Modules | Out-Null
+          Save-Module -Name Pester -RequiredVersion 5.9.0 -Path .tools/powershell/Modules -Repository PSGallery -Force -AcceptLicense
+      - name: Instrument and test maintained PowerShell commands
+        if: runner.os == 'Windows'
+        run: npm run test:powershell:coverage
+      - name: Build the pinned Bash coverage tool
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ pkg-config binutils-dev libiberty-dev libssl-dev libcurl4-openssl-dev libelf-dev zlib1g-dev libdw-dev
+          git init .tools/kcov-source
+          git -C .tools/kcov-source remote add origin https://github.com/SimonKagstrom/kcov.git
+          git -C .tools/kcov-source fetch --depth=1 origin a39874f938ce13f7a65f253120d1ec946b349ffe
+          git -C .tools/kcov-source checkout --detach FETCH_HEAD
+          test "$(git -C .tools/kcov-source rev-parse HEAD)" = a39874f938ce13f7a65f253120d1ec946b349ffe
+          cmake -S .tools/kcov-source -B .tools/kcov-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/.tools/kcov"
+          cmake --build .tools/kcov-build --parallel 2
+          cmake --install .tools/kcov-build
+      - name: Instrument and test maintained Bash scripts
+        if: runner.os == 'Linux'
+        run: npm run test:bash:coverage
+      - name: Inventory coverage across all maintained executable code
+        if: always()
+        run: npm run coverage:inventory
       - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -70,7 +102,5 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
-      - name: Test VM image, seed, desktop and SSH key helpers
-        run: python -m unittest discover -s tests/vm -p "test_*.py" -v
       - name: Build frontend
         run: npm run build

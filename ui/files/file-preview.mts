@@ -1,4 +1,4 @@
-import { NATIVE_PROTOCOL } from '../platform/native-protocol.mts';
+import { NATIVE_PROTOCOL, apiPath } from '../platform/native-protocol.mts';
 import type { ScheduleTimer, CancelTimer } from '../shared/contracts.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord } from '../shared/contracts.mts';
@@ -288,7 +288,7 @@ export function createFilePreview({
       if (!/^[a-f0-9]{64}$/i.test(token) || !['', NATIVE_PROTOCOL.httpOrigin].includes(base))
         fail('failed');
       const response = await untilAbort(
-        fetchImpl(base + '/api/files/' + encodeURIComponent(operation.file.id), {
+        fetchImpl(base + apiPath('/files/' + encodeURIComponent(operation.file.id)), {
           headers: { 'X-Dant-Token': token },
           redirect: 'error',
           credentials: 'omit',

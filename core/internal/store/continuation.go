@@ -128,9 +128,19 @@ func (value *Store) BindWorkContinuation(ctx context.Context, workID, attemptID,
 }
 
 type SettleContinuationOptions struct {
-	Status    contracts.WorkStatus
-	At        float64
-	Submitted bool
+	Status        contracts.WorkStatus
+	At            float64
+	Submitted     bool
+	RejectedStart *RejectedContinuationStart
+}
+
+// RejectedContinuationStart identifies a start request that the transport
+// explicitly proved was not accepted. It cannot retire an acknowledged turn.
+type RejectedContinuationStart struct {
+	ConversationID string
+	FromTurnID     string
+	RuntimeID      string
+	ThreadID       string
 }
 
 func (value *Store) SettleWorkContinuation(ctx context.Context, workID, attemptID string, input SettleContinuationOptions) (*contracts.WorkRecord, error) {
@@ -154,7 +164,25 @@ func (value *Store) SettleWorkContinuation(ctx context.Context, workID, attemptI
 		default:
 			return continuationConflict()
 		}
-		if dispatch.Phase != contracts.ContinuationDispatchPhaseClaimed || input.Submitted || input.Status == contracts.WorkStatusUnknown {
+		knownRejected := false
+		if proof := input.RejectedStart; proof != nil {
+			unacknowledged := dispatch.Phase == contracts.ContinuationDispatchPhaseSubmitting && dispatch.TurnID == ""
+			if input.Submitted || input.Status != contracts.WorkStatusFailed || !unacknowledged {
+				return continuationConflict()
+			}
+			sameTurn := proof.FromTurnID == record.TurnID && proof.FromTurnID == dispatch.FromTurnID
+			sameExecutor := proof.RuntimeID == dispatch.RuntimeID && proof.ThreadID == dispatch.ThreadID
+			if proof.ConversationID != state.ConversationID || !sameTurn || !sameExecutor {
+				return continuationConflict()
+			}
+			sameBinding := state.ThreadRuntime.Value == proof.RuntimeID && state.ThreadID.Value == proof.ThreadID
+			if state.ThreadConversationID != proof.ConversationID || !sameBinding {
+				return continuationConflict()
+			}
+			knownRejected = true
+		}
+
+		if dispatch.Phase != contracts.ContinuationDispatchPhaseClaimed && !knownRejected || input.Submitted || input.Status == contracts.WorkStatusUnknown {
 			record.Status = contracts.WorkStatusUnknown
 			record.PauseReason = contracts.Some("continuation-unconfirmed")
 			c.NextAt = contracts.Null[float64]()

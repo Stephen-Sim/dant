@@ -7,6 +7,7 @@ const MAX_PROFILE_BYTES = 64 * 1024 * 1024;
 const MAX_PROFILE_ROWS = 1_000_000;
 const MAX_PROFILE_BLOCKS = 250_000;
 const PROFILE_ERROR = 'The Go coverage report is incomplete or invalid.';
+const PACKAGE_NAME = /^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+$/;
 export const CORE_CRITICAL_COVERAGE = Object.freeze([
   'internal/controller',
   'internal/computer',
@@ -19,16 +20,20 @@ interface Block {
   statements: number;
   hit: boolean;
 }
-export interface GoPackageCoverage {
-  package: string;
+interface GoStatementCoverage {
   statements: number;
   covered: number;
   percent: number;
+}
+export interface GoPackageCoverage extends GoStatementCoverage {
+  package: string;
 }
 export interface GoCoverageResult {
   metric: 'Go statements';
   minimum: number;
   required: readonly string[];
+  expectedPackages: readonly string[];
+  overall: GoStatementCoverage;
   packages: readonly GoPackageCoverage[];
   failures: readonly string[];
 }
@@ -96,13 +101,37 @@ export function assessGoCoverage(
   expected: readonly string[],
 ): GoCoverageResult {
   requireProfile(expected.length > 0 && new Set(expected).size === expected.length);
-  requireProfile(expected.every((name) => name.startsWith(MODULE)));
+  requireProfile(
+    expected.every(
+      (name) => name.startsWith(MODULE) && PACKAGE_NAME.test(name.slice(MODULE.length)),
+    ),
+  );
   const expectedNames = expected.map((name) => name.slice(MODULE.length));
-  requireProfile(packages.every((item) => expectedNames.includes(item.package)));
+  requireProfile(new Set(packages.map((item) => item.package)).size === packages.length);
+  requireProfile(
+    packages.every(
+      (item) =>
+        expectedNames.includes(item.package) &&
+        Number.isSafeInteger(item.statements) &&
+        Number.isSafeInteger(item.covered) &&
+        item.statements >= 0 &&
+        item.covered >= 0 &&
+        item.covered <= item.statements &&
+        item.percent === (item.statements ? (item.covered / item.statements) * 100 : 100),
+    ),
+  );
+  const statements = packages.reduce((sum, item) => sum + item.statements, 0);
+  const covered = packages.reduce((sum, item) => sum + item.covered, 0);
+  requireProfile(Number.isSafeInteger(statements) && Number.isSafeInteger(covered));
+
   const failures: string[] = [];
   for (const name of expectedNames) {
-    // Thin process entrypoints have no separate feature policy or test package.
-    if (name.startsWith('cmd/')) continue;
+    // Include thin entrypoints in the denominator without requiring their execution.
+    if (name.startsWith('cmd/')) {
+      if (!packages.some((item) => item.package === name && item.statements > 0))
+        failures.push(`Go entrypoint has no instrumented statements: ${name}`);
+      continue;
+    }
     if (!packages.some((item) => item.package === name && item.statements > 0 && item.covered > 0))
       failures.push(`Go package has no executable coverage: ${name}`);
   }
@@ -121,9 +150,77 @@ export function assessGoCoverage(
     metric: 'Go statements',
     minimum: CORE_MINIMUM_STATEMENTS,
     required: CORE_CRITICAL_COVERAGE,
+    expectedPackages: expectedNames,
+    overall: { statements, covered, percent: statements ? (covered / statements) * 100 : 100 },
     packages,
     failures,
   };
+}
+
+/** Counts are weighted by unique statements, never averaged across packages or languages. */
+export function goCoverageMarkdown(result: GoCoverageResult): string {
+  const checked = assessGoCoverage(
+    result.packages,
+    result.expectedPackages.map((name) => MODULE + name),
+  );
+  const total = checked.overall;
+  const percent = (item: GoStatementCoverage) =>
+    item.statements ? `${item.percent.toFixed(4)}%` : 'No executable statements';
+  const lines = [
+    '## Go core statement coverage',
+    '',
+    `**Overall: ${percent(total)} (${total.covered}/${total.statements} statements covered).**`,
+    `**Coverage gates: ${checked.failures.length ? 'FAIL' : 'PASS'}.**`,
+    '',
+    'Repeated instrumented blocks count once; a block is covered when any test binary executes it. Overall coverage is weighted by statement counts. These are Go statements, separate from UI line, branch and function coverage.',
+    '',
+    `Critical packages require at least ${checked.minimum}% without rounding up. Every other feature package requires executable coverage. Command entrypoints must be instrumented but have no percentage minimum. Packages are listed from lowest coverage to highest.`,
+    '',
+    '| Package | Covered / total statements | Coverage | Requirement | Status |',
+    '| --- | ---: | ---: | --- | --- |',
+  ];
+  const names = [...new Set([...checked.expectedPackages, ...checked.required])];
+  const packagePercent = (name: string) => {
+    const item = checked.packages.find((entry) => entry.package === name);
+    return item?.statements ? item.percent : -1;
+  };
+  names.sort(
+    (left, right) => packagePercent(left) - packagePercent(right) || left.localeCompare(right),
+  );
+
+  for (const name of names) {
+    const item = checked.packages.find((entry) => entry.package === name);
+    const critical = checked.required.includes(name);
+    const command = name.startsWith('cmd/');
+    const loaded = item && item.statements > 0;
+    const passed =
+      loaded &&
+      (critical
+        ? BigInt(item.covered) * 100n >= BigInt(checked.minimum) * BigInt(item.statements)
+        : item.covered > 0);
+    const requirement = critical
+      ? `>= ${checked.minimum}%`
+      : command
+        ? 'Reported entrypoint'
+        : 'Executable coverage';
+    lines.push(
+      `| \`${name}\` | ${item ? `${item.covered} / ${item.statements}` : 'Not reported'} | ${item ? percent(item) : 'Not reported'} | ${requirement} | ${command ? (loaded ? 'Reported' : 'FAIL') : passed ? 'PASS' : 'FAIL'} |`,
+    );
+  }
+  return lines.join('\n') + '\n\n';
+}
+
+export function appendGoCoverageSummary(result: GoCoverageResult, destination?: string): void {
+  if (!destination) return;
+  if (!path.isAbsolute(destination) || destination.includes('\0'))
+    throw Error('The Go coverage summary destination is invalid.');
+
+  const markdown = goCoverageMarkdown(result);
+  try {
+    fs.appendFileSync(destination, markdown, 'utf8');
+  } catch {
+    throw Error('The Go coverage summary could not be written.');
+  }
 }
 
 /** A private fresh path prevents a prior successful profile from satisfying a failed run. */
@@ -139,7 +236,7 @@ export function createGoCoverageReport(root: string): GoCoverageReport {
     requireProfile(entry.isDirectory() && !entry.isSymbolicLink());
   }
   // Failed checks must not upload a stale public summary from an earlier run.
-  for (const name of ['coverage.out', 'coverage.json'])
+  for (const name of ['coverage.out', 'coverage.json', 'coverage.md'])
     fs.rmSync(path.join(parent, name), { force: true });
   const directory = fs.mkdtempSync(path.join(parent, 'coverage-run-'));
   const file = path.join(directory, 'coverage.out');
@@ -160,6 +257,9 @@ export function createGoCoverageReport(root: string): GoCoverageReport {
     save(result) {
       fs.copyFileSync(file, path.join(parent, 'coverage.out'), fs.constants.COPYFILE_EXCL);
       fs.writeFileSync(path.join(parent, 'coverage.json'), JSON.stringify(result, null, 2) + '\n', {
+        flag: 'wx',
+      });
+      fs.writeFileSync(path.join(parent, 'coverage.md'), goCoverageMarkdown(result), {
         flag: 'wx',
       });
     },

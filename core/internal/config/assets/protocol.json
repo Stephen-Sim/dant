@@ -3,6 +3,7 @@
   "loopbackHosts": ["127.0.0.1", "localhost"],
   "apiPort": 4317,
   "devPort": 4318,
+  "bootstrapGuestPort": 4319,
   "guestPort": 4320,
   "paths": {
     "api": "/api",

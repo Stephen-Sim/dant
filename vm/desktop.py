@@ -64,7 +64,9 @@ if __name__=='__main__':
     if a.action=='screenshot':
         target=a.args[0] if a.args else '/home/dant/work/screen.png'
         with desktop_access():
-            open(target,'wb').write(screenshot());print(target)
+            with open(target, 'wb') as output:
+                output.write(screenshot())
+            print(target)
     else:
         payload={'type':a.action}
         if a.action=='click':payload.update(x=int(a.args[0]),y=int(a.args[1]))

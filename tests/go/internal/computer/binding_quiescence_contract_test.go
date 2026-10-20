@@ -6,6 +6,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,6 +21,38 @@ func bindingContractInput(t *testing.T) (string, map[string]any) {
 		t.Fatal(err)
 	}
 	return directory, map[string]any{"host": "fixture.invalid", "user": "dant", "keyPath": "fixture-key"}
+}
+
+func TestBindingStandardSSHDefaultPreservesExplicitConnectionIdentity(t *testing.T) {
+	directory, input := bindingContractInput(t)
+	var standard Binding
+	for index, port := range []int{0, 22, 2222} {
+		if port != 0 {
+			input["port"] = port
+		}
+		raw, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		binding, err := NormalizeBinding(raw, directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			standard = binding
+			if binding.Port != 22 {
+				t.Fatal("omitted SSH port lost the standard protocol default")
+			}
+		} else if port == 22 && !reflect.DeepEqual(binding, standard) {
+			t.Fatal("explicit standard port changed the connection identity")
+		} else if port == 2222 && binding.Port != 2222 {
+			t.Fatal("custom SSH port was overwritten by the default")
+		}
+		args := SSHArgs(binding)
+		if len(args) < 3 || args[1] != "-p" || args[2] != strconv.Itoa(binding.Port) {
+			t.Fatal("SSH command did not preserve the selected connection port")
+		}
+	}
 }
 
 func TestBindingNormalizationRetainsSupportedLegacyPortsAndRelativeReferences(t *testing.T) {

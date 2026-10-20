@@ -5,7 +5,12 @@ import { fileURLToPath } from 'node:url';
 import type { SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { createCoreGoTestOverlay } from './test-layout.mts';
 import type { CoreGoTestOverlay } from './test-layout.mts';
-import { assessGoCoverage, createGoCoverageReport, parseGoCoverage } from './coverage.mts';
+import {
+  appendGoCoverageSummary,
+  assessGoCoverage,
+  createGoCoverageReport,
+  parseGoCoverage,
+} from './coverage.mts';
 import type { GoCoverageReport } from './coverage.mts';
 
 export const GO_VERSION = '1.27.2';
@@ -183,6 +188,7 @@ export function runCoreGo(
         if (result.error || result.status !== 0) throw Error('Go core coverage tests failed.');
         const assessed = assessGoCoverage(parseGoCoverage(report.read()), expected);
         report.save(assessed);
+        appendGoCoverageSummary(assessed, env.GITHUB_STEP_SUMMARY);
         for (const name of assessed.required) {
           const item = assessed.packages.find((entry) => entry.package === name);
           if (item) write(`${name}: ${item.percent.toFixed(2)}% Go statements\n`);

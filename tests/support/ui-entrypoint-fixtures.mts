@@ -1,3 +1,4 @@
+import { apiPath } from '../../ui/platform/native-protocol.mts';
 import type { ApiOptions } from '../../ui/shared/contracts.mts';
 import type { MainFunctions, MainBindings } from '../../ui/main.mts';
 import { createMessageWindow } from '../../ui/chat/message-window.mts';
@@ -212,5 +213,5 @@ export function uiEntrypointFixture<T extends object>(
       dispose() {},
     },
   };
-  return Object.assign(bindings, entrypointSlots, context);
+  return Object.assign(bindings, { apiPath }, entrypointSlots, context);
 }

@@ -107,3 +107,5 @@ DOM 测试仅使用 LinkeDOM 的公开 `parseHTML` 入口。`tests/types/linkedo
 `npm run check:core` 检查 Go 格式，并通过完整测试 overlay 运行 vet、全部包测试与语句覆盖率。Controller、Computer（发现及 VM 传输）、Telegram 各自必须至少 90%，全部功能包都必须出现。UI 单独保留 90% 行、80% 分支、80% 函数门槛，appearance 单模块至少 90% 行。Go 语句与 Node 行是不同指标，必须分别报告。`npm run test:core` 运行包测试；`npm run test:core:race` 还会在 Linux 使用可用的 C 编译器运行竞态检测。这些统一命令才是受支持的完整测试入口；在 `core/` 直接执行裸 `go test ./...` 不会发现模块外的测试源码。入口递归校验全部测试映射，拒绝放错目录或未映射的测试，保留平台后缀和所属包工作目录，并在命令结束后清理私有临时 overlay。格式化同时覆盖 `core/` 与 `tests/go/`。核心 CI 在 Windows 与 Linux 执行检查，并在 Linux 增加竞态检测；缺少前提条件是失败，不能忽略测试。核心测试必须使用隔离数据与注入依赖，不得连接真实模型、操作 VM 或读取用户账号数据。
 
 测试使用夹具、注入时钟与传输、临时数据。不得连接真实模型账号或 Telegram bot、操作用户 VM 或使用真实音频设备。保留精确的任务和连接身份、持久状态，以及结果未知时先核对而不重发的规则。不得为通过重构而关闭检查或降低覆盖率要求。
+
+TypeScript、Go、Rust、Python、PowerShell 和 Bash 覆盖率分别报告，注明测量范围和已覆盖／总数。Rust 原生覆盖率需要 LLVM 插桩，行为模块放在 `tests/native/rust/`，通过私有测试专用路径访问；Python 测行和分支，包含 Go 嵌入的 Python 资源，最低分别为 95% 和 90%；PowerShell 测 Pester 命令，最低 95%，夹具位于 `tests/powershell/`。Linux Bash 覆盖率使用固定版本 kcov 和 `tests/bash/` 中的隔离夹具；语法解析或夹具通过不能替代执行测量。必须明示当前平台不可用的插桩。通过有意义的行为和失败测试接近 100%，持续明示未测维护文件。保留门槛，不得编造结果或修改策略来抬高比例。CI 摘要和可下载原始报告必须说明各自指标及准确源码。

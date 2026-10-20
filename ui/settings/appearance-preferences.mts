@@ -20,9 +20,13 @@ const choices = {
   font: ['system', 'sans', 'mono'],
   reduceMotion: ['system', 'reduce', 'full'],
 } as const;
-const ranges = { fontSize: [12, 18], contentFontSize: [12, 24], codeFontSize: [11, 22] } as const;
+export const appearanceFontRanges = Object.freeze({
+  fontSize: Object.freeze([12, 18] as const),
+  contentFontSize: Object.freeze([12, 24] as const),
+  codeFontSize: Object.freeze([11, 22] as const),
+});
 const MAX_FONT_FAMILY_CHARACTERS = 128;
-const MAX_APPEARANCE_IMPORT_BYTES = 64 * 1024;
+export const MAX_APPEARANCE_IMPORT_BYTES = 64 * 1024;
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -30,8 +34,8 @@ function valueFor<Key extends AppearanceKey>(key: Key, value: unknown): Appearan
   if (key in choices) {
     const accepted: readonly string[] = choices[key as keyof typeof choices];
     if (typeof value === 'string' && accepted.includes(value)) return value as Appearance[Key];
-  } else if (key in ranges) {
-    const [min, max] = ranges[key as keyof typeof ranges];
+  } else if (key in appearanceFontRanges) {
+    const [min, max] = appearanceFontRanges[key as keyof typeof appearanceFontRanges];
     if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max)
       return value as Appearance[Key];
   } else if (key.endsWith('Color')) {

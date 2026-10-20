@@ -169,7 +169,7 @@ func (app *WorkerApp) credentialBridge(writer http.ResponseWriter, request *http
 }
 
 func (app *WorkerApp) registerOperationalRoutes(mux *http.ServeMux) {
-	service := updates.New(updates.Options{Version: app.options.Version})
+	service := updates.New(updates.Options{Version: app.options.Version, HTTP: app.options.UpdateHTTP})
 	app.updates = service
 	for _, route := range []string{"/api/version", "/api/updates"} {
 		mux.HandleFunc(route, func(writer http.ResponseWriter, request *http.Request) {

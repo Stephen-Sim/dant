@@ -10,8 +10,10 @@ Run the complete commands in [testing](testing.md) and [CI](ci.md), using the pi
 
 - Go checks cover every feature package, vet, formatting and the required statement coverage. Linux also runs the race detector.
 - Browser/tooling checks cover strict TypeScript, generated contracts, state domains, recursive tests and required UI coverage.
-- Rust tests cover native behavior. Python and PowerShell checks cover VM helpers without operating a real VM.
+- Rust tests cover native behavior with separate LLVM instrumentation. Python measures lines and branch arcs; PowerShell measures executable commands through Pester. Bash uses the pinned Linux kcov collector with isolated fixtures and an inventory of every maintained shell script; syntax checks and passing fixtures alone do not establish coverage. Missing platform prerequisites must be reported as unavailable. These checks must not operate a real VM.
 - Build and version checks validate matching manifests, locked dependencies, clean source provenance and prepared resources.
+
+Record each coverage metric with its source scope, covered/total counts, platform and toolchain. TypeScript percentages do not describe Go, Rust or Python; test totals do not substitute for instrumented coverage. Missing or failed instrumentation remains unavailable, never 100% by inference. Track uncovered maintained files and platform-specific gaps while working toward close to 100%; retain current gates and do not hide unmeasured scripts. Keep CI summaries and downloadable raw reports for the same source.
 
 Keep behavioral evidence separate from layout review. A browser fixture should use the actual renderer and stylesheet with synthetic responses, and verify wide/narrow layouts, keyboard controls and relevant language directions. The recovery view must remain usable when application state is unavailable.
 

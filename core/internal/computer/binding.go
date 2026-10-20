@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/files"
 )
@@ -59,7 +60,7 @@ func NormalizeBinding(raw []byte, directory string) (Binding, error) {
 	if json.Unmarshal(bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf}), &input) != nil {
 		return Binding{}, ErrBinding
 	}
-	port := 22
+	port := config.DefaultSSHPort
 	if input.Port != nil {
 		var value float64
 		if len(input.Port) > 0 && input.Port[0] == '"' {
@@ -71,7 +72,7 @@ func NormalizeBinding(raw []byte, directory string) (Binding, error) {
 		} else {
 			err = json.Unmarshal(input.Port, &value)
 		}
-		if err != nil || value < 1 || value > 65535 || math.Trunc(value) != value {
+		if err != nil || value < 1 || value > config.MaxPort || math.Trunc(value) != value {
 			return Binding{}, ErrBinding
 		}
 		port = int(value)

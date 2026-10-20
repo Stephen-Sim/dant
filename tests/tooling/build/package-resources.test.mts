@@ -4,6 +4,7 @@ import {
   CORE_BUILD_MANIFEST,
   VM_BUNDLE_FILES,
   HOST_HELPERS,
+  HOST_CONFIG_FILES,
   CORE_GUEST_BINARY,
   describeFile,
   type BundleManifest,
@@ -61,6 +62,7 @@ function fixture(t: NodeTestContext) {
   for (const name of [
     ...VM_BUNDLE_FILES.filter((name) => name !== CORE_GUEST_BINARY),
     ...HOST_HELPERS,
+    ...HOST_CONFIG_FILES,
   ])
     write(root, name, 'fixture helper ' + name);
   const coreDirectory = path.join(root, '.cache/core/build');
@@ -127,6 +129,15 @@ test('fresh resources remove obsolete hashed assets and deleted source files wit
     fs.readFileSync(path.join(f.paths.resources, 'UNICODE-LICENSE.txt'), 'utf8'),
     'Unicode license fixture',
   );
+  for (const name of [
+    ...HOST_CONFIG_FILES,
+    'scripts/computer/resource-config.py',
+    'scripts/computer/resource-config.ps1',
+  ])
+    assert.equal(
+      fs.readFileSync(path.join(f.paths.resources, name), 'utf8'),
+      fs.readFileSync(path.join(f.root, name), 'utf8'),
+    );
   write(f.paths.resources, 'dist/assets/stale-old.js', 'stale');
   write(f.paths.resources, 'src/deleted.mjs', 'stale');
   write(f.paths.resources, 'unexpected-extra.txt', 'stale');
@@ -261,6 +272,9 @@ test('resource hashes bind frontend and host helpers as well as both Go binaries
     CORE_WINDOWS,
     CORE_GUEST_BINARY,
     'scripts/vm-lifecycle.ps1',
+    'scripts/computer/resource-config.py',
+    'scripts/computer/resource-config.ps1',
+    ...HOST_CONFIG_FILES,
     'dist/assets/current.js',
   ]) {
     const f = fixture(t);

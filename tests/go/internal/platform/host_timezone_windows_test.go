@@ -5,6 +5,8 @@ import (
 	"syscall"
 	"testing"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestDynamicTimeZoneABIAndLocalizedNames(t *testing.T) {
@@ -30,5 +32,16 @@ func TestDynamicTimeZoneABIAndLocalizedNames(t *testing.T) {
 	}
 	if _, err := readWindowsHostTimeZone(func(*dynamicTimeZoneInformation) uint32 { return 0 }); !errors.Is(err, ErrHostTimeZone) {
 		t.Fatal("missing native key invented UTC")
+	}
+}
+
+func TestUnavailableWindowsTimeZoneAPIHasAClassifiedOutcome(t *testing.T) {
+	original := dynamicTimeZone
+	dynamicTimeZone = windows.NewLazySystemDLL("kernel32.dll").NewProc("DantPlatformFixtureMissingTimeZoneAPI")
+	t.Cleanup(func() { dynamicTimeZone = original })
+
+	zone, err := HostTimeZone(nil)
+	if zone != "" || !errors.Is(err, ErrHostTimeZone) || err.Error() != "host_time_zone_unavailable" {
+		t.Fatal("an unavailable native API exposed a guessed identity or raw loader error")
 	}
 }

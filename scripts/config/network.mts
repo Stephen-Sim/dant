@@ -1,7 +1,6 @@
 // Build/development endpoints and public deployment metadata; production transport belongs to Go.
-import protocol from '../../resources/config/protocol.json' with { type: 'json' };
-
-export const MAX_PORT = 65_535;
+import { MAX_PORT, PROTOCOL as protocol } from './protocol.mts';
+export { MAX_PORT } from './protocol.mts';
 
 // Environment and transport values are untrusted until their field validators
 // have accepted them. This also accepts process.env without widening to any.

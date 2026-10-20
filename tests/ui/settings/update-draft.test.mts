@@ -128,6 +128,23 @@ test('an authoritative matching conversation is required and offline cache canno
   }
 });
 
+test('an omitted SSH port shares the standard-port draft identity while custom ports remain distinct', async () => {
+  const current = state();
+  const { port: _omitted, ...withoutPort } = current.settings.vm;
+  const missing = { ...current, settings: { ...current.settings, vm: withoutPort } };
+  const custom = {
+    ...current,
+    settings: { ...current.settings, vm: { ...current.settings.vm, port: 2222 } },
+  };
+  assert.equal(updateDraftScope(missing), updateDraftScope(current));
+  assert.notEqual(updateDraftScope(custom), updateDraftScope(current));
+  const f = fixture();
+  await f.helper.save(missing, draft());
+  assert.equal((await f.helper.take(current))?.text, draft().text);
+  await f.helper.save(missing, draft());
+  assert.equal(await f.helper.take(custom), null);
+});
+
 test('expired, future, malformed and oversized records cannot restore or linger', async () => {
   const f = fixture(),
     current = state();

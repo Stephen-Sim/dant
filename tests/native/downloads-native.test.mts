@@ -11,10 +11,13 @@ test('native attachment saves are main-window only and use a fixed authenticated
   assert.match(rust, /window\.label\(\) != "main"/);
   assert.match(rust, /valid_id\(&file_id\)/);
   assert.match(rust, /valid_token\(&token\)/);
-  assert.match(rust, /http:\/\/127\.0\.0\.1:4317\/api\/files\/\{file_id\}\?download=1/);
+  assert.match(
+    rust,
+    /crate::protocol::api_url\(&format!\(\s*"files\/\{file_id\}\?download=1"\s*\)\)/,
+  );
   assert.match(rust, /header\("X-Dant-Token", token\)/);
   assert.match(rust, /no_proxy\(\)\s*\.redirect\(reqwest::redirect::Policy::none\(\)\)/);
-  assert.match(rust, /MAX_BYTES: usize = 10 \* 1024 \* 1024/);
+  assert.match(rust, /MAX_BYTES: usize = crate::protocol::ATTACHMENT_MAX_BYTES/);
   assert.doesNotMatch(
     rust,
     /pub\s+async\s+fn\s+save_attachment\s*\([^)]*\b(?:url|destination|path)\s*:/,

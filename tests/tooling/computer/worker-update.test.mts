@@ -8,9 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { observedRecord, observedRecords } from '../../support/service-fixtures.mts';
 
 const script = fs.readFileSync('vm/install-worker.sh', 'utf8').replaceAll('\r\n', '\n');
-const check = defined(
-  defined(script.match(/python3 - "\$\{1:-check\}" <<'PY'\n([\s\S]*?)\nPY/))[1],
-);
+const check = fs.readFileSync('vm/worker-update-guard.py', 'utf8');
 const idle = () => ({
   active: null,
   call: null,
@@ -42,7 +40,8 @@ const GUARD_FIXTURE_CASE_TIMEOUT_MS = 10_000;
 const MAX_GUARD_FIXTURE_CASES = 32;
 const harness = String.raw`
 import contextlib, io, json, os, sys, threading, time, urllib.request
-fixtures=json.loads(sys.argv[1]); source=compile(sys.argv[2],'worker-update-check','exec')
+sys.path.insert(0,os.path.abspath('vm'))
+fixtures=json.loads(sys.argv[1]); source=compile(sys.argv[2],'vm/worker-update-guard.py','exec')
 case_timeout=int(sys.argv[3])/1000
 results=[]
 def expired():

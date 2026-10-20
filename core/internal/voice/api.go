@@ -32,16 +32,16 @@ func NewAPI(ctx context.Context, options APIOptions) (*API, error) {
 		options.NewID = uuid.NewString
 	}
 	if options.ConnectTimeout == 0 {
-		options.ConnectTimeout = 15 * time.Second
+		options.ConnectTimeout = defaultConnectTimeout
 	}
 	if options.RequestTimeout == 0 {
 		options.RequestTimeout = 30 * time.Second
 	}
 	if options.HangupTimeout == 0 {
-		options.HangupTimeout = 10 * time.Second
+		options.HangupTimeout = defaultMediaStopTimeout
 	}
 	if options.ContextTimeout == 0 {
-		options.ContextTimeout = 5 * time.Second
+		options.ContextTimeout = defaultContextTimeout
 	}
 	for _, limit := range []time.Duration{options.ConnectTimeout, options.RequestTimeout, options.HangupTimeout, options.ContextTimeout} {
 		if limit < time.Millisecond || limit > 5*time.Minute {

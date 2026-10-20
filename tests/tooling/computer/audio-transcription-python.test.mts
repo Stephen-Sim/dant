@@ -196,7 +196,7 @@ test('ASR dependency lock pins every wheel and installer verifies exact model ha
   assert.ok(lines.length >= 7);
   for (const line of lines) assert.match(line, /^[\w-]+==[\d.]+ --hash=sha256:[0-9a-f]{64}$/);
   assert.ok(lines.some((line) => line.startsWith('faster-whisper==1.2.1 ')));
-  const script = fs.readFileSync('vm/install-transcription.sh', 'utf8');
+  const script = fs.readFileSync('vm/install-transcription.py', 'utf8');
   assert.match(script, /--require-hashes/);
   assert.match(script, /--only-binary=:all:/);
   assert.match(script, /536b0662742c02347bc0e980a01041f333bce120/);
@@ -209,7 +209,7 @@ test('ASR dependency lock pins every wheel and installer verifies exact model ha
   assert.match(script, /root\.exists\(\) or root\.is_symlink\(\)/);
   succeeds(String.raw`
 import ast
-source=pathlib.Path('vm/install-transcription.sh').read_text().split("<<'PY'\n",1)[1].rsplit('\nPY',1)[0]
+source=pathlib.Path('vm/install-transcription.py').read_text()
 ast.parse(source)
 `);
 });

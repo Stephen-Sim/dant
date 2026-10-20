@@ -5,6 +5,7 @@ import type { UpdateAsset } from '../../ui/platform/native-updates.mts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createNativeUpdates } from '../../ui/platform/native-updates.mts';
+import { MAX_UPDATE_BYTES } from '../../ui/settings/update-limits.mts';
 const asset: UpdateAsset = {
   version: '0.5.0-beta.2',
   channel: 'beta',
@@ -15,6 +16,25 @@ const asset: UpdateAsset = {
 };
 const result = { ...asset, url: undefined, ready: true, packageId: asset.sha256 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('native update admission accepts the shared exact payload limit and rejects excess before IPC', async () => {
+  const selected = { ...asset, size: MAX_UPDATE_BYTES };
+  const f = fixture({
+    invoke: async (name) => {
+      assert.equal(name, 'download_update');
+      return { ...selected, ready: true, packageId: selected.sha256 };
+    },
+  });
+  assert.equal((await f.bridge.download(selected)).size, 512 * 1024 * 1024);
+  assert.equal(f.calls.length, 1);
+  await assert.rejects(
+    f.bridge.download({ ...selected, size: MAX_UPDATE_BYTES + 1 }),
+    /unavailable/,
+  );
+  assert.equal(f.calls.length, 1);
+  f.bridge.dispose();
+});
+
 function fixture({
   install = true,
   invoke,

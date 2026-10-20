@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { parseHTML } from 'linkedom';
 import { reconcile } from '../../../ui/shared/dom.mts';
 import { createUpdates } from '../../../ui/settings/updates.mts';
+import { MAX_UPDATE_BYTES } from '../../../ui/settings/update-limits.mts';
 
 const releaseUrl = 'https://github.com/Stephen-Sim/dant/releases/tag/v1.2.0';
 const update = {
@@ -387,6 +388,35 @@ const ready = (asset: UpdateAsset) => ({
   name: asset.name,
   sha256: asset.sha256,
   size: asset.size,
+});
+
+test('settings update admission uses the same exact installer byte boundary as native download', async () => {
+  const downloaded: UpdateAsset[] = [],
+    f = fixture({
+      nativeUpdater: {
+        available: true,
+        installSupported: true,
+        download: async (asset) => {
+          downloaded.push(asset);
+          return ready(asset);
+        },
+        install: async () => ({ launched: true }),
+      },
+    });
+  await f.enter();
+  const verified = verifiedUpdate();
+  f.request = async () => ({ ...verified, asset: { ...verified.asset, size: MAX_UPDATE_BYTES } });
+  await f.click('[data-check-updates]');
+  await f.click('[data-download-update]');
+  assert.equal(downloaded[0]?.size, 512 * 1024 * 1024);
+  f.request = async () => ({
+    ...verified,
+    asset: { ...verified.asset, size: MAX_UPDATE_BYTES + 1 },
+  });
+  await f.click('[data-check-updates]');
+  assert.equal(f.document.querySelector('[data-download-update]'), null);
+  assert.equal(downloaded.length, 1);
+  f.ui.dispose();
 });
 
 test('channel selection persists locally, never starts work, and stale checks cannot overwrite another channel', async () => {

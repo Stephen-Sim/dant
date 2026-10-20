@@ -32,11 +32,16 @@ func fixtureWorkerOptions(t *testing.T) WorkerOptions {
 		t.Fatal(err)
 	}
 	uid := 1000
+	offlineHTTP := appHTTPFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("isolated_fixture_http_denied")
+	})
 	return WorkerOptions{
 		Startup: startup, Version: "0.0.0-test.1", Source: strings.Repeat("a", 40),
 		VerifyHost: func(context.Context) error { return nil },
+		VoiceHTTP:  offlineHTTP, TelegramHTTP: offlineHTTP, UpdateHTTP: offlineHTTP,
 		WorkerOptions: workerRuntime.WorkerOptions{
 			Platform: "linux", UID: &uid,
+			Client:        offlineHTTP,
 			VerifyRuntime: func(context.Context) error { return errors.New("isolated_fixture_offline") },
 		},
 	}

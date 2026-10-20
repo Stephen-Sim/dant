@@ -153,7 +153,7 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 	gateway.mu.Lock()
 	text = gateway.safeText(text)
 	gateway.mu.Unlock()
-	if contracts.UTF16Length(text) > 100000 {
+	if contracts.UTF16Length(text) > maxIncomingTextUnits {
 		return ErrIncoming
 	}
 	candidates := []incomingCandidate{}
@@ -164,7 +164,7 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 				if file.Size != nil {
 					return *file.Size
 				}
-				if file.Width < 0 || file.Width > 100000 || file.Height < 0 || file.Height > 100000 {
+				if file.Width < 0 || file.Width > maxIncomingImageDimension || file.Height < 0 || file.Height > maxIncomingImageDimension {
 					return 0
 				}
 				return file.Width * file.Height
@@ -272,7 +272,7 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 		}
 	}
 	if err != nil {
-		bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), receiptWriteTimeout)
 		defer cancel()
 		_ = gateway.options.Store.Mutate(bounded, func(latest *contracts.State) error {
 			if latest.ConversationID != conversation {

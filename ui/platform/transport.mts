@@ -1,3 +1,4 @@
+import { NATIVE_PROTOCOL, apiPath } from './native-protocol.mts';
 // The renderer speaks the same local JSON contract through IPC or HTTP.
 // No credentials, application state, or drafts are persisted here.
 import { isRecord, LocalRequestError, requestError } from '../shared/contracts.mts';
@@ -86,7 +87,7 @@ export function createTransport({
     { method = 'GET', body, headers = {}, keepalive = false, beforeSend }: ApiOptions = {},
   ): Promise<unknown> {
     if (
-      !route.startsWith('/api/') ||
+      !route.startsWith(NATIVE_PROTOCOL.paths.api + '/') ||
       route.includes('://') ||
       route.includes('\\') ||
       route.split('/').includes('..')
@@ -153,7 +154,7 @@ export function createTransport({
     if (
       !desktop ||
       method === 'GET' ||
-      (method === 'POST' && route === '/api/skills/import/preview')
+      (method === 'POST' && route === apiPath('/skills/import/preview'))
     )
       return perform();
     mutationRevision++;
@@ -173,7 +174,7 @@ export function createTransport({
     return request;
   }
   const refreshToken = async () => {
-    const session = await json('/api/session');
+    const session = await json(NATIVE_PROTOCOL.paths.session);
     if (!isRecord(session) || typeof session.token !== 'string')
       throw Error('Invalid local service session');
     setToken(session.token);
@@ -243,7 +244,10 @@ export function createTransport({
       let connection;
       try {
         connection = new WebSocketImpl(
-          (base || origin).replace(/^http/, 'ws') + '/events?token=' + encodeURIComponent(token),
+          (base || origin).replace(/^http/, 'ws') +
+            NATIVE_PROTOCOL.paths.events +
+            '?token=' +
+            encodeURIComponent(token),
         );
       } catch {
         reconnect();
@@ -272,7 +276,13 @@ export function createTransport({
       }
       let connection;
       try {
-        connection = new EventSourceImpl(base + '/api/events?token=' + encodeURIComponent(token));
+        connection = new EventSourceImpl(
+          base +
+            NATIVE_PROTOCOL.paths.api +
+            NATIVE_PROTOCOL.paths.events +
+            '?token=' +
+            encodeURIComponent(token),
+        );
       } catch {
         connectWS();
         return;
@@ -302,7 +312,7 @@ export function createTransport({
         while (current()) {
           try {
             const revision = mutationRevision;
-            const data = await json('/api/state');
+            const data = await json(NATIVE_PROTOCOL.paths.state);
             if (!current()) break;
             // A snapshot started before a submitted/completed mutation cannot
             // replace its newer state. Poll again; never replay the mutation.

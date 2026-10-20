@@ -16,8 +16,6 @@ import (
 
 const (
 	SessionTokenBytes      = 32
-	DefaultAPIPort         = 4317
-	DefaultDevPort         = 4318
 	BackupPassphraseHeader = "X-Dant-Backup-Passphrase"
 	CoreRuntime            = "go"
 	CoreProtocolVersion    = 1

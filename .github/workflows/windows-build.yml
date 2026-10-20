@@ -16,7 +16,7 @@ jobs:
   build:
     name: Test and package Windows x64
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       RUSTUP_TOOLCHAIN: 1.99.1
     outputs:
@@ -54,8 +54,8 @@ jobs:
         run: npm run check:contracts
       - name: Check Go formatting, vet, package behavior and critical coverage
         run: npm run check:core
-      - name: Install VM test dependency
-        run: python -m pip install --disable-pip-version-check pycdlib==1.14.0
+      - name: Install pinned Python test and coverage dependencies
+        run: python -m pip install --disable-pip-version-check -r scripts/ci/python-coverage-requirements.txt
       - name: Require VM test tools and check Bash syntax
         run: node scripts/ci/preflight.mts
       - name: Check PowerShell syntax without running VM scripts
@@ -68,22 +68,17 @@ jobs:
         run: node --test tests/tooling/build/version.test.mts tests/tooling/build/coverage.test.mts tests/tooling/build/draft-release.test.mts tests/tooling/build/test-files.test.mts
       - name: Test application and enforce coverage, including Windows DPAPI
         run: npm run test:coverage
-      - name: Upload coverage reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: coverage-windows-packaging
-          path: |
-            .cache/coverage/
-            .cache/core/coverage.out
-            .cache/core/coverage.json
-          include-hidden-files: true
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Test VM image, seed, desktop and SSH key helpers
-        run: python -m unittest discover -s tests/vm -p "test_*.py" -v
+      - name: Test and measure all Python VM helpers
+        run: npm run test:python:coverage
+      - name: Install the pinned PowerShell coverage tool
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .tools/powershell/Modules | Out-Null
+          Save-Module -Name Pester -RequiredVersion 5.9.0 -Path .tools/powershell/Modules -Repository PSGallery -Force -AcceptLicense
+      - name: Instrument and test maintained PowerShell commands
+        run: npm run test:powershell:coverage
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --no-self-update
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component llvm-tools-preview --no-self-update
       - name: Check native Rust formatting
         run: npm run format:rust:check
       - name: Restore Rust compilation cache
@@ -98,10 +93,36 @@ jobs:
             src-tauri/target/release/incremental
           key: windows-x64-rust-1.99.1-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json', 'package-lock.json') }}
           restore-keys: windows-x64-rust-1.99.1-
+      - name: Install pinned native coverage tool
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
       - name: Build frontend
         run: npm run build
       - name: Prepare Windows backend resources
         run: node scripts/package-resources.mts
+      - name: Instrument and test the Rust native host
+        run: npm run test:native:coverage
+      - name: Inventory coverage across all maintained executable code
+        if: always()
+        run: npm run coverage:inventory
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-windows-packaging
+          path: |
+            .cache/coverage/*.json
+            .cache/coverage/*.md
+            .cache/coverage/*.info
+            .cache/coverage/typescript/
+            .cache/coverage/python/
+            .cache/coverage/rust/
+            .cache/coverage/powershell/
+            .cache/core/coverage.out
+            .cache/core/coverage.json
+            .cache/core/coverage.md
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build unsigned NSIS installer with locked Cargo dependencies
         run: npx --no-install tauri build --ci --bundles nsis -- --locked
       - name: Create complete portable runtime, checksums and metadata

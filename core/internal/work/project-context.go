@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
+	"github.com/Stephen-Sim/dant/core/internal/files"
 	"github.com/Stephen-Sim/dant/core/internal/memory"
 	"github.com/Stephen-Sim/dant/core/internal/store"
 	workstate "github.com/Stephen-Sim/dant/core/internal/work/state"
@@ -47,7 +48,7 @@ func projectEntry(message *contracts.ChatMessage, redact func(string) string) js
 			continue
 		}
 		entry := contracts.RawObject{"id": raw(file.ID), "name": raw(workstate.SliceText(redact(file.Name), 200)), "type": raw(workstate.SliceText(redact(file.Type), 100))}
-		if size, present := file.Size.Get(); present && size >= 0 && size <= 10*1024*1024 && float64(int64(size)) == size {
+		if size, present := file.Size.Get(); present && size >= 0 && size <= files.MaxAttachmentBytes && float64(int64(size)) == size {
 			entry["size"] = raw(size)
 		}
 		attachments = append(attachments, entry)

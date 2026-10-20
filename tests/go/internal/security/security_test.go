@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Stephen-Sim/dant/core/internal/config"
 )
 
 func stringPointer(value string) *string { return &value }
@@ -33,7 +35,8 @@ func TestCredentialSearchUsesContextualUnicodeCaseMapping(t *testing.T) {
 
 func TestSessionBuildMarkerPreservesTheControllerRuntimeBoundary(t *testing.T) {
 	build := SessionBuild{Version: "0.0.0-test.1", Source: strings.Repeat("a", 40)}
-	auth, err := NewSessionAuth("controller", DefaultAPIPort, DefaultDevPort, build)
+	protocol := config.DefaultProtocol()
+	auth, err := NewSessionAuth("controller", protocol.APIPort, protocol.DevPort, build)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +45,7 @@ func TestSessionBuildMarkerPreservesTheControllerRuntimeBoundary(t *testing.T) {
 		t.Fatal("build marker missing")
 	}
 	build.Source = "unknown"
-	if _, err := NewSessionAuth("controller", DefaultAPIPort, DefaultDevPort, build); err == nil {
+	if _, err := NewSessionAuth("controller", protocol.APIPort, protocol.DevPort, build); err == nil {
 		t.Fatal("unverified source marker accepted")
 	}
 }

@@ -6,7 +6,9 @@ Cross-platform checks and Windows packaging are separate, following the division
 
 ## Checks
 
-UI TypeScript coverage must reach at least 90% of lines, 80% of branches, and 80% of functions overall; appearance also requires 90% lines individually. Every UI helper must appear. Backend coverage now runs against the actual Go implementation: `npm run check:core` runs all package tests with atomic statement coverage, requires every feature package to appear, and enforces at least 90% separately for Controller, Computer (including connection discovery and VM transport), and Telegram. Duplicate instrumented blocks are counted once, and the comparison uses unrounded counts. Go statements and Node lines are reported separately. A fresh private profile is required; a failed process or missing report cannot reuse a previous pass. The browser entrypoint has separate render/handler fixtures because Node does not load its CSS and live DOM. See [test ownership](testing.md).
+Coverage is measured separately for TypeScript, Go Core, native Rust, Python, PowerShell and Bash. Each report names its actual source scope; running TypeScript tests through Node does not measure the other languages. Test totals and successful test processes are behavioral evidence, not coverage percentages. Never average the runtimes into one percentage.
+
+UI TypeScript coverage must reach at least 90% of lines, 80% of branches, and 80% of functions overall; appearance also requires 90% lines individually. Every UI helper must appear. `npm run check:core` runs all Go package tests with atomic statement coverage, requires every feature package to appear, and enforces at least 90% separately for Controller, Computer (including connection discovery and VM transport), and Telegram. Duplicate instrumented blocks are counted once, and the comparison uses unrounded counts. A fresh private profile is required; a failed process or missing report cannot reuse a previous pass. Isolated DOM integration tests load the complete browser entrypoint with synthetic API, media and timer boundaries; its executable source also appears in the full TypeScript report. See [test ownership](testing.md).
 
 `CI` runs on Ubuntu 24.04 and Windows 2025 with Node.js 22.18+, Python 3.12 and Go 1.27.2. It installs locked npm dependencies, runs browser/tooling tests, coverage and state checks, tests Python VM helpers, and builds the frontend. `pycdlib==1.14.0` and OpenSSH are required so seed-image and SSH-key tests cannot silently disappear when tools are missing. Windows DPAPI tests use temporary test keys; Linux explicitly skips Windows-only checks.
 
@@ -16,9 +18,31 @@ The separate `Go core` workflow runs on Windows and Ubuntu with exactly Go 1.27.
 
 `npm run check:states` requires the pinned Go toolchain because it parses adopted Go scopes as well as UI ASTs. Missing scopes, raw state values, invalid reports and mismatched state domains fail closed. The ordinary Node unit tests inject the checker process; the integrated state command runs the real parser. Main CI and Windows packaging both install the pinned compiler.
 
-Go profiles and statement summaries are saved in `.cache/core/coverage.out` and `.cache/core/coverage.json`, uploaded by core CI and Windows packaging. Every feature package must execute at least one statement; zero-hit blocks introduced by `-coverpkg` alone do not count as test execution.
+Go profiles and statement summaries are saved in `.cache/core/coverage.out`, `.cache/core/coverage.json` and `.cache/core/coverage.md`, uploaded by core CI and Windows packaging. Every feature package must execute at least one statement; zero-hit blocks introduced by `-coverpkg` alone do not count as test execution. The overall percentage is weighted by covered/total unique statements, not the arithmetic mean of package percentages. The report lists every discovered package and the separate critical-package gates.
 
-Bash and PowerShell files are parsed without creating a VM or requesting administrator access. Tests do not use real model accounts, open microphones, or contact a configured Telegram bot. Telegram tests inject a simulated Bot API and verify owner pairing, authorization, deduplication, attachment bounds, delivery results, and shutdown.
+## Coverage reports
+
+Coverage summaries append a separate language heading to GitHub's job summary through `GITHUB_STEP_SUMMARY`. The Windows packaging job displays these reports together and uploads raw measurements as Actions artifacts; the Go core workflow also publishes its own statement report. Read each report's source scope and covered/total counts rather than interpreting TypeScript results as whole-application coverage.
+
+| Area                               | Metric                                                                                | Reports                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Browser TypeScript                 | UI lines, branches and functions; the existing UI gate remains independent.           | `.cache/coverage/` LCOV, JSON and Markdown.                                   |
+| TypeScript tooling and entrypoints | Maintained executable source, including unloaded files as zero.                       | `.cache/coverage/typescript/coverage-final.json`, `lcov.info`, `coverage.md`. |
+| Go Core                            | Atomic executable statements, overall and per package.                                | `.cache/core/coverage.out`, `coverage.json`, `coverage.md`.                   |
+| Native Rust                        | LLVM source lines, functions and regions.                                             | `.cache/coverage/rust/coverage.json`, `lcov.info`, `coverage.md`.             |
+| Python helpers                     | Executable lines and branch arcs; at least 95% lines and 90% branches.                | `.cache/coverage/python/coverage.json`, `coverage.xml`, `coverage.md`.        |
+| PowerShell                         | Executable commands measured by Pester, including zero-hit scripts; at least 95%.     | `.cache/coverage/powershell/coverage.json`, `coverage.xml`, `coverage.md`.    |
+| Bash                               | Executed shell lines measured by pinned kcov 43 on Linux, including zero-hit scripts. | `.cache/coverage/bash/coverage.json`, `summary.json`, `coverage.md`.          |
+
+The improvement target is close to 100% across maintained executable source, reached by meaningful tests of uncovered behavior and failure paths. Preserve existing minimums. Do not raise percentages by excluding files, treating skipped platforms as executed, or inventing thresholds or results. Unavailable instrumentation and unmeasured scripts remain visible gaps. HTML/CSS and generated declarations are not executable-language coverage. Coverage does not prove successful operation of real hardware or external services.
+
+`npm run coverage:inventory` writes `.cache/coverage/inventory.json` and `inventory.md` and appends the source index to the job summary. It records source commit/dirty status, platform and raw-report SHA-256, checks whether source changed after a report, and lists measured, zero-hit and unmeasured files separately. Ordinary cross-platform CI does not run every native collector; those rows remain unmeasured rather than making the inventory fail or inventing full coverage. Invalid reports and unsafe source paths still fail.
+
+Native coverage uses Rust 1.99.1 with `llvm-tools-preview` and locked `cargo-llvm-cov` 0.9.1. Python uses coverage.py 7.16.2 from `scripts/ci/python-coverage-requirements.txt`, installed into the interpreter environment so subprocess instrumentation is active. PowerShell uses Pester 5.9.0, saved with `Save-Module` into `.tools/powershell/Modules` and imported by exact manifest path. Its command denominator is distinct from line or branch coverage. Rust test modules live under `tests/native/rust/`, included only under `#[cfg(test)]`; LLVM runtime reports exclude those test files.
+
+`npm run test:bash:coverage` requires Linux and kcov 43 built from upstream commit `a39874f938ce13f7a65f253120d1ec946b349ffe`. CI builds that pinned source into `.tools/kcov`. DEBUG tracing executes the original scripts through `tests/bash/runtime.test.sh` with isolated HOME and mocked commands; all maintained VM shell scripts stay in the inventory. Embedded Python heredocs have a different execution scope and are not proved by shell line coverage. A Windows run reports the unavailable collector explicitly instead of counting a platform skip as coverage.
+
+Bash and PowerShell syntax checks do not create a VM or request administrator access. PowerShell coverage executes behavior fixtures with mocked host boundaries. Tests do not use real model accounts, open microphones, or contact a configured Telegram bot. Telegram tests inject a simulated Bot API and verify owner pairing, authorization, deduplication, attachment bounds, delivery results, and shutdown.
 
 ## Windows artifacts
 
@@ -52,6 +76,10 @@ npm run check:states
 npm run check:contracts
 npm run check:core
 npm run test:coverage
+npm run test:native:coverage
+npm run test:python:coverage
+npm run test:powershell:coverage
+npm run coverage:inventory
 python -m unittest discover -s tests/vm -p "test_*.py" -v
 node scripts/ci/version.mts
 node --test tests/tooling/build/version.test.mts

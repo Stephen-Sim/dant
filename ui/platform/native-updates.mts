@@ -1,3 +1,4 @@
+import { MAX_UPDATE_BYTES } from '../settings/update-limits.mts';
 import { isRecord, isSafeInteger } from '../shared/contracts.mts';
 import type { CoreModule, EventModule, Cleanup } from '../shared/contracts.mts';
 export interface UpdateAsset {
@@ -26,7 +27,6 @@ interface NativeUpdateOptions {
   loadCore?: () => Promise<CoreModule>;
   loadEvents?: () => Promise<EventModule>;
 }
-const MAX_UPDATE_BYTES = 512 * 1024 * 1024;
 const version = (value: unknown): value is string =>
   typeof value === 'string' &&
   value.length <= 80 &&

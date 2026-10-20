@@ -16,6 +16,14 @@ use tauri::{Emitter, Manager};
 const FAILED: &str = "The update could not be verified. Check for updates and try again.";
 const BLOCKED:&str="Installation could not confirm paused work and VM suspension. dant remains open; check Work computer and try again.";
 const MAX_INSTALLER: u64 = 512 * 1024 * 1024;
+const DOWNLOAD_BUFFER_BYTES: usize = 64 * 1024;
+const UPDATE_METADATA_MAX_BYTES: usize = 64 * 1024;
+const UPDATE_ACTION_RESPONSE_MAX_BYTES: usize = 4096;
+const UPDATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+const PREPARED_EXIT_DELAY: Duration = Duration::from_millis(150);
+pub(crate) const EXIT_AUTHORIZATION_MAX_LIFETIME_MS: u64 = 35_000;
+const EXIT_AUTHORIZATION_MIN_LIFETIME_MS: u64 = 5_000;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Asset {
@@ -237,7 +245,7 @@ pub(crate) fn verify_file(path: &Path, asset: &Asset) -> Result<(), String> {
     }
     let mut file = fs::File::open(path).map_err(|_| FAILED)?;
     let mut hash = Sha256::new();
-    let mut buffer = [0; 65536];
+    let mut buffer = [0; DOWNLOAD_BUFFER_BYTES];
     let mut total = 0;
     loop {
         let count = file.read(&mut buffer).map_err(|_| FAILED)?;
@@ -277,9 +285,31 @@ fn ready(asset: &Asset) -> Ready {
     }
 }
 fn token(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|v| v.is_ascii_hexdigit())
+    value.len() == crate::protocol::CONTROLLER_TOKEN_HEX_CHARS
+        && value.bytes().all(|v| v.is_ascii_hexdigit())
 }
 async fn controller_request(
+    route: &str,
+    token: &str,
+    max: usize,
+    method: reqwest::Method,
+    body: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    controller_request_at(
+        crate::protocol::controller_endpoint(),
+        route,
+        token,
+        max,
+        method,
+        body,
+    )
+    .await
+}
+
+// The public native boundary never accepts an endpoint. Isolated tests supply
+// an exclusively bound loopback socket to exercise the same HTTP behavior.
+async fn controller_request_at(
+    endpoint: std::net::SocketAddr,
     route: &str,
     token: &str,
     max: usize,
@@ -292,16 +322,20 @@ async fn controller_request(
     let timeout = if route.starts_with("desktop/") {
         crate::lifecycle::DESKTOP_TRANSITION_TIMEOUT
     } else {
-        Duration::from_secs(60)
+        UPDATE_REQUEST_TIMEOUT
     };
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(timeout)
+        .retry(reqwest::retry::never())
         .build()
         .map_err(|_| FAILED)?;
     let mut request = client
-        .request(method, format!("http://127.0.0.1:4317/api/{route}"))
+        .request(
+            method,
+            format!("http://{endpoint}{}/{route}", crate::protocol::api_prefix()),
+        )
         .header("X-Dant-Token", token);
     if let Some(body) = body {
         request = request
@@ -332,7 +366,7 @@ fn stream_payload(
 ) -> Result<(), String> {
     let mut hash = Sha256::new();
     let mut total = 0;
-    let mut buffer = [0; 65536];
+    let mut buffer = [0; DOWNLOAD_BUFFER_BYTES];
     let mut last = Instant::now();
     loop {
         let count = input.read(&mut buffer).map_err(|_| FAILED)?;
@@ -345,7 +379,7 @@ fn stream_payload(
         }
         output.write_all(&buffer[..count]).map_err(|_| FAILED)?;
         hash.update(&buffer[..count]);
-        if last.elapsed() > Duration::from_millis(250) {
+        if last.elapsed() > DOWNLOAD_PROGRESS_INTERVAL {
             report(total);
             last = Instant::now();
         }
@@ -356,18 +390,19 @@ fn stream_payload(
     Ok(())
 }
 fn download(app: &tauri::AppHandle, root: &Path, asset: &Asset) -> Result<(), String> {
-    let target = package(root, asset)?;
-    if verify_file(&target, asset).is_ok() {
-        return Ok(());
-    }
-    if target.exists() {
-        let meta = fs::symlink_metadata(&target).map_err(|_| FAILED)?;
-        if !meta.is_file() || linked(&meta) {
-            return Err(FAILED.into());
-        }
-    }
-    let executable =
-        PathBuf::from(std::env::var_os("SystemRoot").ok_or(FAILED)?).join("System32/curl.exe");
+    download_using(
+        root,
+        asset,
+        || {
+            let system_root = PathBuf::from(std::env::var_os("SystemRoot").ok_or(FAILED)?);
+            downloader_command(&system_root, asset)
+        },
+        |received| progress(app, asset, received, "downloading"),
+    )
+}
+
+fn downloader_command(system_root: &Path, asset: &Asset) -> Result<Command, String> {
+    let executable = system_root.join("System32/curl.exe");
     let meta = fs::symlink_metadata(&executable)
         .map_err(|_| "The Windows HTTPS downloader is unavailable.")?;
     if !meta.is_file() || linked(&meta) {
@@ -401,7 +436,27 @@ fn download(app: &tauri::AppHandle, root: &Path, asset: &Asset) -> Result<(), St
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     #[cfg(windows)]
-    command.creation_flags(0x08000000);
+    command.creation_flags(crate::runtime::CREATE_NO_WINDOW);
+    Ok(command)
+}
+
+fn download_using(
+    root: &Path,
+    asset: &Asset,
+    command: impl FnOnce() -> Result<Command, String>,
+    mut report: impl FnMut(u64),
+) -> Result<(), String> {
+    let target = package(root, asset)?;
+    if verify_file(&target, asset).is_ok() {
+        return Ok(());
+    }
+    if target.exists() {
+        let meta = fs::symlink_metadata(&target).map_err(|_| FAILED)?;
+        if !meta.is_file() || linked(&meta) {
+            return Err(FAILED.into());
+        }
+    }
+    let mut command = command()?;
     let mut child = command.spawn().map_err(|_| FAILED)?;
     let result = (|| {
         let mut input = child.stdout.take().ok_or(FAILED)?;
@@ -409,10 +464,8 @@ fn download(app: &tauri::AppHandle, root: &Path, asset: &Asset) -> Result<(), St
             .prefix(".installer-")
             .tempfile_in(target.parent().ok_or(FAILED)?)
             .map_err(|_| FAILED)?;
-        progress(app, asset, 0, "downloading");
-        stream_payload(&mut input, &mut output, asset, |total| {
-            progress(app, asset, total, "downloading")
-        })?;
+        report(0);
+        stream_payload(&mut input, &mut output, asset, &mut report)?;
         if !child.wait().map_err(|_| FAILED)?.success() {
             return Err(FAILED.into());
         }
@@ -435,13 +488,71 @@ pub async fn download_update(
     token: String,
     expected_version: String,
 ) -> Result<Ready, String> {
-    if window.label() != "main"
+    download_selected(
+        &NativeDownloadEffects {
+            app: &app,
+            token: &token,
+        },
+        &app.state::<Updates>(),
+        window.label(),
+        channel,
+        expected_version,
+    )
+    .await
+}
+
+trait DownloadEffects {
+    async fn metadata(&self, channel: &str) -> Result<serde_json::Value, String>;
+    fn cache(&self) -> Result<PathBuf, String>;
+    async fn download(&self, root: &Path, asset: &Asset) -> Result<(), String>;
+    fn progress(&self, asset: &Asset, received: u64, status: &str);
+}
+
+struct NativeDownloadEffects<'a> {
+    app: &'a tauri::AppHandle,
+    token: &'a str,
+}
+
+impl DownloadEffects for NativeDownloadEffects<'_> {
+    async fn metadata(&self, channel: &str) -> Result<serde_json::Value, String> {
+        controller(
+            &format!("updates?channel={channel}"),
+            self.token,
+            UPDATE_METADATA_MAX_BYTES,
+        )
+        .await
+    }
+    fn cache(&self) -> Result<PathBuf, String> {
+        cache(self.app)
+    }
+    async fn download(&self, root: &Path, asset: &Asset) -> Result<(), String> {
+        let app = self.app.clone();
+        let root = root.to_owned();
+        let selected = asset.clone();
+        tauri::async_runtime::spawn_blocking(move || download(&app, &root, &selected))
+            .await
+            .map_err(|_| FAILED.to_string())
+            .and_then(|value| value)
+    }
+    fn progress(&self, asset: &Asset, received: u64, status: &str) {
+        progress(self.app, asset, received, status);
+    }
+}
+
+async fn download_selected(
+    host: &impl DownloadEffects,
+    state: &Updates,
+    window: &str,
+    channel: String,
+    expected_version: String,
+) -> Result<Ready, String> {
+    if window != "main"
         || !matches!(channel.as_str(), "stable" | "beta")
         || version(&expected_version).is_none()
     {
         return Err(FAILED.into());
     }
-    let metadata = controller(&format!("updates?channel={channel}"), &token, 65536).await?;
+    let metadata = host.metadata(&channel).await?;
     let asset: Asset = serde_json::from_value(metadata.get("asset").cloned().ok_or(FAILED)?)
         .map_err(|_| FAILED)?;
     if !valid_asset(&asset)
@@ -453,8 +564,7 @@ pub async fn download_update(
     {
         return Err(FAILED.into());
     }
-    let root = cache(&app)?;
-    let state = app.state::<Updates>();
+    let root = host.cache()?;
     if !state
         .busy
         .lock()
@@ -463,15 +573,10 @@ pub async fn download_update(
     {
         return Err("This update is already downloading.".into());
     }
-    let handle = app.clone();
-    let selected = asset.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || download(&handle, &root, &selected))
-        .await
-        .map_err(|_| FAILED.to_string())
-        .and_then(|value| value);
+    let outcome = host.download(&root, &asset).await;
     state.busy.lock().map_err(|_| FAILED)?.remove(&channel);
     if let Err(error) = outcome {
-        progress(&app, &asset, 0, "failed");
+        host.progress(&asset, 0, "failed");
         return Err(error);
     }
     state
@@ -479,7 +584,7 @@ pub async fn download_update(
         .lock()
         .map_err(|_| FAILED)?
         .insert(asset.sha256.clone(), asset.clone());
-    progress(&app, &asset, asset.size, "ready");
+    host.progress(&asset, asset.size, "ready");
     Ok(ready(&asset))
 }
 pub(crate) fn install_allowed(state: &serde_json::Value) -> bool {
@@ -584,7 +689,14 @@ pub async fn install_update(
         .get(&package_id)
         .cloned()
         .ok_or(FAILED)?;
-    if !install_allowed(&controller("state", &token, 16 * 1024 * 1024).await?) {
+    if !install_allowed(
+        &controller(
+            crate::protocol::state_route(),
+            &token,
+            crate::protocol::API_RESPONSE_MAX_BYTES,
+        )
+        .await?,
+    ) {
         return Err(BLOCKED.into());
     }
     let controller_id = {
@@ -599,6 +711,110 @@ pub async fn install_update(
     let root = cache(&app)?;
     let installer = package(&root, &asset)?;
     verify_file(&installer, &asset)?;
+    install_verified(
+        &NativeInstallEffects {
+            app: &app,
+            token: &token,
+        },
+        &state,
+        asset,
+        root,
+        installer,
+        controller_id,
+    )
+    .await
+}
+
+// Installation owns one narrow set of effects. The state machine still performs
+// real private-cache writes; synthetic tests replace only Controller/helper/app
+// boundaries, never the authorization decisions or their durable receipts.
+trait InstallEffects {
+    async fn request(
+        &self,
+        route: &str,
+        method: reqwest::Method,
+        body: Option<&str>,
+    ) -> Result<serde_json::Value, String>;
+    async fn prepare(
+        &self,
+        root: &Path,
+        installer: &Path,
+        asset: &Asset,
+        controller_id: u32,
+    ) -> Result<PathBuf, String>;
+    fn owns_controller(&self) -> bool;
+    fn now_ms(&self) -> u64;
+    fn schedule_exit(&self);
+}
+
+struct NativeInstallEffects<'a> {
+    app: &'a tauri::AppHandle,
+    token: &'a str,
+}
+
+impl InstallEffects for NativeInstallEffects<'_> {
+    async fn request(
+        &self,
+        route: &str,
+        method: reqwest::Method,
+        body: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        controller_request(
+            route,
+            self.token,
+            UPDATE_ACTION_RESPONSE_MAX_BYTES,
+            method,
+            body,
+        )
+        .await
+    }
+
+    async fn prepare(
+        &self,
+        root: &Path,
+        installer: &Path,
+        asset: &Asset,
+        controller_id: u32,
+    ) -> Result<PathBuf, String> {
+        let root = root.to_owned();
+        let installer = installer.to_owned();
+        let selected = asset.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::update_helper::prepare(&root, &installer, &selected, controller_id)
+        })
+        .await
+        .map_err(|_| FAILED.to_string())
+        .and_then(|value| value)
+    }
+
+    fn owns_controller(&self) -> bool {
+        owns_controller(self.app)
+    }
+
+    fn now_ms(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_millis() as u64)
+            .unwrap_or(u64::MAX)
+    }
+
+    fn schedule_exit(&self) {
+        let handle = self.app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(PREPARED_EXIT_DELAY);
+            crate::lifecycle::prepared_update_exit(&handle);
+        });
+    }
+}
+
+async fn install_verified(
+    host: &impl InstallEffects,
+    state: &Updates,
+    asset: Asset,
+    root: PathBuf,
+    installer: PathBuf,
+    controller_id: u32,
+) -> Result<InstallResult, String> {
     {
         let mut installing = state.installing.lock().map_err(|_| FAILED)?;
         if *installing {
@@ -606,14 +822,9 @@ pub async fn install_update(
         }
         *installing = true;
     }
-    let lease = controller_request(
-        "updates/install-lease",
-        &token,
-        4096,
-        reqwest::Method::POST,
-        Some("{}"),
-    )
-    .await;
+    let lease = host
+        .request("updates/install-lease", reqwest::Method::POST, Some("{}"))
+        .await;
     let lease_id = lease
         .as_ref()
         .ok()
@@ -631,14 +842,9 @@ pub async fn install_update(
         return Err(BLOCKED.into());
     };
     let body = serde_json::json!({"reason":"install","leaseId":lease_id}).to_string();
-    let suspension = controller_request(
-        "desktop/exit",
-        &token,
-        4096,
-        reqwest::Method::POST,
-        Some(&body),
-    )
-    .await;
+    let suspension = host
+        .request("desktop/exit", reqwest::Method::POST, Some(&body))
+        .await;
     let suspended = suspension.as_ref().is_ok_and(crate::lifecycle::confirmed)
         && suspension
             .as_ref()
@@ -647,218 +853,77 @@ pub async fn install_update(
             .and_then(|value| value.as_str())
             == Some(lease_id.as_str());
     if !suspended {
-        let _ = controller_request(
-            "desktop/cancel-exit",
-            &token,
-            4096,
-            reqwest::Method::POST,
-            Some(&body),
-        )
-        .await;
-        let _ = controller_request(
-            &format!("updates/install-lease/{lease_id}"),
-            &token,
-            4096,
-            reqwest::Method::DELETE,
-            None,
-        )
-        .await;
-        *state.installing.lock().map_err(|_| FAILED)? = false;
-        return Err(BLOCKED.into());
-    }
-    let handle = app.clone();
-    let selected = asset.clone();
-    let job = tauri::async_runtime::spawn_blocking(move || {
-        crate::update_helper::prepare(&root, &installer, &selected, controller_id)
-    })
-    .await
-    .map_err(|_| FAILED.to_string())
-    .and_then(|v| v);
-    let folder = match job {
-        Ok(folder) => folder,
-        Err(error) => {
-            let _ = controller_request(
-                "desktop/cancel-exit",
-                &token,
-                4096,
-                reqwest::Method::POST,
-                Some(&body),
-            )
+        let _ = host
+            .request("desktop/cancel-exit", reqwest::Method::POST, Some(&body))
             .await;
-            let _ = controller_request(
+        let _ = host
+            .request(
                 &format!("updates/install-lease/{lease_id}"),
-                &token,
-                4096,
                 reqwest::Method::DELETE,
                 None,
             )
             .await;
+        *state.installing.lock().map_err(|_| FAILED)? = false;
+        return Err(BLOCKED.into());
+    }
+    let job = host.prepare(&root, &installer, &asset, controller_id).await;
+    let folder = match job {
+        Ok(folder) => folder,
+        Err(error) => {
+            let _ = host
+                .request("desktop/cancel-exit", reqwest::Method::POST, Some(&body))
+                .await;
+            let _ = host
+                .request(
+                    &format!("updates/install-lease/{lease_id}"),
+                    reqwest::Method::DELETE,
+                    None,
+                )
+                .await;
             *state.installing.lock().map_err(|_| FAILED)? = false;
             return Err(error);
         }
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|v| v.as_millis() as u64)
-        .unwrap_or(u64::MAX);
+    let now = host.now_ms();
     let lease_fresh = suspension
         .as_ref()
         .ok()
         .and_then(|value| value.get("expiresAt"))
         .and_then(|value| value.as_u64())
         .is_some_and(|value| {
-            value > now.saturating_add(5000) && value <= now.saturating_add(35000)
+            value > now.saturating_add(EXIT_AUTHORIZATION_MIN_LIFETIME_MS)
+                && value <= now.saturating_add(EXIT_AUTHORIZATION_MAX_LIFETIME_MS)
         });
-    let authorized=lease_fresh&&owns_controller(&app)&&write_json(&folder.join("go.json"),&serde_json::json!({"authorized":true,"sha256":asset.sha256,"leaseId":lease_id,"expiresAt":suspension.as_ref().ok().and_then(|value|value.get("expiresAt"))})).is_ok();
+    let authorization = serde_json::json!({
+        "authorized": true,
+        "sha256": asset.sha256,
+        "leaseId": lease_id,
+        "expiresAt": suspension.as_ref().ok().and_then(|value| value.get("expiresAt")),
+    });
+    let authorized = lease_fresh
+        && host.owns_controller()
+        && write_json(&folder.join("go.json"), &authorization).is_ok();
     if !authorized {
         let _ = write_json(&folder.join("cancel.json"), &true);
-        let _ = controller_request(
-            "desktop/cancel-exit",
-            &token,
-            4096,
-            reqwest::Method::POST,
-            Some(&body),
-        )
-        .await;
-        let _ = controller_request(
-            &format!("updates/install-lease/{lease_id}"),
-            &token,
-            4096,
-            reqwest::Method::DELETE,
-            None,
-        )
-        .await;
+        let _ = host
+            .request("desktop/cancel-exit", reqwest::Method::POST, Some(&body))
+            .await;
+        let _ = host
+            .request(
+                &format!("updates/install-lease/{lease_id}"),
+                reqwest::Method::DELETE,
+                None,
+            )
+            .await;
         *state.installing.lock().map_err(|_| FAILED)? = false;
         return Err(BLOCKED.into());
     }
     // The install lease already paused work and suspended the VM. The helper owns
     // the exact process handles; do not issue a second suspend during handoff.
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(150));
-        crate::lifecycle::prepared_update_exit(&handle);
-    });
+    host.schedule_exit();
     Ok(InstallResult { launched: true })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn asset() -> Asset {
-        let data = b"verified installer";
-        Asset{version:"0.5.0-beta.2".into(),channel:"beta".into(),url:"https://github.com/Stephen-Sim/dant/releases/download/v0.5.0-beta.2/dant_0.5.0-beta.2_windows_x64_setup.exe".into(),sha256:format!("{:x}",Sha256::digest(data)),size:data.len() as u64,name:"dant_0.5.0-beta.2_windows_x64_setup.exe".into()}
-    }
-    #[test]
-    fn official_asset_and_version_validation_rejects_redirect_injection_and_downgrades() {
-        let a = asset();
-        assert!(valid_asset(&a));
-        for url in [
-            a.url.clone() + "?token=x",
-            a.url.replace("Stephen-Sim", "other"),
-            a.url.replace("https:", "http:"),
-            a.url.replace("github.com", "github.com.evil"),
-        ] {
-            let mut bad = a.clone();
-            bad.url = url;
-            assert!(!valid_asset(&bad));
-        }
-        let mut bad = a.clone();
-        bad.channel = "stable".into();
-        assert!(!valid_asset(&bad));
-        bad = a.clone();
-        bad.size = MAX_INSTALLER + 1;
-        assert!(!valid_asset(&bad));
-        assert!(newer("0.5.0", "0.5.0-beta.9"));
-        assert!(newer("0.5.0-beta.10", "0.5.0-beta.2"));
-        assert!(!newer("0.4.6", "0.4.7-beta.1"));
-        for v in ["../0.5.0", "01.0.0", "0.5.0+build", "0.5.0-beta.01", "0.5"] {
-            assert!(version(v).is_none());
-        }
-    }
-    #[test]
-    fn cached_payload_is_rehashed_and_truncation_tampering_and_links_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = asset();
-        let file = dir.path().join(&a.name);
-        fs::write(&file, b"verified installer").unwrap();
-        assert!(verify_file(&file, &a).is_ok());
-        fs::write(&file, b"tampered installer").unwrap();
-        assert!(verify_file(&file, &a).is_err());
-        fs::write(&file, b"short").unwrap();
-        assert!(verify_file(&file, &a).is_err());
-        assert!(verify_file(dir.path(), &a).is_err());
-    }
-    #[test]
-    fn streamed_installer_requires_exact_size_and_digest_before_a_payload_can_be_committed() {
-        let a = asset();
-        for bytes in [
-            &b"verified installer"[..],
-            &b"short"[..],
-            &b"verified installerEXTRA"[..],
-            &b"untrusted contents"[..],
-        ] {
-            let mut input = std::io::Cursor::new(bytes);
-            let mut output = Vec::new();
-            let result = stream_payload(&mut input, &mut output, &a, |_| {});
-            assert_eq!(result.is_ok(), bytes == b"verified installer");
-            assert!(output.len() <= a.size as usize);
-        }
-    }
-    fn controller_state() -> serde_json::Value {
-        serde_json::json!({"mode":"vm-controller","controller":{"status":"online","cached":false,"authority":"vm","vmConfigured":true,"desktopTransition":"idle","serviceUpdateBusy":false},"call":{"id":"call"},"takeover":true,"computer":{"status":"human","sessionId":"lease"},"provisioning":{"status":"ready","running":false},"active":{"status":"running"},"queue":["keep"]})
-    }
-    #[test]
-    fn installation_preflight_allows_confirmable_work_but_never_bypasses_controller_or_setup_boundaries(
-    ) {
-        let state = controller_state();
-        assert!(install_allowed(&state));
-        for (path, value) in [
-            ("/controller/cached", serde_json::json!(true)),
-            ("/controller/status", serde_json::json!("unknown")),
-            ("/controller/authority", serde_json::json!("cache")),
-            ("/controller/vmConfigured", serde_json::Value::Null),
-            (
-                "/controller/desktopTransition",
-                serde_json::json!("suspending"),
-            ),
-            ("/controller/serviceUpdateBusy", serde_json::json!(true)),
-            ("/provisioning/status", serde_json::json!("creating")),
-            ("/provisioning/running", serde_json::json!(true)),
-            ("/mode", serde_json::json!("vm-worker")),
-        ] {
-            let mut changed = state.clone();
-            *changed.pointer_mut(path).unwrap() = value;
-            assert!(!install_allowed(&changed), "{path}");
-        }
-    }
-    #[test]
-    fn installation_without_a_vm_reaches_the_backend_lease_instead_of_requiring_a_vm_connection() {
-        let mut state = controller_state();
-        state["controller"]["vmConfigured"] = serde_json::json!(false);
-        state["controller"]["status"] = serde_json::json!("offline");
-        state["controller"]["cached"] = serde_json::json!(true);
-        state["worker"] = serde_json::json!({"status":"offline"});
-        state["active"] = serde_json::Value::Null;
-        state["call"] = serde_json::Value::Null;
-        state["queue"] = serde_json::json!([]);
-        assert!(install_allowed(&state));
-    }
-    #[test]
-    fn stopped_executor_and_disconnected_vm_can_request_a_fresh_backend_pause_witness() {
-        for worker in ["offline", "connecting"] {
-            let mut state = controller_state();
-            state["worker"] = serde_json::json!({"status":worker});
-            assert!(
-                install_allowed(&state),
-                "the backend, not stale executor metadata, must decide {worker}"
-            );
-        }
-        for status in ["offline", "connecting"] {
-            let mut state = controller_state();
-            state["controller"]["status"] = serde_json::json!(status);
-            state["controller"]["cached"] = serde_json::json!(true);
-            assert!(install_allowed(&state));
-            state["controller"]["authority"] = serde_json::json!("cache");
-            assert!(!install_allowed(&state));
-        }
-    }
-}
+#[path = "../../tests/native/rust/updates.rs"]
+mod tests;

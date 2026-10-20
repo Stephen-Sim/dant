@@ -1,3 +1,11 @@
+import { NATIVE_PROTOCOL, MAX_PORT, apiPath } from '../../ui/platform/native-protocol.mts';
+import { COMPUTER_RESOURCES } from '../../ui/computer/resource-config.mts';
+import { DEFAULT_SSH_PORT } from '../../ui/computer/connection-config.mts';
+import {
+  appearanceDefaults,
+  appearanceFontRanges,
+  MAX_APPEARANCE_IMPORT_BYTES,
+} from '../../ui/settings/appearance-preferences.mts';
 import {
   TaskStatus,
   ConnectionStatus,
@@ -30,6 +38,14 @@ import { messageHistoryScope } from '../../ui/chat/message-window.mts';
 import { callCaptionScope } from '../../ui/call/call-caption-preferences.mts';
 // VM fixtures run selected UI functions without loading browser assets.
 export const languageContext = {
+  COMPUTER_RESOURCES,
+  DEFAULT_SSH_PORT,
+  NATIVE_PROTOCOL,
+  MAX_PORT,
+  apiPath,
+  appearanceDefaults,
+  appearanceFontRanges,
+  MAX_APPEARANCE_IMPORT_BYTES,
   TaskStatus,
   ConnectionStatus,
   SubmissionStatus,

@@ -61,7 +61,7 @@ func (value *voiceOutputTail) Write(data []byte) (int, error) {
 }
 
 func runVoiceMessageCommand(ctx context.Context, input VoiceMessageCommand) ([]byte, error) {
-	command := exec.CommandContext(ctx, "/usr/bin/python3", input.Script, "--output-dir", input.OutputDirectory)
+	command := exec.CommandContext(ctx, pythonExecutable, input.Script, "--output-dir", input.OutputDirectory)
 	command.WaitDelay = time.Second
 	command.Stdin = strings.NewReader(string(input.Input))
 	output := &voiceOutputTail{limit: VoiceMessageOutputBytes}

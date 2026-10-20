@@ -159,11 +159,18 @@ func TestControllerKeepsSettingsAndVersionAvailableOfflineAndPreservesAuthority(
 	var recovery struct {
 		Version string
 		Status  contracts.ConnectionStatus
+		VM      struct {
+			User string
+			Port int
+		}
 	}
 	json.NewDecoder(response.Body).Decode(&recovery)
 	response.Body.Close()
 	if response.StatusCode != 200 || recovery.Version != "0.4.7-beta.12" || recovery.Status != contracts.ConnectionStatusOffline {
 		t.Fatal("offline recovery configuration unavailable")
+	}
+	if recovery.VM.User != "dant" || recovery.VM.Port != 22 {
+		t.Fatal("offline recovery lost the standard SSH connection defaults")
 	}
 	response = controllerRequest(t, server, token, "PATCH", "/api/settings", `{"language":"en","theme":"dark","fontSize":15}`)
 	response.Body.Close()

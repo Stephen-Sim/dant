@@ -9,7 +9,14 @@ import {
   RecordingDraftStatus,
 } from './shared/states.mts';
 import { MAX_ATTACHMENT_BYTES } from './files/attachment-limits.mts';
-import { NATIVE_PROTOCOL } from './platform/native-protocol.mts';
+import { COMPUTER_RESOURCES } from './computer/resource-config.mts';
+import { DEFAULT_SSH_PORT } from './computer/connection-config.mts';
+import { NATIVE_PROTOCOL, MAX_PORT, apiPath } from './platform/native-protocol.mts';
+import {
+  appearanceDefaults,
+  appearanceFontRanges,
+  MAX_APPEARANCE_IMPORT_BYTES,
+} from './settings/appearance-preferences.mts';
 import type { ProgressMessage } from './work/progress-snapshot.mts';
 import { requiredData, formInput, formSelect, serviceStatusLabel } from './app/controls.mts';
 import {
@@ -233,7 +240,13 @@ let composerDraft = '',
   callGeneration = 0,
   callTimeout: Timer | undefined,
   recordStarting = false,
-  provisionDraft = { provider: 'auto', cpu: 4, memoryGB: 8, diskGB: 64, adminSudo: false },
+  provisionDraft = {
+    provider: 'auto',
+    cpu: COMPUTER_RESOURCES.cpu.default,
+    memoryGB: COMPUTER_RESOURCES.memoryGB.default,
+    diskGB: COMPUTER_RESOURCES.diskGB.default,
+    adminSudo: false,
+  },
   provisionExpanded = false,
   voiceApiExpanded = false,
   voiceChoices: string[] = [],
@@ -620,8 +633,8 @@ const recoverySettings = createRecoverySettings({
   container: app,
   getLanguage: language,
   request: async (route, options) => {
-    if (route === '/api/controller/settings' || route === '/api/updates?channel=beta') {
-      const session = await transport.json('/api/session');
+    if (route === apiPath('/controller/settings') || route === apiPath('/updates?channel=beta')) {
+      const session = await transport.json(NATIVE_PROTOCOL.paths.session);
       if (!isRecord(session) || typeof session.token !== 'string') throw Error('Invalid session');
       transport.setToken(session.token);
     }
@@ -956,8 +969,8 @@ function api(route: '/telegram', options?: ApiOptions): Promise<TelegramStatus>;
 function api(route: string, options?: ApiOptions): Promise<unknown>;
 async function api(route: string, options: ApiOptions = {}): Promise<unknown> {
   if (!(options.body instanceof FormData))
-    return decodeApiResult(route, await transport.json('/api' + route, options));
-  const response = await fetch(base + '/api' + route, {
+    return decodeApiResult(route, await transport.json(apiPath(route), options));
+  const response = await fetch(base + apiPath(route), {
     method: options.method ?? 'GET',
     body: options.body,
     headers: { 'X-Dant-Token': token, ...options.headers },
@@ -1412,7 +1425,7 @@ async function readAloud(id: string) {
   }
 }
 const fileURL = (file: Attachment) =>
-  base + '/api/files/' + encodeURIComponent(file.id) + '?token=' + encodeURIComponent(token);
+  base + apiPath('/files/' + encodeURIComponent(file.id)) + '?token=' + encodeURIComponent(token);
 function formatTime(time: unknown, full = false) {
   const value = messageDate(time);
   if (!value) return '';
@@ -1623,21 +1636,14 @@ function renderAppearance() {
     .join('');
   const sizes = (
     [
-      ['appearance-size', 'uiFontSize', 'uiFontSizeHint', 'fontSize', 12, 18],
-      [
-        'appearance-content-size',
-        'contentFontSize',
-        'contentFontSizeHint',
-        'contentFontSize',
-        12,
-        24,
-      ],
-      ['appearance-code-size', 'codeFontSize', 'codeFontSizeHint', 'codeFontSize', 11, 22],
+      ['appearance-size', 'uiFontSize', 'uiFontSizeHint', 'fontSize'],
+      ['appearance-content-size', 'contentFontSize', 'contentFontSizeHint', 'contentFontSize'],
+      ['appearance-code-size', 'codeFontSize', 'codeFontSizeHint', 'codeFontSize'],
     ] as const
   )
     .map(
-      ([id, label, hint, key, min, max]) =>
-        `<label class="appearance-row"><span>${t(label)}<small>${t(hint)}</small></span><input id="${id}" type="number" min="${min}" max="${max}" step="1" value="${selected[key] ?? (key === 'codeFontSize' ? 12 : 13)}" aria-label="${t(label)}"></label>`,
+      ([id, label, hint, key]) =>
+        `<label class="appearance-row"><span>${t(label)}<small>${t(hint)}</small></span><input id="${id}" type="number" min="${appearanceFontRanges[key][0]}" max="${appearanceFontRanges[key][1]}" step="1" value="${selected[key] ?? appearanceDefaults[key]}" aria-label="${t(label)}"></label>`,
     )
     .join('');
   return `<section class="settings-section appearance-settings"><h2>${t('appearance')}</h2><h3>${t('visualStyle')}</h3><div class="appearance-group appearance-mode-row"><span>${t('appearanceMode')}</span><div class="appearance-modes" role="group" aria-label="${t('appearanceMode')}">${modes}</div></div><div class="appearance-group"><div class="appearance-row"><span>${t('themePreset')}</span><div class="appearance-theme-controls"><button type="button" class="icon-btn" id="appearance-export" aria-label="${t('exportTheme')}" title="${t('exportTheme')}">${ico('download')}</button><button type="button" class="icon-btn" id="appearance-import" aria-label="${t('importTheme')}" title="${t('importTheme')}">${ico('arrow-up')}</button><select id="appearance-preset" aria-label="${t('themePreset')}">${(
@@ -1832,7 +1838,7 @@ function bindAppearance() {
       file.value = '';
       if (!selected) return;
       try {
-        if (selected.size > 64 * 1024) throw Error(t('themeImportLimit'));
+        if (selected.size > MAX_APPEARANCE_IMPORT_BYTES) throw Error(t('themeImportLimit'));
         await importAppearanceData(await selected.text());
       } catch (cause) {
         const error = requestError(cause);
@@ -1938,14 +1944,14 @@ function renderVMSettings() {
   const serviceNotice = known
     ? `<div class="vm-service-update ${status === ServiceUpdateStatus.Failed ? 'error' : 'muted'}" data-service-update="${status}" role="status" aria-live="polite"><strong>${t(paused ? 'servicePaused' : serviceStatusLabel(status))}</strong>${versions ? `<small>${esc(versions)}</small>` : ''}<p>${t(paused ? 'servicePauseHint' : status === ServiceUpdateStatus.Failed ? 'serviceUpdateError' : status === ServiceUpdateStatus.Pending ? (service.reason === 'work-active' ? 'serviceWaitWork' : 'serviceWaitConfirm') : 'serviceAutoHint')}</p><div class="inline-actions service-update-actions">${button(paused ? 'service-resume' : 'service-pause', paused ? 'play' : 'pause', t(paused ? 'serviceResume' : 'servicePause'), 'text-btn', busy)}${hasValue([ServiceUpdateStatus.Pending, ServiceUpdateStatus.Failed], status || '') ? button('service-install', 'download', t('serviceInstall'), 'text-btn', busy) : ''}</div></div>`
     : '';
-  return `<section class="settings-section setting-card vm-settings"><div class="card-label"><h2>Ubuntu ${t('computer')}</h2></div><div class="card-content"><div class="setting-row computer-summary"><div><strong>${esc(vmSystemDescription())}</strong><small>${t(online ? 'online' : currentState().worker.status)}${settings.vm.host ? ' · ' + esc(settings.vm.host) : ''}</small></div><span class="status-label ${online ? 'connected' : ''}">${t(online ? 'online' : 'offline')}</span></div>${serviceNotice}${currentState().worker.error ? `<p class="error" role="status">${esc(errorText(currentState().worker.error))}</p>` : ''}<div class="inline-actions">${button('use-existing', 'monitor', t('useExistingComputer'), 'text-btn ' + (!configured ? 'primary' : ''), busy)}${configured ? button('connect', 'refresh-cw', t('refresh'), 'text-btn', busy) : ''}${button('setup', 'plus', t('createComputer'), 'text-btn', busy)}</div>${Boolean(pc || callStarting || currentState().call || callStops.pending) ? `<p class="takeover-call-hint" role="status">${t('endCallBeforeConnection')}</p>` : ''}${vmProfilesVisible ? renderVMProfiles() : ''}<details class="manual-vm-details" id="manual-vm-options" ${manualVMExpanded ? 'open' : ''}><summary>${t('manualConnection')}</summary><p class="muted">${t('manualVMHint')}</p><form id="vm-form"><div class="form-grid"><label>${t('host')}<input name="host" value="${esc(vm.host)}" placeholder="172.20.0.10" required></label><label>${t('user')}<input name="user" value="${esc(vm.user || 'dant')}" required></label><label>${t('port')}<input name="port" type="number" min="1" max="65535" value="${esc(vm.port || 22)}" required></label><label class="wide">${t('key')}<input name="keyPath" value="${esc(vm.keyPath)}" placeholder="C:/path/to/dant/data/vm-key" required></label></div><div class="form-actions"><button class="text-btn primary" type="submit" ${busy ? 'disabled' : ''}>${t('saveAndConnect')}</button></div></form></details></div></section>`;
+  return `<section class="settings-section setting-card vm-settings"><div class="card-label"><h2>Ubuntu ${t('computer')}</h2></div><div class="card-content"><div class="setting-row computer-summary"><div><strong>${esc(vmSystemDescription())}</strong><small>${t(online ? 'online' : currentState().worker.status)}${settings.vm.host ? ' · ' + esc(settings.vm.host) : ''}</small></div><span class="status-label ${online ? 'connected' : ''}">${t(online ? 'online' : 'offline')}</span></div>${serviceNotice}${currentState().worker.error ? `<p class="error" role="status">${esc(errorText(currentState().worker.error))}</p>` : ''}<div class="inline-actions">${button('use-existing', 'monitor', t('useExistingComputer'), 'text-btn ' + (!configured ? 'primary' : ''), busy)}${configured ? button('connect', 'refresh-cw', t('refresh'), 'text-btn', busy) : ''}${button('setup', 'plus', t('createComputer'), 'text-btn', busy)}</div>${Boolean(pc || callStarting || currentState().call || callStops.pending) ? `<p class="takeover-call-hint" role="status">${t('endCallBeforeConnection')}</p>` : ''}${vmProfilesVisible ? renderVMProfiles() : ''}<details class="manual-vm-details" id="manual-vm-options" ${manualVMExpanded ? 'open' : ''}><summary>${t('manualConnection')}</summary><p class="muted">${t('manualVMHint')}</p><form id="vm-form"><div class="form-grid"><label>${t('host')}<input name="host" value="${esc(vm.host)}" placeholder="172.20.0.10" required></label><label>${t('user')}<input name="user" value="${esc(vm.user || 'dant')}" required></label><label>${t('port')}<input name="port" type="number" min="1" max="${MAX_PORT}" value="${esc(vm.port || DEFAULT_SSH_PORT)}" required></label><label class="wide">${t('key')}<input name="keyPath" value="${esc(vm.keyPath)}" placeholder="C:/path/to/dant/data/vm-key" required></label></div><div class="form-actions"><button class="text-btn primary" type="submit" ${busy ? 'disabled' : ''}>${t('saveAndConnect')}</button></div></form></details></div></section>`;
 }
 function renderVMProfiles() {
   const candidates = vmProfiles?.candidates || [],
     current = vmProfiles?.current,
     protectedCurrent = !!current,
     busy = pendingActions.has('import-vm') || pendingActions.has('connect');
-  return `<div class="vm-profiles"><h3>${t('existingProfiles')}</h3>${vmProfilesBusy ? `<p class="muted" role="status">${t('findVMProfiles')}</p>` : ''}${vmProfilesError ? `<p class="error">${esc(errorText(vmProfilesError))}</p>` : ''}${protectedCurrent ? `<p class="muted">${t('currentVMProtected')}</p><div class="vm-current"><strong>${t('currentVMProfile')}</strong><span>${esc(current.label || current.host || '')} ${current.host ? `· ${esc(current.user || 'dant')}@${esc(current.host)}:${esc(current.port || 22)}` : ''}</span></div>` : ''}${candidates.length ? `<fieldset class="vm-profile-options"><legend>${t('selectVMProfile')}</legend>${candidates.map((profile) => `<label><input type="radio" name="vm-profile" value="${esc(profile.id)}" ${selectedVMProfile === profile.id ? 'checked' : ''} ${busy || protectedCurrent ? 'disabled' : ''}><span><strong>${esc(profile.label || profile.host)}</strong><small>${esc(profile.user || 'dant')}@${esc(profile.host)}:${esc(profile.port || 22)}</small>${profile.directory ? `<small>${esc(profile.directory)}</small>` : ''}</span></label>`).join('')}</fieldset><button type="button" class="text-btn" data-action="import-vm-profile" ${!selectedVMProfile || busy || protectedCurrent ? 'disabled' : ''}>${t('importAndConnect')}</button>` : !vmProfilesBusy && !protectedCurrent ? `<p class="muted">${t('noVMProfiles')}</p>` : ''}${!protectedCurrent ? `<form id="vm-import-form"><label>${t('legacyVMDirectory')}<input name="directory" value="${esc(legacyVMDirectory)}" placeholder="C:/path/to/dant/data" required ${busy ? 'disabled' : ''}></label><small class="muted">${t('legacyVMHint')}</small><div class="form-actions"><button type="submit" class="text-btn" ${busy ? 'disabled' : ''}>${t('importDirectory')}</button></div></form>` : ''}</div>`;
+  return `<div class="vm-profiles"><h3>${t('existingProfiles')}</h3>${vmProfilesBusy ? `<p class="muted" role="status">${t('findVMProfiles')}</p>` : ''}${vmProfilesError ? `<p class="error">${esc(errorText(vmProfilesError))}</p>` : ''}${protectedCurrent ? `<p class="muted">${t('currentVMProtected')}</p><div class="vm-current"><strong>${t('currentVMProfile')}</strong><span>${esc(current.label || current.host || '')} ${current.host ? `· ${esc(current.user || 'dant')}@${esc(current.host)}:${esc(current.port || DEFAULT_SSH_PORT)}` : ''}</span></div>` : ''}${candidates.length ? `<fieldset class="vm-profile-options"><legend>${t('selectVMProfile')}</legend>${candidates.map((profile) => `<label><input type="radio" name="vm-profile" value="${esc(profile.id)}" ${selectedVMProfile === profile.id ? 'checked' : ''} ${busy || protectedCurrent ? 'disabled' : ''}><span><strong>${esc(profile.label || profile.host)}</strong><small>${esc(profile.user || 'dant')}@${esc(profile.host)}:${esc(profile.port || DEFAULT_SSH_PORT)}</small>${profile.directory ? `<small>${esc(profile.directory)}</small>` : ''}</span></label>`).join('')}</fieldset><button type="button" class="text-btn" data-action="import-vm-profile" ${!selectedVMProfile || busy || protectedCurrent ? 'disabled' : ''}>${t('importAndConnect')}</button>` : !vmProfilesBusy && !protectedCurrent ? `<p class="muted">${t('noVMProfiles')}</p>` : ''}${!protectedCurrent ? `<form id="vm-import-form"><label>${t('legacyVMDirectory')}<input name="directory" value="${esc(legacyVMDirectory)}" placeholder="C:/path/to/dant/data" required ${busy ? 'disabled' : ''}></label><small class="muted">${t('legacyVMHint')}</small><div class="form-actions"><button type="submit" class="text-btn" ${busy ? 'disabled' : ''}>${t('importDirectory')}</button></div></form>` : ''}</div>`;
 }
 async function useExistingComputer() {
   page = 'settings';
@@ -2386,7 +2392,7 @@ function renderProvisionCard() {
       : provider === 'hyperv'
         ? 'providerHypervHint'
         : 'providerAutoHint';
-  return `<div class="provision-card"><p class="setup-summary">${existing ? esc(vmSystemDescription()) : t('newComputerSystem')}</p><p class="setup-lead">${ready ? t('setupReady') : busy ? setupStageText(current) : t(existing ? 'existingComputerConfigured' : 'setupBeforeCreate')}</p>${current.status === ProvisioningStatus.Failed ? `<p class="error">${esc(current.error ? errorText(current.error) : t('provisionFailed'))}</p>` : ''}${busy || ready ? `<ol class="setup-phases">${phases.map((phase, index) => `<li class="${index < rank || ready ? 'done' : index === rank ? 'current' : ''}"><span>${index < rank || ready ? ico('check') : index + 1}</span>${t(phase === 'ready' ? 'provisionReady' : phase)}</li>`).join('')}</ol>` : ''}${existing ? `<div class="setup-connection"><strong>${t('connectionDetails')}</strong><span>${esc(currentState().settings.vm.user || current.connection?.user || 'dant')}@${esc(currentState().settings.vm.host || current.connection?.host || '')}</span></div>` : ''}<form id="provision-form"><label>${t('hypervisor')}<select name="provider" aria-label="${t('hypervisor')}" ${busy || existing || vmProvidersBusy ? 'disabled' : ''}>${providerOptions}</select></label>${vmProvidersBusy ? `<p class="muted" role="status">${t('providerDetecting')}</p>` : ''}${vmProvidersError ? `<p class="error">${esc(errorText(vmProvidersError))}</p>` : ''}${provider ? `<p class="muted">${t('providerUsing')} · ${esc(vmProviderLabel(provider))}</p>` : ''}<p class="muted">${t(providerHint)}</p>${unavailable ? `<p class="error">${t(selection === 'auto' ? 'noHypervisor' : 'providerUnavailable')}${availability?.reason ? ' · ' + esc(errorText(availability.reason)) : ''}</p>` : ''}<details id="provision-options" ${provisionExpanded ? 'open' : ''}><summary>${t('createOptions')}</summary><div class="provision-resources"><label>${t('cpu')}<input name="cpu" type="number" min="1" max="64" value="${esc(provisionDraft.cpu)}" required ${busy || existing ? 'disabled' : ''}></label><label>${t('memorySize')}<input name="memoryGB" type="number" min="2" max="128" value="${esc(provisionDraft.memoryGB)}" required ${busy || existing ? 'disabled' : ''}></label><label>${t('diskSize')}<input name="diskGB" type="number" min="32" max="2048" value="${esc(provisionDraft.diskGB)}" required ${busy || existing ? 'disabled' : ''}></label></div><label class="provision-admin"><input name="adminSudo" type="checkbox" ${provisionDraft.adminSudo ? 'checked' : ''} ${busy || existing ? 'disabled' : ''}><span>${t('vmAdmin')}<small>${t('vmAdminHint')}</small></span></label></details><div class="setup-footer">${existing ? button('connect', 'refresh-cw', t('refresh'), 'text-btn') : ''}<button type="submit" class="text-btn primary" ${busy || existing || vmProvidersBusy || unavailable ? 'disabled' : ''}>${t(existing ? 'createReady' : busy ? current.status : 'createComputer')}</button>${ready ? button('setup-done', 'arrow-up', t('backChat'), 'text-btn') : ''}</div></form></div>`;
+  return `<div class="provision-card"><p class="setup-summary">${existing ? esc(vmSystemDescription()) : t('newComputerSystem')}</p><p class="setup-lead">${ready ? t('setupReady') : busy ? setupStageText(current) : t(existing ? 'existingComputerConfigured' : 'setupBeforeCreate')}</p>${current.status === ProvisioningStatus.Failed ? `<p class="error">${esc(current.error ? errorText(current.error) : t('provisionFailed'))}</p>` : ''}${busy || ready ? `<ol class="setup-phases">${phases.map((phase, index) => `<li class="${index < rank || ready ? 'done' : index === rank ? 'current' : ''}"><span>${index < rank || ready ? ico('check') : index + 1}</span>${t(phase === 'ready' ? 'provisionReady' : phase)}</li>`).join('')}</ol>` : ''}${existing ? `<div class="setup-connection"><strong>${t('connectionDetails')}</strong><span>${esc(currentState().settings.vm.user || current.connection?.user || 'dant')}@${esc(currentState().settings.vm.host || current.connection?.host || '')}</span></div>` : ''}<form id="provision-form"><label>${t('hypervisor')}<select name="provider" aria-label="${t('hypervisor')}" ${busy || existing || vmProvidersBusy ? 'disabled' : ''}>${providerOptions}</select></label>${vmProvidersBusy ? `<p class="muted" role="status">${t('providerDetecting')}</p>` : ''}${vmProvidersError ? `<p class="error">${esc(errorText(vmProvidersError))}</p>` : ''}${provider ? `<p class="muted">${t('providerUsing')} · ${esc(vmProviderLabel(provider))}</p>` : ''}<p class="muted">${t(providerHint)}</p>${unavailable ? `<p class="error">${t(selection === 'auto' ? 'noHypervisor' : 'providerUnavailable')}${availability?.reason ? ' · ' + esc(errorText(availability.reason)) : ''}</p>` : ''}<details id="provision-options" ${provisionExpanded ? 'open' : ''}><summary>${t('createOptions')}</summary><div class="provision-resources"><label>${t('cpu')}<input name="cpu" type="number" min="${COMPUTER_RESOURCES.cpu.min}" max="${COMPUTER_RESOURCES.cpu.max}" value="${esc(provisionDraft.cpu)}" required ${busy || existing ? 'disabled' : ''}></label><label>${t('memorySize')}<input name="memoryGB" type="number" min="${COMPUTER_RESOURCES.memoryGB.min}" max="${COMPUTER_RESOURCES.memoryGB.max}" value="${esc(provisionDraft.memoryGB)}" required ${busy || existing ? 'disabled' : ''}></label><label>${t('diskSize')}<input name="diskGB" type="number" min="${COMPUTER_RESOURCES.diskGB.min}" max="${COMPUTER_RESOURCES.diskGB.max}" value="${esc(provisionDraft.diskGB)}" required ${busy || existing ? 'disabled' : ''}></label></div><label class="provision-admin"><input name="adminSudo" type="checkbox" ${provisionDraft.adminSudo ? 'checked' : ''} ${busy || existing ? 'disabled' : ''}><span>${t('vmAdmin')}<small>${t('vmAdminHint')}</small></span></label></details><div class="setup-footer">${existing ? button('connect', 'refresh-cw', t('refresh'), 'text-btn') : ''}<button type="submit" class="text-btn primary" ${busy || existing || vmProvidersBusy || unavailable ? 'disabled' : ''}>${t(existing ? 'createReady' : busy ? current.status : 'createComputer')}</button>${ready ? button('setup-done', 'arrow-up', t('backChat'), 'text-btn') : ''}</div></form></div>`;
 }
 function renderMemory() {
   return memorySettings.render();
@@ -3757,7 +3763,7 @@ function restartScreen() {
     const timeout = setTimeout(() => controller.abort(), 10000);
     let candidate = '';
     try {
-      const response = await fetch(base + '/api/screen', {
+      const response = await fetch(base + apiPath('/screen'), {
         headers: { 'X-Dant-Token': token },
         signal: controller.signal,
       });
@@ -4699,7 +4705,7 @@ window.addEventListener('beforeunload', () => {
   cancelRecording(true);
   if (hadCall && id)
     transport
-      .json('/api/call/stop', { method: 'POST', body: { callId: id }, keepalive: true })
+      .json(apiPath('/call/stop'), { method: 'POST', body: { callId: id }, keepalive: true })
       .catch(() => {});
   transport.close();
   if (screenURL) URL.revokeObjectURL(screenURL);
@@ -4709,7 +4715,7 @@ async function boot() {
   document.documentElement.dir = languageInfo(language()).direction;
   try {
     await loadLanguage(language());
-    const session = await transport.json('/api/session');
+    const session = await transport.json(NATIVE_PROTOCOL.paths.session);
     if (!isRecord(session) || typeof session.token !== 'string') throw Error('Invalid session');
     transport.setToken(session.token);
     state = await api('/state');

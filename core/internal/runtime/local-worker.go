@@ -12,12 +12,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Stephen-Sim/dant/core/internal/buildinfo"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/files"
 	"github.com/Stephen-Sim/dant/core/internal/history"
 )
 
-const ExecutorStopTimeout = 5 * time.Second
+const (
+	ExecutorStopTimeout = 5 * time.Second
+	pythonExecutable    = "/usr/bin/python3"
+	mcpToolTimeout      = 660 * time.Second
+)
 
 type ConversationSource interface {
 	Snapshot() contracts.State
@@ -250,7 +255,19 @@ func (value *LocalWorker) open(ctx context.Context, generation uint64, conversat
 		raw, _ := json.Marshal(value)
 		return string(raw)
 	}
-	args := []string{"-c", "features.realtime_conversation=true", "-c", "mcp_servers.dant_desktop.command=" + jsonString("/usr/bin/python3"), "-c", "mcp_servers.dant_desktop.args=" + jsonString([]string{filepath.Join(value.options.Home, "dant", "vm", "desktop_mcp.py"), "--output-dir", filepath.Join(value.options.WorkspaceRoot, conversation, "output")}), "-c", "mcp_servers.dant_desktop.env_vars=" + jsonString([]string{"DANT_CREDENTIAL_BRIDGE_TOKEN", "DANT_CONTROL_FILE"}), "-c", "mcp_servers.dant_desktop.tool_timeout_sec=660", "app-server", "--listen", "stdio://"}
+	args := []string{
+		"-c", "features.realtime_conversation=true",
+		"-c", "mcp_servers.dant_desktop.command=" + jsonString(pythonExecutable),
+		"-c", "mcp_servers.dant_desktop.args=" + jsonString([]string{
+			filepath.Join(value.options.Home, "dant", "vm", "desktop_mcp.py"),
+			"--output-dir", filepath.Join(value.options.WorkspaceRoot, conversation, "output"),
+		}),
+		"-c", "mcp_servers.dant_desktop.env_vars=" + jsonString([]string{
+			"DANT_CREDENTIAL_BRIDGE_TOKEN", "DANT_CONTROL_FILE",
+		}),
+		"-c", "mcp_servers.dant_desktop.tool_timeout_sec=" + jsonString(mcpToolTimeout/time.Second),
+		"app-server", "--listen", "stdio://",
+	}
 	environment := executorEnvironment(value.options)
 	executor, err := value.options.Factory(value.ctx, ProcessOptions{Command: command, Args: args, Directory: value.options.WorkspaceRoot, Environment: environment})
 	if err != nil {
@@ -287,7 +304,19 @@ func (value *LocalWorker) open(ctx context.Context, generation uint64, conversat
 		value.mu.Unlock()
 		return nil, err
 	}
-	initialize := contracts.RawObject{"clientInfo": json.RawMessage(`{"name":"dant","title":"dant","version":"0.1.0"}`), "capabilities": json.RawMessage(`{"experimentalApi":true}`)}
+	clientInfo, _ := json.Marshal(struct {
+		Name    string `json:"name"`
+		Title   string `json:"title"`
+		Version string `json:"version"`
+	}{
+		Name:    "dant",
+		Title:   "dant",
+		Version: buildinfo.Version,
+	})
+	initialize := contracts.RawObject{
+		"clientInfo":   clientInfo,
+		"capabilities": json.RawMessage(`{"experimentalApi":true}`),
+	}
 	if _, err = rpc.Request(ctx, "initialize", initialize); err != nil {
 		return fail(err)
 	}
@@ -483,12 +512,12 @@ func (value *LocalWorker) Guest(ctx context.Context, route string, body json.Raw
 	value.mu.Lock()
 	status := value.status
 	value.mu.Unlock()
-	readOnly := value.options.Platform == "linux" && route == "/screen" && len(body) == 0
+	readOnly := value.options.Platform == "linux" && route == desktopPaths.Screen && len(body) == 0
 	if status != contracts.ConnectionStatusOnline && !readOnly {
 		return nil, ErrDisconnected
 	}
 	switch route {
-	case "/screen", "/input", "/control", "/file", "/read-file":
+	case desktopPaths.Screen, desktopPaths.Input, desktopPaths.Control, desktopPaths.File, desktopPaths.ReadFile:
 	default:
 		return nil, ErrInvalidProtocol
 	}

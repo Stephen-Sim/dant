@@ -32,7 +32,7 @@ ready=false
 for attempt in $(seq 1 60); do
   if systemctl is-active --quiet dant-display.service dant-desktop.service dant-guest.service && \
      runuser -u dant -- env DISPLAY=:0 xdpyinfo >/dev/null 2>&1 && \
-     python3 -c 'import urllib.request; r=urllib.request.urlopen("http://127.0.0.1:4319/screen", timeout=10); assert r.read(8)==b"\x89PNG\r\n\x1a\n"' && \
+     python3 /opt/dant/network_config.py bootstrap-screen-check && \
      /usr/local/bin/codex --version; then
     ready=true
     break

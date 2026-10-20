@@ -48,9 +48,13 @@ var bundleAllowlist = map[string]bool{
 	"vm/desktop.py":                     true,
 	"vm/guest.py":                       true,
 	"vm/install-speech.sh":              true,
+	"vm/install-speech.py":              true,
 	"vm/install-transcription.sh":       true,
+	"vm/install-transcription.py":       true,
 	"vm/install-worker.sh":              true,
 	"vm/worker-install.py":              true,
+	"vm/worker-update-guard.py":         true,
+	"vm/network_config.py":              true,
 	"vm/start-codex.sh":                 true,
 	"vm/transcribe_audio.py":            true,
 	"vm/transcription-requirements.txt": true,
@@ -286,42 +290,7 @@ func (remote deployedSource) matches(manifest BundleManifest, fingerprint string
 		session.Version == manifest.Version && session.Source == manifest.SourceCommit
 }
 
-const inspectDeployment = `python3 - <<'PY'
-import json,pathlib,subprocess,urllib.request
-class NoRedirect(urllib.request.HTTPRedirectHandler):
- def redirect_request(self,request,response,code,message,headers,url): return None
-opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
-p=pathlib.Path.home()/'dant/deployed-source.json'
-sha=None
-try:
- data=p.read_bytes()
- if len(data)<=4096:
-  value=json.loads(data).get('sha256')
-  if isinstance(value,str) and len(value)==64 and all(c in '0123456789abcdef' for c in value): sha=value
-except (OSError,ValueError,AttributeError): pass
-units=('dant-worker.service','dant-guest-local.service')
-active=all(subprocess.run(['systemctl','--user','is-active','--quiet',unit],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=2).returncode==0 for unit in units)
-version=None
-build=None
-if active:
- try:
-  def read(path,token=None):
-   request=urllib.request.Request('http://127.0.0.1:4317'+path,headers={} if token is None else {'X-Dant-Token':token})
-   with opener.open(request,timeout=2) as response:
-    raw=response.read(4097)
-    if len(raw)>4096: raise ValueError()
-    return json.loads(raw)
-  session=read('/api/session')
-  if session.get('product')!='dant' or session.get('mode')!='worker': raise ValueError()
-  if any(key in session for key in ('runtime','protocol','source')):
-   build={key:session.get(key) for key in ('product','mode','runtime','protocol','version','source')}
-  token=session.get('token')
-  if not isinstance(token,str) or not 32<=len(token)<=512 or any(c not in '0123456789abcdefABCDEF' for c in token): raise ValueError()
-  candidate=read('/api/version',token).get('version')
-  if isinstance(candidate,str) and 0<len(candidate)<=64: version=candidate
- except (OSError,ValueError,AttributeError): pass
-print(json.dumps({'sha256':sha,'active':active,'version':version,'session':build}))
-PY`
+var inspectDeployment = workerInspectionCommand("deployment")
 
 func (deployer *Deployer) remote(ctx context.Context, binding Binding) (deployedSource, error) {
 	bounded, stop := context.WithTimeout(ctx, deploymentInspectTimeout)
@@ -356,24 +325,7 @@ func (deployer *Deployer) remote(ctx context.Context, binding Binding) (deployed
 	return result, nil
 }
 
-const inspectWorkerQuiescence = `python3 - <<'PY'
-import json,urllib.request
-class NoRedirect(urllib.request.HTTPRedirectHandler):
- def redirect_request(self,request,response,code,message,headers,url): return None
-opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
-base='http://127.0.0.1:4317'
-def read(path,token=None):
- request=urllib.request.Request(base+path,headers={} if token is None else {'X-Dant-Token':token})
- with opener.open(request,timeout=5) as response:
-  raw=response.read(8388609)
-  if len(raw)>8388608: raise ValueError()
-  return json.loads(raw)
-session=read('/api/session')
-if session.get('product')!='dant' or session.get('mode')!='worker': raise ValueError()
-token=session.get('token')
-if not isinstance(token,str) or not 32<=len(token)<=512: raise ValueError()
-print(json.dumps(read('/api/state',token),separators=(',',':')))
-PY`
+var inspectWorkerQuiescence = workerInspectionCommand("quiescence")
 
 func (deployer *Deployer) remoteQuiescent(ctx context.Context, binding Binding) error {
 	bounded, stop := context.WithTimeout(ctx, deploymentInspectTimeout)
@@ -531,6 +483,14 @@ func (deployer *Deployer) Prepare(ctx context.Context, binding Binding) error {
 }
 
 func writeBundleTar(ctx context.Context, root, target string, manifest BundleManifest, raw []byte, fingerprint string, network config.Network) error {
+	publicEnvironment, err := config.PublicVMConfiguration(map[string]string{
+		"DANT_GUEST_HOST": network.Guest.Host,
+		"DANT_GUEST_PORT": strconv.Itoa(network.Guest.Port),
+	})
+	if err != nil {
+		return ErrDeploymentUnavailable
+	}
+
 	file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return ErrDeploymentUnavailable
@@ -590,10 +550,10 @@ func writeBundleTar(ctx context.Context, root, target string, manifest BundleMan
 		return err
 	}
 	public := struct {
-		SchemaVersion     int               `json:"schemaVersion"`
-		SHA256            string            `json:"sha256"`
-		PublicEnvironment map[string]string `json:"publicEnvironment"`
-	}{2, fingerprint, map[string]string{"DANT_GUEST_HOST": network.Guest.Host, "DANT_GUEST_PORT": strconv.Itoa(network.Guest.Port)}}
+		SchemaVersion     int                        `json:"schemaVersion"`
+		SHA256            string                     `json:"sha256"`
+		PublicEnvironment config.PublicVMEnvironment `json:"publicEnvironment"`
+	}{2, fingerprint, publicEnvironment}
 	deployment, _ := json.Marshal(public)
 	if err := add("deploy-manifest.json", deployment); err != nil {
 		return err

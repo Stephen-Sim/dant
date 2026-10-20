@@ -1,4 +1,6 @@
 import { MAX_ATTACHMENT_BYTES } from '../files/attachment-limits.mts';
+import { DEFAULT_SSH_PORT } from '../computer/connection-config.mts';
+import { MAX_PORT } from '../platform/native-protocol.mts';
 import { isSafeInteger, isRecord } from '../shared/contracts.mts';
 import type {
   Attachment,
@@ -60,7 +62,7 @@ export function updateDraftScope(state: UpdateDraftState | null) {
   )
     return null;
   const vm = state.settings?.vm,
-    port = Number(vm?.port || 22);
+    port = Number(vm?.port || DEFAULT_SSH_PORT);
   if (
     !vm ||
     typeof vm.host !== 'string' ||
@@ -74,7 +76,7 @@ export function updateDraftScope(state: UpdateDraftState | null) {
     vm.keyPath.length > 2048 ||
     !Number.isInteger(port) ||
     port < 1 ||
-    port > 65535
+    port > MAX_PORT
   )
     return null;
   return JSON.stringify([state.conversationId, vm.host, vm.user, port, vm.keyPath]);

@@ -19,6 +19,7 @@ import {
   CORE_BUNDLE_MANIFEST,
   VM_BUNDLE_FILES,
   HOST_HELPERS,
+  HOST_CONFIG_FILES,
   describeFile,
   readManifest,
   verifyFiles,
@@ -194,6 +195,7 @@ function validateSources(root: string): void {
   for (const name of [
     'dist/index.html',
     ...HOST_HELPERS,
+    ...HOST_CONFIG_FILES,
     ...VM_BUNDLE_FILES.filter((name) => name !== CORE_GUEST_BINARY),
   ])
     file(path.join(root, name));
@@ -217,6 +219,7 @@ function resourceInventory(root: string): string[] {
     CORE_BUNDLE_MANIFEST,
     hostManifestPath,
     ...HOST_HELPERS,
+    ...HOST_CONFIG_FILES,
     ...VM_BUNDLE_FILES,
   ]);
   const inventory: string[] = [];
@@ -325,7 +328,7 @@ export function prepareResources({
         path.join(root, CORE_UNICODE_LICENSE_SOURCE),
         path.join(staging, CORE_UNICODE_LICENSE),
       );
-      for (const name of HOST_HELPERS) copyFile(root, staging, name);
+      for (const name of [...HOST_HELPERS, ...HOST_CONFIG_FILES]) copyFile(root, staging, name);
       for (const name of VM_BUNDLE_FILES) {
         if (name === CORE_GUEST_BINARY) {
           fs.mkdirSync(path.dirname(path.join(staging, name)), { recursive: true });
