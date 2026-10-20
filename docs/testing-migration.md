@@ -20,6 +20,8 @@ The production backend now belongs to the Go Controller and Worker. Browser test
 
 The memory and instruction goldens were captured from synthetic fixtures with Node **22.23.3**, source commit `d058bdc7509efce90bd9d96cc367b04e11c98bae` and recorded source hashes. Go **1.27.2** executes the replacements. The memory runner rebuilds a private SQLite fixture from frozen rows; it does not retain `MemoryStore` or another TypeScript backend implementation. No Node-versus-Go timing is presented as a current performance guarantee.
 
+The unchanged [instruction golden](../tests/support/goldens/work-prompt-node22.json) is shared test data. Go's [`instructions_golden_test.go`](../tests/go/internal/work/instructions_golden_test.go) verifies its original capture hash and metadata, all permission-specific tool schemas including numeric types and array order, and the complete instruction template bytes. These asset parity checks belong to the Go Work package rather than a separate Node test.
+
 Shared browser contracts, language catalogs, source-fixture helpers and build/development configuration continue to receive TypeScript checks. The former Node critical-module coverage responsibilities move to their actual Go feature tests. Formatting, type checks, generated contracts, state checks, required coverage and Windows/Linux Go checks stay enabled. A full integrated run is required after the final retirement; earlier focused passes do not replace it.
 
 ## Verified retirement boundaries
@@ -27,3 +29,16 @@ Shared browser contracts, language catalogs, source-fixture helpers and build/de
 The final retirement waited for actual Go behavior and failure passes. [`legacyimport`](../tests/go/internal/legacyimport/) verifies `TestImportArchivesLegacyFilesOncePreservesOriginalTextAndIsAuthenticatedIdempotent` and `TestImportRefusesAuthoritativeAndAmbiguousTargetsWithoutOverwritingThem`, plus binary/missing files, partial-publication fences, unknown legacy values and authenticated receipts. [`application/legacy_import_test.go`](../tests/go/internal/application/legacy_import_test.go) proves the explicit offline role cannot construct a service or Engine. Full-size skill/editor preservation and real HTTP JSON/ZIP capacity tests also passed against the Go owners; smaller round trips were not treated as equivalent evidence.
 
 The detailed file-to-test mapping and local execution evidence are in the ignored `.cache/core/retired-node-tests.json`; this document keeps the reviewable feature-level rationale in Git. Test fixtures never reconnect a VM, call a real model or Telegram bot, use the microphone, or read user data.
+
+## Current test ownership
+
+| Directory                                               | Responsibility                                                                                                        |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `tests/go/<package>/`                                   | Go behavior, persistence, protocol, permissions and failure paths, compiled through the explicit overlay.             |
+| `tests/ui/<feature>/`                                   | TypeScript browser behavior and rendering.                                                                            |
+| `tests/tooling/{build,config,contracts,core,computer}/` | Node build/development tools, CI guards, generated contracts, memory parity runner and isolated host-helper fixtures. |
+| `tests/native/`                                         | Node guards of the Rust/native boundary; Rust unit tests retain their native compiler ownership.                      |
+| `tests/vm/`                                             | Python VM and installer helpers using isolated fixtures.                                                              |
+| `tests/support/`, `tests/types/`                        | Shared fixtures, frozen independent goldens and compile-time contracts.                                               |
+
+`npm test` and `npm run test:coverage` recursively discover every maintained Node test, including the CI-tool tests moved out of `scripts/ci/`. The CI workflow keeps its explicit guard checks at their new paths. `npm run test:core:parity` runs `tests/tooling/core/memory-parity.mts`; its source fingerprint follows that path while recorded historical oracle provenance stays unchanged. Moving these files changes neither behavior nor the required coverage thresholds.

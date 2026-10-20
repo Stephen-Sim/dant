@@ -1,9 +1,9 @@
 #Requires -RunAsAdministrator
 param(
   [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$')][string]$Name = 'dant',
-  [ValidateRange(2,128)][int]$MemoryGB = 6,
+  [ValidateRange(2,128)][int]$MemoryGB = 8,
   [ValidateRange(1,64)][int]$Cpu = 4,
-  [ValidateRange(32,2048)][int]$DiskGB = 40,
+  [ValidateRange(32,2048)][int]$DiskGB = 64,
   [switch]$Resume,
   [string]$DataDirectory
 )
@@ -112,7 +112,9 @@ try {
     Save-Stage 'converting-disk'
     Convert-VHD -Path $sourceDisk -DestinationPath $disk -VHDType Dynamic
     Save-Stage 'resizing-disk'
-    Resize-VHD -Path $disk -SizeBytes ($DiskGB * 1GB)
+    if ((Get-VHD -Path $disk).Size -lt ($DiskGB * 1GB)) {
+      Resize-VHD -Path $disk -SizeBytes ($DiskGB * 1GB)
+    }
     Save-Stage 'registering-vm'
     # The official Azure VHD has legacy BIOS boot support.
     New-VM -Name $Name -Generation 1 -MemoryStartupBytes ($MemoryGB * 1GB) -VHDPath $disk -SwitchName $switch.Name -Path $vmRoot | Out-Null

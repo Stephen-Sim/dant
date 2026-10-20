@@ -165,7 +165,7 @@ function fixture(selected = 'zh') {
     voiceError: '',
     vmDraft: null,
     manualVMExpanded: false,
-    provisionDraft: { provider: 'auto', cpu: 4, memoryGB: 6, diskGB: 40, adminSudo: false },
+    provisionDraft: { provider: 'auto', cpu: 4, memoryGB: 8, diskGB: 64, adminSudo: false },
     provisionExpanded: false,
     steerExpectedTurn: null,
     steerDraft: '',

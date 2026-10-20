@@ -58,7 +58,7 @@ jobs:
       - name: Check application versions
         run: node scripts/ci/version.mts
       - name: Test release version gate
-        run: node --test scripts/ci/version.test.mts scripts/ci/coverage.test.mts scripts/ci/test-files.test.mts
+        run: node --test tests/tooling/build/version.test.mts tests/tooling/build/coverage.test.mts tests/tooling/build/test-files.test.mts
       - name: Test application and enforce coverage
         run: npm run test:coverage
       - name: Upload coverage reports

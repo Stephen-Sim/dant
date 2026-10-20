@@ -2,7 +2,9 @@
 
 [English](../VM.md) · Chinese
 
-dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Go Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Go Worker 通过 stdio 启动，桌面桥只供 VM 内访问。新建虚拟机默认 4 个 CPU、6 GB 内存、40 GB 磁盘；Hyper-V 使用 Default Switch，VMware Workstation 使用 NAT。两者采用相同的 Worker 边界和 SSH 连接。
+dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Go Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Go Worker 通过 stdio 启动，桌面桥只供 VM 内访问。新建虚拟机默认 4 个 CPU、8 GiB 内存、64 GiB 磁盘；Hyper-V 使用 Default Switch，VMware Workstation 使用 NAT。两者采用相同的 Worker 边界和 SSH 连接。
+
+这些默认值仅用于新建 VM。恢复现有 VM 会保留已配置的内存和磁盘容量，包括更大的自定义规格，不会调整或缩小磁盘。修改现有 VM 的规格需要单独执行维护操作。
 
 首次安装先选择是否已有 dant 备份；没有 VM 时也能导入便携备份。没有备份则由引导说明如何创建工作电脑、检测 Hyper-V/VMware，或连接已有 SSH 电脑。只有明确提交创建才会创建 VM，查看引导不会自动执行。已有配置的安装正常进入原界面。连接新 VM 后，预览并恢复导入的备份，即可带着记忆和项目继续；参见[备份说明](backups.md)。
 

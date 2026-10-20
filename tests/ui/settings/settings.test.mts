@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
+import { parseAst } from 'rollup/parseAst';
 import {
   createAppearance,
   exportAppearance as serializeAppearance,
@@ -166,7 +167,7 @@ function fixture() {
     selectedVMProfile: '',
     legacyVMDirectory: '',
     manualVMExpanded: false,
-    provisionDraft: { provider: 'auto', cpu: 4, memoryGB: 6, diskGB: 40, adminSudo: false },
+    provisionDraft: { provider: 'auto', cpu: 4, memoryGB: 8, diskGB: 64, adminSudo: false },
     provisionExpanded: false,
     telegramStatus: null as Partial<TelegramStatus> | null,
     telegramLoading: false,
@@ -809,6 +810,32 @@ test('Telegram pairing codes are ephemeral, expire locally, and only safe bot li
   await f.c.updateTelegram('disconnect', { clearToken: false });
   assert.equal(defined(f.requests.at(-1)).route, '/telegram/disconnect');
   assert.equal(observedRecord(defined(f.requests.at(-1)).body).clearToken, false);
+});
+
+test('new-computer options render the actual 8 GiB and 64 GiB entrypoint defaults without provisioning', () => {
+  const f = fixture(),
+    erased = stripTypeScriptTypes(source),
+    declarations = parseAst(erased).body.flatMap((node) =>
+      node.type === 'VariableDeclaration' ? node.declarations : [],
+    ),
+    draft = defined(
+      declarations.find(
+        (node) => node.id.type === 'Identifier' && node.id.name === 'provisionDraft',
+      ),
+    );
+  assert(draft.init?.type === 'ObjectExpression');
+  assert(
+    'start' in draft.init &&
+      typeof draft.init.start === 'number' &&
+      'end' in draft.init &&
+      typeof draft.init.end === 'number',
+  );
+  vm.runInContext(`provisionDraft = (${erased.slice(draft.init.start, draft.init.end)})`, f.c);
+  const { document } = parseHTML(f.c.renderProvisionCard());
+  assert.equal(document.querySelector('input[name="cpu"]')?.getAttribute('value'), '4');
+  assert.equal(document.querySelector('input[name="memoryGB"]')?.getAttribute('value'), '8');
+  assert.equal(document.querySelector('input[name="diskGB"]')?.getAttribute('value'), '64');
+  assert.equal(f.requests.length, 0);
 });
 
 test('provider detection is read only and automatic VMware setup never shows a Hyper-V approval phase', async () => {

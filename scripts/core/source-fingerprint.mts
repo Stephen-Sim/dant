@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 
 export const CORE_SOURCE_FINGERPRINT_VERSION = 5;
 export const CORE_PARITY_SOURCE_FILES = Object.freeze([
-  'tests/core/memory-parity.mts',
+  'tests/tooling/core/memory-parity.mts',
   'scripts/core/source-fingerprint.mts',
   'scripts/core/go.mts',
   'scripts/core/coverage.mts',

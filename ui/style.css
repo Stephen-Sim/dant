@@ -2081,10 +2081,25 @@ textarea:disabled {
   font-size: calc(var(--app-font-size) * 11 / 13);
 }
 .recovery-settings {
+  display: grid;
+  gap: 16px;
   width: min(100%, 720px);
   max-height: 100%;
   overflow: auto;
   box-sizing: border-box;
+}
+.recovery-settings h1,
+.recovery-settings h2,
+.recovery-settings p {
+  margin: 0;
+}
+.recovery-settings p {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.recovery-settings .inline-actions {
+  margin-top: 0;
+  align-items: center;
 }
 .recovery-settings > .inline-actions {
   justify-content: center;
@@ -2092,12 +2107,73 @@ textarea:disabled {
 .recovery-settings .setting-card {
   display: block;
   text-align: start;
-  margin-top: 24px;
+  margin-top: 8px;
+  padding: 22px;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+}
+.recovery-settings .card-content {
+  display: grid;
+  gap: 16px;
+}
+.recovery-settings h2 {
+  font-size: calc(var(--app-font-size) * 14 / 13);
+  line-height: 1.6;
+}
+.recovery-settings [data-recovery-form] {
+  display: grid;
+  gap: 12px;
+}
+.recovery-settings .setting-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 6px 16px;
+}
+.recovery-settings .setting-row:has([data-recovery-consent]) {
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: start;
+}
+.recovery-settings [data-recovery-consent] {
+  margin: 4px 0 0;
 }
 .recovery-settings input:not([type='checkbox']),
 .recovery-settings select {
-  width: min(100%, 340px);
+  width: 100%;
+  max-width: none;
   min-width: 0;
+}
+.recovery-settings [data-recovery-form] > .inline-actions {
+  justify-content: flex-end;
+}
+.recovery-settings [data-recovery-import] {
+  justify-self: end;
+  max-width: 100%;
+}
+.recovery-settings [data-recovery-release] {
+  justify-self: center;
+  max-width: 100%;
+}
+.recovery-settings [data-recovery-notice]:empty {
+  display: none;
+}
+@media (max-width: 560px) {
+  .recovery-settings {
+    padding: 20px;
+  }
+  .recovery-settings .setting-card {
+    padding: 16px;
+  }
+  .recovery-settings .setting-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .recovery-settings .inline-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .recovery-settings [data-recovery-import],
+  .recovery-settings [data-recovery-release] {
+    width: 100%;
+  }
 }
 @keyframes pulse {
   50% {

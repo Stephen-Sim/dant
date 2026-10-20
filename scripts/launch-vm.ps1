@@ -1,8 +1,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$DataDirectory,
-  [ValidateRange(2,128)][int]$MemoryGB = 6,
+  [ValidateRange(2,128)][int]$MemoryGB = 8,
   [ValidateRange(1,64)][int]$Cpu = 4,
-  [ValidateRange(32,2048)][int]$DiskGB = 40
+  [ValidateRange(32,2048)][int]$DiskGB = 64
 )
 $ErrorActionPreference = 'Stop'
 $dataRoot = [System.IO.Path]::GetFullPath($DataDirectory)

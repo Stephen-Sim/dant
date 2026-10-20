@@ -25,9 +25,9 @@
 
 移动文件时一并修改导入、打包白名单、测试夹具、覆盖率路径、命令和文档链接。保留已有数据位置与公开接口；需要改变时必须同时提供明确迁移。避免循环依赖，不要用无边界的工具目录混放各功能逻辑。
 
-界面测试放在 `tests/ui/chat/`、`tests/ui/settings/` 等对应目录；构建/开发测试按工具归属放在 `tests/core/`、`tests/build/`、`tests/config/`。旧后端测试的对应归属见[测试迁移](testing-migration.md)。公共夹具放在 `tests/support/`，编译期契约放在 `tests/types/`，Python VM 测试放在 `tests/vm/`。`npm test` 和覆盖率检查使用同一个递归发现模块，移动目录不能漏跑测试。单独执行时使用完整路径，例如 `node --test tests/ui/chat/message-window.test.mts`。
+界面测试放在 `tests/ui/chat/`、`tests/ui/settings/` 等对应目录。Node 构建／开发测试按工具归属放在 `tests/tooling/build/`、`tests/tooling/config/`、`tests/tooling/contracts/`、`tests/tooling/core/` 和 `tests/tooling/computer/`，CI 脚本测试也放入对应目录。原生宿主边界校验保留在 `tests/native/`。旧后端测试的对应归属见[测试迁移](testing-migration.md)。公共夹具放在 `tests/support/`，编译期契约放在 `tests/types/`，Python VM 测试放在 `tests/vm/`。`npm test` 和覆盖率检查使用同一个递归发现模块，移动目录不能漏跑测试。单独执行时使用完整路径，例如 `node --test tests/tooling/build/test-files.test.mts`。
 
-生产 Go 核心包放在 `core/internal/<feature>/`，全部 Go 测试集中在镜像完整包路径的 `tests/go/<package>/`，例如 `tests/go/internal/memory/`。统一入口通过 Go 官方的显式 `-overlay` 选项，将这些测试编译到所属包中，不为测试导出私有实现，也不复制生产代码。相关 TypeScript 工具放在 `scripts/core/`，工具的 Node 测试放在 `tests/core/`。明确保留 Controller、Worker、浏览器与认证传输边界；Controller 离线时不能导入执行组装作为回退。
+生产 Go 核心包放在 `core/internal/<feature>/`，全部 Go 测试集中在镜像完整包路径的 `tests/go/<package>/`，例如 `tests/go/internal/memory/`。统一入口通过 Go 官方的显式 `-overlay` 选项，将这些测试编译到所属包中，不为测试导出私有实现，也不复制生产代码。相关 TypeScript 工具放在 `scripts/core/`，工具的 Node 测试放在 `tests/tooling/core/`。明确保留 Controller、Worker、浏览器与认证传输边界；Controller 离线时不能导入执行组装作为回退。
 
 ## 格式化命令
 

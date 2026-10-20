@@ -7,5 +7,5 @@
       "linkedom": ["./tests/types/linkedom.d.ts"]
     }
   },
-  "include": ["tests/**/*.mts", "tests/**/*.ts", "scripts/**/*.test.mts", "ui/**/*.d.ts"]
+  "include": ["tests/**/*.mts", "tests/**/*.ts", "ui/**/*.d.ts"]
 }

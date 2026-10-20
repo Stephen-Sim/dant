@@ -1,6 +1,6 @@
 {
   "name": "dant",
-  "version": "0.4.7-beta.17",
+  "version": "0.4.7-beta.18",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,7 @@
     "format:go:check": "node scripts/core/go.mts format-check",
     "test:core": "node scripts/core/go.mts test",
     "test:core:race": "node scripts/core/go.mts race",
-    "test:core:parity": "node tests/core/memory-parity.mts",
+    "test:core:parity": "node tests/tooling/core/memory-parity.mts",
     "check:core": "node scripts/core/go.mts check",
     "generate:contracts": "node scripts/core/generate-contracts.mts",
     "check:contracts": "node scripts/core/generate-contracts.mts --check",

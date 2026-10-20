@@ -26,6 +26,7 @@ import { languageInfo } from '../../../ui/i18n/languages.mts';
 import { sourceDeclaration } from '../../support/source-fixtures.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';
+import postcss from 'postcss';
 
 const configuration = (status: ConnectionStatusValue = ConnectionStatus.Offline) => ({
   version: '0.4.7-beta.9',
@@ -205,6 +206,59 @@ test('recovery remains available without application state and never starts a VM
     ['/api/controller/settings'],
   );
   assert.equal(f.writes().length, 0);
+});
+
+test('recovery fields and separate actions retain scoped spacing and a stacked narrow layout', async () => {
+  const f = fixture();
+  await f.click('[data-recovery-settings]');
+  await f.click('[data-recovery-updates]');
+  assert.equal(f.container.querySelectorAll('[data-recovery-form] > .setting-row').length, 5);
+  assert.ok(f.container.querySelector('[data-recovery-form] > .inline-actions > button'));
+  assert.ok(f.container.querySelector('.card-content > [data-recovery-import]'));
+  assert.ok(f.container.querySelector('.recovery-settings > [data-recovery-release]'));
+  assert.equal(f.writes().length, 0);
+
+  const styles = postcss.parse(
+    fs.readFileSync(new URL('../../../ui/style.css', import.meta.url), 'utf8'),
+  );
+  const declarations = (selector: string) => {
+    const values = new Map<string, string>();
+    styles.walkRules(selector, (rule) => {
+      if (rule.parent?.type !== 'root') return;
+      rule.walkDecls((declaration) => {
+        values.set(declaration.prop, declaration.value);
+      });
+    });
+    return values;
+  };
+  for (const selector of [
+    '.recovery-settings .card-content',
+    '.recovery-settings [data-recovery-form]',
+  ]) {
+    const values = declarations(selector);
+    assert.equal(values.get('display'), 'grid');
+    assert.ok(Number.parseFloat(defined(values.get('gap'))) > 0);
+  }
+  assert.equal(
+    declarations('.recovery-settings [data-recovery-form] > .inline-actions').get(
+      'justify-content',
+    ),
+    'flex-end',
+  );
+  assert.equal(
+    declarations('.recovery-settings [data-recovery-import]').get('justify-self'),
+    'end',
+  );
+  const narrowRules: string[] = [];
+  styles.walkAtRules('media', (rule) => {
+    if (rule.params !== '(max-width: 560px)') return;
+    rule.walkRules('.recovery-settings .setting-row', (row) => {
+      row.walkDecls('grid-template-columns', (declaration) => {
+        narrowRules.push(declaration.value);
+      });
+    });
+  });
+  assert.deepEqual(narrowRules, ['minmax(0, 1fr)']);
 });
 
 test('the actual startup catch routes invalid state and transport errors to distinct recovery views', async () => {

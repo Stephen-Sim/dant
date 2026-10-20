@@ -252,7 +252,7 @@ func (provisioning *Provisioning) Start(ctx context.Context, raw []byte) (Provis
 			return ProvisioningState{}, ErrBinding
 		}
 	}
-	request := setupRequest{CPU: 4, MemoryGB: 6, DiskGB: 40, Provider: "auto"}
+	request := setupRequest{CPU: 4, MemoryGB: 8, DiskGB: 64, Provider: "auto"}
 	if json.Unmarshal(raw, &request) != nil || request.CPU < 1 || request.CPU > 64 || request.MemoryGB < 2 || request.MemoryGB > 128 || request.DiskGB < 32 || request.DiskGB > 2048 {
 		return ProvisioningState{}, ErrBinding
 	}

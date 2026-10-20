@@ -45,7 +45,7 @@ npm run test:core:parity
 npm run test:coverage
 python -m unittest discover -s tests/vm -p "test_*.py" -v
 node scripts/ci/version.mts
-node --test scripts/ci/version.test.mts
+node --test tests/tooling/build/version.test.mts
 node scripts/ci/preflight.mts
 pwsh -File scripts/ci/check-powershell.ps1
 npm run build

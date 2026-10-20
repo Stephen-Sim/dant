@@ -10,7 +10,7 @@ Read [docs/code-style.md](docs/code-style.md) before changing this repository. T
 - Keep the browser, Windows Controller, Ubuntu Worker, and Tauri native host separate. The Controller must not create a task Engine or execute agent work on Windows. Cross a boundary through its existing authenticated API, IPC command, or validated transport.
 - Keep dependency direction explicit. Shared contracts must not import a browser entrypoint, the Controller entrypoint, or the Worker entrypoint. Avoid circular imports and generic utility folders for unrelated features.
 - On a module move, update imports, resource allowlists, tests, coverage discovery, scripts, and documentation together. Preserve persisted file names and public API routes unless the change explicitly includes a migration.
-- Mirror feature ownership in `tests/<module>/` and browser ownership in `tests/ui/<module>/`. Shared test fixtures belong in `tests/support/`, compile-time contracts in `tests/types/`, and Python VM tests in `tests/vm/`. Keep test discovery recursive; do not add new test files to the root of `tests/`.
+- Mirror browser ownership in `tests/ui/<module>/` and build/development tooling in `tests/tooling/<module>/`. Go tests belong under `tests/go/`, native boundary tests under `tests/native/`, and Python VM tests under `tests/vm/`. Shared fixtures belong in `tests/support/` and compile-time contracts in `tests/types/`. Keep test discovery recursive; do not add test files to the root of `tests/` or beside tooling source.
 
 ## Code and configuration
 

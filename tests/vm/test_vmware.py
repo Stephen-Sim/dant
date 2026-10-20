@@ -110,6 +110,40 @@ class VmwareTests(unittest.TestCase):
     def create(self, **kwargs):
         return self.provisioner.create(cpu=2, memory_gb=3, disk_gb=40, ip_timeout_seconds=5, **kwargs)
 
+    def test_new_vm_defaults_are_8gib_memory_and_64gib_disk(self):
+        self.prepare()
+        self.provisioner.create(ip_timeout_seconds=5)
+        manifest = vm.read_json(self.provisioner.manifest_path)
+        self.assertEqual((manifest['cpu'], manifest['memoryGB'], manifest['diskGB']), (4, 8, 64))
+        self.assertEqual(vm.parse_vmx(self.provisioner.vmx)['memsize'], '8192')
+        self.assertEqual(vm.vmdk_info(self.provisioner.disk, 'monolithicSparse')['capacityBytes'], 64 * 1024**3)
+        self.assertTrue(any(call[1:3] == ['-x', '64GB'] for call in self.host.calls))
+
+    def test_resume_defaults_preserve_larger_configured_memory_and_disk_bytes(self):
+        self.prepare()
+        self.provisioner.create(cpu=12, memory_gb=16, disk_gb=128, ip_timeout_seconds=5)
+        original_vmx = self.provisioner.vmx.read_bytes()
+        original_disk = self.provisioner.disk.read_bytes()
+        original_manifest = vm.read_json(self.provisioner.manifest_path)
+        self.host.calls.clear()
+
+        self.provisioner.create(resume=True, ip_timeout_seconds=5)
+
+        resumed = vm.read_json(self.provisioner.manifest_path)
+        self.assertEqual((resumed['cpu'], resumed['memoryGB'], resumed['diskGB']), (12, 16, 128))
+        self.assertEqual(resumed['id'], original_manifest['id'])
+        self.assertEqual(self.provisioner.vmx.read_bytes(), original_vmx)
+        self.assertEqual(self.provisioner.disk.read_bytes(), original_disk)
+        self.assertFalse(any('-r' in call or '-x' in call for call in self.host.calls))
+
+    def test_cli_uses_same_defaults_without_contacting_vmware(self):
+        with mock.patch.object(vm.sys, 'argv', ['vmware.py', 'create']), \
+                mock.patch.object(vm.sys, 'platform', 'win32'), \
+                mock.patch.object(vm, 'Provisioner') as provisioner:
+            vm.main()
+        arguments = provisioner.return_value.create.call_args.kwargs
+        self.assertEqual((arguments['cpu'], arguments['memory_gb'], arguments['disk_gb']), (4, 8, 64))
+
     def test_checksum_exact_unique_filename(self):
         digest = 'a' * 64
         self.assertEqual(vm.checksum_for(f'{digest} *{vm.IMAGE}\n'), digest)

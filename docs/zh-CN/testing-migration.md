@@ -20,6 +20,8 @@
 
 记忆与指令 golden 来自 Node **22.23.3** 的合成 fixture，记录源码提交 `d058bdc7509efce90bd9d96cc367b04e11c98bae` 与文件哈希。替代实现由 Go **1.27.2** 执行。Memory runner 仅用冻结的数据行重建私有 SQLite fixture，不保留 `MemoryStore` 或其它 TypeScript 后台实现，也不把旧 Node／Go 计时作为当前性能承诺。
 
+原始[指令 golden](../../tests/support/goldens/work-prompt-node22.json) 作为共享测试数据保留。Go 的 [`instructions_golden_test.go`](../../tests/go/internal/work/instructions_golden_test.go) 校验原始捕获文件的哈希与来源信息，逐一比较包含数值类型、数组顺序的工具权限 schema，并核对完整指令模板的字节。这些资产等价测试归属 Go Work 包，不再保留单独的 Node 测试。
+
 共享浏览器契约、语言目录、源码 fixture 辅助函数及构建／开发配置继续进行 TypeScript 检查。旧 Node 关键模块的覆盖率职责转交实际 Go 功能测试；格式、类型、生成契约、状态、必需覆盖率及 Windows／Linux Go 检查继续启用。最终退役后必须重新完整集成验证，先前的定向通过不能替代它。
 
 ## 已验证的退役边界
@@ -27,3 +29,16 @@
 最终退役在 Go 行为与失败测试实际通过后执行。[`legacyimport`](../../tests/go/internal/legacyimport/) 验证 `TestImportArchivesLegacyFilesOncePreservesOriginalTextAndIsAuthenticatedIdempotent` 和 `TestImportRefusesAuthoritativeAndAmbiguousTargetsWithoutOverwritingThem`，并覆盖二进制／缺失文件、部分发布屏障、未知旧值和认证回执。[`application/legacy_import_test.go`](../../tests/go/internal/application/legacy_import_test.go) 证明显式离线角色不构造服务或 Engine。完整容量 Skill／编辑资产保留及真实 HTTP JSON／ZIP 传输边界也已由 Go 模块实际验证，小文件往返没有被当成等价证据。
 
 逐文件映射与本机执行证据保存在忽略的 `.cache/core/retired-node-tests.json`；本页把可审查的功能级理由保存在 Git 中。测试 fixture 不连接真实 VM、不请求真实模型或 Telegram、不使用麦克风，也不读取用户数据。
+
+## 当前测试归属
+
+| 目录                                                    | 职责                                                                                |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `tests/go/<package>/`                                   | 通过显式 overlay 编译的 Go 行为、持久化、协议、权限及失败路径测试。                 |
+| `tests/ui/<feature>/`                                   | TypeScript 浏览器行为与渲染测试。                                                   |
+| `tests/tooling/{build,config,contracts,core,computer}/` | Node 构建／开发工具、CI 校验、生成契约、记忆 parity runner 及隔离宿主脚本 fixture。 |
+| `tests/native/`                                         | Rust／原生边界的 Node 校验；Rust 单元测试仍由原生编译器负责。                       |
+| `tests/vm/`                                             | 使用隔离 fixture 的 Python VM 与安装器测试。                                        |
+| `tests/support/`、`tests/types/`                        | 公共 fixture、冻结的独立 golden 及编译期契约。                                      |
+
+`npm test` 和 `npm run test:coverage` 递归发现全部维护中的 Node 测试，包括从 `scripts/ci/` 移出的 CI 工具测试。CI workflow 保留显式校验步骤并改用新路径。`npm run test:core:parity` 执行 `tests/tooling/core/memory-parity.mts`；源码指纹跟随新路径，历史 oracle 来源记录保持原样。移动文件不改变行为或必需覆盖率门槛。

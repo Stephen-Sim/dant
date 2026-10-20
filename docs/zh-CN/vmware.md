@@ -25,7 +25,7 @@ Get-Service -Name 'VMnetDHCP','VMware NAT Service' | Select-Object Name,Status,S
 ```powershell
 $dantData = Join-Path $env:APPDATA 'com.dant.desktop\data'
 .\scripts\prepare-vmware.ps1 -DataDirectory $dantData
-.\scripts\create-vmware.ps1 -DataDirectory $dantData -Cpu 4 -MemoryGB 6 -DiskGB 40
+.\scripts\create-vmware.ps1 -DataDirectory $dantData -Cpu 4 -MemoryGB 8 -DiskGB 64
 .\scripts\check-vm.ps1 -DataDirectory $dantData
 ```
 
@@ -33,7 +33,7 @@ $dantData = Join-Path $env:APPDATA 'com.dant.desktop\data'
 
 准备阶段下载官方 Ubuntu 24.04 AMD64 VMDK，核对官方 SHA-256 清单，准备 SSH 密钥和 NoCloud 种子，并把 ISO 工具安装在独立工具目录。创建阶段生成受管理的 VMX 和磁盘，调用 Workstation 启动，通过 VMware Tools 等待地址，然后保存顶层 SSH 配置。来宾镜像包含 open-vm-tools。拿到 SSH 地址不代表安装完成；必须等图形桌面、截图桥和执行器的就绪检查通过。
 
-默认四核、6 GB 内存、40 GB 磁盘。`create-vmware.ps1` 的 `-IPTimeoutSeconds` 可调整地址发现等待时间。Worker 和桌面服务采用与 Hyper-V 相同的 VM 数据归属边界，详见 [VM 运行说明](VM.md)。
+新建 VM 默认四核、8 GiB 内存、64 GiB 磁盘。`-Resume` 保留现有 VM 的规格，包括更大的自定义容量，不会转换或调整其磁盘。`create-vmware.ps1` 的 `-IPTimeoutSeconds` 可调整地址发现等待时间。Worker 和桌面服务采用与 Hyper-V 相同的 VM 数据归属边界，详见 [VM 运行说明](VM.md)。
 
 ## 文件、进度与恢复
 
