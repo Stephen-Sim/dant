@@ -4,13 +4,13 @@ import { parseHTML } from 'linkedom';
 import { createVmBackups } from '../../../ui/settings/vm-backups.mts';
 import { backupMessages } from '../../../ui/settings/vm-backup-copy.mts';
 import { loadLanguage } from '../../../ui/i18n/localization.mts';
-import { languages } from '../../../src/i18n/languages.mts';
-import { BackupMode, BackupPhase, ConnectionStatus } from '../../../src/contracts/states.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
+import { BackupMode, BackupPhase, ConnectionStatus } from '../../../ui/shared/states.mts';
 import type {
   BackupMetadata,
   BackupPreview,
   BackupStatus,
-} from '../../../src/backups/backup-types.ts';
+} from '../../../ui/settings/backup-types.ts';
 import type { ApiOptions, ApiRequest, Timer, UiState } from '../../../ui/shared/contracts.mts';
 import { isRecord, LocalRequestError } from '../../../ui/shared/contracts.mts';
 import { defined } from '../../support/fixture-assertions.mts';
@@ -890,7 +890,7 @@ test('all 16 languages have localized fixed backup text and metadata remains unc
     if (language.code !== 'en' && language.code !== 'zh') {
       const catalog: unknown = JSON.parse(
         fs.readFileSync(
-          new URL(`../../../src/i18n/locales/${language.code}.json`, import.meta.url),
+          new URL(`../../../resources/i18n/locales/${language.code}.json`, import.meta.url),
           'utf8',
         ),
       );

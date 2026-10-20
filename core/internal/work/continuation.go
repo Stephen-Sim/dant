@@ -3,12 +3,13 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
+
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/runtime"
 	"github.com/Stephen-Sim/dant/core/internal/store"
 	workstate "github.com/Stephen-Sim/dant/core/internal/work/state"
-	"slices"
-	"strings"
 )
 
 func (value *Engine) canContinueLocked() bool {
@@ -16,7 +17,13 @@ func (value *Engine) canContinueLocked() bool {
 }
 
 func (value *Engine) continuationAvailableLocked(allowQueue bool) bool {
-	if value.closed || value.maintenance || value.paused || value.openingThread || value.referencePending > 0 || value.active != nil || value.takeover || value.acquiring || !allowQueue && len(value.queue) > 0 || len(value.pendingFollowups) > 0 || len(value.pendingRequests) > 0 || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline {
+	if value.closed || value.maintenance || value.paused || value.openingThread || value.referencePending > 0 {
+		return false
+	}
+	if value.active != nil || value.takeover || value.acquiring || !allowQueue && len(value.queue) > 0 {
+		return false
+	}
+	if len(value.pendingFollowups) > 0 || len(value.pendingRequests) > 0 || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline {
 		return false
 	}
 	if value.callReservation != nil && value.callReservation.Provider == "subscription" {
@@ -132,7 +139,7 @@ func (value *Engine) ContinueRegisteredWork(ctx context.Context, workID string, 
 	for _, turn := range turns {
 		id := eventString(turn, "id")
 		status := eventString(turn, "status")
-		if !workstate.ValidID(id, workstate.ReferenceIDLength) || slices.Contains(seen, id) || (status != "completed" && status != "interrupted" && status != "failed") {
+		if !workstate.ValidID(id, workstate.ReferenceIDLength) || slices.Contains(seen, id) || !contracts.RuntimeTerminalTurnStatus(status).Valid() {
 			return nil, value.failContinuation(active, ErrBusy, false)
 		}
 		seen = append(seen, id)

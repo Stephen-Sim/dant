@@ -1,6 +1,6 @@
-import type { RecordingDraftStatusValue } from '../../src/contracts/states.mts';
-import type { ConnectionStatusValue } from '../../src/contracts/contracts.ts';
-import type { Appearance } from '../../src/settings/appearance-types.ts';
+import type { RecordingDraftStatusValue } from '../shared/states.mts';
+import type { ConnectionStatusValue } from '../shared/api-types.ts';
+import type { Appearance } from '../settings/appearance-types.ts';
 import type {
   UiState,
   UiSettings,
@@ -10,7 +10,7 @@ import type {
   UsageSnapshot,
 } from '../shared/contracts.mts';
 import type { MessageSubmission } from '../chat/pending.mts';
-import type { CallCaption } from '../../src/contracts/call-caption.mts';
+import type { CallCaption } from '../call/caption-contracts.mts';
 
 export interface AppSettings extends UiSettings, Partial<Appearance> {
   vm: VmSettings;

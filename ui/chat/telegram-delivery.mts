@@ -1,5 +1,5 @@
-import { localizeMessages, translate } from '../../src/i18n/i18n.mts';
-import { languageInfo, normalizeLanguage } from '../../src/i18n/languages.mts';
+import { localizeMessages, translate } from '../i18n/messages.mts';
+import { languageInfo, normalizeLanguage } from '../i18n/languages.mts';
 import { isRecord, isSafeInteger, isFiniteNumber } from '../shared/contracts.mts';
 const reasons = {
   zh: {

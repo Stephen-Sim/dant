@@ -1,8 +1,8 @@
-import { MAX_ATTACHMENT_BYTES } from '../../src/config/limits.mts';
+import { MAX_ATTACHMENT_BYTES } from '../files/attachment-limits.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord as plain, isSafeInteger } from '../shared/contracts.mts';
-import { languageInfo } from '../../src/i18n/languages.mts';
-import { PlanStepStatus, isEnumValue } from '../../src/contracts/states.mts';
+import { languageInfo } from '../i18n/languages.mts';
+import { PlanStepStatus, isEnumValue } from '../shared/states.mts';
 import {
   validWorkTarget as targetValid,
   sameWorkTarget as same,
@@ -88,7 +88,7 @@ interface TaskDetailsOptions {
   icon?: (name: string) => string;
   connected?: boolean | (() => boolean);
 }
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import { workProgress } from './work-progress.mts';
 
 const copy = {

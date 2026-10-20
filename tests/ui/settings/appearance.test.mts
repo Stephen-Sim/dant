@@ -1,4 +1,4 @@
-import type { AppearancePatch } from '../../../src/settings/appearance-types.ts';
+import type { AppearancePatch } from '../../../ui/settings/appearance-types.ts';
 import { defined } from '../../support/fixture-assertions.mts';
 import { compactCss } from '../../support/source-fixtures.mts';
 import test from 'node:test';

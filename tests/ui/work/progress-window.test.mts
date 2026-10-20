@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import { parseHTML } from 'linkedom';
-import { TaskStatus, PlanStepStatus, SubmissionStatus } from '../../../src/contracts/states.mts';
+import { TaskStatus, PlanStepStatus, SubmissionStatus } from '../../../ui/shared/states.mts';
 import { workProgress } from '../../../ui/work/work-progress.mts';
 import { createTaskReplyController } from '../../../ui/work/task-reply.mts';
 import {

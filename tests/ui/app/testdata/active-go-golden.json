@@ -1,0 +1,53 @@
+{
+  "active": {
+    "messageId": "00000000-0000-4000-8000-000000000091",
+    "messageIds": ["00000000-0000-4000-8000-000000000091"],
+    "turnId": "turn-active",
+    "threadId": "thread-fixture",
+    "status": "running",
+    "source": "chat",
+    "background": false,
+    "startedAt": 1792460088829,
+    "updatedAt": 1792460088829,
+    "step": "working",
+    "callId": null,
+    "canSteer": true
+  },
+  "go": "1.27.2",
+  "kind": "isolated-public-Engine-snapshot",
+  "withCall": {
+    "messageId": "00000000-0000-4000-8000-000000000091",
+    "messageIds": ["00000000-0000-4000-8000-000000000091"],
+    "turnId": "turn-active",
+    "threadId": "thread-fixture",
+    "status": "running",
+    "source": "chat",
+    "background": false,
+    "startedAt": 1792460088829,
+    "updatedAt": 1792460088829,
+    "step": "working",
+    "callId": "call-active",
+    "canSteer": true
+  },
+  "provenance": {
+    "baseCommit": "d058bdc7509efce90bd9d96cc367b04e11c98bae",
+    "sources": [
+      {
+        "file": "core/internal/work/engine.go",
+        "sha256": "7ebf0b26bed8aaed0275d8a625afff07fbbd956d6852cdf77b949be53af7ad84"
+      },
+      {
+        "file": "core/internal/contracts/types.go",
+        "sha256": "213ab207c014316552eb8d613ee58a3ce18fa1492bb268e41b80a569a8f6051d"
+      },
+      {
+        "file": "core/internal/backups/portable.go",
+        "sha256": "8ac2fdf3b4ec2395b520121426422c49eb2f28b2402a108a74436f6f4774c309"
+      },
+      {
+        "file": "core/internal/backups/vault.go",
+        "sha256": "f13ef7c98a8f09847e182fd98bce2c875a5899b064fd592c1b8303c7bd6b57d6"
+      }
+    ]
+  }
+}

@@ -32,7 +32,7 @@ func deploymentBundleFixture(t *testing.T) (string, BundleManifest, string) {
 		"vm/start-codex.sh",
 		"vm/transcribe_audio.py",
 		"vm/voice_message.py",
-		"src/config/protocol.json",
+		config.ProtocolResourcePath,
 	} {
 		value := []byte("isolated bundle " + name + "\x00\xff")
 		target := filepath.Join(root, filepath.FromSlash(name))

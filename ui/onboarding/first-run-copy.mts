@@ -1,4 +1,4 @@
-import type { LanguageCode } from '../../src/i18n/languages.mts';
+import type { LanguageCode } from '../i18n/languages.mts';
 
 export interface FirstRunCopy {
   title: string;

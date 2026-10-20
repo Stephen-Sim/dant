@@ -2,7 +2,17 @@
 
 English · [Chinese](zh-CN/verification.md)
 
-Date: 2026-10-19, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
+Date: 2026-10-20, Asia/Kuala_Lumpur. Unit tests, protocol simulations, real VM tasks, and real audio acceptance are reported separately. Earlier checkpoints retain their original results and deployment status.
+
+## 0.4.7-beta.16 backend retirement source verification
+
+The former root `src/` backend and Node legacy importer have been removed after their Go replacements passed behavioral checks. Controller and Worker ownership stays in `core/`; canonical contracts, protocol defaults and language catalogs now live in `resources/`. All **158 Go test files** live under `tests/go/` and compile through the explicit Go overlay. The [test migration record](testing-migration.md) maps retired responsibilities to their current owners and independent fixtures.
+
+The final Windows source checks passed **856 Node tests** with zero failures or skips. Browser coverage is **98.99% lines, 92.29% branches and 91.91% functions**. Go formatting, vet and all **35 packages** passed; every one of the **33 feature packages** had executable coverage. Aggregate Go statement coverage is **71.12%**, with the separately enforced critical packages at **Controller 90.58%, Computer 91.11% and Telegram 90.05%**. Go statements and browser lines are different metrics and are not combined.
+
+The final Memory parity run compared **12 searches, 18 retrievals, 29 ordered references and 11 boundary checks** against frozen synthetic Node results. Maximum score difference was zero. **66 Rust native tests**, **11 CI-helper tests** and the Python VM-helper suite also passed; Python ran **116 tests**, with **115 passing and one Linux kernel-lock probe skipped on Windows**. Strict Node/UI/test types, state checks, generated contracts, all formatter checks, prerequisite/syntax/version checks and the production frontend build passed. The frontend retains its existing large-chunk advisory; no gate or limit was weakened to hide it.
+
+These checks do not establish local installer, live VM version/source, complete authenticated backup, real editor/skill UI acceptance or Linux race results. Those remain separate candidate acceptance steps, and this checkpoint does not claim Beta 16 is published.
 
 ## 0.4.7-beta.12 candidate source verification
 

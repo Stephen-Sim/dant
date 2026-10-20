@@ -15,7 +15,7 @@ const fixtureResources = [
   'vm/start-codex.sh',
   'vm/transcribe_audio.py',
   'vm/voice_message.py',
-  'src/config/protocol.json',
+  'resources/config/protocol.json',
 ] as const;
 
 export function workerInstallFixture(t: TestContext) {
@@ -30,7 +30,7 @@ export function workerInstallFixture(t: TestContext) {
   const commit = 'a'.repeat(40);
   const files = fixtureResources.map((name) => {
     const data =
-      name === 'src/config/protocol.json' || name === 'vm/worker-install.py'
+      name === 'resources/config/protocol.json' || name === 'vm/worker-install.py'
         ? fs.readFileSync(name)
         : Buffer.from('isolated resource ' + name);
     const target = path.join(source, name);

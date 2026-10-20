@@ -1,20 +1,20 @@
-import type { ServiceUpdateStatusValue } from '../../src/contracts/states.mts';
-import type { ScheduleRecord } from '../../src/schedules/schedule-types.ts';
+import type { ServiceUpdateStatusValue } from './states.mts';
+import type { ScheduleRecord } from '../schedules/schedule-types.ts';
 import type {
   PlanStepStatusValue,
   TaskPriorityValue,
   TaskProgressSnapshot,
   TaskStatusValue,
   WorkRecord,
-} from '../../src/contracts/contracts.ts';
+} from './api-types.ts';
 
 /** The browser accepts JSON only at its transport boundary. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export interface JsonObject {
   [key: string]: JsonValue;
 }
-export { isRecord } from '../../src/contracts/json.mts';
-import { isRecord } from '../../src/contracts/json.mts';
+export { isRecord } from './json.mts';
+import { isRecord } from './json.mts';
 export const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 export const isSafeInteger = (value: unknown): value is number =>

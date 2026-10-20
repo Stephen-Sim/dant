@@ -1,12 +1,7 @@
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord, isSafeInteger, requestError } from '../shared/contracts.mts';
-import {
-  ScheduleStatus,
-  TaskPriority,
-  ConnectionStatus,
-  isEnumValue,
-} from '../../src/contracts/states.mts';
-import type { TaskPriorityValue } from '../../src/contracts/contracts.ts';
+import { ScheduleStatus, TaskPriority, ConnectionStatus, isEnumValue } from '../shared/states.mts';
+import type { TaskPriorityValue } from '../shared/api-types.ts';
 import type { UiSchedule, UiState, ApiRequest } from '../shared/contracts.mts';
 interface ScheduleBody {
   text: string;
@@ -61,8 +56,8 @@ export function schedulesSnapshot(value: unknown): UiSchedule[] {
   if (!Array.isArray(items) || !items.every(isSchedule)) throw Error('Invalid schedule list');
   return items;
 }
-import { languageInfo } from '../../src/i18n/languages.mts';
-import { localizeMessages, translateCount } from '../../src/i18n/i18n.mts';
+import { languageInfo } from '../i18n/languages.mts';
+import { localizeMessages, translateCount } from '../i18n/messages.mts';
 const baseCopy = {
   en: {
     title: 'Scheduled tasks',

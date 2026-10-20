@@ -6,8 +6,8 @@ import {
   validateAppearancePatch,
   exportAppearance,
   importAppearance,
-} from '../../src/settings/appearance-settings.mts';
-import type { Appearance, AppearancePatch } from '../../src/settings/appearance-types.ts';
+} from './appearance-preferences.mts';
+import type { Appearance, AppearancePatch } from './appearance-types.ts';
 import type { Cleanup } from '../shared/contracts.mts';
 export {
   appearanceDefaults,

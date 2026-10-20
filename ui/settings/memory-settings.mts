@@ -1,11 +1,8 @@
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord } from '../shared/contracts.mts';
 import type { ApiRequest, UiState } from '../shared/contracts.mts';
-import { MemoryEntryStatus, ConnectionStatus } from '../../src/contracts/states.mts';
-import {
-  MEMORY_MANAGEMENT_PAGE_SIZE,
-  MEMORY_MAX_BYTES,
-} from '../../src/conversation/memory-constants.mts';
+import { MemoryEntryStatus, ConnectionStatus } from '../shared/states.mts';
+import { MEMORY_MANAGEMENT_PAGE_SIZE, MEMORY_MAX_BYTES } from './memory-limits.mts';
 import { memoryManagementCopy } from './memory-management-copy.mts';
 import { readManagedMemory } from './memory-management-contracts.mts';
 import type { ManagedMemoryView, ManagedMemoryRecord } from './memory-management-contracts.mts';

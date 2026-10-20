@@ -1,6 +1,6 @@
 import type { TelegramStatus, TelegramPairing } from '../../../ui/app/application-types.ts';
 import type { Timer } from '../../../ui/shared/contracts.mts';
-import { isRecord, errorMessage } from '../../../src/contracts/json.mts';
+import { isRecord, errorMessage } from '../../../ui/shared/json.mts';
 import { escapeHtml } from '../../../ui/shared/html.mts';
 import { observedRecord } from '../../support/service-fixtures.mts';
 type StatusFixture = Omit<TelegramStatus, 'sync'> & { sync?: unknown };

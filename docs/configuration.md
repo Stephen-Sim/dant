@@ -2,7 +2,7 @@
 
 English · [Chinese](zh-CN/configuration.md)
 
-Copy [`.env.example`](../.env.example) to `.env` at the repository root. The server and Vite load it for local development; existing process environment variables take priority. `.env` and private variants are ignored by Git and excluded from VM archives and desktop resources.
+Copy [`.env.example`](../.env.example) to `.env` at the repository root. The development launcher and Vite load it before starting the compiled Go Controller; existing process environment variables take priority. `.env` and private variants are ignored by Git and excluded from VM archives and desktop resources.
 
 | Variable          | Default     | Purpose                           |
 | ----------------- | ----------- | --------------------------------- |
@@ -12,7 +12,7 @@ Copy [`.env.example`](../.env.example) to `.env` at the repository root. The ser
 | `DANT_GUEST_HOST` | `127.0.0.1` | VM graphical desktop bridge host. |
 | `DANT_GUEST_PORT` | `4320`      | VM graphical desktop bridge port. |
 
-Hosts accept only `127.0.0.1` or `localhost`; ports must be integers from 1 to 65535. A malformed value stops configuration rather than silently falling back. The shared configuration module constructs health, screen and action URLs from these validated values.
+Hosts accept only `127.0.0.1` or `localhost`; ports must be integers from 1 to 65535. A malformed value stops configuration rather than silently falling back. Go [`config`](../core/internal/config/network.go) owns runtime endpoint validation and VM deployment settings; [`scripts/config`](../scripts/config/network.mts) validates only build/development endpoints. Health, screen and action URLs use the runtime values.
 
 Native desktop IPC and the SSH-forwarded VM API keep the fixed port `4317`. These are protocol constants, not development preferences. VM deployment includes only the two public guest settings in its manifest and applies them to both worker and guest services. Changing those settings changes the deployment fingerprint; `.env` itself is never copied. Keep credentials in the existing protected settings facilities.
 

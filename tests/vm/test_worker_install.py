@@ -29,8 +29,10 @@ class WorkerInstallFixture(unittest.TestCase):
         self.source.mkdir(parents=True)
         entries = []
         for name in sorted(installer.ALLOWLIST):
+            if name == installer.LEGACY_PROTOCOL_PATH:
+                continue
             data = ('isolated resource ' + name).encode()
-            if name == 'src/config/protocol.json':
+            if name == installer.PROTOCOL_PATH:
                 data = json.dumps({'apiPort': 4317, 'loopbackHosts': ['127.0.0.1', 'localhost']}).encode()
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +62,39 @@ class WorkerInstallFixture(unittest.TestCase):
         self.deployment = {'schemaVersion': 2, 'sha256': self.digest,
                            'publicEnvironment': {'DANT_GUEST_HOST': 'localhost', 'DANT_GUEST_PORT': '5540'}}
         (self.source / 'deploy-manifest.json').write_text(json.dumps(self.deployment), encoding='utf-8')
+
+    def test_current_bundle_uses_canonical_resource_protocol(self):
+        verified = installer.verify_bundle(self.source, self.home)
+        self.assertIn(installer.PROTOCOL_PATH, verified['entries'])
+        self.assertNotIn(installer.LEGACY_PROTOCOL_PATH, verified['entries'])
+
+    def test_legacy_target_protocol_is_verified_without_changing_its_manifest(self):
+        previous, _, _ = self.stopped_attempt(legacy_protocol=True)
+        target = self.home / 'dant/releases' / previous['directory']
+        original = (target / installer.BUNDLE_MANIFEST).read_bytes()
+        verified = installer.verify_bundle(target, self.home)
+        self.assertIn(installer.LEGACY_PROTOCOL_PATH, verified['entries'])
+        self.assertNotIn(installer.PROTOCOL_PATH, verified['entries'])
+        self.assertEqual((target / installer.BUNDLE_MANIFEST).read_bytes(), original)
+        self.assertEqual(verified['digest'], previous['source'])
+
+    def test_missing_or_ambiguous_protocol_cannot_select_a_manifest_layout(self):
+        original_files = self.manifest['files']
+        self.manifest['files'] = [entry for entry in original_files if entry['path'] != installer.PROTOCOL_PATH]
+        self.write_manifests()
+        with self.assertRaisesRegex(installer.InstallError, '^manifest-invalid$'):
+            installer.verify_bundle(self.source, self.home)
+        legacy = self.source / installer.LEGACY_PROTOCOL_PATH
+        legacy.parent.mkdir(parents=True)
+        raw = (self.source / installer.PROTOCOL_PATH).read_bytes()
+        legacy.write_bytes(raw)
+        self.manifest['files'] = sorted([*original_files, {
+            'path': installer.LEGACY_PROTOCOL_PATH, 'bytes': len(raw),
+            'sha256': hashlib.sha256(raw).hexdigest(),
+        }], key=lambda entry: entry['path'])
+        self.write_manifests()
+        with self.assertRaisesRegex(installer.InstallError, '^manifest-invalid$'):
+            installer.verify_bundle(self.source, self.home)
 
     def quiet(self, arguments, timeout=installer.SERVICE_TIMEOUT, environment=None, output=None):
         self.calls.append(arguments)
@@ -106,10 +141,20 @@ class WorkerInstallFixture(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             installer._activate_locked(self.configuration, manual, self.service_directory, reconciliation)
 
-    def stopped_attempt(self, phase=installer.PHASE_STOPPING):
+    def stopped_attempt(self, phase=installer.PHASE_STOPPING, legacy_protocol=False):
         old_source = self.source.with_name('source.previous')
         shutil.copytree(self.source, old_source)
         manifest = dict(self.manifest, version='0.4.6')
+        if legacy_protocol:
+            current = old_source / installer.PROTOCOL_PATH
+            legacy = old_source / installer.LEGACY_PROTOCOL_PATH
+            legacy.parent.mkdir(parents=True)
+            current.rename(legacy)
+            manifest['files'] = sorted([
+                dict(entry, path=installer.LEGACY_PROTOCOL_PATH)
+                if entry['path'] == installer.PROTOCOL_PATH else dict(entry)
+                for entry in manifest['files']
+            ], key=lambda entry: entry['path'])
         raw = json.dumps(manifest, separators=(',', ':')).encode()
         (old_source / installer.BUNDLE_MANIFEST).write_bytes(raw)
         deployment = dict(self.deployment, sha256=hashlib.sha256(raw).hexdigest())
@@ -253,7 +298,7 @@ class WorkerInstallFixture(unittest.TestCase):
         self.assertEqual(sum('--role=prepare-worker' in call for call in self.calls), 1)
 
     def test_new_operator_preflight_keeps_older_target_bundle_and_live_proof_identity(self):
-        previous, _, request = self.stopped_attempt()
+        previous, _, request = self.stopped_attempt(legacy_protocol=True)
         target = installer.verify_bundle(self.home / 'dant/releases' / previous['directory'], self.home)
         script = self.source / 'vm/worker-install.py'
         with patch.object(installer, '__file__', str(script)):
@@ -452,7 +497,7 @@ class WorkerInstallFixture(unittest.TestCase):
                 activate.assert_not_called()
 
     def test_installation_phase_constants_match_shared_contract(self):
-        domains = json.loads((ROOT / 'src/contracts/state-domains.json').read_bytes())['domains']
+        domains = json.loads((ROOT / 'resources/contracts/state-domains.json').read_bytes())['domains']
         self.assertEqual(domains['WorkerInstallationPhase'], {
             'Reserving': installer.PHASE_RESERVING,
             'Stopping': installer.PHASE_STOPPING,

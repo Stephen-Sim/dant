@@ -52,7 +52,7 @@ func newActivationFixture(t *testing.T) activationFixture {
 	for _, name := range []string{
 		computer.GuestBinaryPath, "vm/install-worker.sh", "vm/worker-install.py", "vm/guest.py",
 		"vm/control.py", "vm/desktop.py", "vm/desktop_mcp.py", "vm/start-codex.sh",
-		"vm/transcribe_audio.py", "vm/voice_message.py", "src/config/protocol.json",
+		"vm/transcribe_audio.py", "vm/voice_message.py", config.ProtocolResourcePath,
 	} {
 		content := []byte("isolated verified resource " + name)
 		file := filepath.Join(target, filepath.FromSlash(name))

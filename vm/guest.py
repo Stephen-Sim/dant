@@ -8,7 +8,7 @@ ROOT=pathlib.Path('/home/dant/work')
 def load_protocol():
     home = pathlib.Path(__file__).resolve().parents[1]
     # Source checkout and the installed ~/dant/vm helper use the same manifest.
-    candidates = (home/'src/config/protocol.json', home/'app/src/config/protocol.json')
+    candidates = (home/'resources/config/protocol.json', home/'app/resources/config/protocol.json')
     for candidate in candidates:
         if candidate.is_file():
             return json.loads(candidate.read_text(encoding='utf-8'))

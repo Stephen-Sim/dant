@@ -1,6 +1,6 @@
-import { normalizeLanguage } from '../../src/i18n/languages.mts';
+import { normalizeLanguage } from '../i18n/languages.mts';
 import { isRecord } from '../shared/contracts.mts';
-import { TaskStatus, ConnectionStatus } from '../../src/contracts/states.mts';
+import { TaskStatus, ConnectionStatus } from '../shared/states.mts';
 import type { CoreModule, EventModule, Cleanup } from '../shared/contracts.mts';
 const taskStates = new Set<string>([
   TaskStatus.WaitingUser,

@@ -703,7 +703,8 @@ mod tests {
     #[test]
     fn every_registered_language_has_safe_native_exit_reasons() {
         let registry: Vec<serde_json::Value> =
-            serde_json::from_str(include_str!("../../src/i18n/language-registry.json")).unwrap();
+            serde_json::from_str(include_str!("../../resources/i18n/language-registry.json"))
+                .unwrap();
         for entry in registry {
             let language = entry["code"].as_str().unwrap();
             for failure in [

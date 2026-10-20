@@ -1,5 +1,5 @@
-import { isLanguage } from '../../src/i18n/languages.mts';
-import type { LanguageCode } from '../../src/i18n/languages.mts';
+import { isLanguage } from '../i18n/languages.mts';
+import type { LanguageCode } from '../i18n/languages.mts';
 import { isFiniteNumber, isRecord, isSafeInteger } from '../shared/contracts.mts';
 
 export type OverlayStatus = 'calling' | 'talking' | 'recovering' | 'stopping';

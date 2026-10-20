@@ -1,4 +1,4 @@
-import { normalizeLanguage, languageInfo } from '../../src/i18n/languages.mts';
+import { normalizeLanguage, languageInfo } from '../i18n/languages.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
 import type { ApiRequest } from '../shared/contracts.mts';
 import { profiles, providerInfo, read } from '../app/application-state.mts';

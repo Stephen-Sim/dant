@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBuildPaths } from './ci/build-paths.mts';
 import { readVersion } from './ci/version.mts';
-import { errorCode, isRecord } from '../src/contracts/json.mts';
+import { errorCode, isRecord } from './core/manifest-json.mts';
 import { buildCore, sourceCommit, type CoreBuildOptions } from './core/build.mts';
 import type { GoRunner } from './core/go.mts';
 import {

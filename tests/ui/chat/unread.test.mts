@@ -1,6 +1,6 @@
 import type { ReadMessage } from '../../../ui/chat/read-state.mts';
 import type { Timer } from '../../../ui/shared/contracts.mts';
-import { isRecord } from '../../../src/contracts/json.mts';
+import { isRecord } from '../../../ui/shared/json.mts';
 type VisibilityOptions = NonNullable<Parameters<typeof createReadVisibility>[0]>;
 type ReadBody = { ids?: string[]; attachmentSnapshots?: Record<string, string[]> };
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';

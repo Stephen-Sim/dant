@@ -1,9 +1,9 @@
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isSafeInteger } from '../shared/contracts.mts';
 import type { UsageSnapshot, UsageCounters, UsageProvider } from '../shared/contracts.mts';
-import { translate } from '../../src/i18n/i18n.mts';
-import { languageInfo } from '../../src/i18n/languages.mts';
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { translate } from '../i18n/messages.mts';
+import { languageInfo } from '../i18n/languages.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import { renderUsageActivity } from './usage-activity.mts';
 const words = {
   en: {

@@ -14,7 +14,7 @@ interface ChildOptions {
   invoke?: ParentOptions['invoke'];
 }
 import { defined } from '../support/fixture-assertions.mts';
-import { languageInfo } from '../../src/i18n/languages.mts';
+import { languageInfo } from '../../ui/i18n/languages.mts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -18,6 +18,7 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/buildinfo"
 	"github.com/Stephen-Sim/dant/core/internal/config"
 	"github.com/Stephen-Sim/dant/core/internal/controller"
+	"github.com/Stephen-Sim/dant/core/internal/legacyimport"
 	"github.com/Stephen-Sim/dant/core/internal/platform"
 	"github.com/Stephen-Sim/dant/core/internal/security"
 	"github.com/Stephen-Sim/dant/core/internal/shadow"
@@ -54,6 +55,8 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 
 	if len(args) > 0 {
 		switch args[0] {
+		case "--role=" + string(config.RoleLegacyImport):
+			return legacyimport.RunCLI(ctx, args[1:], output)
 		case "--role=backup-transform":
 			if len(args) != 1 {
 				return config.ErrStartup

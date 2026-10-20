@@ -10,9 +10,9 @@ import {
   numberValue as number,
   unknownValue,
 } from '../shared/validation.mts';
-import { PlanStepStatus, TaskProgressStage, isEnumValue } from '../../src/contracts/states.mts';
-import type { PlanStepStatusValue } from '../../src/contracts/states.mts';
-import type { TaskProgressStageValue } from '../../src/contracts/contracts.ts';
+import { PlanStepStatus, TaskProgressStage, isEnumValue } from '../shared/states.mts';
+import type { PlanStepStatusValue } from '../shared/states.mts';
+import type { TaskProgressStageValue } from '../shared/api-types.ts';
 
 /** Presentation accepts partial old snapshots; unknown state values stay unknown until normalized. */
 export interface ProgressMessage {

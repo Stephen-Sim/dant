@@ -2,7 +2,7 @@
 
 [English](../go-core-migration.md) · Chinese
 
-当前源码组装为 **Go Agent Core + Rust Tauri + TypeScript UI**。Go 负责 Controller 和 Linux Worker 后端，包括持久化、执行编排、记忆、调度、通话、Telegram、文件、Skills、安全、VM 部署和备份。TypeScript 保留用于浏览器、构建工具与兼容性测试基准。这里描述源码实现，不代表新版本已经发布或完成本机安装验收。
+当前源码组装为 **Go Agent Core + Rust Tauri + TypeScript UI**。Go 负责 Controller 和 Linux Worker 后端，包括持久化、执行编排、记忆、调度、通话、Telegram、文件、Skills、安全、VM 部署和备份。TypeScript 保留用于浏览器与构建工具。根目录 `src/` 后端已移除，独立的合成 Node golden 结果以数据夹具保留。这里描述源码实现，不代表新版本已经发布或完成本机安装验收。
 
 模型推理、工具迭代和持久模型对话仍由 Codex App Server 负责。dant 的 Go Engine 负责准入、持久任务、确认、资源所有权与交付，不另建一套 LLM 循环。参见[系统架构](architecture.md)和[运行支持](runtime-support.md)。
 
@@ -19,13 +19,13 @@
 | `core/internal/files`、`skills`、`security`、`backups`、`updates` | 经校验的文件、Skill 支持文件、凭据、加密归档与更新契约。                      |
 | `src-tauri/src`、`ui`                                             | 原生窗口/系统集成与 TypeScript 浏览器交互。                                   |
 
-Go 功能测试放在包旁。固定查询、事务所有权和校验后的行映射保留在所属 Repository，入口和 HTTP 适配器不接受任意 SQL 或调用者选定的数据库路径。窄接口属于消费者，不增加通用 Repository 或自动 ORM 迁移。
+全部 Go 测试放在镜像完整包路径的 `tests/go/`，通过官方编译器 overlay 保留包内私有访问。固定查询、事务所有权和校验后的行映射保留在所属 Repository，入口和 HTTP 适配器不接受任意 SQL 或调用者选定的数据库路径。窄接口属于消费者，不增加通用 Repository 或自动 ORM 迁移。
 
 Controller 与 Worker 是编译后程序的独立角色。Controller 不在宿主创建任务 Engine 或执行 Agent 工作。宿主与提供商抽象保留 Windows Hyper-V/VMware 行为；可识别 Unix 宿主能力只是扩展点，不代表 macOS/Linux 桌面版本已经支持。
 
 ## 稳定契约与数据
 
-`src/contracts/state-domains.json` 生成 Go 类型化状态与 TypeScript 冻结状态域，`core-protocol.json` 提供共享传输限制。`npm run check:contracts` 检查漂移。运行时解码器仍校验实际消费字段，包括状态值、消息/turn/对话身份，以及缺失、显式 null 和零的区别。共享文字工具保留 ECMAScript trim、UTF-16 预算与受支持旧 JSON 文字；Unicode golden 夹具比较参考实现的归一化和大小写行为。
+`resources/contracts/state-domains.json` 生成 Go 类型化状态与 TypeScript 冻结状态域，`core-protocol.json` 提供共享传输限制。`npm run check:contracts` 检查漂移。运行时解码器仍校验实际消费字段，包括状态值、消息/turn/对话身份，以及缺失、显式 null 和零的区别。共享文字工具保留 ECMAScript trim、UTF-16 预算与受支持旧 JSON 文字；Unicode golden 夹具比较参考实现的归一化和大小写行为。
 
 原 API 路由、`X-Dant-Token`、origin/host 校验、原生 IPC、`4317` 应用 API、`4320` 桌面 bridge 与认证 SSH 转发保持不变。Token 鉴权本地 HTTP，SSH 加密宿主到 VM 的通道。Worker 仍在有图形桌面的 Linux VM 内使用普通用户运行。更换语言实现不增加权限。
 
@@ -65,6 +65,14 @@ Worker 在打开 Store 或 Memory 前还会检查 `install-attempt.json`，独�
 
 准备阶段之前中断的安装，只能通过显式运维命令 `reconcile-stopped` 协调恢复。它要求准确的 attempt ID 与原始 journal 哈希、旧／新源码清单校验、停止进程证明和独占安装锁；先持久保留原 journal 证据，再写入带保护的新 attempt。准备或激活结果未知时不能走这个入口，自动连接检查也不会调用它。
 
+## 显式导入早期导出包
+
+`core/internal/legacyimport` 替代原 Node 操作工具 `vm/migrate-state.mts`。经验证的程序接受 `--role=legacy-import --source-dir <绝对导出目录> --data-dir <绝对空目标目录>`，读取早期 `manifest.json`、`state.json`、`files/<legacy-id>` 格式，不构造 Controller、Engine、模型会话或 Scheduler。它与当前便携备份恢复流程分开。
+
+目标必须为空且由本进程独占。每个原附件 ID 只生成一次 UUID 映射，保留任意字节与安全显示名称；缺失文件设置有界 unavailable 标记。原 state 和 manifest 字节作为私有证据保留；生效的宿主 VM 凭据清空，未完成用户/工作记录暂停，定时任务禁用，不确定结果保持未确认。支持的旧身份与时间戳缺省不会凭空补造，原导出包不变。
+
+写输出前先持久保存意图，state、附件元数据、回执和完成证明均刷盘并绑定哈希。只有来源、目标及完整输出认证不变时才幂等成功；部分写入、来源变化或目标变化均需独立协调。早期格式限制为每文件 10 MiB、1,000 个不同文件、附件合计 512 MiB、state 128 MiB、manifest 64 KiB；这些限制属于该操作工具，不是现代 VM 备份限制。参见[测试迁移](testing-migration.md)。
+
 ## 构建、资源与开发
 
 工具与 CI 固定 **Go 1.27.2**，关闭自动选择工具链。生产二进制使用 `CGO_ENABLED=0`、`-trimpath` 和显式版本/源码构建信息。`buildCore` 要求已提交且干净的工作树，校验预期 CI 提交，并在编译后再次检查。不能把脏源码标成另一个干净提交。
@@ -84,8 +92,8 @@ Worker 在打开 Store 或 Memory 前还会检查 `install-attempt.json`，独�
 
 ## 兼容证据与剩余验收
 
-原只读 Memory 影子角色保留为显式测试工具：有界 stdio 帧、四个 worker、有界队列、取消与修订检查，不具有执行能力。TypeScript owner 生成脱敏夹具投影，Go reader 比较作用域、排名、可空元数据、摘录和分数。影子结果不会进入生产上下文，生产召回直接使用 Go Store。
+原只读 Memory 影子角色保留为显式测试工具：有界 stdio 帧、四个 worker、有界队列、取消与修订检查，不具有执行能力。仅用于夹具的 Node 工具从冻结的独立 golden 数据重建脱敏 SQLite 快照，Go Store 与 reader 比较作用域、排名、可空元数据、摘录和分数。影子结果不会进入生产上下文，生产召回直接使用 Go Store。
 
-`npm run test:core:parity` 保留隔离参考比较，覆盖 CJK、NFKC 展开、UTF-16 边界、来源隔离和 SQLite 整数值 REAL 时间戳。其他 Go 夹具验证写入、冲突、重启/派发阶段、通话、未知结果、备份恢复和传输取消。保留的 TypeScript 测试是兼容基准或浏览器/工具测试，不是第二套实时后端。
+`npm run test:core:parity` 保留隔离参考比较，覆盖 CJK、NFKC 展开、UTF-16 边界、来源隔离和 SQLite 整数值 REAL 时间戳。其他 Go 夹具验证写入、冲突、重启/派发阶段、通话、未知结果、备份恢复和传输取消。旧后端测试归入所属 Go 包，浏览器与工具继续使用 TypeScript 测试；独立 golden 数据保留确切 Node 来源，不保留 Node 业务实现。参见[测试迁移](testing-migration.md)。
 
 运行固定格式化、`go vet`、全部包测试与 Linux race 检查，同时保留严格 TypeScript、原覆盖率、Python VM 辅助、Rust、版本与发布完整性门禁。源码测试通过不能证明打包原生启动、真实 VM 更新/恢复、音频、Telegram 送达或桌面任务成功。这些必须使用验证后的产物单独记录验收；本文不代表已安装或发布成功。

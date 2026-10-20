@@ -1,5 +1,5 @@
-import { normalizeLanguage } from '../../src/i18n/languages.mts';
-import type { LanguageCode } from '../../src/i18n/languages.mts';
+import { normalizeLanguage } from '../i18n/languages.mts';
+import type { LanguageCode } from '../i18n/languages.mts';
 
 interface CaptionCopy {
   title: string;

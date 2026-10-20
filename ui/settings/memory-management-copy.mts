@@ -1,6 +1,6 @@
-import { normalizeLanguage } from '../../src/i18n/languages.mts';
-import type { LanguageCode } from '../../src/i18n/languages.mts';
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { normalizeLanguage } from '../i18n/languages.mts';
+import type { LanguageCode } from '../i18n/languages.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 
 const keys = [
   'description',

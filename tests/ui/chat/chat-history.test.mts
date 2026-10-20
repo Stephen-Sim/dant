@@ -1,6 +1,6 @@
 import type { HistoryMessage } from '../../../ui/chat/chat-history.mts';
 import type { UiModal, ApiOptions } from '../../../ui/shared/contracts.mts';
-import { isRecord } from '../../../src/contracts/json.mts';
+import { isRecord } from '../../../ui/shared/json.mts';
 type HistoryOptions = Parameters<typeof createChatHistory>[0];
 import { defined, invokeHandler } from '../../support/fixture-assertions.mts';
 import test from 'node:test';

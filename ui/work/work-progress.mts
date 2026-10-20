@@ -6,13 +6,13 @@ import {
   ConnectionStatus,
   SubmissionStatus,
   isEnumValue,
-} from '../../src/contracts/states.mts';
+} from '../shared/states.mts';
 import type {
   TaskPriorityValue,
   TaskStatusValue,
   TaskPlanSummary,
   TaskPlan,
-} from '../../src/contracts/contracts.ts';
+} from '../shared/api-types.ts';
 import type { WorkReplyTarget } from '../shared/contracts.mts';
 import { progressSnapshot } from './progress-snapshot.mts';
 import { progressWindow } from './progress-window.mts';
@@ -22,7 +22,7 @@ import type {
   ProgressCompletion as UiCompletion,
   ProgressPlan,
 } from './progress-snapshot.mts';
-import { localizeMessages, translateCount } from '../../src/i18n/i18n.mts';
+import { localizeMessages, translateCount } from '../i18n/messages.mts';
 import { formatCallDuration } from '../call/call-duration.mts';
 
 const baseCopy = {

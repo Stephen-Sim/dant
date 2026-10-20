@@ -20,14 +20,14 @@ Windows remains the desktop release target. HostPlatform/VMProvider capability a
 
 ## Build and test tools
 
-| Tool                   | Repository requirement                                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Go                     | Exactly 1.27.2, pinned dependencies, `GOTOOLCHAIN=local`. Production builds use `CGO_ENABLED=0`.                          |
-| Node                   | 22.18+ LTS or 24+ with native TypeScript, built-in SQLite and FTS5, for UI tooling and retained compatibility tests only. |
-| npm                    | Locked dependencies through `npm ci`, including the repository's Prettier and Vite.                                       |
-| Rust                   | Packaging workflow's pinned 1.99.1 toolchain with rustfmt and locked Cargo dependencies.                                  |
-| Python and shell tools | Python 3.12 CI, `pycdlib==1.14.0`, OpenSSH, Bash and PowerShell for existing isolated VM/helper gates.                    |
-| Linux race checks      | A working C compiler for Go's race detector; this does not change CGO-free production builds.                             |
+| Tool                   | Repository requirement                                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Go                     | Exactly 1.27.2, pinned dependencies, `GOTOOLCHAIN=local`. Production builds use `CGO_ENABLED=0`.                                |
+| Node                   | 22.18+ LTS or 24+ with native TypeScript, built-in SQLite and FTS5, for UI/build tooling and fixture-only compatibility checks. |
+| npm                    | Locked dependencies through `npm ci`, including the repository's Prettier and Vite.                                             |
+| Rust                   | Packaging workflow's pinned 1.99.1 toolchain with rustfmt and locked Cargo dependencies.                                        |
+| Python and shell tools | Python 3.12 CI, `pycdlib==1.14.0`, OpenSSH, Bash and PowerShell for existing isolated VM/helper gates.                          |
+| Linux race checks      | A working C compiler for Go's race detector; this does not change CGO-free production builds.                                   |
 
 The compiler lookup prefers `.tools/go1.27.2/go/bin`, then verifies the PATH compiler. It does not download another compiler automatically. See [CI](ci.md) and [code style](code-style.md).
 

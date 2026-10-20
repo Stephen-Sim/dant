@@ -4,7 +4,7 @@ import postcss from 'postcss';
 import { stripTypeScriptTypes } from 'node:module';
 import type { Node } from 'estree';
 import type { ChildNode, Container } from 'postcss';
-import { isRecord } from '../../src/contracts/json.mts';
+import { isRecord } from '../../scripts/core/manifest-json.mts';
 type AstNode = Node & { start: number; end: number };
 
 const programs = new Map<string, ReturnType<typeof parseAst>>();

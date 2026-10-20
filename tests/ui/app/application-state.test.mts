@@ -1,3 +1,4 @@
+import goProjection from './testdata/active-go-golden.json' with { type: 'json' };
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -22,13 +23,10 @@ import {
   PlanStepStatus,
   SubmissionStatus,
   WorkStatus,
-} from '../../../src/contracts/states.mts';
+} from '../../../ui/shared/states.mts';
 import type { AppState } from '../../../ui/app/application-types.ts';
 import { workProgress } from '../../../ui/work/work-progress.mts';
 import { renderUsageSettings } from '../../../ui/settings/usage-settings.mts';
-import { Engine } from '../../../src/work/engine.mts';
-import { activeTaskFixture } from '../../support/service-fixtures.mts';
-import { startTaskProgress } from '../../../src/work/task-progress.mts';
 import { progressSnapshot } from '../../../ui/work/progress-snapshot.mts';
 
 const snapshot = (): AppState => ({
@@ -133,34 +131,27 @@ test('application state validates the actual offline controller and partial lega
   assert.equal(readAppState(value).messages[0]?.text, 'Keep 原始内容');
 });
 
-test('actual Engine progress with no call remains active through both UI boundaries without losing paused work', () => {
-  const task = activeTaskFixture({
-    messageId: 'human-active',
-    turnId: 'turn-active',
-    startAcknowledged: true,
-  });
-  startTaskProgress(task, { at: 100 });
-  const owner = {
-      active: task,
-      task: () => ({ time: 100 }),
-      pendingUserRequests: new Map(),
-      takeover: false,
-      acquiring: false,
-      redact: (text: string) => text,
-    },
-    publicActive: unknown = Reflect.get(Engine.prototype, 'progress', owner),
+test('actual Go Engine wire progress with no call remains active through both UI boundaries without losing paused work', () => {
+  assert.equal(goProjection.go, '1.27.2');
+  assert.equal(goProjection.kind, 'isolated-public-Engine-snapshot');
+  const publicActive = structuredClone(goProjection.active),
     value = snapshot();
   value.worker.status = ConnectionStatus.Online;
   value.controller = { status: ConnectionStatus.Online, cached: false };
   value.messages = [
-    { id: 'human-active', role: 'user', text: 'Active request', status: TaskStatus.Running },
+    {
+      id: publicActive.messageId,
+      role: 'user',
+      text: 'Active request',
+      status: TaskStatus.Running,
+    },
     { id: 'human-paused', role: 'user', text: 'Paused request', status: TaskStatus.Paused },
   ];
   const decoded = readAppState({ ...value, active: publicActive }),
     projection = progressSnapshot(decoded),
     model = workProgress(projection);
   assert.equal(decoded.active?.callId, null);
-  assert.equal(decoded.active?.plan, undefined, 'the real backend omits an absent plan');
+  assert.equal(decoded.active?.plan, undefined, 'the actual Go backend omits an absent plan');
   assert.equal(decoded.active?.turnId, 'turn-active');
   assert.equal(model.active?.turnId, 'turn-active');
   assert.equal(model.active?.status, TaskStatus.Running);
@@ -170,13 +161,10 @@ test('actual Engine progress with no call remains active through both UI boundar
     model.recent.find((item) => item.message?.id === 'human-paused')?.status,
     TaskStatus.Paused,
   );
-  task.callId = 'call-active';
-  const withCall = readAppState({
-    ...value,
-    active: Reflect.get(Engine.prototype, 'progress', owner),
-  });
+  const withCall = readAppState({ ...value, active: goProjection.withCall });
   assert.equal(withCall.active?.callId, 'call-active');
   assert.equal(workProgress(withCall).active?.cancelTarget?.callId, 'call-active');
+  assert.deepEqual(publicActive, goProjection.active);
 });
 
 test('nullable active call identity never admits malformed identifiers, plans or unknown enum values', () => {

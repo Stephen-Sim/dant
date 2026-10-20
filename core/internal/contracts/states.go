@@ -1,4 +1,4 @@
-// Code generated from src/contracts/state-domains.json; DO NOT EDIT.
+// Code generated from resources/contracts/state-domains.json; DO NOT EDIT.
 package contracts
 
 import (
@@ -962,6 +962,100 @@ func (value *WorkerRestorePhase) UnmarshalJSON(data []byte) error {
 func (value WorkerRestorePhase) MarshalJSON() ([]byte, error) {
 	if !value.Valid() {
 		return nil, errors.New("invalid WorkerRestorePhase")
+	}
+	return json.Marshal(string(value))
+}
+
+type RuntimeOperatingSystem string
+
+const (
+	RuntimeOperatingSystemWindows RuntimeOperatingSystem = "windows"
+	RuntimeOperatingSystemMacOS   RuntimeOperatingSystem = "darwin"
+	RuntimeOperatingSystemLinux   RuntimeOperatingSystem = "linux"
+)
+
+func (value RuntimeOperatingSystem) Valid() bool {
+	switch value {
+	case RuntimeOperatingSystemWindows, RuntimeOperatingSystemMacOS, RuntimeOperatingSystemLinux:
+		return true
+	default:
+		return false
+	}
+}
+func (value *RuntimeOperatingSystem) UnmarshalJSON(data []byte) error {
+	var wire string
+	if err := json.Unmarshal(data, &wire); err != nil || !RuntimeOperatingSystem(wire).Valid() {
+		return errors.New("invalid RuntimeOperatingSystem")
+	}
+	*value = RuntimeOperatingSystem(wire)
+	return nil
+}
+func (value RuntimeOperatingSystem) MarshalJSON() ([]byte, error) {
+	if !value.Valid() {
+		return nil, errors.New("invalid RuntimeOperatingSystem")
+	}
+	return json.Marshal(string(value))
+}
+
+type RuntimeTerminalTurnStatus string
+
+const (
+	RuntimeTerminalTurnStatusCompleted   RuntimeTerminalTurnStatus = "completed"
+	RuntimeTerminalTurnStatusInterrupted RuntimeTerminalTurnStatus = "interrupted"
+	RuntimeTerminalTurnStatusFailed      RuntimeTerminalTurnStatus = "failed"
+)
+
+func (value RuntimeTerminalTurnStatus) Valid() bool {
+	switch value {
+	case RuntimeTerminalTurnStatusCompleted, RuntimeTerminalTurnStatusInterrupted, RuntimeTerminalTurnStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+func (value *RuntimeTerminalTurnStatus) UnmarshalJSON(data []byte) error {
+	var wire string
+	if err := json.Unmarshal(data, &wire); err != nil || !RuntimeTerminalTurnStatus(wire).Valid() {
+		return errors.New("invalid RuntimeTerminalTurnStatus")
+	}
+	*value = RuntimeTerminalTurnStatus(wire)
+	return nil
+}
+func (value RuntimeTerminalTurnStatus) MarshalJSON() ([]byte, error) {
+	if !value.Valid() {
+		return nil, errors.New("invalid RuntimeTerminalTurnStatus")
+	}
+	return json.Marshal(string(value))
+}
+
+type SpokenReferenceStatus string
+
+const (
+	SpokenReferenceStatusPending   SpokenReferenceStatus = "pending"
+	SpokenReferenceStatusSubmitted SpokenReferenceStatus = "submitted"
+	SpokenReferenceStatusUnknown   SpokenReferenceStatus = "unknown"
+	SpokenReferenceStatusFailed    SpokenReferenceStatus = "failed"
+)
+
+func (value SpokenReferenceStatus) Valid() bool {
+	switch value {
+	case SpokenReferenceStatusPending, SpokenReferenceStatusSubmitted, SpokenReferenceStatusUnknown, SpokenReferenceStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+func (value *SpokenReferenceStatus) UnmarshalJSON(data []byte) error {
+	var wire string
+	if err := json.Unmarshal(data, &wire); err != nil || !SpokenReferenceStatus(wire).Valid() {
+		return errors.New("invalid SpokenReferenceStatus")
+	}
+	*value = SpokenReferenceStatus(wire)
+	return nil
+}
+func (value SpokenReferenceStatus) MarshalJSON() ([]byte, error) {
+	if !value.Valid() {
+		return nil, errors.New("invalid SpokenReferenceStatus")
 	}
 	return json.Marshal(string(value))
 }

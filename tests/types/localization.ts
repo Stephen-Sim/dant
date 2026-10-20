@@ -3,9 +3,9 @@ import {
   languageForWorker,
   languageInfo,
   normalizeLanguage,
-} from '../../src/i18n/languages.mts';
-import type { LanguageCode } from '../../src/i18n/languages.mts';
-import { localizeMessages, translate, translateCount } from '../../src/i18n/i18n.mts';
+} from '../../ui/i18n/languages.mts';
+import type { LanguageCode } from '../../ui/i18n/languages.mts';
+import { localizeMessages, translate, translateCount } from '../../ui/i18n/messages.mts';
 
 const source: unknown = 'fr';
 if (isLanguage(source)) {

@@ -17,7 +17,7 @@ interface TaskReplyOptions {
   toast?: (message: string) => void;
   isPending?: () => boolean;
 }
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 const copy = {
   en: {
     reply: 'Replying to task',

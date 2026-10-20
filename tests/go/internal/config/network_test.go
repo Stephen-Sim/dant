@@ -8,7 +8,7 @@ import (
 )
 
 func TestEmbeddedProtocolMatchesCanonicalUIAndNativeSource(t *testing.T) {
-	canonical, err := os.ReadFile("../../../src/config/protocol.json")
+	canonical, err := os.ReadFile("../../../" + ProtocolResourcePath)
 	if err != nil || !bytes.Equal(canonical, protocolJSON) {
 		t.Fatal("generated network protocol drifted")
 	}

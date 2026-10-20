@@ -1,5 +1,5 @@
 import { escapeHtml as escape } from '../shared/html.mts';
-import { localizeMessages, translate } from '../../src/i18n/i18n.mts';
+import { localizeMessages, translate } from '../i18n/messages.mts';
 import { callCaptionCopy } from '../call/call-caption-copy.mts';
 const categories = [
   ['general', 'General', '通用'],

@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { errorCode } from '../../src/contracts/json.mts';
+import { errorCode } from '../../scripts/core/manifest-json.mts';
 import {
   prepareResources,
   stageReleaseResources,
@@ -342,8 +342,8 @@ test('linked project, source and backend ancestor directories are rejected befor
   if (!link(t, f.root, alias)) return;
   assert.throws(() => prepareResources({ ...f.options, projectRoot: alias }), /links or junctions/);
   fs.unlinkSync(alias);
-  const original = path.join(f.root, 'src'),
-    moved = path.join(f.root, 'src-original');
+  const original = path.join(f.root, 'resources'),
+    moved = path.join(f.root, 'resources-original');
   fs.renameSync(original, moved);
   if (!link(t, moved, original)) return;
   assert.throws(() => prepareResources(f.options), /links or junctions/);

@@ -17,6 +17,39 @@ type workerCapabilities struct {
 	Languages          []string `json:"languages"`
 }
 
+func publicWorkContext(work contracts.RawObject) contracts.RawObject {
+	if work == nil {
+		return nil
+	}
+	result := make(contracts.RawObject, len(work))
+	for key, value := range work {
+		if key != "projectContext" {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func publicMessages(messages []*contracts.ChatMessage) []*contracts.ChatMessage {
+	result := make([]*contracts.ChatMessage, len(messages))
+	for index, message := range messages {
+		if message != nil {
+			copy := *message
+			copy.Work = publicWorkContext(message.Work)
+			result[index] = &copy
+		}
+	}
+	return result
+}
+
+func publicCompletions(completions []contracts.Completion) []contracts.Completion {
+	result := append([]contracts.Completion{}, completions...)
+	for index := range result {
+		result[index].Work = publicWorkContext(result[index].Work)
+	}
+	return result
+}
+
 func (app *WorkerApp) Snapshot(ctx context.Context) (contracts.WorkerSnapshot, error) {
 	state, execution := app.engine.StateSnapshot()
 	worker := app.worker.Snapshot()
@@ -77,7 +110,7 @@ func (app *WorkerApp) Snapshot(ctx context.Context) (contracts.WorkerSnapshot, e
 	}
 	result := contracts.WorkerSnapshot{
 		Mode: "vm-worker", ConversationID: state.ConversationID,
-		Messages: state.Messages, Completions: state.Completions,
+		Messages: publicMessages(state.Messages), Completions: publicCompletions(state.Completions),
 		WorkTasks: work.TaskContextSnapshots(state.WorkTasks), Settings: state.Settings,
 		Worker: worker, Active: execution.Active, Queue: execution.Queue,
 		Call: execution.Call, Takeover: control.Status == contracts.ComputerControlStatusHuman,

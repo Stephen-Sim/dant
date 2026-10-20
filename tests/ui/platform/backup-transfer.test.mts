@@ -1,3 +1,4 @@
+import portableGolden from './testdata/portable-go-golden.json' with { type: 'json' };
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,35 +9,27 @@ import {
   BACKUP_PASSPHRASE_MIN_BYTES,
   BACKUP_PASSPHRASE_MAX_BYTES,
 } from '../../../ui/platform/backup-transfer.mts';
-import {
-  PORTABLE_MAX_FILE_BYTES,
-  PORTABLE_PASSPHRASE_MIN_BYTES,
-  PORTABLE_PASSPHRASE_MAX_BYTES,
-} from '../../../src/backups/portable-backup.mts';
 import type { CoreModule } from '../../../ui/shared/contracts.mts';
-import type { BackupMetadata } from '../../../src/backups/backup-types.ts';
+import type { BackupMetadata } from '../../../ui/settings/backup-types.ts';
 
 const ID = '00000000-0000-4000-8000-000000000009',
   TOKEN = 'a'.repeat(64),
   PASSWORD = 'isolated passphrase';
-const metadata: BackupMetadata = {
-  id: ID,
-  createdAt: Date.now(),
-  appVersion: '0.4.7-beta.9',
-  bytes: 20,
-  files: 1,
-  source: 'a'.repeat(12),
-};
-test('Node, browser and native portable limits agree without importing Node runtime into the browser', () => {
+const metadata: BackupMetadata = portableGolden.metadata;
+const portableBytes = Buffer.from(portableGolden.base64, 'base64');
+test('Go, browser and native portable limits agree without importing Node runtime into the browser', () => {
+  assert.equal(portableGolden.go, '1.27.2');
+  assert.equal(portableGolden.kind, 'isolated-public-Portable-export');
+  assert.ok(portableBytes.subarray(0, 22).toString().startsWith('DANT-PORTABLE-BACKUP/1'));
   const source = fs.readFileSync(
     new URL('../../../src-tauri/src/backup_transfer.rs', import.meta.url),
     'utf8',
   );
   const match = /const MAX_PORTABLE_BYTES: u64 = ([\d_]+);/.exec(source);
   assert.ok(match?.[1]);
-  assert.equal(Number(match[1].replaceAll('_', '')), PORTABLE_MAX_FILE_BYTES);
-  assert.equal(BACKUP_PASSPHRASE_MIN_BYTES, PORTABLE_PASSPHRASE_MIN_BYTES);
-  assert.equal(BACKUP_PASSPHRASE_MAX_BYTES, PORTABLE_PASSPHRASE_MAX_BYTES);
+  assert.equal(Number(match[1].replaceAll('_', '')), portableGolden.maxFileBytes);
+  assert.equal(BACKUP_PASSPHRASE_MIN_BYTES, portableGolden.passphraseMinBytes);
+  assert.equal(BACKUP_PASSPHRASE_MAX_BYTES, portableGolden.passphraseMaxBytes);
   assert.equal(validBackupPassphrase('中文中文'), true);
   assert.equal(validBackupPassphrase('中文'), false);
   assert.equal(validBackupPassphrase('x'.repeat(1025)), false);
@@ -110,8 +103,11 @@ test('browser export uses the fixed local API and bounds memory even when Conten
       assert.equal(options.redirect, 'error');
       assert.equal(options.credentials, 'omit');
       if (mode === 'small')
-        return new Response('encrypted fixture', {
-          headers: { 'Content-Length': '17', 'Content-Type': 'application/octet-stream' },
+        return new Response(portableBytes, {
+          headers: {
+            'Content-Length': String(portableBytes.byteLength),
+            'Content-Type': 'application/octet-stream',
+          },
         });
       if (mode === 'declared')
         return new Response(
@@ -145,7 +141,7 @@ test('browser export uses the fixed local API and bounds memory even when Conten
   const savedBlob = (): Blob | null => saved;
   const actual = savedBlob();
   assert.ok(actual);
-  assert.equal(await actual.text(), 'encrypted fixture');
+  assert.deepEqual(Buffer.from(await actual.arrayBuffer()), portableBytes);
   mode = 'declared';
   await assert.rejects(port.exportBackup(ID, PASSWORD), { code: 'backup_size_limit' });
   mode = 'stream';
@@ -155,7 +151,7 @@ test('browser export uses the fixed local API and bounds memory even when Conten
 
 test('browser import rejects oversized files before upload and only imports authenticated metadata', async () => {
   const phrase = '中文中文',
-    file = new File(['encrypted fixture'], 'fixture.dant');
+    file = new File([portableBytes], 'fixture.dant');
   let count = 0;
   const port = createBackupTransfer({
     getToken: () => TOKEN,

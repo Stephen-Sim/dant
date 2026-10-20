@@ -7,11 +7,11 @@ import type {
   UiModal,
   UiState,
 } from '../shared/contracts.mts';
-import { localizeMessages } from '../../src/i18n/i18n.mts';
-import { languageInfo } from '../../src/i18n/languages.mts';
+import { localizeMessages } from '../i18n/messages.mts';
+import { languageInfo } from '../i18n/languages.mts';
 import { collectionMessages } from './chat-collections-copy.mts';
 import { formatMessageTime } from './render-cache.mts';
-import { ConnectionStatus } from '../../src/contracts/states.mts';
+import { ConnectionStatus } from '../shared/states.mts';
 
 const COLLECTION_PAGE_SIZE = 50;
 const MAX_MESSAGE_LINKS = 100;

@@ -23,7 +23,7 @@ Windows 仍是桌面发布目标。HostPlatform/VMProvider 能力适配为其他
 | 工具                 | 仓库要求                                                                                             |
 | -------------------- | ---------------------------------------------------------------------------------------------------- |
 | Go                   | 严格 1.27.2、固定依赖、`GOTOOLCHAIN=local`；生产构建使用 `CGO_ENABLED=0`。                           |
-| Node                 | 22.18+ LTS 或 24+，支持原生 TypeScript、内置 SQLite 和 FTS5，仅用于 UI 工具与保留的兼容性测试。      |
+| Node                 | 22.18+ LTS 或 24+，支持原生 TypeScript、内置 SQLite 和 FTS5，仅用于 UI/构建工具与夹具一致性检查。    |
 | npm                  | 使用 `npm ci` 安装锁定依赖，包含仓库固定的 Prettier 和 Vite。                                        |
 | Rust                 | 打包工作流固定的 1.99.1，包含 rustfmt 与锁定 Cargo 依赖。                                            |
 | Python 与 shell 工具 | CI 使用 Python 3.12，另需 `pycdlib==1.14.0`、OpenSSH、Bash 和 PowerShell，以执行原隔离 VM/辅助门禁。 |

@@ -82,12 +82,12 @@ func (configuration WindowsConfiguration) ExpandDirectory(value string) (string,
 // The caller wires secret protection; constructing a host never performs a command.
 func New(goos string, environment map[string]string, protection SecretProtection) (Host, error) {
 	host := Host{OS: goos, ID: contracts.HostPlatformIdUnsupported, Protection: protection}
-	switch goos {
-	case "windows", "win32":
+	switch contracts.RuntimeOperatingSystem(goos) {
+	case contracts.RuntimeOperatingSystemWindows, contracts.RuntimeOperatingSystem(contracts.HostPlatformIdWindows):
 		host.ID = contracts.HostPlatformIdWindows
-	case "darwin":
+	case contracts.RuntimeOperatingSystemMacOS:
 		host.ID = contracts.HostPlatformIdMacOS
-	case "linux":
+	case contracts.RuntimeOperatingSystemLinux:
 		host.ID = contracts.HostPlatformIdLinux
 	}
 	host.Commands.Archive = "tar"

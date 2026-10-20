@@ -1,5 +1,5 @@
-import { isLanguage } from '../../src/i18n/languages.mts';
-import { readCallCaption } from '../../src/contracts/call-caption.mts';
+import { isLanguage } from '../i18n/languages.mts';
+import { readCallCaption } from '../call/caption-contracts.mts';
 import {
   ChatTaskStatus,
   ComputerControlStatus,
@@ -13,8 +13,8 @@ import {
   TaskStatus,
   WorkStatus,
   isEnumValue,
-} from '../../src/contracts/states.mts';
-import type { TaskPlan, TaskPlanSummary, WorkContinuation } from '../../src/contracts/contracts.ts';
+} from '../shared/states.mts';
+import type { TaskPlan, TaskPlanSummary, WorkContinuation } from '../shared/api-types.ts';
 import type {
   AppState,
   AppSettings,

@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveGoToolchain, type GoRunner } from './go.mts';
 import { readVersion } from '../ci/version.mts';
-import { isRecord } from '../../src/contracts/json.mts';
+import { isRecord } from './manifest-json.mts';
 import {
   CORE_BUILD_MANIFEST,
   CORE_LINUX,

@@ -1,6 +1,6 @@
 import type { RecordingDraft } from '../../../ui/app/application-types.ts';
 import type { ChatMessage, UiModal, Attachment } from '../../../ui/shared/contracts.mts';
-import { errorMessage } from '../../../src/contracts/json.mts';
+import { errorMessage } from '../../../ui/shared/json.mts';
 import { observedRecord, observedString } from '../../support/service-fixtures.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { defined } from '../../support/fixture-assertions.mts';

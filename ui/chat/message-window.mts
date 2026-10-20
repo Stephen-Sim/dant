@@ -1,4 +1,4 @@
-import { translate } from '../../src/i18n/i18n.mts';
+import { translate } from '../i18n/messages.mts';
 import { escapeHtml } from '../shared/html.mts';
 import { isRecord } from '../shared/contracts.mts';
 

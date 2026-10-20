@@ -35,7 +35,7 @@ interface ChatHistoryOptions {
   renderMetadataMarkers?: (message: HistoryMessage) => string;
   onOpenMenu?: () => void;
 }
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 export const historyMessages = {
   zh: {
     conversation: '对话记录',

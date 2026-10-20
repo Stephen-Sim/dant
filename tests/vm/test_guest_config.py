@@ -16,7 +16,7 @@ spec.loader.exec_module(guest)
 
 class GuestConfigurationTests(unittest.TestCase):
     def test_shared_protocol_defaults_match_worker_endpoint_and_paths(self):
-        protocol = json.loads((ROOT / 'src/config/protocol.json').read_text(encoding='utf-8'))
+        protocol = json.loads((ROOT / 'resources/config/protocol.json').read_text(encoding='utf-8'))
         self.assertEqual(guest.guest_bind({}), ('127.0.0.1', 4320))
         self.assertEqual(guest.PROTOCOL, protocol)
         self.assertEqual(guest.PATHS['health'], '/health')
@@ -48,7 +48,7 @@ class GuestConfigurationTests(unittest.TestCase):
             helper = home / 'vm/guest.py'
             with patch.object(guest, '__file__', str(helper)), self.assertRaisesRegex(RuntimeError, 'configuration is missing'):
                 guest.load_protocol()
-            config = home / 'app/src/config/protocol.json'
+            config = home / 'app/resources/config/protocol.json'
             config.parent.mkdir(parents=True)
             config.write_text(json.dumps(guest.PROTOCOL), encoding='utf-8')
             with patch.object(guest, '__file__', str(helper)):

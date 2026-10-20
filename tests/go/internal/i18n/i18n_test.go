@@ -18,14 +18,14 @@ func TestAllSixteenLanguagesAreEmbeddedAndKeepStableWireCodes(t *testing.T) {
 		if !IsLanguage(info.Code) || Normalize(info.Code, "en") != info.Code || Info(info.Code) != info {
 			t.Fatal("registry lost exact language")
 		}
-		source := filepath.Join("..", "..", "..", "src", "i18n", "language-registry.json")
+		source := filepath.Join("..", "..", "..", "resources", "i18n", "language-registry.json")
 		if raw, err := os.ReadFile(source); err != nil {
 			t.Fatal(err)
 		} else if embedded, _ := assets.ReadFile("language-registry.json"); !bytes.Equal(raw, embedded) {
 			t.Fatal("embedded registry drifted")
 		}
 		if info.Code != "en" && info.Code != "zh" {
-			raw, err := os.ReadFile(filepath.Join("..", "..", "..", "src", "i18n", "locales", info.Code+".json"))
+			raw, err := os.ReadFile(filepath.Join("..", "..", "..", "resources", "i18n", "locales", info.Code+".json"))
 			embedded, embedErr := assets.ReadFile("locales/" + info.Code + ".json")
 			if err != nil || embedErr != nil || !bytes.Equal(raw, embedded) {
 				t.Fatal("embedded catalog drifted")

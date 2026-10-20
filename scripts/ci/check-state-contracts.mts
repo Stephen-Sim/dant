@@ -2,34 +2,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripTypeScriptTypes } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import { parseAst } from 'rollup/parseAst';
-import { isRecord } from '../../src/contracts/json.mts';
+import { isRecord } from '../core/manifest-json.mts';
+import { resolveGoToolchain } from '../core/go.mts';
+import type { GoRunner, GoToolchain } from '../core/go.mts';
 import {
-  ComputerControlStatus,
   ConnectionStatus,
   ContinuationDispatchPhase,
-  DesktopPhase,
   PlanStepStatus,
   ServiceUpdateStatus,
   SubmissionStatus,
   TaskPriority,
   TaskProgressStage,
   TaskStatus,
-  VmPowerState,
-  VmReceiptPhase,
-  ScheduleStatus,
-  ScheduleDispatchPhase,
   MemoryEntryStatus,
-  HostPlatformId,
-  VmProviderId,
   BackupMode,
   BackupPhase,
-  WorkerRestorePhase,
-} from '../../src/contracts/states.mts';
+} from '../../ui/shared/states.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-// Adopted modules have a strict gate. Extending this list is part of migrating
-// another domain; legacy modules are not silently exempted with inline ignores.
+// Browser adopters retain their AST gate. The former backend adopters are now
+// recursively checked in Go by core/internal/devcheck, not silently removed.
 const taskDomains = Object.freeze([
   ContinuationDispatchPhase,
   PlanStepStatus,
@@ -44,21 +38,6 @@ interface ContractRule {
   domains: readonly Domain[];
 }
 const stateContractRules: readonly ContractRule[] = Object.freeze([
-  { file: 'src/conversation/store.mts', domains: taskDomains },
-  { file: 'src/work/task-progress.mts', domains: taskDomains },
-  { file: 'src/work/work-continuation-state.mts', domains: taskDomains },
-  { file: 'src/work/work-continuation.mts', domains: [...taskDomains, ConnectionStatus] },
-  ...['memory-entries', 'memory-sqlite', 'memory-search', 'memory-management'].map((name) => ({
-    file: 'src/conversation/' + name + '.mts',
-    domains: [MemoryEntryStatus],
-  })),
-  { file: 'src/app/desktop-lifecycle.mts', domains: [DesktopPhase, ConnectionStatus] },
-  { file: 'src/computer/vm-lifecycle.mts', domains: [VmPowerState, VmReceiptPhase, VmProviderId] },
-  { file: 'src/platform/host-platform.mts', domains: [HostPlatformId] },
-  { file: 'src/backups/worker-lock.mts', domains: [HostPlatformId] },
-  { file: 'src/backups/controller-backups.mts', domains: [BackupMode, BackupPhase] },
-  { file: 'src/backups/backup-validation.mts', domains: [BackupMode] },
-  { file: 'src/backups/worker-restore.mts', domains: [WorkerRestorePhase] },
   { file: 'ui/settings/vm-backups.mts', domains: [BackupMode, BackupPhase] },
   { file: 'ui/chat/chat-collections.mts', domains: [ConnectionStatus] },
   { file: 'ui/settings/memory-settings.mts', domains: [MemoryEntryStatus] },
@@ -66,24 +45,6 @@ const stateContractRules: readonly ContractRule[] = Object.freeze([
   {
     file: 'ui/app/recovery-settings.mts',
     domains: [BackupMode, BackupPhase, ConnectionStatus, ServiceUpdateStatus],
-  },
-  ...['hypervisors', 'provisioning', 'providers/vm-providers'].map((name) => ({
-    file: 'src/computer/' + name + '.mts',
-    domains: [VmProviderId],
-  })),
-  ...['scheduler', 'schedule-database'].map((name) => ({
-    file: 'src/schedules/' + name + '.mts',
-    domains: [ScheduleStatus, ScheduleDispatchPhase, TaskStatus, TaskPriority],
-  })),
-  {
-    file: 'src/computer/vm-service-update.mts',
-    domains: [
-      ServiceUpdateStatus,
-      ConnectionStatus,
-      TaskStatus,
-      ComputerControlStatus,
-      SubmissionStatus,
-    ],
   },
 ]);
 export const stateContractModules = Object.freeze(stateContractRules.map((rule) => rule.file));
@@ -130,7 +91,7 @@ export function rawStateLiterals(
   visit(tree);
   return found;
 }
-export function checkStateContracts(projectRoot = root) {
+export function checkUIStateContracts(projectRoot = root): string[] {
   const failures = [];
   for (const { file, domains } of stateContractRules) {
     const source = fs.readFileSync(path.join(projectRoot, file), 'utf8');
@@ -141,10 +102,95 @@ export function checkStateContracts(projectRoot = root) {
   }
   return failures;
 }
+
+export interface GoStateReport {
+  checkedFiles: number;
+  violations: { file: string; line: number; column: number; value: string }[];
+}
+
+function readGoStateReport(raw: string): GoStateReport {
+  const value: unknown = JSON.parse(raw);
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.checkedFiles) ||
+    typeof value.checkedFiles !== 'number' ||
+    value.checkedFiles < 1 ||
+    !Array.isArray(value.violations)
+  )
+    throw Error('The Go state contract report is invalid.');
+  const violations: GoStateReport['violations'] = [];
+  for (const item of value.violations) {
+    if (
+      !isRecord(item) ||
+      typeof item.file !== 'string' ||
+      !/^core\/internal\/[a-zA-Z0-9_/-]+\.go$/.test(item.file) ||
+      item.file.includes('//') ||
+      typeof item.line !== 'number' ||
+      !Number.isSafeInteger(item.line) ||
+      item.line < 1 ||
+      typeof item.column !== 'number' ||
+      !Number.isSafeInteger(item.column) ||
+      item.column < 1 ||
+      typeof item.value !== 'string' ||
+      item.value.length > 128
+    )
+      throw Error('The Go state contract report is invalid.');
+    violations.push({
+      file: item.file,
+      line: item.line,
+      column: item.column,
+      value: item.value,
+    });
+  }
+  return { checkedFiles: value.checkedFiles, violations };
+}
+
+export function checkGoStateContracts(
+  projectRoot = root,
+  {
+    run = spawnSync,
+    toolchain = resolveGoToolchain,
+  }: { run?: GoRunner; toolchain?: (projectRoot: string) => GoToolchain } = {},
+): GoStateReport {
+  const compiler = toolchain(projectRoot);
+  const result = run(compiler.go, ['run', '-p=1', './cmd/dant-checks', '--root', projectRoot], {
+    cwd: path.join(projectRoot, 'core'),
+    env: compiler.env,
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
+    shell: false,
+  });
+  if (result.error || (result.status !== 0 && result.status !== 1) || !result.stdout)
+    throw Error('The Go state contract check could not be completed.');
+  const report = readGoStateReport(result.stdout);
+  if (result.status !== 0 && report.violations.length === 0)
+    throw Error('The Go state contract check could not be completed.');
+  return report;
+}
+
+export function checkStateContracts(
+  projectRoot = root,
+  checkGo: (projectRoot: string) => GoStateReport = checkGoStateContracts,
+): string[] {
+  const failures = checkUIStateContracts(projectRoot);
+  const report = checkGo(projectRoot);
+  for (const item of report.violations)
+    failures.push(
+      `${item.file}:${item.line}:${item.column}: use the named domain enum instead of ${JSON.stringify(item.value)}`,
+    );
+  return failures;
+}
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const failures = checkStateContracts();
-  if (failures.length) {
-    for (const failure of failures) console.error(failure);
+  try {
+    const failures = checkStateContracts();
+    if (failures.length) {
+      for (const failure of failures) console.error(failure);
+      process.exitCode = 1;
+    } else console.log(`Browser and recursive Go state contracts checked.`);
+  } catch {
+    console.error('State contract checks could not be completed.');
     process.exitCode = 1;
-  } else console.log(`State contracts checked in ${stateContractModules.length} adopted modules.`);
+  }
 }

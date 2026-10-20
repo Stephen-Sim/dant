@@ -1,4 +1,4 @@
-import { NATIVE_PROTOCOL } from '../../src/config/network.mts';
+import { NATIVE_PROTOCOL } from '../platform/native-protocol.mts';
 import type { ScheduleTimer, CancelTimer } from '../shared/contracts.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord } from '../shared/contracts.mts';
@@ -49,7 +49,7 @@ interface FilePreviewOptions {
   openExternal?: (file: Attachment) => unknown;
   desktop?: boolean;
 }
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 const MAX_BYTES = 1024 * 1024,
   MAX_FORMATTED = 2 * 1024 * 1024;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

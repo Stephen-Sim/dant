@@ -1,4 +1,4 @@
-import { isRecord } from '../../../src/contracts/json.mts';
+import { isRecord } from '../../../ui/shared/json.mts';
 type ActionOptions = Parameters<typeof createProgressActions>[0];
 type RequestArgs = Parameters<ActionOptions['request']>;
 type RecordedCall = [string, string, Record<string, unknown>];

@@ -8,12 +8,15 @@ import {
   renderGoStates,
   renderGoProtocol,
 } from '../../scripts/core/generate-contracts.mts';
-import * as states from '../../src/contracts/states.mts';
+import * as states from '../../ui/shared/states.mts';
 
 test('every TypeScript state domain exactly matches the shared schema and remains frozen', async () => {
   const schema = stateSchema(
     JSON.parse(
-      fs.readFileSync(new URL('../../src/contracts/state-domains.json', import.meta.url), 'utf8'),
+      fs.readFileSync(
+        new URL('../../resources/contracts/state-domains.json', import.meta.url),
+        'utf8',
+      ),
     ),
   );
   for (const [name, values] of Object.entries(schema.domains)) {
@@ -28,7 +31,7 @@ test('every TypeScript state domain exactly matches the shared schema and remain
     trailingComma: 'all',
   });
   assert.equal(
-    fs.readFileSync(new URL('../../src/contracts/states.mts', import.meta.url), 'utf8'),
+    fs.readFileSync(new URL('../../ui/shared/states.mts', import.meta.url), 'utf8'),
     generated,
   );
   assert.equal(
@@ -66,7 +69,10 @@ test('Go validators reject unknown external states without changing the previous
 
 test('cross-runtime transport limits have one complete positive-integer schema', () => {
   const protocol: unknown = JSON.parse(
-    fs.readFileSync(new URL('../../src/contracts/core-protocol.json', import.meta.url), 'utf8'),
+    fs.readFileSync(
+      new URL('../../resources/contracts/core-protocol.json', import.meta.url),
+      'utf8',
+    ),
   );
   const output = renderGoProtocol(protocol);
   assert(output.includes('CoreRequestMaxBytes = 262144'));

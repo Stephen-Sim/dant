@@ -6,7 +6,7 @@ import {
   requestError,
   attachmentSnapshot,
 } from '../shared/contracts.mts';
-import type { SkillAssetMetadata } from '../../src/skills/skill-types.ts';
+import type { SkillAssetMetadata } from './skill-types.ts';
 import type {
   Attachment,
   ApiOptions,
@@ -135,7 +135,7 @@ export function skillsSnapshot(value: unknown): SkillLibrary {
     throw Error('Invalid skill metadata');
   return { items: value.items, error: Boolean(value.error) };
 }
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import {
   SKILL_SUPPORT_FILE_LIMIT,
   SKILL_RELATIVE_PATH_CHARACTERS,
@@ -145,7 +145,7 @@ import {
   SKILL_EDITOR_FILE_BYTES,
   SKILL_EDITOR_TOTAL_BYTES,
   SKILL_EDITOR_JSON_BYTES,
-} from '../../src/skills/skill-limits.mts';
+} from './skill-limits.mts';
 const skillFileMiB = SKILL_FILE_BYTES / (1024 * 1024),
   skillTotalMiB = SKILL_TOTAL_BYTES / (1024 * 1024),
   skillArchiveMiB = SKILL_ARCHIVE_BYTES / (1024 * 1024),

@@ -5,7 +5,7 @@ import type {
   UiState,
   UsageSnapshot,
 } from '../../../ui/shared/contracts.mts';
-import { errorMessage } from '../../../src/contracts/json.mts';
+import { errorMessage } from '../../../ui/shared/json.mts';
 import { htmlTag } from '../../support/fixture-assertions.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { defined, invokeHandler } from '../../support/fixture-assertions.mts';

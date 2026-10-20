@@ -140,9 +140,13 @@ func (gateway *Gateway) ProgressText(brief bool) string {
 	if active := work.Active; active != nil {
 		activeTurn, _ = active.TurnID.Get()
 		id, _ := active.MessageID.Get()
-		activeIDs[id] = true
-		for _, id := range active.MessageIDs {
+		if id != "" {
 			activeIDs[id] = true
+		}
+		for _, id := range active.MessageIDs {
+			if id != "" {
+				activeIDs[id] = true
+			}
 		}
 		title := active.Title
 		if title == "" {
@@ -195,7 +199,9 @@ func (gateway *Gateway) ProgressText(brief bool) string {
 		}
 		turns[record.TurnID] = true
 		for _, id := range record.TurnIDs {
-			turns[id] = true
+			if id != "" {
+				turns[id] = true
+			}
 		}
 		messageID, _ := record.MessageID.Get()
 		message := messageByID(state, messageID)
@@ -224,7 +230,7 @@ func (gateway *Gateway) ProgressText(brief bool) string {
 		}
 		turn, _ := message.TurnID.Get()
 		dismissed, _ := message.ProgressDismissedAt.Get()
-		if activeIDs[message.ID] || slices.Contains(work.Queue, message.ID) || registered[message.ID] || turns[turn] || turn != "" && turn == activeTurn || dismissed > 0 {
+		if activeIDs[message.ID] || slices.Contains(work.Queue, message.ID) || registered[message.ID] || turn != "" && (turns[turn] || turn == activeTurn) || dismissed > 0 {
 			continue
 		}
 		at, _ := message.Time.Get()

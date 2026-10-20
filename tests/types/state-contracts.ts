@@ -6,14 +6,14 @@ import {
   TaskPriority,
   TaskStatus,
   WorkStatus,
-} from '../../src/contracts/states.mts';
+} from '../../ui/shared/states.mts';
 import type {
   DesktopExitResult,
   PlanStep,
   ServiceUpdate,
   TaskPriorityValue,
   WorkStatusValue,
-} from '../../src/contracts/contracts.ts';
+} from '../../ui/shared/api-types.ts';
 
 export const realStep: PlanStep = { step: 'Verify', status: PlanStepStatus.InProgress };
 export const realPriority: TaskPriorityValue = TaskPriority.Normal;

@@ -27,7 +27,7 @@ import {
 } from '../../../ui/work/work-progress.mts';
 import { SpeechHelper, speechMessages } from '../../../ui/platform/speech.mts';
 import { formatCallDuration } from '../../../ui/call/call-duration.mts';
-import { defaultReactions } from '../../../src/conversation/reactions.mts';
+import { defaultReactions } from '../../../ui/chat/reactions.mts';
 import { parseHTML } from 'linkedom';
 import { reconcile } from '../../../ui/shared/dom.mts';
 import { formatPresence } from '../../../ui/chat/presence.mts';

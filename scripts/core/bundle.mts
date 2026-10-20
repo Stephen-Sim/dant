@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { isRecord } from '../../src/contracts/json.mts';
+import { isRecord } from './manifest-json.mts';
 
 export const CORE_WINDOWS = 'dant-core.exe';
 export const CORE_LINUX = 'dant-core-linux-amd64';
@@ -21,7 +21,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 export const VM_BUNDLE_FILES = Object.freeze(
   [
     CORE_GUEST_BINARY,
-    'src/config/protocol.json',
+    'resources/config/protocol.json',
     'vm/bootstrap.sh',
     'vm/control.py',
     'vm/desktop.py',

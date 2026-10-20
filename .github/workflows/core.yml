@@ -42,9 +42,20 @@ jobs:
         run: npm ci
       - name: Check generated cross-runtime contracts
         run: npm run check:contracts
-      - name: Check Go formatting, vet and package tests
+      - name: Check Go formatting, vet, package tests and critical coverage
         run: npm run check:core
-      - name: Compare isolated memory readers and measure sequential reads
+      - name: Upload Go statement coverage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: core-coverage-${{ matrix.os }}
+          path: |
+            .cache/core/coverage.out
+            .cache/core/coverage.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Compare isolated memory readers with independent Node golden results
         run: npm run test:core:parity
       - name: Run the Linux race detector
         if: runner.os == 'Linux'

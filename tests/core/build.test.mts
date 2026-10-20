@@ -194,14 +194,27 @@ test('VM resource allowlist matches both the Go deployer and Python cutover inst
   const goFiles = [...goBlock.matchAll(/"([^"\n]+)"\s*:\s*true/g)]
     .map((match) => match[1])
     .filter((name): name is string => !!name);
+  const goConfig = fs.readFileSync('core/internal/config/network.go', 'utf8');
+  const protocolPath = goConfig.match(/\bProtocolResourcePath\s*=\s*"([^"\n]+)"/)?.[1];
+  assert.equal(protocolPath, 'resources/config/protocol.json');
+  assert.match(goBlock, /\bconfig\.ProtocolResourcePath\s*:\s*true/);
+  goFiles.push(protocolPath);
   goFiles.push('resources/core/dant-core-linux-amd64');
   const python = fs.readFileSync('vm/worker-install.py', 'utf8');
   const pythonBlock = python.match(/ALLOWLIST = frozenset\(\{([\s\S]*?)\}\)/)?.[1];
   assert.ok(pythonBlock);
+  assert.match(python, /^PROTOCOL_PATH = 'resources\/config\/protocol\.json'$/m);
+  assert.match(python, /^LEGACY_PROTOCOL_PATH = 'src\/config\/protocol\.json'$/m);
+  assert.match(pythonBlock, /\bPROTOCOL_PATH,/);
   const pythonFiles = [...pythonBlock.matchAll(/'([^'\n]+)'/g)]
     .map((match) => match[1])
     .filter((name): name is string => !!name);
   pythonFiles.push('resources/core/dant-core-linux-amd64');
+  pythonFiles.push(protocolPath);
+  assert.equal(
+    VM_BUNDLE_FILES.some((name) => name.startsWith('src/')),
+    false,
+  );
   assert.deepEqual([...VM_BUNDLE_FILES].sort(), goFiles.sort());
   assert.deepEqual([...VM_BUNDLE_FILES].sort(), pythonFiles.sort());
 });

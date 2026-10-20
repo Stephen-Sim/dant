@@ -4,7 +4,7 @@ import { parseHTML } from 'linkedom';
 import { createCallCaptionPreferences } from '../../../ui/call/call-caption-preferences.mts';
 import { createCallSubtitles } from '../../../ui/call/call-subtitles.mts';
 import { callCaptionCopy } from '../../../ui/call/call-caption-copy.mts';
-import { languages } from '../../../src/i18n/languages.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
 import type { ApiRequest } from '../../../ui/shared/contracts.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import { deferred } from '../../support/service-fixtures.mts';

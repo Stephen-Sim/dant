@@ -1,9 +1,4 @@
-import {
-  BackupMode,
-  BackupPhase,
-  ConnectionStatus,
-  isEnumValue,
-} from '../../src/contracts/states.mts';
+import { BackupMode, BackupPhase, ConnectionStatus, isEnumValue } from '../shared/states.mts';
 import {
   BACKUP_CHECK_INTERVAL_MS,
   BACKUP_CATALOG_LIMIT,
@@ -11,14 +6,14 @@ import {
   BACKUP_INTERVAL_MINUTES,
   BACKUP_RETENTION_COUNT,
   BACKUP_WARNING_CODES,
-} from '../../src/backups/backup-constants.mts';
+} from './backup-limits.mts';
 import type {
   BackupMetadata,
   BackupPreview,
   BackupSettings,
   BackupStatus,
-} from '../../src/backups/backup-types.ts';
-import { backupId, isBackupMetadata } from '../../src/backups/backup-validation.mts';
+} from './backup-types.ts';
+import { backupId, isBackupMetadata } from './backup-contracts.mts';
 import type {
   ApiRequest,
   CancelTimer,
@@ -28,8 +23,8 @@ import type {
 } from '../shared/contracts.mts';
 import { isRecord, isSafeInteger, requestError } from '../shared/contracts.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
-import { languageInfo } from '../../src/i18n/languages.mts';
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { languageInfo } from '../i18n/languages.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import { backupMessages } from './vm-backup-copy.mts';
 import { createBackupTransfer, validBackupPassphrase } from '../platform/backup-transfer.mts';
 import type { BackupTransfer } from '../platform/backup-transfer.mts';

@@ -1,4 +1,4 @@
-import { TaskStatus, SubmissionStatus } from '../../src/contracts/states.mts';
+import { TaskStatus, SubmissionStatus } from '../shared/states.mts';
 import type { ProgressMessage, ProgressSnapshot } from './progress-snapshot.mts';
 
 interface ProgressWindowItem {

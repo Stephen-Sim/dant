@@ -1,4 +1,4 @@
-// Code generated from src/contracts/core-protocol.json; DO NOT EDIT.
+// Code generated from resources/contracts/core-protocol.json; DO NOT EDIT.
 package contracts
 
 const (

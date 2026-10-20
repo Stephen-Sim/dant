@@ -27,8 +27,8 @@ const isProvider = (value: unknown): value is UsageProvider =>
   value === 'subscription' || value === 'apiVoice';
 const isMode = (value: unknown): value is UsageMode =>
   value === 'daily' || value === 'weekly' || value === 'cumulative';
-import { languageInfo } from '../../src/i18n/languages.mts';
-import { localizeMessages, translateCount } from '../../src/i18n/i18n.mts';
+import { languageInfo } from '../i18n/languages.mts';
+import { localizeMessages, translateCount } from '../i18n/messages.mts';
 const DAY = 86400000;
 const modes = ['daily', 'weekly', 'cumulative'] as const;
 const providers = ['subscription', 'apiVoice'] as const;

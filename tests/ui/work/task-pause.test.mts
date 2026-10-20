@@ -1,4 +1,4 @@
-import { isRecord } from '../../../src/contracts/json.mts';
+import { isRecord } from '../../../ui/shared/json.mts';
 import type { ProgressSnapshot } from '../../../ui/work/progress-snapshot.mts';
 type ActionOptions = Parameters<typeof createProgressActions>[0];
 type RequestArgs = Parameters<ActionOptions['request']>;

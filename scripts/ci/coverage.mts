@@ -6,13 +6,7 @@ import { discoverTests } from './test-files.mts';
 import { TEST_CONCURRENCY } from './test-constants.mts';
 
 export const coverageThresholds = Object.freeze({ lines: 90, branches: 80, functions: 80 });
-const critical = [
-  'src/app/controller.mts',
-  'src/computer/vm-profiles.mts',
-  'src/computer/vm-bridge.mts',
-  'src/telegram/telegram.mts',
-  'ui/settings/appearance.mts',
-];
+const critical = ['ui/settings/appearance.mts'];
 const COUNT_KEYS = ['LF', 'LH', 'BRF', 'BRH', 'FNF', 'FNH'] as const;
 const COVERAGE_KINDS = ['lines', 'branches', 'functions'] as const;
 type Counts = Record<(typeof COUNT_KEYS)[number], number>;
@@ -144,7 +138,6 @@ function main() {
     process.execPath,
     [
       '--experimental-test-coverage',
-      '--test-coverage-include=src/**/*.mts',
       '--test-coverage-include=ui/**/*.mts',
       '--test-reporter=spec',
       `--test-reporter-destination=${log}`,
@@ -168,12 +161,11 @@ function main() {
       .flatMap((entry) =>
         entry.isDirectory()
           ? applicationModules(`${directory}/${entry.name}`)
-          : /\.mts$/.test(entry.name) &&
-              !['ui/main.mts', 'src/server.mts'].includes(`${directory}/${entry.name}`)
+          : /\.mts$/.test(entry.name) && `${directory}/${entry.name}` !== 'ui/main.mts'
             ? [`${directory}/${entry.name}`]
             : [],
       );
-  const modules = ['src', 'ui'].flatMap(applicationModules);
+  const modules = applicationModules('ui');
   const assessed = assessCoverage(parseLcov(fs.readFileSync(report, 'utf8'), root), { modules });
   fs.writeFileSync(path.join(output, 'summary.json'), JSON.stringify(assessed, null, 2) + '\n');
   const markdown = coverageMarkdown(assessed);

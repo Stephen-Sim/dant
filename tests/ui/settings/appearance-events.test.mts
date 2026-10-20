@@ -1,4 +1,4 @@
-import type { AppearancePatch } from '../../../src/settings/appearance-types.ts';
+import type { AppearancePatch } from '../../../ui/settings/appearance-types.ts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { defined, htmlTag } from '../../support/fixture-assertions.mts';
 import { stripTypeScriptTypes } from 'node:module';

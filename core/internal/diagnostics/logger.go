@@ -21,17 +21,19 @@ import (
 )
 
 const (
-	Schema            = "dant.diagnostics.v1"
-	StartupSchema     = "dant.startup.v1"
-	MaxLineBytes      = 4096
-	MaxFileBytes      = 5 * 1024 * 1024
-	MaxTotalBytes     = 50 * 1024 * 1024
-	MaxDirectoryFiles = 4096
-	MaxQueue          = 256
-	Retention         = 3 * 24 * time.Hour
-	CleanupInterval   = time.Hour
-	StartupLogBytes   = 1024 * 1024
-	maxSafeInteger    = 9007199254740991
+	Schema             = "dant.diagnostics.v1"
+	StartupSchema      = "dant.startup.v1"
+	MaxLineBytes       = 4096
+	MaxFileBytes       = 5 * 1024 * 1024
+	MaxTotalBytes      = 50 * 1024 * 1024
+	MaxDirectoryFiles  = 4096
+	MaxQueue           = 256
+	MaxRecentRecords   = 200
+	MaxRecentFileBytes = 256 * 1024
+	Retention          = 3 * 24 * time.Hour
+	CleanupInterval    = time.Hour
+	StartupLogBytes    = 1024 * 1024
+	maxSafeInteger     = 9007199254740991
 )
 
 var logName = regexp.MustCompile(`^dant-diagnostics-v1-(\d{4}-\d{2}-\d{2})-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jsonl$`)
@@ -87,6 +89,7 @@ type Logger struct {
 	ctx        context.Context
 	options    Options
 	queue      chan []byte
+	fileGate   chan struct{}
 	stop       chan struct{}
 	done       chan struct{}
 	mu         sync.Mutex
@@ -134,6 +137,7 @@ func New(ctx context.Context, options Options) (*Logger, error) {
 	logger := &Logger{
 		ctx: ctx, options: options, status: status,
 		queue: make(chan []byte, MaxQueue), stop: make(chan struct{}), done: make(chan struct{}),
+		fileGate: make(chan struct{}, 1),
 	}
 
 	if _, err := logger.cleanup(); err != nil {
@@ -212,6 +216,11 @@ func (logger *Logger) run() {
 	defer timer.Stop()
 
 	write := func(line []byte) {
+		if err := logger.acquireFiles(logger.ctx); err != nil {
+			return
+		}
+		defer logger.releaseFiles()
+
 		if err := logger.append(line); err != nil {
 			logger.current = ""
 			logger.cacheReady = false
@@ -223,9 +232,13 @@ func (logger *Logger) run() {
 		case line := <-logger.queue:
 			write(line)
 		case <-timer.C:
+			if err := logger.acquireFiles(logger.ctx); err != nil {
+				return
+			}
 			if _, err := logger.cleanup(); err != nil {
 				logger.failure("LOG_CLEANUP_FAILED")
 			}
+			logger.releaseFiles()
 		case <-logger.stop:
 			for {
 				select {
@@ -239,6 +252,24 @@ func (logger *Logger) run() {
 			return
 		}
 	}
+}
+
+// The writer and read-only snapshots share file ownership, independently of the
+// enqueue/status mutex. Our own append or rotation must not invalidate a read.
+func (logger *Logger) acquireFiles(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case logger.fileGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (logger *Logger) releaseFiles() {
+	<-logger.fileGate
 }
 
 func (logger *Logger) scan(ctx context.Context, create bool) ([]retainedFile, error) {
@@ -509,11 +540,16 @@ func (logger *Logger) Status() Status {
 }
 
 func (logger *Logger) Recent(ctx context.Context, limit int) ([]Record, error) {
-	limit = max(0, min(limit, 200))
+	limit = max(0, min(limit, MaxRecentRecords))
 	result := []Record{}
 	if limit == 0 {
 		return result, nil
 	}
+	if err := logger.acquireFiles(ctx); err != nil {
+		return nil, err
+	}
+	defer logger.releaseFiles()
+
 	// Recent reads only validated files and fields. It never cleans up or writes.
 	items, err := logger.scan(ctx, false)
 	if err != nil {
@@ -525,7 +561,7 @@ func (logger *Logger) Recent(ctx context.Context, limit int) ([]Record, error) {
 		if err != nil {
 			return nil, err
 		}
-		length := min(len(data), min(256*1024, budget))
+		length := min(len(data), min(MaxRecentFileBytes, budget))
 		start := len(data) - length
 		content := string(data[start:])
 		budget -= length

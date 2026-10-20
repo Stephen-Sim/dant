@@ -18,6 +18,12 @@ A failed or rate-limited request shows a retry message rather than claiming the 
 
 ## Work computer service updates
 
+### Source retirement in 0.4.7-beta.16
+
+The Beta 16 source retires the former `src/` backend. Go owns the Controller, Worker and explicit legacy manifest/file importer; the browser stays TypeScript. Canonical contracts, protocol defaults and language data live under `resources/`, with generated Go/browser consumers checked for drift. Saved data locations and public routes remain compatible.
+
+Go replacements cover full-size skill files, preserved editor assets and authenticated ZIP downloads. The Controller rejects oversized JSON before forwarding it, and diagnostic reads serialize with file changes. Go coverage checks require Controller, Computer and Telegram to reach at least 90% statement coverage, with every feature accounted for; browser coverage keeps its separate 90/80/80 thresholds. See [test migration](testing-migration.md). This source description does not mean Beta 16 is published or that its installer and VM have completed local acceptance.
+
 ### Go Core migration in 0.4.7-beta.15
 
 The Windows Controller and Ubuntu Worker now use compiled Go programs; Tauri remains Rust and the interface remains TypeScript. Updates verify the running Worker role, protocol, version and source commit. A durable installation journal prevents a reboot or an independent service start from bypassing offline backup and preparation. Only a matching successful preparation receipt permits activation. Existing chats, SQLite memory/schedules, skills and workspace keep their saved paths. See [architecture](architecture.md) and [migration](go-core-migration.md).

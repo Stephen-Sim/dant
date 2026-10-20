@@ -2,21 +2,35 @@ package work
 
 import (
 	"context"
+	"slices"
+
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/runtime"
 	"github.com/Stephen-Sim/dant/core/internal/store"
 	workstate "github.com/Stephen-Sim/dant/core/internal/work/state"
-	"slices"
 )
 
 type NativeTurnInput struct {
-	ConversationID, CallID, ThreadID, TurnID, HandoffID string
-	MessageIDs                                          []string
-	CapturedOwner                                       *ToolContext
+	ConversationID string
+	CallID         string
+	ThreadID       string
+	TurnID         string
+	HandoffID      string
+	MessageIDs     []string
+	CapturedOwner  *ToolContext
 }
 
 func (value *Engine) ownerLocked(active *execution) ToolContext {
-	owner := ToolContext{ConversationID: active.conversationID, MessageID: active.messageID, MessageIDs: append([]string{}, active.messageIDs...), WorkID: active.workID, TurnID: active.turnID, ThreadID: active.threadID, CallID: active.callID, Owner: active.turnID}
+	owner := ToolContext{
+		ConversationID: active.conversationID,
+		MessageID:      active.messageID,
+		MessageIDs:     append([]string{}, active.messageIDs...),
+		WorkID:         active.workID,
+		TurnID:         active.turnID,
+		ThreadID:       active.threadID,
+		CallID:         active.callID,
+		Owner:          active.turnID,
+	}
 	owner.IsCurrent = func() bool {
 		return value.Current(owner)
 	}

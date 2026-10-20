@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
-import { loadProjectEnv } from './src/config/env.mts';
-import { readNetworkConfig, PROTOCOL_PATHS } from './src/config/network.mts';
+import { loadProjectEnv } from './scripts/config/project-env.mts';
+import { readNetworkConfig, PROTOCOL_PATHS } from './scripts/config/network.mts';
 
 loadProjectEnv({ projectRoot: fileURLToPath(new URL('.', import.meta.url)) });
 const network = readNetworkConfig();

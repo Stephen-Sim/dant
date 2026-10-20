@@ -4,7 +4,7 @@
 
 dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括带作用域的记忆召回、SQLite 调度与本地加密备份；已发布的安装包可能仍是较早的实现。
 
-当前源码采用 **Go Agent Core + Rust Tauri + TypeScript UI**。独立的 Go Controller 与 Worker 角色替代生产 Node 后端。TypeScript 保留用于浏览器、构建工具和兼容性测试基准；只读 Memory 影子角色仅用于差分测试，不参与生产执行。本文描述源码，不代表新安装包已完成实机验收或发布。参见[运行支持](runtime-support.md)和[迁移与切换](go-core-migration.md)。
+当前源码采用 **Go Agent Core + Rust Tauri + TypeScript UI**。独立的 Go Controller 与 Worker 角色拥有全部后端。TypeScript 负责浏览器与构建工具，原根目录 `src/` 后端已退役，跨语言 schema、协议与语言数据归属 `resources/`。独立冻结的合成 Node 结果保留兼容证据，不再需要另一套可执行后端；Memory 影子角色仅用于差分测试。本文描述源码，不代表新安装包已完成实机验收或发布。参见[运行支持](runtime-support.md)和[迁移与切换](go-core-migration.md)。
 
 ## 总体系统
 
@@ -77,7 +77,7 @@ UI 展示状态并提交操作。Controller **不会创建 Engine，也不会在
 | 宿主 / VM 适配 | [`core/internal/platform/`](../../core/internal/platform/)、[`providers/`](../../core/internal/computer/) | 宿主能力及提供商的检测/创建/生命周期命令                          |
 | 本地备份       | [`core/internal/backups/`](../../core/internal/backups/)                                                  | Controller 加密归档、Worker 快照与明确的离线恢复                  |
 
-生产后端位于 `core/internal/`，通过 `application` 由小型 `core/cmd/dant-core` 入口组装。Controller 与 Worker 是编译后二进制的独立角色。前端使用 Vite、TypeScript 和 DOM/CSS；保留的 `src/` 模块提供共享契约、语言数据和测试基准，不进入后端部署。模块与测试归属遵循[代码规范](code-style.md)。
+生产后端位于 `core/internal/`，通过 `application` 由小型 `core/cmd/dant-core` 入口组装。Controller 与 Worker 是编译后二进制的独立角色。前端使用 Vite、TypeScript 和 DOM/CSS；原根目录 `src/` 后端已退役。跨语言输入分别归属 `resources/contracts/`、`resources/config/`、`resources/i18n/`，生成的 Go 与 UI 契约都检查漂移。全部 Go 测试放在对应包结构的 `tests/go/`。模块与测试归属遵循[代码规范](code-style.md)。
 
 ## Agent loop 与执行所有权
 
@@ -113,7 +113,9 @@ sequenceDiagram
   Engine-->>Input: 验证后的结果、失败或需要人类回复的问题
 ```
 
-Go Engine 选择排队任务，恢复当前对话对应的 Codex 线程，分派有作用域的事件和工具，并保存结果及附件。提前到达的事件有界保存，不能在有效 `turn/start` 确认之前证明执行归属。提交状态和任务状态是 [`states.mts`](../../src/contracts/states.mts) 中的不同状态域。
+Go Engine 选择排队任务，恢复当前对话对应的 Codex 线程，分派有作用域的事件和工具，并保存结果及附件。提前到达的事件有界保存，不能在有效 `turn/start` 确认之前证明执行归属。提交状态和任务状态由共享[状态 schema](../../resources/contracts/state-domains.json) 定义，生成到 Go 与 [`states.mts`](../../ui/shared/states.mts) 中的不同状态域。
+
+Go 的并发用于传输和编排，仍然只有一个执行权持有者。Engine 拥有可取消的生命周期、唤醒 channel、有界输入队列、工具并发槽和退出时等待的 worker。Memory 和 Scheduler 的事务、SQL 与行映射留在所属仓储，不进入 UI 或进程入口。网络取消仍保留请求、连接、任务和 turn 的精确身份，不能把未知副作用改成可重试。无 CGO 的编译产物移除了部署 Node 的需求；这些是架构取舍，不代表已经测得延迟提升。
 
 持久 `workId` 可以跨 turn 保留。`task_plan` 记录真实步骤，`task_list` 和 `task_cancel` 使用已保存身份。回复任务时，普通聊天输入携带 `workId`、预期 turn 和对话 ID；执行中的回复只送给匹配所有者，已结束任务则带着保留的项目上下文，从同一入口重开。
 

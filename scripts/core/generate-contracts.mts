@@ -3,11 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { format } from 'prettier';
-import { isRecord } from '../../src/contracts/json.mts';
+import { isRecord } from './manifest-json.mts';
 
 const SCHEMA_VERSION = 1;
 const MAX_DOMAINS = 128;
 const MAX_VALUES = 128;
+const MAX_LANGUAGES = 128;
+const BASE_LANGUAGES = new Set(['en', 'zh']);
+const LANGUAGE_CODE = /^[a-z]{2}(?:-[A-Z]{2})?$/;
 const identifier = /^[A-Z][A-Za-z0-9]{0,63}$/;
 const wireValue = /^[a-z][A-Za-z0-9_-]{0,63}$/;
 
@@ -78,7 +81,7 @@ export function renderTypeScriptStates(schema: StateSchema): string {
 
 export function renderGoStates(schema: StateSchema): string {
   return [
-    '// Code generated from src/contracts/state-domains.json; DO NOT EDIT.',
+    '// Code generated from resources/contracts/state-domains.json; DO NOT EDIT.',
     'package contracts',
     '',
     'import ("encoding/json"; "errors")',
@@ -140,7 +143,7 @@ export function renderGoProtocol(value: unknown): string {
   )
     throw Error('Invalid core protocol limits');
   return [
-    '// Code generated from src/contracts/core-protocol.json; DO NOT EDIT.',
+    '// Code generated from resources/contracts/core-protocol.json; DO NOT EDIT.',
     'package contracts',
     'const (',
     ...fields.map((name) => `Core${name[0]?.toUpperCase()}${name.slice(1)} = ${value[name]}`),
@@ -149,9 +152,59 @@ export function renderGoProtocol(value: unknown): string {
   ].join('\n');
 }
 
+/** Go embeds the canonical locale data; the second physical copy is generated. */
+export async function languageResourceOutputs(
+  root: string,
+): Promise<readonly (readonly [string, string])[]> {
+  const directory = path.join(root, 'resources/i18n');
+  const raw = await fs.readFile(path.join(directory, 'language-registry.json'), 'utf8');
+  const registry: unknown = JSON.parse(raw);
+  if (!Array.isArray(registry) || !registry.length || registry.length > MAX_LANGUAGES)
+    throw Error('Invalid shared language registry');
+  const codes = new Set<string>();
+  for (const item of registry) {
+    if (
+      !isRecord(item) ||
+      typeof item.code !== 'string' ||
+      !LANGUAGE_CODE.test(item.code) ||
+      codes.has(item.code)
+    )
+      throw Error('Invalid shared language code');
+    codes.add(item.code);
+  }
+  for (const code of BASE_LANGUAGES) if (!codes.has(code)) throw Error('Missing base language');
+  const expected = [...codes]
+    .filter((code) => !BASE_LANGUAGES.has(code))
+    .map((code) => code + '.json')
+    .sort();
+  const entries = await fs.readdir(path.join(directory, 'locales'), { withFileTypes: true });
+  if (
+    entries.some((entry) => !entry.isFile()) ||
+    entries
+      .map((entry) => entry.name)
+      .sort()
+      .join('\0') !== expected.join('\0')
+  )
+    throw Error('Shared language catalogs do not match the registry');
+  const outputs: [string, string][] = [['core/internal/i18n/language-registry.json', raw]];
+  for (const name of expected) {
+    const contents = await fs.readFile(path.join(directory, 'locales', name), 'utf8');
+    const catalog: unknown = JSON.parse(contents);
+    if (
+      !isRecord(catalog) ||
+      Object.values(catalog).some((value) => typeof value !== 'string' || !value.trim())
+    )
+      throw Error('Invalid shared language catalog');
+    outputs.push(['core/internal/i18n/locales/' + name, contents]);
+  }
+  return outputs;
+}
+
 export async function generateContracts(root: string, check: boolean): Promise<void> {
   const schema = stateSchema(
-    JSON.parse(await fs.readFile(path.join(root, 'src/contracts/state-domains.json'), 'utf8')),
+    JSON.parse(
+      await fs.readFile(path.join(root, 'resources/contracts/state-domains.json'), 'utf8'),
+    ),
   );
   const { resolveGoToolchain } = await import('./go.mts');
   const toolchain = resolveGoToolchain(root);
@@ -164,7 +217,7 @@ export async function generateContracts(root: string, check: boolean): Promise<v
   });
   if (formatted.error || formatted.status !== 0) throw Error('Go contract formatting failed');
   const protocol = JSON.parse(
-    await fs.readFile(path.join(root, 'src/contracts/core-protocol.json'), 'utf8'),
+    await fs.readFile(path.join(root, 'resources/contracts/core-protocol.json'), 'utf8'),
   );
   const formattedProtocol = spawnSync(toolchain.gofmt, [], {
     input: renderGoProtocol(protocol),
@@ -177,7 +230,7 @@ export async function generateContracts(root: string, check: boolean): Promise<v
     throw Error('Go protocol formatting failed');
   const outputs = [
     [
-      'src/contracts/states.mts',
+      'ui/shared/states.mts',
       await format(renderTypeScriptStates(schema), {
         parser: 'typescript',
         singleQuote: true,
@@ -189,8 +242,9 @@ export async function generateContracts(root: string, check: boolean): Promise<v
     ['core/internal/contracts/core_protocol.go', formattedProtocol.stdout],
     [
       'core/internal/config/assets/protocol.json',
-      await fs.readFile(path.join(root, 'src/config/protocol.json'), 'utf8'),
+      await fs.readFile(path.join(root, 'resources/config/protocol.json'), 'utf8'),
     ],
+    ...(await languageResourceOutputs(root)),
   ] as const;
   for (const [relative, contents] of outputs) {
     const destination = path.join(root, relative);

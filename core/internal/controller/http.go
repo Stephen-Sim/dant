@@ -489,6 +489,15 @@ func (app *App) proxy(writer http.ResponseWriter, request *http.Request) error {
 			raw, _ = json.Marshal(object)
 		}
 		body = bytes.NewReader(raw)
+	} else if kind, _, err := mime.ParseMediaType(request.Header.Get("Content-Type")); err == nil && kind == "application/json" {
+		if request.ContentLength > config.APIJSONBodyBytes {
+			return apiError(413, "request_too_large", "The request is too large.")
+		}
+		raw, err := io.ReadAll(io.LimitReader(request.Body, config.APIJSONBodyBytes+1))
+		if err != nil || len(raw) > config.APIJSONBodyBytes {
+			return apiError(413, "request_too_large", "The request is too large.")
+		}
+		body = bytes.NewReader(raw)
 	}
 	headers := http.Header{}
 	if contentType := request.Header.Get("Content-Type"); contentType != "" {

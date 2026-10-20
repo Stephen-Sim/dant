@@ -55,7 +55,7 @@ var bundleAllowlist = map[string]bool{
 	"vm/transcribe_audio.py":            true,
 	"vm/transcription-requirements.txt": true,
 	"vm/voice_message.py":               true,
-	"src/config/protocol.json":          true,
+	config.ProtocolResourcePath:         true,
 }
 
 type BundleFile struct {
@@ -199,7 +199,7 @@ func readBundle(root, version, source string) (BundleManifest, []byte, error) {
 		"vm/start-codex.sh",
 		"vm/transcribe_audio.py",
 		"vm/voice_message.py",
-		"src/config/protocol.json",
+		config.ProtocolResourcePath,
 	} {
 		if !seen[required] {
 			return BundleManifest{}, nil, ErrDeploymentUnavailable

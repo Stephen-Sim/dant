@@ -4,12 +4,12 @@ import {
   ConnectionStatus,
   ServiceUpdateStatus,
   isEnumValue,
-} from '../../src/contracts/states.mts';
-import type { ConnectionStatusValue } from '../../src/contracts/contracts.ts';
-import { MAX_PORT } from '../../src/config/network.mts';
-import { isLanguage, normalizeLanguage, languageInfo } from '../../src/i18n/languages.mts';
-import type { LanguageCode } from '../../src/i18n/languages.mts';
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+} from '../shared/states.mts';
+import type { ConnectionStatusValue } from '../shared/api-types.ts';
+import { MAX_PORT } from '../platform/native-protocol.mts';
+import { isLanguage, normalizeLanguage, languageInfo } from '../i18n/languages.mts';
+import type { LanguageCode } from '../i18n/languages.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import { isRecord, requestError } from '../shared/contracts.mts';
 import type { ApiRequest, UiServiceUpdate, VmSettings } from '../shared/contracts.mts';
 import { escapeHtml as escape } from '../shared/html.mts';

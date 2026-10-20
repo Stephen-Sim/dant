@@ -1,5 +1,5 @@
 import type { NativeInvoke } from '../../../ui/platform/transport.mts';
-import { isRecord } from '../../../src/contracts/json.mts';
+import { isRecord } from '../../../ui/shared/json.mts';
 type EditorOptions = NonNullable<Parameters<typeof createTextEditor>[0]>;
 import { defined } from '../../support/fixture-assertions.mts';
 import test from 'node:test';

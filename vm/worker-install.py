@@ -26,15 +26,19 @@ PREPARE_TIMEOUT = 15 * 60
 READY_ATTEMPTS = 60
 BINARY = 'resources/core/dant-core-linux-amd64'
 BUNDLE_MANIFEST = 'resources/core/bundle-manifest.json'
+PROTOCOL_PATH = 'resources/config/protocol.json'
+# Only an already verified older target bundle uses this deployed layout.
+LEGACY_PROTOCOL_PATH = 'src/config/protocol.json'
+PROTOCOL_PATHS = frozenset({PROTOCOL_PATH, LEGACY_PROTOCOL_PATH})
 ALLOWLIST = frozenset({
-    BINARY, 'src/config/protocol.json', 'vm/bootstrap.sh', 'vm/control.py',
+    BINARY, PROTOCOL_PATH, LEGACY_PROTOCOL_PATH, 'vm/bootstrap.sh', 'vm/control.py',
     'vm/desktop.py', 'vm/desktop_mcp.py', 'vm/guest.py', 'vm/install-speech.sh',
     'vm/install-transcription.sh', 'vm/install-worker.sh', 'vm/worker-install.py',
     'vm/start-codex.sh', 'vm/transcribe_audio.py',
     'vm/transcription-requirements.txt', 'vm/voice_message.py',
 })
 REQUIRED = frozenset({
-    BINARY, 'src/config/protocol.json', 'vm/control.py', 'vm/desktop.py',
+    BINARY, 'vm/control.py', 'vm/desktop.py',
     'vm/desktop_mcp.py', 'vm/guest.py', 'vm/install-worker.sh',
     'vm/worker-install.py', 'vm/start-codex.sh', 'vm/voice_message.py',
     'vm/transcribe_audio.py',
@@ -184,7 +188,8 @@ def verify_bundle(source, home):
             ):
                 reject('bundle-changed')
         normalized.append({'path': name, 'bytes': size, 'sha256': expected})
-    if not REQUIRED <= seen:
+    protocol_paths = PROTOCOL_PATHS.intersection(seen)
+    if not REQUIRED <= seen or len(protocol_paths) != 1:
         reject('manifest-invalid')
 
     normalized.sort(key=lambda entry: entry['path'])
@@ -199,7 +204,7 @@ def verify_bundle(source, home):
     ):
         reject('manifest-invalid')
 
-    protocol = json_object(read_regular(source / 'src/config/protocol.json', MANIFEST_LIMIT))
+    protocol = json_object(read_regular(source / next(iter(protocol_paths)), MANIFEST_LIMIT))
     environment = deployment['publicEnvironment']
     if not isinstance(environment, dict) or set(environment) != {'DANT_GUEST_HOST', 'DANT_GUEST_PORT'}:
         reject('network-invalid')

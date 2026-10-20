@@ -1,12 +1,12 @@
 import { isRecord } from '../shared/contracts.mts';
-import { MemoryEntryStatus, isEnumValue } from '../../src/contracts/states.mts';
-import type { MemoryEntryStatusValue } from '../../src/contracts/states.mts';
+import { MemoryEntryStatus, isEnumValue } from '../shared/states.mts';
+import type { MemoryEntryStatusValue } from '../shared/states.mts';
 import {
   MEMORY_MANAGEMENT_PAGE_SIZE,
   MEMORY_ENTRY_LIMIT,
   MEMORY_MAX_BYTES,
   MEMORY_SEARCH_QUERY_MAX_CHARS,
-} from '../../src/conversation/memory-constants.mts';
+} from './memory-limits.mts';
 export interface ManagedMemoryRecord {
   id: string;
   kind: 'note' | 'semantic' | 'episodic';

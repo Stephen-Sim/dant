@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseHTML } from 'linkedom';
 import { createFirstRun } from '../../../ui/onboarding/first-run.mts';
 import { firstRunMessages } from '../../../ui/onboarding/first-run-copy.mts';
-import { languages } from '../../../src/i18n/languages.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
 import type { ApiRequest } from '../../../ui/shared/contracts.mts';
 import { deferred } from '../../support/service-fixtures.mts';
 import { defined } from '../../support/fixture-assertions.mts';

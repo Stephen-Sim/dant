@@ -22,6 +22,7 @@ const (
 	MaxEarlyEvents  = 128
 	MaxEarlyBytes   = 1024 * 1024
 	MaxCompletedIDs = 4096
+	MaxToolWorkers  = 4
 )
 
 type execution struct {
@@ -151,7 +152,7 @@ func New(ctx context.Context, persistence *store.Store, worker Worker, options O
 		wake:             make(chan struct{}, 1),
 		confirmedStopped: true,
 
-		toolSlots:  make(chan struct{}, 4),
+		toolSlots:  make(chan struct{}, MaxToolWorkers),
 		quietFiles: make(map[string][]contracts.Attachment),
 	}
 	value.referenceGate = make(chan struct{}, 1)

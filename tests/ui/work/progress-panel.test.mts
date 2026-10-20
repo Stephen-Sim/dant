@@ -6,7 +6,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { parseHTML } from 'linkedom';
 import { createProgressPanel } from '../../../ui/work/progress-panel.mts';
 import { reconcile } from '../../../ui/shared/dom.mts';
-import { languageInfo } from '../../../src/i18n/languages.mts';
+import { languageInfo } from '../../../ui/i18n/languages.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { sourceDeclaration, compactCss } from '../../support/source-fixtures.mts';
 import { defined } from '../../support/fixture-assertions.mts';
@@ -16,7 +16,7 @@ import {
   renderWorkEntry,
   renderWorkSummary,
 } from '../../../ui/work/work-progress.mts';
-import { TaskStatus } from '../../../src/contracts/states.mts';
+import { TaskStatus } from '../../../ui/shared/states.mts';
 import { createCallSubtitles } from '../../../ui/call/call-subtitles.mts';
 import type { CallState, UiActiveTask } from '../../../ui/shared/contracts.mts';
 

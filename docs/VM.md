@@ -2,24 +2,28 @@
 
 English · [Chinese](zh-CN/VM.md)
 
-dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Windows Controller reaches the VM's work API at `127.0.0.1:4317` through an SSH local tunnel. The VM Node service starts Codex over stdio; the desktop bridge is also accessible only inside the VM. New VMs default to 4 CPUs, 6 GB RAM, and a 40 GB disk. Hyper-V uses its Default Switch; VMware Workstation uses NAT. The Worker boundary and SSH connection are the same for both.
+dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Windows Go Controller reaches the VM's work API at `127.0.0.1:4317` through an SSH local tunnel. The Go Worker starts Codex over stdio; the desktop bridge is also accessible only inside the VM. New VMs default to 4 CPUs, 6 GB RAM, and a 40 GB disk. Hyper-V uses its Default Switch; VMware Workstation uses NAT. The Worker boundary and SSH connection are the same for both.
 
 On a fresh installation, first choose whether you have an existing dant backup. A portable backup can be imported before a VM is available. Otherwise the guide explains how to create a work computer, detect Hyper-V/VMware, or connect an existing SSH computer. Creation requires your explicit action; merely viewing the guide does not create a VM. Existing configured installations open normally. After connecting a new VM, preview and restore an imported backup to continue with its memory and projects; see [backups](backups.md).
 
 ## Worker deployment and operation
 
-The first connection deploys an explicit source allowlist, verifies and installs Node 22 in the VM user's directory, installs runtime dependencies from the lockfile, and creates the ordinary user's `dant-worker.service` and `dant-guest-local.service`. With user lingering enabled, closing the Windows Controller does not stop these services. The legacy system desktop bridge on port 4319 remains available; the new Worker uses the local lease-aware bridge on port 4320. Neither listens on an external VM address.
+The first connection deploys a verified Go executable and fixed VM-helper allowlist with exact version, source and file hashes. The installer checks available space before shutdown, stops the previous service with ownership proof, validates a private recovery archive and performs offline preparation before activating the new ordinary-user `dant-worker.service` and `dant-guest-local.service`. dant's backend no longer installs Node or `node_modules`; Codex and user tools may independently need Node/npm. With user lingering enabled, closing the Windows Controller does not stop these services. The legacy system desktop bridge on port 4319 remains available; the Worker uses the local lease-aware bridge on port 4320. Neither listens on an external VM address. See [cutover and interruption recovery](go-core-migration.md).
 
 The Worker refuses to execute tasks on Windows, bare-metal Linux, as root, or without a working graphical desktop. Updates check for active work and calls first. An active executor is preserved and its update is deferred; an unchanged source version reuses the existing healthy services.
 
-Legacy Windows chat migration saves a complete backup first, then imports attachments into the VM's UUID storage. Migration refuses to overwrite a target that already holds another conversation. Codex maintains and refreshes its own authentication; deployment neither reads nor packages its authentication files.
+New computer recovery uses a validated portable backup and an explicit restore action. The separate operator-only legacy importer accepts the early manifest/state/files export into an empty target; it is not an automatic connection step. Both preserve source data and refuse to overwrite an unrelated conversation. Codex maintains and refreshes its own authentication; deployment neither reads nor packages its authentication files.
 
 ```powershell
-# Deploy using the selected data directory's existing vm.json, without a Windows UI.
-node src/server.mts --deploy-worker
+# After committing source and running npm run package:resources, quit the existing Controller.
+$dantResources = (Resolve-Path .\src-tauri\resources).Path
+$dantData = Join-Path $env:APPDATA 'com.dant.desktop\data'
+
+# Deploy using that directory's existing vm.json, without a Windows UI.
+& "$dantResources\dant-core.exe" --role=controller --root $dantResources --data-dir $dantData --deploy-worker
 
 # Show setup preparation only; do not automatically connect the Worker.
-node src/server.mts --prepare
+& "$dantResources\dant-core.exe" --role=controller --root $dantResources --data-dir $dantData --prepare
 ```
 
 Authoritative VM data is in `~/dant/data/`, conversation workspaces are in `~/dant/workspaces/<conversationId>/`, and deployed application versions are in `~/dant/releases/`. Inspect user services with `systemctl --user status dant-worker dant-guest-local` and `journalctl --user -u dant-worker`. Do not commit raw logs containing private conversations.

@@ -7,9 +7,9 @@ import {
   ComputerControlStatus,
   ProvisioningStatus,
   RecordingDraftStatus,
-} from '../src/contracts/states.mts';
-import { MAX_ATTACHMENT_BYTES } from '../src/config/limits.mts';
-import { NATIVE_PROTOCOL } from '../src/config/network.mts';
+} from './shared/states.mts';
+import { MAX_ATTACHMENT_BYTES } from './files/attachment-limits.mts';
+import { NATIVE_PROTOCOL } from './platform/native-protocol.mts';
 import type { ProgressMessage } from './work/progress-snapshot.mts';
 import { requiredData, formInput, formSelect, serviceStatusLabel } from './app/controls.mts';
 import {
@@ -60,12 +60,12 @@ import type {
   ConversationFile,
 } from './app/application-types.ts';
 import type { ProgressItem } from './work/work-progress.mts';
-import type { TaskStatusValue } from '../src/contracts/states.mts';
+import type { TaskStatusValue } from './shared/states.mts';
 import type { TransportEvent } from './platform/transport.mts';
 import { en, zh } from './i18n/interface-copy.mts';
-import { languages, isLanguage, normalizeLanguage, languageInfo } from '../src/i18n/languages.mts';
+import { languages, isLanguage, normalizeLanguage, languageInfo } from './i18n/languages.mts';
 import { loadLanguage } from './i18n/localization.mts';
-import { translate } from '../src/i18n/i18n.mts';
+import { translate } from './i18n/messages.mts';
 import './style.css';
 import {
   createElement,
@@ -148,7 +148,7 @@ import { createWorkspaceLayout } from './work/workspace-layout.mts';
 import { createNativeCallOverlay } from './platform/native-call-overlay.mts';
 import { createNativeTray } from './platform/native-tray.mts';
 import { createTextEditor } from './platform/text-editor.mts';
-import { defaultReactions } from '../src/conversation/reactions.mts';
+import { defaultReactions } from './chat/reactions.mts';
 import { createManagedSettings } from './settings/managed-settings.mts';
 import { createChatHistory } from './chat/chat-history.mts';
 import { createChatCollections } from './chat/chat-collections.mts';

@@ -1,7 +1,7 @@
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord, requestError } from '../shared/contracts.mts';
 import type { LocalRequestError, WorkReplyTarget } from '../shared/contracts.mts';
-import { TaskPriority } from '../../src/contracts/states.mts';
+import { TaskPriority } from '../shared/states.mts';
 import type { ProgressKind, CancelTarget } from './work-progress.mts';
 interface ActionItem {
   id?: string | undefined;
@@ -51,7 +51,7 @@ interface ProgressActionsOptions {
   document?: Document;
   isPending?: (id: string) => boolean;
 }
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 const baseCopy = {
   en: {
     title: 'Remove unfinished task?',

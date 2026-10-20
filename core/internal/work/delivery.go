@@ -3,18 +3,22 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
+
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/runtime"
 	"github.com/Stephen-Sim/dant/core/internal/store"
 	workstate "github.com/Stephen-Sim/dant/core/internal/work/state"
-	"slices"
-	"strings"
 )
 
-const MaxDeliveredFiles = 5
+const (
+	MaxDeliveredFiles     = 5
+	MaxDeliveredTextUnits = 100_000
+)
 
 func (value *Engine) DeliverText(ctx context.Context, text string, owner ToolContext) (json.RawMessage, error) {
-	if contracts.TrimText(text) == "" || contracts.UTF16Length(text) > 100_000 || owner.IsCurrent == nil || !owner.IsCurrent() {
+	if contracts.TrimText(text) == "" || contracts.UTF16Length(text) > MaxDeliveredTextUnits || owner.IsCurrent == nil || !owner.IsCurrent() {
 		return nil, ErrStaleOwner
 	}
 	text = value.redact(text)

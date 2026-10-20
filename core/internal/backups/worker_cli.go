@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/ownership"
 	"github.com/Stephen-Sim/dant/core/internal/platform"
 )
@@ -126,7 +127,7 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 		return nil
 	}}
 	if arguments.command == "restore" {
-		if runtime.GOOS == "linux" {
+		if contracts.RuntimeOperatingSystem(runtime.GOOS) == contracts.RuntimeOperatingSystemLinux {
 			lock, err := ownership.Acquire(ctx, options.DataDir)
 			if err != nil {
 				return ErrBusy
@@ -141,7 +142,7 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 	}
 
 	if arguments.command == "recover" {
-		if runtime.GOOS == "linux" {
+		if contracts.RuntimeOperatingSystem(runtime.GOOS) == contracts.RuntimeOperatingSystemLinux {
 			lock, err := ownership.Acquire(ctx, options.DataDir)
 			if err != nil {
 				return ErrBusy
@@ -161,7 +162,7 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 			if err := assertOffline(ctx, options); err != nil {
 				return err
 			}
-			if runtime.GOOS == "linux" {
+			if contracts.RuntimeOperatingSystem(runtime.GOOS) == contracts.RuntimeOperatingSystemLinux {
 				lock, err := ownership.Acquire(ctx, options.DataDir)
 				if err != nil {
 					return ErrBusy
@@ -215,7 +216,7 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 type systemdBackupService struct{}
 
 func (systemdBackupService) Running(ctx context.Context) (bool, error) {
-	if runtime.GOOS != "linux" {
+	if contracts.RuntimeOperatingSystem(runtime.GOOS) != contracts.RuntimeOperatingSystemLinux {
 		return false, ErrRestoreFailed
 	}
 	check, stop := context.WithTimeout(ctx, systemdCheckTimeout)
@@ -275,7 +276,7 @@ func (systemdBackupService) Running(ctx context.Context) (bool, error) {
 }
 
 func (systemdBackupService) Start(ctx context.Context) error {
-	if runtime.GOOS != "linux" {
+	if contracts.RuntimeOperatingSystem(runtime.GOOS) != contracts.RuntimeOperatingSystemLinux {
 		return ErrRestoreFailed
 	}
 	start, stop := context.WithTimeout(ctx, systemdStartTimeout)

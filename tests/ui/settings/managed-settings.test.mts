@@ -21,9 +21,9 @@ import {
   SKILL_EDITOR_FILE_BYTES,
   SKILL_EDITOR_TOTAL_BYTES,
   SKILL_ARCHIVE_BYTES,
-} from '../../../src/skills/skill-limits.mts';
-import { languages } from '../../../src/i18n/languages.mts';
-import { localizeMessages } from '../../../src/i18n/i18n.mts';
+} from '../../../ui/settings/skill-limits.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
+import { localizeMessages } from '../../../ui/i18n/messages.mts';
 import { loadLanguage } from '../../../ui/i18n/localization.mts';
 
 const settle = async () => {

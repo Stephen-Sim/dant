@@ -3,17 +3,14 @@ package memory
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"reflect"
 	"testing"
 	"time"
 )
 
 func TestNodeWriterGoldenLifecycle(t *testing.T) {
-	raw, err := os.ReadFile("testdata/node-writer-golden.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := readNodeGolden(t, "node-writer-golden.json")
+	var err error
 	var fixture struct {
 		Node  string
 		IDs   []string

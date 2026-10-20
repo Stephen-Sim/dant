@@ -9,7 +9,7 @@ import { createManagedSettings, parseSkillFiles } from '../../../ui/settings/man
 import {
   SKILL_SUPPORT_FILE_LIMIT,
   SKILL_ARCHIVE_BYTES,
-} from '../../../src/skills/skill-limits.mts';
+} from '../../../ui/settings/skill-limits.mts';
 
 const settle = async () => {
   await new Promise((resolve) => setImmediate(resolve));

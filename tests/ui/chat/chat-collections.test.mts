@@ -13,9 +13,9 @@ import { reconcile } from '../../../ui/shared/dom.mts';
 import { escapeHtml } from '../../../ui/shared/html.mts';
 import { isRecord } from '../../../ui/shared/contracts.mts';
 import { readAppState } from '../../../ui/app/application-state.mts';
-import { ConnectionStatus, TaskStatus } from '../../../src/contracts/states.mts';
-import { languages } from '../../../src/i18n/languages.mts';
-import { registerLocale, localizeMessages } from '../../../src/i18n/i18n.mts';
+import { ConnectionStatus, TaskStatus } from '../../../ui/shared/states.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
+import { registerLocale, localizeMessages } from '../../../ui/i18n/messages.mts';
 import { defined, invokeHandler } from '../../support/fixture-assertions.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';
@@ -713,7 +713,7 @@ test('all supported locales include collection controls without translating mess
     if (language.code !== 'en' && language.code !== 'zh') {
       const catalog: unknown = JSON.parse(
         fs.readFileSync(
-          new URL('../../../src/i18n/locales/' + language.code + '.json', import.meta.url),
+          new URL('../../../resources/i18n/locales/' + language.code + '.json', import.meta.url),
           'utf8',
         ),
       );

@@ -1,11 +1,14 @@
 package history
 
 import (
-	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
+
+const MaxNotificationInputRunes = 8192
 
 var notificationFences = regexp.MustCompile("```[^\\n]*\\n?")
 var notificationLinks = regexp.MustCompile(`!?\[([^\]]*)\]\([^\n)]*\)`)
@@ -18,8 +21,8 @@ var notificationEntities = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;"
 func plainNotificationText(value string) string {
 	// Bounded before regex work; user Markdown is display text, never HTML.
 	units := []rune(value)
-	if len(units) > 8192 {
-		value = string(units[:8192])
+	if len(units) > MaxNotificationInputRunes {
+		value = string(units[:MaxNotificationInputRunes])
 	}
 	value = notificationFences.ReplaceAllString(value, "")
 	value = notificationLinks.ReplaceAllString(value, "$1")

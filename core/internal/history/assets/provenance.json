@@ -1,7 +1,11 @@
 {
   "unicode": "17.0",
   "validatedNode": "v22.23.3",
-  "validator": "src/conversation/reactions.mts",
+  "validator": "core/internal/history/reactions.go",
+  "nodeOracle": {
+    "source": "src/conversation/reactions.mts",
+    "commit": "d058bdc7509efce90bd9d96cc367b04e11c98bae"
+  },
   "count": 3944,
   "sources": [
     {

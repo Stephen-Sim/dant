@@ -12,8 +12,8 @@ interface OverlayOptions {
   cancel?: (timer: Interval) => void;
   randomId?: () => string;
 }
-import { languageInfo } from '../../src/i18n/languages.mts';
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { languageInfo } from '../i18n/languages.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import { loadLanguage } from '../i18n/localization.mts';
 import { formatCallDuration } from './call-duration.mts';
 

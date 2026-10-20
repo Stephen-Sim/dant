@@ -4,7 +4,7 @@ English · [Chinese](zh-CN/architecture.md)
 
 dant is a local-first desktop agent. Tauri 2 provides the Windows host, a Controller manages the work computer, and an Ubuntu Worker owns execution and conversation data. This document describes the current source, including scoped memory retrieval, SQLite scheduling and protected local backups; published installers may contain an earlier implementation.
 
-The current source uses **Go Agent Core + Rust Tauri + TypeScript UI**. Separate Go Controller and Worker roles replace the production Node backend. TypeScript remains the browser implementation, build tooling and compatibility-test oracle. The isolated Memory shadow role remains available for differential tests, not production execution. This describes source behavior, not a claim that a new installer has passed live acceptance or been released. See [runtime support](runtime-support.md) and [migration and cutover](go-core-migration.md).
+The current source uses **Go Agent Core + Rust Tauri + TypeScript UI**. Separate Go Controller and Worker roles own the complete backend. TypeScript implements the browser and build tools; the former root `src/` backend is retired. Cross-runtime schemas, protocol defaults and locale data live in `resources/`. Frozen synthetic Node results retain independent compatibility evidence without another executable backend. This describes source behavior, not a claim that a new installer has passed live acceptance or been released. See [runtime support](runtime-support.md) and [migration and cutover](go-core-migration.md).
 
 ## Overall system
 
@@ -77,7 +77,7 @@ Chat initially renders the latest 80 messages and prepends older batches on dema
 | Host / VM adapters    | [`core/internal/platform/`](../core/internal/platform/), [`providers/`](../core/internal/computer/) | Host capabilities and provider-specific detection/setup/lifecycle commands                 |
 | Local backups         | [`core/internal/backups/`](../core/internal/backups/)                                               | Protected Controller archives, Worker snapshots and explicit offline recovery              |
 
-Production backend packages live under `core/internal/`, assembled by the small `core/cmd/dant-core` entrypoint through `application`. Controller and Worker are distinct roles of the compiled binary. The browser uses Vite, TypeScript and DOM/CSS; retained `src/` modules provide shared contracts, locale data and test oracles, and are excluded from backend deployment. Feature ownership and tests follow [code style](code-style.md).
+Production backend packages live under `core/internal/`, assembled by the small `core/cmd/dant-core` entrypoint through `application`. Controller and Worker are distinct roles of the compiled binary. The browser uses Vite, TypeScript and DOM/CSS. `resources/contracts/`, `resources/config/` and `resources/i18n/` own language-independent inputs; generated Go contracts and UI contracts are checked against those inputs. Every Go test lives under the mirrored `tests/go/` tree. Feature ownership and tests follow [code style](code-style.md).
 
 ## Agent loop and execution ownership
 
@@ -113,7 +113,9 @@ sequenceDiagram
   Engine-->>Input: Verified result, failure or required human input
 ```
 
-The Go Engine selects queued work, restores the matching conversation's Codex thread, routes scoped events/tools and records outcomes and deliverables. Bounded early events cannot establish ownership before a valid `turn/start` acknowledgment. Submission and work states are separate domains in [`states.mts`](../src/contracts/states.mts).
+The Go Engine selects queued work, restores the matching conversation's Codex thread, routes scoped events/tools and records outcomes and deliverables. Bounded early events cannot establish ownership before a valid `turn/start` acknowledgment. Submission and work states are separate domains in the shared [state schema](../resources/contracts/state-domains.json), generated into Go and [`states.mts`](../ui/shared/states.mts).
+
+Go concurrency serves transport and orchestration while preserving one execution owner. The Engine owns its cancellable lifetime, wake channel, bounded input queue, tool slots and joined workers. Memory and scheduling keep transaction ownership in their feature repositories; SQL and row mapping do not enter the UI or process entrypoint. Network cancellation retains request, connection, work and turn identity, and cannot convert an unknown side effect into a retry. Compiled CGO-free binaries remove the deployed Node dependency. These properties are architectural choices; the migration does not establish a measured latency improvement.
 
 A durable `workId` survives turns. `task_plan` records actual steps; `task_list` and `task_cancel` use saved identities. Task replies carry `workId`, expected turn and conversation through ordinary chat. Live replies steer only their matching owner; ended work reopens through the same admission path with retained project context.
 

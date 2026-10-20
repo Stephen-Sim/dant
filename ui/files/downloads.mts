@@ -1,7 +1,7 @@
 import { isRecord } from '../shared/contracts.mts';
 import type { NativeInvoke } from '../platform/transport.mts';
-import { MAX_ATTACHMENT_BYTES } from '../../src/config/limits.mts';
-import { NATIVE_PROTOCOL } from '../../src/config/network.mts';
+import { MAX_ATTACHMENT_BYTES } from './attachment-limits.mts';
+import { NATIVE_PROTOCOL } from '../platform/native-protocol.mts';
 import type { ScheduleTimer, CancelTimer } from '../shared/contracts.mts';
 const MAX_BYTES = MAX_ATTACHMENT_BYTES;
 import type { Attachment, Timer } from '../shared/contracts.mts';

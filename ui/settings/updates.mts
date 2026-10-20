@@ -1,11 +1,8 @@
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import { escapeHtml as escape } from '../shared/html.mts';
 import { isRecord, isSafeInteger } from '../shared/contracts.mts';
-import { AppUpdateStatus, UpdateDownloadStatus } from '../../src/contracts/states.mts';
-import type {
-  AppUpdateStatusValue,
-  UpdateDownloadStatusValue,
-} from '../../src/contracts/states.mts';
+import { AppUpdateStatus, UpdateDownloadStatus } from '../shared/states.mts';
+import type { AppUpdateStatusValue, UpdateDownloadStatusValue } from '../shared/states.mts';
 import type { ApiRequest } from '../shared/contracts.mts';
 import type { UpdateAsset, UpdateProgress } from '../platform/native-updates.mts';
 type UpdateChannel = 'stable' | 'beta';

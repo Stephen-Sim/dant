@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	ProtocolResourcePath                 = "resources/config/protocol.json"
 	MaxPort                              = 65535
 	APIJSONBodyBytes                     = 3 * 1024 * 1024
 	InstallLeaseTTLMilliseconds          = 30000
@@ -47,7 +48,7 @@ type Protocol struct {
 }
 
 // DefaultProtocol returns a copy of generated, embedded protocol data. The
-// source is src/config/protocol.json; contract generation verifies drift.
+// source is resources/config/protocol.json; contract generation verifies drift.
 func DefaultProtocol() Protocol {
 	var protocol Protocol
 	if err := json.Unmarshal(protocolJSON, &protocol); err != nil {

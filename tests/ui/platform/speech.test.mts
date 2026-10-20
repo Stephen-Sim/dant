@@ -1,4 +1,4 @@
-import { errorCode, errorMessage } from '../../../src/contracts/json.mts';
+import { errorCode, errorMessage } from '../../../ui/shared/json.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import test from 'node:test';
 import assert from 'node:assert/strict';

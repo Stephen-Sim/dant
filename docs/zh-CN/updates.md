@@ -18,6 +18,12 @@ Windows 可点击**下载更新**，在后台下载官方安装包并核对大�
 
 ## 工作电脑服务更新
 
+### 0.4.7-beta.16 的源码退役
+
+Beta 16 源码移除原 `src/` 后台。Controller、Worker 和显式的旧 manifest／文件导入器由 Go 负责，浏览器继续使用 TypeScript。契约、协议默认值和语言数据统一位于 `resources/`，生成的 Go／浏览器消费者检查内容漂移，已有数据路径和公开接口保持兼容。
+
+Go 替代测试覆盖完整容量技能文件、编辑时保留的资产及认证 ZIP 下载。Controller 在转发前拒绝超限 JSON，诊断读取与文件变更串行协调。Go 覆盖率检查要求 Controller、Computer 和 Telegram 的语句覆盖率至少 90%，并核对每个功能包；浏览器保留独立的 90／80／80 门槛，详见[测试迁移](testing-migration.md)。此处描述源码变化，不表示 Beta 16 已发布，也不表示其安装器与 VM 已完成本机验收。
+
 ### 0.4.7-beta.15 的 Go Core 迁移
 
 Windows Controller 和 Ubuntu Worker 改用编译后的 Go 程序，Tauri 继续使用 Rust，界面继续使用 TypeScript。更新会核对实际 Worker 的角色、协议、版本和源码提交。持久安装日志阻止重启或独立启动服务时绕过离线备份与数据准备，只有匹配的成功准备回执才允许启用服务。已有聊天、SQLite 记忆与调度、技能和工作区保留原有保存路径。详见[系统架构](architecture.md)和[迁移设计](go-core-migration.md)。

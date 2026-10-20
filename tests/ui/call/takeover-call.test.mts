@@ -1,5 +1,5 @@
 import type { UiModal, CallState } from '../../../ui/shared/contracts.mts';
-import { isRecord } from '../../../src/contracts/json.mts';
+import { isRecord } from '../../../ui/shared/json.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import { stripTypeScriptTypes } from 'node:module';

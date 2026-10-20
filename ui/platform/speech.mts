@@ -22,8 +22,8 @@ interface SpeechOptions {
   Utterance?: UtteranceConstructor;
 }
 const READ_ALOUD_TEXT_LIMIT = 10_000;
-import { localizeMessages } from '../../src/i18n/i18n.mts';
-import { languageInfo } from '../../src/i18n/languages.mts';
+import { localizeMessages } from '../i18n/messages.mts';
+import { languageInfo } from '../i18n/languages.mts';
 export const speechMessages = {
   zh: {
     cancelled: '语音辅助已停止。',

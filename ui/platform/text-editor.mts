@@ -22,7 +22,7 @@ interface TextEditorOptions {
   invoke?: NativeInvoke | undefined;
   loadCore?: () => Promise<{ invoke: NativeInvoke }>;
 }
-import { localizeMessages } from '../../src/i18n/i18n.mts';
+import { localizeMessages } from '../i18n/messages.mts';
 import { canPreviewFile } from '../files/file-preview.mts';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const installedIds = new Set([

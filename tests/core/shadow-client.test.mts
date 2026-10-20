@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { spawn } from 'node:child_process';
-import { ShadowClient } from '../../scripts/core/shadow-client.mts';
+import path from 'node:path';
+import { ShadowClient, startShadowClient } from '../../scripts/core/shadow-client.mts';
 
 function fixture(t: TestContext, body: string) {
   const source = `import readline from 'node:readline';
@@ -18,6 +19,24 @@ function fixture(t: TestContext, body: string) {
   t.after(() => client.close());
   return client;
 }
+
+test('shadow launcher validates its own read-only descriptor without a backend snapshot type', () => {
+  const executable = path.resolve('isolated-core-fixture');
+  const file = path.resolve('isolated-shadow-fixture.sqlite');
+  for (const revision of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(
+      () => startShadowClient(executable, { file, revision }),
+      /Invalid core shadow launch/,
+    );
+  assert.throws(
+    () => startShadowClient('relative-core', { file, revision: 0 }),
+    /Invalid core shadow launch/,
+  );
+  assert.throws(
+    () => startShadowClient(executable, { file: 'relative-shadow', revision: 0 }),
+    /Invalid core shadow launch/,
+  );
+});
 
 test('shadow client associates interleaved responses with exact request identity', async (t) => {
   const client = fixture(

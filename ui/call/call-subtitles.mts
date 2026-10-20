@@ -5,7 +5,7 @@ import {
   CALL_CAPTION_EVENT_METHOD,
   isCallCaptionId,
   readCallCaption,
-} from '../../src/contracts/call-caption.mts';
+} from './caption-contracts.mts';
 const ENDED_CALL_LIMIT = 64;
 const LIVE_CALL_STATES = new Set(['connecting', 'negotiating', 'connected']);
 interface SubtitleSnapshot {

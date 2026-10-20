@@ -8,8 +8,8 @@ import {
   RECENT_MESSAGE_LIMIT,
   OLDER_MESSAGE_BATCH_SIZE,
 } from '../../../ui/chat/message-window.mts';
-import { languages } from '../../../src/i18n/languages.mts';
-import { registerLocale } from '../../../src/i18n/i18n.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
+import { registerLocale } from '../../../ui/i18n/messages.mts';
 import { isRecord } from '../../../ui/shared/contracts.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import { createChatScroll } from '../../../ui/chat/chat-scroll.mts';
@@ -121,7 +121,7 @@ test('earlier-history controls use all supported interface languages and never t
     if (!['en', 'zh'].includes(language.code)) {
       const catalog: unknown = JSON.parse(
         fs.readFileSync(
-          new URL(`../../../src/i18n/locales/${language.code}.json`, import.meta.url),
+          new URL(`../../../resources/i18n/locales/${language.code}.json`, import.meta.url),
           'utf8',
         ),
       );

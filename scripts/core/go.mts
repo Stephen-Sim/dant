@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import type { SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { createCoreGoTestOverlay } from './test-layout.mts';
 import type { CoreGoTestOverlay } from './test-layout.mts';
+import { assessGoCoverage, createGoCoverageReport, parseGoCoverage } from './coverage.mts';
+import type { GoCoverageReport } from './coverage.mts';
 
 export const GO_VERSION = '1.27.2';
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -13,7 +15,9 @@ const GO_COMMAND_TIMEOUT_MS = 300_000;
 const GO_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 const GO_ROOT_MAX_CHARS = 4096;
 const GO_TEST_TIMEOUT = '120s';
-const modes = ['format', 'format-check', 'vet', 'test', 'check', 'race'] as const;
+const GO_TEST_PACKAGE_PARALLELISM = 2;
+const GO_TEST_CASE_PARALLELISM = 4;
+const modes = ['format', 'format-check', 'vet', 'test', 'coverage', 'check', 'race'] as const;
 export type CoreGoMode = (typeof modes)[number];
 interface GoResult {
   status: number | null;
@@ -108,7 +112,7 @@ export function resolveGoToolchain(
 export function coreGoMode(args: readonly string[]): CoreGoMode {
   const mode = args[0];
   if (args.length !== 1 || !modes.some((value) => value === mode))
-    throw Error('Usage: node scripts/core/go.mts format|format-check|vet|test|check|race');
+    throw Error('Usage: node scripts/core/go.mts format|format-check|vet|test|coverage|check|race');
   return mode as CoreGoMode;
 }
 
@@ -124,19 +128,68 @@ export function runCoreGo(
       process.stdout.write(text);
     },
     createTestOverlay = createCoreGoTestOverlay,
+    createCoverageReport = createGoCoverageReport,
   }: ToolOptions & {
     root?: string;
     write?: (text: string) => void;
     createTestOverlay?: (root: string) => CoreGoTestOverlay;
+    createCoverageReport?: (root: string) => GoCoverageReport;
   } = {},
 ): void {
   if (mode === 'race' && platform !== 'linux')
     throw Error('The core race check requires Linux and a working C compiler.');
-  const toolchain = resolveGoToolchain(root, { run, fileExists, env, platform });
-  const overlay = createTestOverlay(root);
-  const steps: readonly CoreGoMode[] = mode === 'check' ? ['format-check', 'vet', 'test'] : [mode];
+  const coverage = mode === 'check' || mode === 'coverage' ? createCoverageReport(root) : undefined;
+  let overlay: CoreGoTestOverlay | undefined;
+  const steps: readonly CoreGoMode[] =
+    mode === 'check' ? ['format-check', 'vet', 'coverage'] : [mode];
   try {
+    const toolchain = resolveGoToolchain(root, { run, fileExists, env, platform });
+    overlay = createTestOverlay(root);
     for (const step of steps) {
+      if (step === 'coverage') {
+        if (!coverage) throw Error('The Go coverage run has no fresh report.');
+        const report = coverage;
+        const options = {
+          cwd: path.join(root, 'core'),
+          env: toolchain.env,
+          encoding: 'utf8' as const,
+          timeout: GO_COMMAND_TIMEOUT_MS,
+          maxBuffer: GO_OUTPUT_LIMIT_BYTES,
+          windowsHide: true,
+          shell: false,
+        };
+        const listed = run(toolchain.go, ['list', '-f={{.ImportPath}}', './...'], options);
+        if (listed.error || listed.status !== 0)
+          throw Error('Go coverage package discovery failed.');
+        const expected = listed.stdout?.trim().split(/\r?\n/) ?? [];
+        const result = run(
+          toolchain.go,
+          [
+            'test',
+            '-overlay=' + overlay.file,
+            '-p=' + GO_TEST_PACKAGE_PARALLELISM,
+            '-parallel=' + GO_TEST_CASE_PARALLELISM,
+            '-count=1',
+            '-timeout=' + GO_TEST_TIMEOUT,
+            '-covermode=atomic',
+            '-coverpkg=./...',
+            '-coverprofile=' + report.file,
+            './...',
+          ],
+          options,
+        );
+        if (result.stdout) write(result.stdout);
+        if (result.stderr) write(result.stderr);
+        if (result.error || result.status !== 0) throw Error('Go core coverage tests failed.');
+        const assessed = assessGoCoverage(parseGoCoverage(report.read()), expected);
+        report.save(assessed);
+        for (const name of assessed.required) {
+          const item = assessed.packages.find((entry) => entry.package === name);
+          if (item) write(`${name}: ${item.percent.toFixed(2)}% Go statements\n`);
+        }
+        if (assessed.failures.length) throw Error(assessed.failures.join('\n'));
+        continue;
+      }
       const formatting = step === 'format' || step === 'format-check';
       const args =
         step === 'format'
@@ -149,6 +202,8 @@ export function runCoreGo(
                   'test',
                   '-overlay=' + overlay.file,
                   ...(step === 'race' ? ['-race'] : []),
+                  '-p=' + GO_TEST_PACKAGE_PARALLELISM,
+                  '-parallel=' + GO_TEST_CASE_PARALLELISM,
                   '-count=1',
                   '-timeout=' + GO_TEST_TIMEOUT,
                   './...',
@@ -169,7 +224,11 @@ export function runCoreGo(
         throw Error('Go source formatting differs; run npm run format:go.');
     }
   } finally {
-    overlay.close();
+    try {
+      overlay?.close();
+    } finally {
+      coverage?.close();
+    }
   }
 }
 

@@ -22,10 +22,14 @@ const (
 	RoleBackupCLI       Role = "backup-cli"
 	RoleWorkerBackup    Role = "worker-backup"
 	RoleMemoryShadow    Role = "memory-shadow"
+	RoleLegacyImport    Role = "legacy-import"
 )
 
 func (role Role) Valid() bool {
-	return slices.Contains([]Role{RoleController, RoleWorker, RolePrepareWorker, RoleBackupTransform, RoleBackupCLI, RoleWorkerBackup, RoleMemoryShadow}, role)
+	return slices.Contains([]Role{
+		RoleController, RoleWorker, RolePrepareWorker, RoleBackupTransform,
+		RoleBackupCLI, RoleWorkerBackup, RoleMemoryShadow, RoleLegacyImport,
+	}, role)
 }
 
 var ErrStartup = errors.New("invalid_startup_configuration")
@@ -159,6 +163,11 @@ func LoadStartup(input StartupInput) (Startup, error) {
 		}
 	}
 	if !result.Role.Valid() {
+		return Startup{}, ErrStartup
+	}
+	if result.Role == RoleLegacyImport {
+		// The offline importer has a separate strict parser and must be the
+		// first fixed role argument handled by application.Run.
 		return Startup{}, ErrStartup
 	}
 	var err error

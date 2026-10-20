@@ -7,22 +7,22 @@ import {
 } from '../../../ui/app/recovery-settings.mts';
 import { recoveryMessages } from '../../../ui/app/recovery-copy.mts';
 import { loadLanguage } from '../../../ui/i18n/localization.mts';
-import { languages } from '../../../src/i18n/languages.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
 import {
   BackupMode,
   BackupPhase,
   ConnectionStatus,
   ServiceUpdateStatus,
-} from '../../../src/contracts/states.mts';
-import type { ConnectionStatusValue } from '../../../src/contracts/contracts.ts';
-import type { BackupStatus } from '../../../src/backups/backup-types.ts';
+} from '../../../ui/shared/states.mts';
+import type { ConnectionStatusValue } from '../../../ui/shared/api-types.ts';
+import type { BackupStatus } from '../../../ui/settings/backup-types.ts';
 import type { ApiOptions } from '../../../ui/shared/contracts.mts';
 import { LocalRequestError, isRecord } from '../../../ui/shared/contracts.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
-import { languageInfo } from '../../../src/i18n/languages.mts';
+import { languageInfo } from '../../../ui/i18n/languages.mts';
 import { sourceDeclaration } from '../../support/source-fixtures.mts';
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';

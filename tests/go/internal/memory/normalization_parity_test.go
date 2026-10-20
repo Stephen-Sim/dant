@@ -2,16 +2,12 @@ package memory
 
 import (
 	"encoding/json"
-	"os"
 	"reflect"
 	"testing"
 )
 
 func TestNodeNormalizationAndRedactionGoldenContract(t *testing.T) {
-	data, err := os.ReadFile("testdata/node-memory-goldens.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readNodeGolden(t, "node-memory-goldens.json")
 	var fixture struct {
 		Node, Unicode string
 		Queries       []struct {
@@ -23,7 +19,7 @@ func TestNodeNormalizationAndRedactionGoldenContract(t *testing.T) {
 			Secret      bool
 		}
 	}
-	if err = json.Unmarshal(data, &fixture); err != nil {
+	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatal(err)
 	}
 	if fixture.Node != "22.23.3" || fixture.Unicode != "17.0" {

@@ -2,24 +2,28 @@
 
 [English](../VM.md) · Chinese
 
-dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Node 服务通过 stdio 启动，桌面桥只供 VM 内访问。新建虚拟机默认 4 个 CPU、6 GB 内存、40 GB 磁盘；Hyper-V 使用 Default Switch，VMware Workstation 使用 NAT。两者采用相同的 Worker 边界和 SSH 连接。
+dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。Windows Go Controller 通过 SSH 本地隧道访问 VM 的 `127.0.0.1:4317` 工作 API；Codex 由 VM 内 Go Worker 通过 stdio 启动，桌面桥只供 VM 内访问。新建虚拟机默认 4 个 CPU、6 GB 内存、40 GB 磁盘；Hyper-V 使用 Default Switch，VMware Workstation 使用 NAT。两者采用相同的 Worker 边界和 SSH 连接。
 
 首次安装先选择是否已有 dant 备份；没有 VM 时也能导入便携备份。没有备份则由引导说明如何创建工作电脑、检测 Hyper-V/VMware，或连接已有 SSH 电脑。只有明确提交创建才会创建 VM，查看引导不会自动执行。已有配置的安装正常进入原界面。连接新 VM 后，预览并恢复导入的备份，即可带着记忆和项目继续；参见[备份说明](backups.md)。
 
 ## Worker 部署与运行
 
-首次连接会同步源码允许列表，校验并安装用户目录内的 Node 22，使用锁文件安装运行依赖，以普通用户创建 `dant-worker.service` 和 `dant-guest-local.service`。启用 user lingering 后，Windows Controller 退出不终止 VM 服务。旧系统桌面桥端口 4319 保留，新 Worker 使用本机 4320 的租约桥，均不绑定 VM 外部地址。
+首次连接部署经验证的 Go 程序和固定 VM 辅助文件白名单，绑定精确版本、源码及文件哈希。安装器在停服务前检查空间，证明旧服务已停止，验证私有恢复归档，再离线准备并激活普通用户的 `dant-worker.service`、`dant-guest-local.service`。dant 后端不再安装 Node 或 `node_modules`；Codex 与用户工具可能独立使用 Node/npm。启用 user lingering 后，Windows Controller 退出不终止 VM 服务。旧系统桌面桥端口 4319 保留，Worker 使用本机 4320 的租约桥，均不绑定 VM 外部地址。参见[切换与中断恢复](go-core-migration.md)。
 
 Worker 拒绝在 Windows、裸机 Linux、root 账号或缺少可用图形桌面的环境执行任务。更新前会检查活动任务与通话；正在工作时保留当前进程并推迟升级。相同源码版本复用已有健康服务。
 
-Windows 原有聊天迁移前保存完整备份，再把附件复制为 VM UUID 存储；迁移只允许进入未被另一份对话占用的目标目录。Codex 自行保存和刷新认证，部署不读取或打包认证文件。
+新工作电脑使用经过校验的便携备份，由用户明确恢复。另有仅供操作者使用的旧版 importer，可把早期 manifest/state/files 导出包导入空目标，不是自动连接步骤。两种方式保留来源数据，拒绝覆盖其他对话。Codex 自行保存和刷新认证，部署不读取或打包认证文件。
 
 ```powershell
-# 已有 data/vm.json 时单独部署，不启动 Windows UI
-node src/server.mts --deploy-worker
+# 提交源码并运行 npm run package:resources 后，先退出已有 Controller。
+$dantResources = (Resolve-Path .\src-tauri\resources).Path
+$dantData = Join-Path $env:APPDATA 'com.dant.desktop\data'
+
+# 使用该目录已有 vm.json 单独部署，不启动 Windows UI。
+& "$dantResources\dant-core.exe" --role=controller --root $dantResources --data-dir $dantData --deploy-worker
 
 # 仅展示安装准备界面，不自动连接 Worker
-node src/server.mts --prepare
+& "$dantResources\dant-core.exe" --role=controller --root $dantResources --data-dir $dantData --prepare
 ```
 
 VM 权威数据为 `~/dant/data/`，工作目录为 `~/dant/workspaces/<conversationId>/`，程序版本保存在 `~/dant/releases/`。诊断用户服务时使用 `systemctl --user status dant-worker dant-guest-local` 和 `journalctl --user -u dant-worker`；不要把包含私人聊天的日志原文提交仓库。

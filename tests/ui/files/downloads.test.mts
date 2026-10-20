@@ -1,6 +1,6 @@
 import type { NativeInvoke } from '../../../ui/platform/transport.mts';
 import type { Timer } from '../../../ui/shared/contracts.mts';
-import { errorCode, errorMessage } from '../../../src/contracts/json.mts';
+import { errorCode, errorMessage } from '../../../ui/shared/json.mts';
 import { htmlTag } from '../../support/fixture-assertions.mts';
 type DownloadOptions = NonNullable<Parameters<typeof createDownloads>[0]>;
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';

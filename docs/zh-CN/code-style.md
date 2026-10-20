@@ -8,15 +8,16 @@
 
 生产后端按功能放在 `core/internal/<feature>/`，浏览器模块放在 `ui/<feature>/`。小型 `core/cmd/` 入口把角色组装交给 `application`；Controller 组装属于 `controller`，Worker 组装属于 `app`。领域逻辑、持久化、渲染和传输保留在所属功能内。
 
-| 目录                                                                                      | 职责                                                                                  |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `core/internal/controller`、`computer`、`platform`                                        | 宿主配置、SSH、VM 提供商、生命周期和部署。                                            |
-| `core/internal/app`、`work`、`runtime`                                                    | Worker API、准入、任务连续性及 Codex 进程/RPC 边界。                                  |
-| `core/internal/store`、`history`、`memory`、`schedules`                                   | 对话权威、SQLite 记忆/召回与调度派发。                                                |
-| `core/internal/voice`、`telegram`、`files`、`skills`、`security`、`backups`、`updates`    | 各自功能及其存储/传输边界。                                                           |
-| `core/internal/config`、`contracts`、`i18n`、`settings`、`diagnostics`                    | 配置、生成状态、嵌入语言数据、偏好及有界诊断。                                        |
-| `ui/chat`、`call`、`work`、`schedules`、`files`、`settings`、`platform`、`shared`、`i18n` | 浏览器功能、原生适配及共享浏览器基础模块。                                            |
-| `src/contracts`、`src/i18n`、`scripts`、`tests`                                           | 共享 schema/语言源、TypeScript 工具与兼容参考；保留的旧后端 TypeScript 不是生产入口。 |
+| 目录                                                                                      | 职责                                                                |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `core/internal/controller`、`computer`、`platform`                                        | 宿主配置、SSH、VM 提供商、生命周期和部署。                          |
+| `core/internal/app`、`work`、`runtime`                                                    | Worker API、准入、任务连续性及 Codex 进程/RPC 边界。                |
+| `core/internal/store`、`history`、`memory`、`schedules`                                   | 对话权威、SQLite 记忆/召回与调度派发。                              |
+| `core/internal/voice`、`telegram`、`files`、`skills`、`security`、`backups`、`updates`    | 各自功能及其存储/传输边界。                                         |
+| `core/internal/config`、`contracts`、`i18n`、`settings`、`diagnostics`                    | 配置、生成状态、嵌入语言数据、偏好及有界诊断。                      |
+| `ui/chat`、`call`、`work`、`schedules`、`files`、`settings`、`platform`、`shared`、`i18n` | 浏览器功能、原生适配及共享浏览器基础模块。                          |
+| `resources/contracts`、`resources/config`、`resources/i18n`                               | 权威 schema、协议默认值与语言数据；生成消费者检查漂移。             |
+| `scripts`、`tests`                                                                        | 构建/开发工具、浏览器测试、合成 golden 夹具和镜像包路径的 Go 测试。 |
 
 共享契约不能导入浏览器、Controller 或 Worker 入口。编译后的 Go 角色不能回退到 `src/server.mts`；生产资源排除后端 TypeScript 目录与 Node 运行时。
 
@@ -24,7 +25,7 @@
 
 移动文件时一并修改导入、打包白名单、测试夹具、覆盖率路径、命令和文档链接。保留已有数据位置与公开接口；需要改变时必须同时提供明确迁移。避免循环依赖，不要用无边界的工具目录混放各功能逻辑。
 
-保留的 TypeScript 兼容测试按参考模块对应，放在 `tests/work/`、`tests/conversation/`、`tests/computer/` 等目录；界面测试放在 `tests/ui/chat/`、`tests/ui/settings/` 等对应目录。公共夹具放在 `tests/support/`，编译期契约放在 `tests/types/`，Python VM 测试放在 `tests/vm/`。`npm test` 和覆盖率检查使用同一个递归发现模块，移动目录不能漏跑测试。单独执行时使用完整路径，例如 `node --test tests/work/task-cancel.test.mts`。
+界面测试放在 `tests/ui/chat/`、`tests/ui/settings/` 等对应目录；构建/开发测试按工具归属放在 `tests/core/`、`tests/build/`、`tests/config/`。旧后端测试的对应归属见[测试迁移](testing-migration.md)。公共夹具放在 `tests/support/`，编译期契约放在 `tests/types/`，Python VM 测试放在 `tests/vm/`。`npm test` 和覆盖率检查使用同一个递归发现模块，移动目录不能漏跑测试。单独执行时使用完整路径，例如 `node --test tests/ui/chat/message-window.test.mts`。
 
 生产 Go 核心包放在 `core/internal/<feature>/`，全部 Go 测试集中在镜像完整包路径的 `tests/go/<package>/`，例如 `tests/go/internal/memory/`。统一入口通过 Go 官方的显式 `-overlay` 选项，将这些测试编译到所属包中，不为测试导出私有实现，也不复制生产代码。相关 TypeScript 工具放在 `scripts/core/`，工具的 Node 测试放在 `tests/core/`。明确保留 Controller、Worker、浏览器与认证传输边界；Controller 离线时不能导入执行组装作为回退。
 
@@ -63,19 +64,19 @@ Go 源码严格使用 **Go 1.27.2** 及其附带的 `gofmt`，采用 Go 的制�
 
 ## 命名状态与跨运行时契约
 
-TypeScript 状态统一引用 `src/contracts/states.mts` 中冻结的运行时枚举；Go 使用相同 schema 生成的 `core/internal/contracts` 常量，例如 `contracts.TaskStatusRunning`。键名采用 UpperCamelCase，例如 `TaskStatus.Running`、`TaskPriority.Normal`、`PlanStepStatus.InProgress`，序列化值保持已有字符串。不要把持久状态换成数字序号或翻译后的显示文案。任务、提交、续作、连接、升级分别属于不同状态域；任务标记为暂停不等于执行器已经停止，结果未知的提交也不能视为可安全重试的失败。
+TypeScript 状态统一引用 `ui/shared/states.mts` 中冻结的运行时枚举；Go 使用相同 schema 生成的 `core/internal/contracts` 常量，例如 `contracts.TaskStatusRunning`。键名采用 UpperCamelCase，例如 `TaskStatus.Running`、`TaskPriority.Normal`、`PlanStepStatus.InProgress`，序列化值保持已有字符串。不要把持久状态换成数字序号或翻译后的显示文案。任务、提交、续作、连接、升级分别属于不同状态域；任务标记为暂停不等于执行器已经停止，结果未知的提交也不能视为可安全重试的失败。
 
 `ChatTaskStatus` 与 `WorkStatus` 有意区分：聊天任务沿用原来的允许状态；持久任务可在两个执行回合间保持 `continuing`，或在核对结果时保持 `unknown`。旧显示值仍由原兼容边界处理。接受未知输入时使用 `isEnumValue(domain, value)` 校验，明确拒绝或保留未确认结果，不要凭空补出安全状态。
 
-`src/contracts/contracts.ts` 定义共享边界结构；各功能专用的类型放在所属模块旁。生产后端使用 Go 静态类型；浏览器、工具与保留的 Node 兼容测试使用严格 TypeScript。Node 工具/参考模块使用 `.mts`；纯类型文件使用 `.ts`，并通过 type-only import 引入。生成的浏览器 bundle、第三方文件和用户文件测试夹具中的 JavaScript 保留原格式。
+`ui/shared/api-types.ts` 定义共享边界结构；各功能专用的类型放在所属模块旁。生产后端使用 Go 静态类型；浏览器与工具使用严格 TypeScript。Node 工具模块使用 `.mts`；纯类型文件使用 `.ts`，并通过 type-only import 引入。生成的浏览器 bundle、第三方文件和用户文件测试夹具中的 JavaScript 保留原格式。
 
-`src/contracts/state-domains.json` 统一拥有跨运行时的状态词表。`npm run generate:contracts` 生成 TypeScript 与 Go 契约；`npm run check:contracts` 使用固定格式化工具核对生成内容。不能单独维护另一套 Go 线值，也不能分别手改生成文件。Go 边界同样必须拒绝未知状态，保留任务身份、旧数据兼容和明确的未确认语义。功能专属 Go 类型留在对应包内。依赖由 `core/go.mod` 与 `core/go.sum` 固定，变更须有意进行并经过审查。
+`resources/contracts/state-domains.json` 统一拥有跨运行时的状态词表。`npm run generate:contracts` 生成 TypeScript 与 Go 契约；`npm run check:contracts` 使用固定格式化工具核对生成内容。不能单独维护另一套 Go 线值，也不能分别手改生成文件。Go 边界同样必须拒绝未知状态，保留任务身份、旧数据兼容和明确的未确认语义。功能专属 Go 类型留在对应包内。依赖由 `core/go.mod` 与 `core/go.sum` 固定，变更须有意进行并经过审查。
 
 持久化放在所属功能的 Repository 内。固定的参数化查询、事务归属和经校验的行映射，与应用策略分开；不要把 SQL 或数据库行传给入口或渲染器。重复使用的可选作用域值使用命名绑定。授权条件、持久化文档名、确认规则和 schema/revision 校验是代码不变量，不属于用户可修改的配置。优先提供具体功能操作，避免通用 CRUD 抽象。只有在证明收益及 SQLite、FTS、schema 兼容性后才引入 ORM 或 SQL 生成器；运行时语言迁移期间不能启用自动 schema 变更。
 
-固定版本编译器开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 和 `noEmit`。`npm run typecheck` 依次检查三个工程：Node 入口与工具、Vite 浏览器应用、全部 Node 测试。Node 使用 `NodeNext` 解析；浏览器和混合浏览器测试使用 `Bundler`，对应实际依赖包入口。声明文件检查保持开启。编译夹具包含必须始终被拒绝的非法状态。`npm run check:states` 对已接入的 Store、计划、续作、调度器、桌面生命周期与 VM 生命周期模块禁止原始状态字面量。各模块明确适用的状态域，避免将无关品牌名或外部协议字段误判为状态；迁移其他域时同步扩展检查名单。
+固定版本编译器开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 和 `noEmit`。`npm run typecheck` 依次检查三个工程：Node 入口与工具、Vite 浏览器应用、全部 Node 测试。Node 使用 `NodeNext` 解析；浏览器和混合浏览器测试使用 `Bundler`，对应实际依赖包入口。声明文件检查保持开启。编译夹具包含必须始终被拒绝的非法状态。`npm run check:states` 检查 UI AST，并使用固定 Go 工具链递归解析已接入的功能范围，禁止其状态域的原始字面量，包括别名与包装调用。运行时 OS、宿主平台、终止 turn、任务、提交、语音引用状态分别校验。缺失范围或非法检查报告会失败；新增状态所有者时同步扩展范围。
 
-Node 工具/参考模块使用可擦除类型的 `.mts`，要求 Node 22.18+ LTS 或 24+。开发预检仍验证原生 TypeScript、内置 SQLite 与 FTS5，供参考测试使用。这不是生产 Worker 的前提：VM 运行经验证的 Go 程序和独立安装的 Codex/Python 辅助工具。不允许用 `any`、跳过检查或仅改后缀代替迁移。移除旧实现前须验证引用、资源与有意义的替代测试；需要的测试基准应明确保留。Vite 负责转换，独立类型检查门禁必须保留。
+Node 工具模块使用可擦除类型的 `.mts`，要求 Node 22.18+ LTS 或 24+。开发预检仍验证原生 TypeScript、内置 SQLite 与 FTS5，供参考测试使用。这不是生产 Worker 的前提：VM 运行经验证的 Go 程序和独立安装的 Codex/Python 辅助工具。不允许用 `any`、跳过检查或仅改后缀代替迁移。移除旧实现前须验证引用、资源与有意义的替代测试；需要的测试基准应明确保留。Vite 负责转换，独立类型检查门禁必须保留。
 
 磁盘 JSON 和传输返回值先按 `unknown` 处理，由所属边界验证实际消费的字段。兼容旧记录缺失的字段，不生成虚假的任务标识、执行确认或时间。注入服务按消费者实际使用的能力定义接口，不要求具体实现的私有字段，也不让事件监听方法的返回值绑定到完整具体类。
 
@@ -103,8 +104,8 @@ DOM 测试仅使用 LinkeDOM 的公开 `parseHTML` 入口。`tests/types/linkedo
 
 格式和行为分别检查。实施中运行相关测试；交付集成变更前完成 [AGENTS.md](../../AGENTS.md) 列出的检查。[CI](ci.md) 在测试 runner 检查 Prettier，在 Windows 打包 runner 构建前检查 Rust 格式。
 
-`npm run check:core` 检查 Go 格式，并通过完整测试 overlay 运行 vet 与全部包测试。`npm run test:core` 运行包测试；`npm run test:core:race` 还会在 Linux 使用可用的 C 编译器运行竞态检测。这些统一命令才是受支持的完整测试入口；在 `core/` 直接执行裸 `go test ./...` 不会发现模块外的测试源码。入口递归校验全部测试映射，拒绝放错目录或未映射的测试，保留平台后缀和所属包工作目录，并在命令结束后清理私有临时 overlay。格式化同时覆盖 `core/` 与 `tests/go/`。核心 CI 在 Windows 与 Linux 执行检查，并在 Linux 增加竞态检测；缺少前提条件是失败，不能忽略测试。核心测试必须使用隔离数据与注入依赖，不得连接真实模型、操作 VM 或读取用户账号数据。
+`npm run check:core` 检查 Go 格式，并通过完整测试 overlay 运行 vet、全部包测试与语句覆盖率。Controller、Computer（发现及 VM 传输）、Telegram 各自必须至少 90%，全部功能包都必须出现。UI 单独保留 90% 行、80% 分支、80% 函数门槛，appearance 单模块至少 90% 行。Go 语句与 Node 行是不同指标，必须分别报告。`npm run test:core` 运行包测试；`npm run test:core:race` 还会在 Linux 使用可用的 C 编译器运行竞态检测。这些统一命令才是受支持的完整测试入口；在 `core/` 直接执行裸 `go test ./...` 不会发现模块外的测试源码。入口递归校验全部测试映射，拒绝放错目录或未映射的测试，保留平台后缀和所属包工作目录，并在命令结束后清理私有临时 overlay。格式化同时覆盖 `core/` 与 `tests/go/`。核心 CI 在 Windows 与 Linux 执行检查，并在 Linux 增加竞态检测；缺少前提条件是失败，不能忽略测试。核心测试必须使用隔离数据与注入依赖，不得连接真实模型、操作 VM 或读取用户账号数据。
 
-`npm run test:core:parity` 明确以 `CGO_ENABLED=0` 构建只读影子工具，创建私有临时记忆夹具，对比权威 TypeScript 搜索／召回结果与持久 Go IPC 读取器。仅分数允许绝对 `1e-10` 误差，其他引用字段和顺序必须完全一致。它分别记录两个运行时各 200 次顺序读取的实验 p50／p95 统计，不保证性能提升；输出只含统计，不含夹具正文。普通 Node 测试发现不会启动这个依赖 Go 的工具，核心 CI 会显式执行。
+`npm run test:core:parity` 以 `CGO_ENABLED=0` 构建只读影子工具，重建私有 SQLite 夹具，将生产 Go Store 和持久 IPC reader 与独立冻结的 Node golden 结果对照。夹具记录原源码提交、oracle 文件哈希、Node/SQLite 版本、原始查询、准备后的词项及有序引用，不保留可执行旧后端。仅分数允许绝对 `1e-10` 误差，其他字段与顺序完全一致；取消、过期修订、边界及数据库字节不变另行验证。输出只含统计，不含正文，也不宣称性能提升。普通 Node 测试发现不会启动这个依赖 Go 的工具，核心 CI 会显式执行。
 
 测试使用夹具、注入时钟与传输、临时数据。不得连接真实模型账号或 Telegram bot、操作用户 VM 或使用真实音频设备。保留精确的任务和连接身份、持久状态，以及结果未知时先核对而不重发的规则。不得为通过重构而关闭检查或降低覆盖率要求。

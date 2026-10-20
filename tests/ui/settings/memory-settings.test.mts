@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import { parseHTML } from 'linkedom';
 import { createMemorySettings } from '../../../ui/settings/memory-settings.mts';
 import { memoryManagementCopy } from '../../../ui/settings/memory-management-copy.mts';
-import { languages } from '../../../src/i18n/languages.mts';
+import { languages } from '../../../ui/i18n/languages.mts';
 import type { ApiOptions, ApiRequest } from '../../../ui/shared/contracts.mts';
-import { ServiceUpdateStatus } from '../../../src/contracts/states.mts';
+import { ServiceUpdateStatus } from '../../../ui/shared/states.mts';
 import type { UiServiceUpdate } from '../../../ui/shared/contracts.mts';
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function fixture() {

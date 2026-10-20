@@ -11,7 +11,7 @@ import {
   runCoreGo,
 } from '../../scripts/core/go.mts';
 import type { GoRunner } from '../../scripts/core/go.mts';
-import { isRecord } from '../../src/contracts/json.mts';
+import { isRecord } from '../../scripts/core/manifest-json.mts';
 
 interface Call {
   executable: string;
@@ -46,6 +46,13 @@ function fixture({
     calls.push({ executable, args, options });
     if (args[0] === 'version') return { status: 0, stdout: version };
     if (args[0] === 'env') return { status: 0, stdout: (reportedRoot ?? goroot) + '\n' };
+    if (args[0] === 'list')
+      return {
+        status: 0,
+        stdout: ['controller', 'computer', 'telegram']
+          .map((name) => 'github.com/Stephen-Sim/dant/core/internal/' + name)
+          .join('\n'),
+      };
     return command(executable, args, options);
   };
   const fileExists = (file: string) => (local && file === go) || (formatter && file === gofmt);
@@ -68,6 +75,18 @@ function fixture({
       close: () => {
         overlayClosed++;
       },
+    }),
+    createCoverageReport: () => ({
+      file: path.join(root, 'isolated-coverage.out'),
+      read: () =>
+        'mode: atomic\n' +
+        ['controller', 'computer', 'telegram']
+          .map(
+            (name) => `github.com/Stephen-Sim/dant/core/internal/${name}/feature.go:1.1,2.1 1 1\n`,
+          )
+          .join(''),
+      save: () => {},
+      close: () => {},
     }),
   };
   return {
@@ -193,7 +212,7 @@ test('Go environment disables compiler selection and ambient workspace/settings 
   assert.equal(source.GOROOT, 'old-root');
 });
 
-test('integrated core checks format both source roots and explicitly overlay vet and uncached bounded tests', () => {
+test('integrated core checks format both source roots and enforce Go coverage on overlaid uncached tests', () => {
   const f = fixture();
   runCoreGo('check', f.options);
   const commands = f.calls.slice(2);
@@ -202,12 +221,24 @@ test('integrated core checks format both source roots and explicitly overlay vet
     [
       ['-l', 'core', 'tests/go'],
       ['vet', '-overlay=' + f.overlayFile, './...'],
-      ['test', '-overlay=' + f.overlayFile, '-count=1', '-timeout=120s', './...'],
+      ['list', '-f={{.ImportPath}}', './...'],
+      [
+        'test',
+        '-overlay=' + f.overlayFile,
+        '-p=2',
+        '-parallel=4',
+        '-count=1',
+        '-timeout=120s',
+        '-covermode=atomic',
+        '-coverpkg=./...',
+        '-coverprofile=' + path.join(f.root, 'isolated-coverage.out'),
+        './...',
+      ],
     ],
   );
   assert.deepEqual(
     commands.map((call) => call.executable),
-    [f.gofmt, f.go, f.go],
+    [f.gofmt, f.go, f.go, f.go],
   );
   for (const [index, call] of commands.entries()) {
     assert.equal(call.options.cwd, index === 0 ? f.root : path.join(f.root, 'core'));
@@ -258,6 +289,8 @@ test('Linux race tests require their compiler prerequisite and never turn into a
     'test',
     '-overlay=' + linux.overlayFile,
     '-race',
+    '-p=2',
+    '-parallel=4',
     '-count=1',
     '-timeout=120s',
     './...',
@@ -267,7 +300,7 @@ test('Linux race tests require their compiler prerequisite and never turn into a
 });
 
 test('the command boundary rejects missing, unknown and additional arguments', () => {
-  for (const mode of ['format', 'format-check', 'vet', 'test', 'check', 'race'])
+  for (const mode of ['format', 'format-check', 'vet', 'test', 'coverage', 'check', 'race'])
     assert.equal(coreGoMode([mode]), mode);
   for (const args of [[], ['other'], ['test', '--extra']])
     assert.throws(() => coreGoMode(args), /Usage:/);

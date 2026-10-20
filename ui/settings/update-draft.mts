@@ -1,4 +1,4 @@
-import { MAX_ATTACHMENT_BYTES } from '../../src/config/limits.mts';
+import { MAX_ATTACHMENT_BYTES } from '../files/attachment-limits.mts';
 import { isSafeInteger, isRecord } from '../shared/contracts.mts';
 import type {
   Attachment,

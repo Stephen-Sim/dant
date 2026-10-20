@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+
+	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
 
 const (
@@ -30,7 +32,7 @@ type offlineInspection struct {
 // cgroup and any surviving owned Codex/Node/Core processes before migration.
 // Captured startup paths identify this Worker; unrelated user sessions survive.
 func AssertWorkerOffline(ctx context.Context, home, dataDir string) error {
-	if runtime.GOOS != "linux" {
+	if contracts.RuntimeOperatingSystem(runtime.GOOS) != contracts.RuntimeOperatingSystemLinux {
 		return ErrBusy
 	}
 	return inspectWorkerOffline(ctx, offlineInspection{

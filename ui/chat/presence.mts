@@ -1,6 +1,6 @@
-import { translate } from '../../src/i18n/i18n.mts';
-import { languageInfo } from '../../src/i18n/languages.mts';
-import { ConnectionStatus, WorkStatus, SubmissionStatus } from '../../src/contracts/states.mts';
+import { translate } from '../i18n/messages.mts';
+import { languageInfo } from '../i18n/languages.mts';
+import { ConnectionStatus, WorkStatus, SubmissionStatus } from '../shared/states.mts';
 
 const MILLISECONDS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;

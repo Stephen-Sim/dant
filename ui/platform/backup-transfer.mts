@@ -1,6 +1,6 @@
-import type { BackupMetadata } from '../../src/backups/backup-types.ts';
-import { backupId, isBackupMetadata } from '../../src/backups/backup-validation.mts';
-import { isRecord } from '../../src/contracts/json.mts';
+import type { BackupMetadata } from '../settings/backup-types.ts';
+import { backupId, isBackupMetadata } from '../settings/backup-contracts.mts';
+import { isRecord } from '../shared/json.mts';
 import type { CoreModule } from '../shared/contracts.mts';
 
 export const WEB_BACKUP_MAX_BYTES = 64 * 1024 * 1024;

@@ -3,10 +3,15 @@ import type { ChildProcess } from 'node:child_process';
 import type { Writable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { isRecord } from '../../src/contracts/json.mts';
-import type { JsonObject } from '../../src/contracts/json.mts';
-import protocol from '../../src/contracts/core-protocol.json' with { type: 'json' };
-import type { MemoryShadowSnapshot } from '../../src/conversation/memory-shadow-snapshot.mts';
+import { isRecord } from './manifest-json.mts';
+import type { JsonObject } from './manifest-json.mts';
+import protocol from '../../resources/contracts/core-protocol.json' with { type: 'json' };
+
+/** Read-only developer protocol descriptor; it has no production memory dependency. */
+export interface ReadonlyShadowSnapshot {
+  readonly file: string;
+  readonly revision: number;
+}
 
 type Method = 'ping' | 'search' | 'retrieve';
 const ShadowErrorCode = Object.freeze({
@@ -228,7 +233,7 @@ export class ShadowClient {
 
 export function startShadowClient(
   executable: string,
-  snapshot: MemoryShadowSnapshot,
+  snapshot: ReadonlyShadowSnapshot,
 ): ShadowClient {
   if (
     !path.isAbsolute(executable) ||
