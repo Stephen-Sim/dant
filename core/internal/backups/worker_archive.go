@@ -107,7 +107,7 @@ func CreateWorkerBackup(ctx context.Context, options WorkerBackupOptions) (*Work
 		return nil, ErrInvalid
 	}
 	_ = os.Chmod(staging, 0700)
-	identity, err := os.Lstat(staging)
+	identity, err := directoryIdentity(staging)
 	if err != nil {
 		return nil, ErrInvalid
 	}
@@ -119,7 +119,12 @@ func CreateWorkerBackup(ctx context.Context, options WorkerBackupOptions) (*Work
 			if errors.Is(err, os.ErrNotExist) {
 				return
 			}
-			if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(identity, current) || filepath.Dir(staging) != temporary {
+			if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || filepath.Dir(staging) != temporary {
+				cleanupError = ErrSourceChanged
+				return
+			}
+			currentIdentity, err := directoryIdentity(staging)
+			if err != nil || currentIdentity != identity {
 				cleanupError = ErrSourceChanged
 				return
 			}

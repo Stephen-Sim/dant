@@ -180,6 +180,12 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 				return err
 			}
 			defer archive.Close()
+			if err := ValidateWorkerBackup(ctx, archive.Archive); err != nil {
+				return err
+			}
+			if err := assertOffline(ctx, options); err != nil {
+				return err
+			}
 			return archive.WriteTo(ctx, output)
 		case "outcome":
 			receipt, err := InspectWorkerRestoreRejection(options)

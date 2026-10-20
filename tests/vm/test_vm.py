@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zlib
 import wave
 
@@ -289,13 +289,27 @@ class BrowserLaunchTests(unittest.TestCase):
         self.assertEqual(self.processes[0].returncode, 0)
 
     def test_immediate_launcher_failure_is_safe_and_not_retried(self):
-        with self.launcher_fixture("import sys;sys.stderr.write('private-url private-error');sys.exit(7)") as launch, patch.object(desktop_mcp, 'OPEN_URL_STARTUP_SECONDS', 2):
+        # A new Python child may not be scheduled before the startup deadline
+        # under instrumentation. This case needs a confirmed nonzero exit,
+        # rather than a wall-clock assumption about starting that child.
+        process = Mock(spec=['wait', 'poll', 'returncode'], returncode=7)
+        process.wait.return_value = 7
+        process.poll.return_value = 7
+        with patch.object(desktop_mcp.subprocess, 'Popen', return_value=process) as launch, patch.object(desktop_mcp.threading, 'Thread') as reaper:
             response = desktop_mcp.dispatch({'id': 87, 'method': 'tools/call', 'params': {'name': 'open_url', 'arguments': {'url': 'https://example.invalid/private-url'}}}, self.output)
+
         self.assertTrue(response['result']['isError'])
         message = response['result']['content'][0]['text']
         self.assertEqual(message, 'The browser launcher exited unsuccessfully; page loading was not verified. Do not retry automatically.')
         self.assertNotIn('private', message)
-        launch.assert_called_once()
+        launch.assert_called_once_with(
+            ['xdg-open', 'https://example.invalid/private-url'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+        )
+        process.wait.assert_called_once_with(timeout=desktop_mcp.OPEN_URL_STARTUP_SECONDS)
+        self.assertEqual(process.returncode, 7)
+        reaper.assert_not_called()
 
     def test_failed_process_start_is_safe_and_not_retried(self):
         for error in [FileNotFoundError('private executable path'), PermissionError('private-url')]:

@@ -206,13 +206,26 @@ test('native lifecycle installs one instance first, hides only after successful 
   assert.match(main, /state\.stop\(\)/);
   assert.match(backend, /drop\(child\.stdin\.take\(\)\)/);
   assert.match(tray, /window\.hide\(\)\.is_ok\(\)[\s\S]*api\.prevent_close\(\)/);
-  assert.match(tray, /state\.ready\.store\(true/);
+  assert.match(tray, /fn install_tray[\s\S]*target\.lock\(\)\.unwrap\(\)[\s\S]*ready\.store\(true/);
+  assert.match(tray, /\.build\(app\)\?;[\s\S]*install_tray\(\s*&state\.ready,\s*&state\.inner,/);
   assert.match(tray, /fn exit\(app:[\s\S]*crate::lifecycle::request_exit\(app\)/);
   assert.match(main, /ExitRequested\s*\{\s*api,\s*\.\.\s*\}[\s\S]*api\.prevent_exit\(\)/);
-  assert.match(tray, /window\.label\(\) != "main"/);
+  assert.match(
+    tray,
+    /update_status\(\s*&app\.state::<BackgroundTray>\(\)\.inner,\s*window\.label\(\),\s*status/,
+  );
+  assert.match(tray, /if label != "main" \|\| !valid\(&status\)/);
   assert.match(tray, /dant-tray-progress/);
   assert.doesNotMatch(tray, /process::exit|api\/call\/stop|turn\/interrupt/);
-  assert.match(overlay, /let background = minimized \|\| !main\.is_visible/);
+  assert.match(overlay, /let background = main\.minimized\(\) \|\| !main\.visible\(true\)/);
+  assert.match(
+    overlay,
+    /fn minimized\(&self\) -> bool\s*\{\s*self\.is_minimized\(\)\.unwrap_or\(false\)/,
+  );
+  assert.match(
+    overlay,
+    /fn visible\(&self, fallback: bool\) -> bool\s*\{\s*self\.is_visible\(\)\.unwrap_or\(fallback\)/,
+  );
   assert.match(overlay, /if !background \|\| call\.is_none\(\)/);
   assert.match(cargo, /features = \["tray-icon"\]/);
 });

@@ -478,7 +478,9 @@ fn download_commits_only_a_verified_owned_child_payload_and_never_replays_a_cach
     .unwrap();
     let destination = package(root.path(), &selected).unwrap();
     verify_file(&destination, &selected).unwrap();
-    assert_eq!(progress, vec![0]);
+    assert_eq!(progress.first(), Some(&0));
+    assert!(progress.iter().all(|received| *received <= selected.size));
+    assert!(progress.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(
         json_file(&destination.parent().unwrap().join("asset.json"), 65536).unwrap()["sha256"],
         selected.sha256

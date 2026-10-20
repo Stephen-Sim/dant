@@ -164,47 +164,52 @@ func TestUnjoinedPollingConsumerNeverReportsSuccessfulReconfigurationDisconnecti
 		{name: "close", run: cancellationClose},
 	} {
 		t.Run(operation.name, func(t *testing.T) {
-			fixture := fixture(t)
-			gateway := fixture.Gateway
-			gateway.options.AutoPoll = true
-			entered := make(chan context.Context, 1)
-			release := make(chan struct{})
-			defer close(release)
-			fixture.Send = func(request *http.Request) (*http.Response, error) {
-				if !strings.HasSuffix(request.URL.Path, "/getUpdates") {
-					t.Error("owned polling attempted a write")
+			synctest.Test(t, func(t *testing.T) {
+				fixture := fixture(t)
+				gateway := fixture.Gateway
+				gateway.options.AutoPoll = true
+				entered := make(chan context.Context, 1)
+				release := make(chan struct{})
+				defer close(release)
+				fixture.Send = func(request *http.Request) (*http.Response, error) {
+					if !strings.HasSuffix(request.URL.Path, "/getUpdates") {
+						t.Error("owned polling attempted a write")
+					}
+					entered <- request.Context()
+					<-release
+					return nil, request.Context().Err()
 				}
-				entered <- request.Context()
-				<-release
-				return nil, request.Context().Err()
-			}
-			before := cancellationConfigBytes(t, fixture)
-			gateway.Start()
-			var poll context.Context
-			select {
-			case poll = <-entered:
-			case <-time.After(5 * time.Second):
-				t.Fatal("isolated polling consumer did not start")
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			done := make(chan error, 1)
-			go func() { done <- operation.run(ctx, gateway) }()
-			select {
-			case <-poll.Done():
-			case <-time.After(5 * time.Second):
-				t.Fatal("administration did not cancel its polling consumer")
-			}
+				before := cancellationConfigBytes(t, fixture)
+				gateway.Start()
+				var poll context.Context
+				select {
+				case poll = <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("isolated polling consumer did not start")
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- operation.run(ctx, gateway) }()
+				select {
+				case <-poll.Done():
+				case <-time.After(5 * time.Second):
+					t.Fatal("administration did not cancel its polling consumer")
+				}
 
-			// Cancellation was delivered, but the injected consumer has not yet
-			// joined. No successful acknowledgement or configuration commit is safe.
-			cancel()
-			if err := <-done; !errors.Is(err, ErrClosed) {
-				t.Fatal("unconfirmed polling shutdown claimed administrative success", err)
-			}
-			if !bytes.Equal(before, cancellationConfigBytes(t, fixture)) || fixture.Admitted.Load() != 0 || fixture.Sent.Load() != 1 || string(gateway.Status()["connected"]) != "false" {
-				t.Fatal("unjoined polling changed owner, admitted work or claimed a live connection")
-			}
+				// Cancellation was delivered, but the injected consumer has not yet
+				// joined. No successful acknowledgement or configuration commit is safe.
+				// Close cancels the gateway before acquiring its admin gate. Wait for
+				// administration to reach the join, rather than racing that acquisition.
+				synctest.Wait()
+				cancel()
+				if err := <-done; !errors.Is(err, ErrClosed) {
+					t.Fatal("unconfirmed polling shutdown claimed administrative success", err)
+				}
+				if !bytes.Equal(before, cancellationConfigBytes(t, fixture)) || fixture.Admitted.Load() != 0 || fixture.Sent.Load() != 1 || string(gateway.Status()["connected"]) != "false" {
+					t.Fatal("unjoined polling changed owner, admitted work or claimed a live connection")
+				}
+			})
 		})
 	}
 }

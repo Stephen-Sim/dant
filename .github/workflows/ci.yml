@@ -84,6 +84,9 @@ jobs:
           git -C .tools/kcov-source fetch --depth=1 origin a39874f938ce13f7a65f253120d1ec946b349ffe
           git -C .tools/kcov-source checkout --detach FETCH_HEAD
           test "$(git -C .tools/kcov-source rev-parse HEAD)" = a39874f938ce13f7a65f253120d1ec946b349ffe
+          git -C .tools/kcov-source fetch --depth=1 origin refs/tags/v43:refs/tags/v43
+          test "$(git -C .tools/kcov-source rev-parse 'v43^{commit}')" = a39874f938ce13f7a65f253120d1ec946b349ffe
+          test "$(git -C .tools/kcov-source describe --exact-match --tags HEAD)" = v43
           cmake -S .tools/kcov-source -B .tools/kcov-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/.tools/kcov"
           cmake --build .tools/kcov-build --parallel 2
           cmake --install .tools/kcov-build

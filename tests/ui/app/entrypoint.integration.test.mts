@@ -4,14 +4,18 @@ import { spawnSync } from 'node:child_process';
 
 for (const scenario of [
   'navigation',
+  'settings-information',
   'invalid-state',
   'call-controls',
   'chat-actions',
   'voice-message',
   'settings-operations',
+  'telegram-settings',
+  'voice-settings',
   'computer-controls',
   'onboarding',
   'computer-resources',
+  'work-progress',
   'send-errors',
   'speech',
   'vm-settings',

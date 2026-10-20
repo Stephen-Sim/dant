@@ -82,6 +82,6 @@ Go profile 与语句汇总保存在 `.cache/core/coverage.out`、`.cache/core/co
 
 原生覆盖率使用 Rust 1.99.1 的 `llvm-tools-preview` 及锁定的 `cargo-llvm-cov` 0.9.1。Python 使用 `scripts/ci/python-coverage-requirements.txt` 中的 coverage.py 7.16.2，安装到解释器环境以启用子进程插桩。PowerShell 使用 Pester 5.9.0，通过 `Save-Module` 保存到 `.tools/powershell/Modules`，再按精确 manifest 路径导入；其命令分母与行、分支覆盖率不同。Rust 测试模块位于 `tests/native/rust/`，仅通过 `#[cfg(test)]` 引入，LLVM 运行时代码报告不包含这些测试文件。
 
-`npm run test:bash:coverage` 要求 Linux，以及从上游提交 `a39874f938ce13f7a65f253120d1ec946b349ffe` 构建的 kcov 43。CI 将其构建到 `.tools/kcov`。DEBUG 跟踪使用 `tests/bash/runtime.test.sh`、隔离 HOME 和模拟命令执行原脚本；所有维护的 VM shell 脚本保留在清单中。内嵌 Python heredoc 属于不同执行范围，shell 行覆盖率不能证明它已执行。Windows 明确报告采集器不可用，不把平台跳过算作覆盖率。
+`npm run test:bash:coverage` 要求 Linux，以及从上游提交 `a39874f938ce13f7a65f253120d1ec946b349ffe` 构建的 kcov 43。CI 将其构建到 `.tools/kcov`，同时拉取 `v43`，校验其解引用提交与固定源码相同，并在 CMake 读取上游 Git 版本前校验精确标签；标签缺失或被移动都会令构建失败。DEBUG 跟踪使用 `tests/bash/runtime.test.sh`、隔离 HOME 和模拟命令执行原脚本；所有维护的 VM shell 脚本保留在清单中。内嵌 Python heredoc 属于不同执行范围，shell 行覆盖率不能证明它已执行。Windows 明确报告采集器不可用，不把平台跳过算作覆盖率。
 
 本地启动前先提交已审查源码，运行 `npm run package:resources`，再执行 `npm start` 或 `npm run dev`。两者均启动经校验的 Go 后端，后者同时启动 Vite；原生 `desktop` 也先准备同一份资源。详见[运行支持](runtime-support.md)。完整测试、打包程序启动与用户设备验收是独立门禁，工作流定义不代表发布已完成。

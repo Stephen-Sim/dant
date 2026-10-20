@@ -14,6 +14,7 @@ use tauri::{
 const LABEL: &str = "call-overlay";
 const DOCUMENT_PATH: &str = "/call-overlay.html";
 const IDENTIFIER_MAX_BYTES: usize = 128;
+const ACTION_HISTORY_LIMIT: usize = 128;
 const WINDOW_WIDTH: f64 = 360.0;
 const WINDOW_HEIGHT: f64 = 76.0;
 const WORK_AREA_INSET: f64 = 16.0;
@@ -31,7 +32,7 @@ pub struct CallState {
     language: String,
     theme: String,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Area {
     x: i32,
     y: i32,
@@ -88,7 +89,7 @@ pub struct CallOverlay {
     scheduled: AtomicBool,
     dirty: AtomicBool,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct Action {
     call_id: String,
@@ -128,7 +129,7 @@ fn area(monitor: tauri::Monitor) -> Area {
         scale: monitor.scale_factor(),
     }
 }
-fn monitor(window: &WebviewWindow) -> Option<Area> {
+fn monitor<R: tauri::Runtime>(window: &WebviewWindow<R>) -> Option<Area> {
     window
         .current_monitor()
         .ok()
@@ -159,69 +160,109 @@ fn position(
             .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
     )
 }
-fn clamp(window: &WebviewWindow, area: Area, initial: bool) -> Result<(), String> {
-    let size = window
-        .outer_size()
-        .map_err(|_| "Call window size is unavailable")?;
-    let desired = if initial {
-        None
-    } else {
-        window.outer_position().ok().map(|point| (point.x, point.y))
-    };
-    let point = position(area, size.width, size.height, desired);
-    if window.outer_position().ok() != Some(point) {
-        window
-            .set_position(point)
-            .map_err(|_| "Call window position is unavailable")?;
-    }
-    Ok(())
-}
-// Tauri's packaged origins are fixed SDK origins. Development navigation must
-// match the canonical local origin; caller-provided ports never reach this gate.
-fn allowed_navigation(url: &tauri::Url) -> bool {
-    url.path() == DOCUMENT_PATH
-        && ((url.scheme() == "tauri" && url.host_str() == Some("localhost"))
-            || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
-            || (url.scheme() == "http"
-                && url.host_str() == Some(crate::protocol::loopback_host())
-                && url.port_or_known_default() == Some(crate::protocol::dev_endpoint().port())))
+trait CallWindow: Clone {
+    fn minimized(&self) -> bool;
+    fn visible(&self, fallback: bool) -> bool;
+    fn monitor(&self) -> Option<Area>;
+    fn size(&self) -> Result<(u32, u32), String>;
+    fn position(&self) -> Option<PhysicalPosition<i32>>;
+    fn move_to(&self, point: PhysicalPosition<i32>) -> Result<(), String>;
+    fn hide(&self) -> Result<(), String>;
+    fn show(&self) -> Result<(), String>;
+    fn focusable(&self, value: bool) -> Result<(), String>;
+    fn restore(&self) -> Result<(), String>;
+    fn publish(&self, call: &CallState);
+    fn destroy(&self);
+    fn drag(&self) -> Result<(), String>;
 }
 
-fn sync(app: &AppHandle) -> Result<(), String> {
-    let managed = app.state::<CallOverlay>();
-    let _operation = managed
-        .operation
-        .lock()
-        .map_err(|_| "Call window is unavailable")?;
-    let Some(main) = app.get_webview_window("main") else {
-        return Ok(());
-    };
-    let minimized = main.is_minimized().unwrap_or(false);
-    let background = minimized || !main.is_visible().unwrap_or(true);
-    let foreground_area = if background { None } else { monitor(&main) };
-    let call = {
-        let mut inner = managed
-            .inner
-            .lock()
-            .map_err(|_| "Call window is unavailable")?;
-        if let Some(area) = foreground_area {
-            inner.main_area = Some(area);
-        }
-        inner.visible_call()
-    };
-    if !background || call.is_none() {
-        if let Some(window) = app.get_webview_window(LABEL) {
-            let _ = window.hide();
-        }
-        return Ok(());
+impl<R: tauri::Runtime> CallWindow for WebviewWindow<R> {
+    fn minimized(&self) -> bool {
+        self.is_minimized().unwrap_or(false)
     }
-    let call = call.unwrap();
-    let window = if let Some(window) = app.get_webview_window(LABEL) {
-        window
-    } else {
-        // Creating WebView2 from a synchronous window event can deadlock. This
-        // function only runs on an async-runtime worker, never the UI thread.
-        WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("call-overlay.html".into()))
+    fn visible(&self, fallback: bool) -> bool {
+        self.is_visible().unwrap_or(fallback)
+    }
+    fn monitor(&self) -> Option<Area> {
+        monitor(self)
+    }
+    fn size(&self) -> Result<(u32, u32), String> {
+        self.outer_size()
+            .map(|size| (size.width, size.height))
+            .map_err(|_| "Call window size is unavailable".into())
+    }
+    fn position(&self) -> Option<PhysicalPosition<i32>> {
+        self.outer_position().ok()
+    }
+    fn move_to(&self, point: PhysicalPosition<i32>) -> Result<(), String> {
+        self.set_position(point)
+            .map_err(|_| "Call window position is unavailable".into())
+    }
+    fn hide(&self) -> Result<(), String> {
+        self.hide()
+            .map_err(|_| "Call window could not be hidden".into())
+    }
+    fn show(&self) -> Result<(), String> {
+        self.show()
+            .map_err(|_| "Call window could not be shown".into())
+    }
+    fn focusable(&self, value: bool) -> Result<(), String> {
+        self.set_focusable(value).map_err(|_| {
+            if value {
+                "Call window controls are unavailable"
+            } else {
+                "Call window could not be shown"
+            }
+            .into()
+        })
+    }
+    fn restore(&self) -> Result<(), String> {
+        self.unminimize()
+            .map_err(|_| "The main window could not be restored")?;
+        self.show()
+            .map_err(|_| "The main window could not be shown")?;
+        self.set_focus()
+            .map_err(|_| "The main window could not be focused".into())
+    }
+    fn publish(&self, call: &CallState) {
+        let _ = self.emit("dant-call-overlay-state", call);
+        let _ = self.set_theme(Some(if call.theme == "dark" {
+            tauri::Theme::Dark
+        } else {
+            tauri::Theme::Light
+        }));
+    }
+    fn destroy(&self) {
+        let _ = self.destroy();
+    }
+    fn drag(&self) -> Result<(), String> {
+        self.start_dragging()
+            .map_err(|_| "Call window dragging is unavailable".into())
+    }
+}
+
+trait OverlayHost {
+    type Window: CallWindow;
+
+    fn window(&self, label: &str) -> Option<Self::Window>;
+    fn create_overlay(&self) -> Result<Self::Window, String>;
+    fn action(&self, action: Action) -> Result<(), String>;
+    fn schedule(&self);
+    fn tray_changed(&self, active: bool, language: Option<&str>);
+}
+
+struct NativeOverlay<'a, R: tauri::Runtime>(&'a AppHandle<R>);
+
+impl<R: tauri::Runtime> OverlayHost for NativeOverlay<'_, R> {
+    type Window = WebviewWindow<R>;
+
+    fn window(&self, label: &str) -> Option<Self::Window> {
+        self.0.get_webview_window(label)
+    }
+    fn create_overlay(&self) -> Result<Self::Window, String> {
+        // Creating WebView2 from a synchronous window event can deadlock. The
+        // caller runs on an async-runtime worker, never the UI thread.
+        WebviewWindowBuilder::new(self.0, LABEL, WebviewUrl::App("call-overlay.html".into()))
             .title("dant call")
             .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
             .decorations(false)
@@ -237,7 +278,76 @@ fn sync(app: &AppHandle) -> Result<(), String> {
             .shadow(true)
             .on_navigation(allowed_navigation)
             .build()
-            .map_err(|_| "Call window could not be created")?
+            .map_err(|_| "Call window could not be created".into())
+    }
+    fn action(&self, action: Action) -> Result<(), String> {
+        self.0
+            .emit_to("main", "dant-call-overlay-action", action)
+            .map_err(|_| "The call action was not confirmed".into())
+    }
+    fn schedule(&self) {
+        schedule(self.0);
+    }
+    fn tray_changed(&self, active: bool, language: Option<&str>) {
+        crate::tray::call_window_changed(self.0, active, language);
+    }
+}
+
+fn clamp(window: &impl CallWindow, area: Area, initial: bool) -> Result<(), String> {
+    let (width, height) = window.size()?;
+    let desired = if initial {
+        None
+    } else {
+        window.position().map(|point| (point.x, point.y))
+    };
+    let point = position(area, width, height, desired);
+    if window.position() != Some(point) {
+        window.move_to(point)?;
+    }
+    Ok(())
+}
+// Tauri's packaged origins are fixed SDK origins. Development navigation must
+// match the canonical local origin; caller-provided ports never reach this gate.
+fn allowed_navigation(url: &tauri::Url) -> bool {
+    url.path() == DOCUMENT_PATH
+        && ((url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+            || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
+            || (url.scheme() == "http"
+                && url.host_str() == Some(crate::protocol::loopback_host())
+                && url.port_or_known_default() == Some(crate::protocol::dev_endpoint().port())))
+}
+
+fn sync(managed: &CallOverlay, host: &impl OverlayHost) -> Result<(), String> {
+    let _operation = managed
+        .operation
+        .lock()
+        .map_err(|_| "Call window is unavailable")?;
+    let Some(main) = host.window("main") else {
+        return Ok(());
+    };
+    let background = main.minimized() || !main.visible(true);
+    let foreground_area = if background { None } else { main.monitor() };
+    let call = {
+        let mut inner = managed
+            .inner
+            .lock()
+            .map_err(|_| "Call window is unavailable")?;
+        if let Some(area) = foreground_area {
+            inner.main_area = Some(area);
+        }
+        inner.visible_call()
+    };
+    if !background || call.is_none() {
+        if let Some(window) = host.window(LABEL) {
+            let _ = window.hide();
+        }
+        return Ok(());
+    }
+    let call = call.unwrap();
+    let window = if let Some(window) = host.window(LABEL) {
+        window
+    } else {
+        host.create_overlay()?
     };
     let (initial, main_area) = {
         let inner = managed
@@ -250,9 +360,9 @@ fn sync(app: &AppHandle) -> Result<(), String> {
         )
     };
     let work = if initial {
-        main_area.or_else(|| monitor(&main))
+        main_area.or_else(|| main.monitor())
     } else {
-        monitor(&window).or(main_area)
+        window.monitor().or(main_area)
     };
     if let Some(work) = work {
         clamp(&window, work, initial)?;
@@ -271,47 +381,53 @@ fn sync(app: &AppHandle) -> Result<(), String> {
             true
         }
     };
-    if !current || (!main.is_minimized().unwrap_or(false) && main.is_visible().unwrap_or(true)) {
+    if !current || (!main.minimized() && main.visible(true)) {
         let _ = window.hide();
         return Ok(());
     }
-    let _ = window.emit("dant-call-overlay-state", &call);
-    let _ = window.set_theme(Some(if call.theme == "dark" {
-        tauri::Theme::Dark
-    } else {
-        tauri::Theme::Light
-    }));
-    if !window.is_visible().unwrap_or(false) {
+    window.publish(&call);
+    if !window.visible(false) {
         // Creation's focused(false) does not govern later SW_SHOW calls.
         // Show without activating over the app the user is currently using.
-        window
-            .set_focusable(false)
-            .map_err(|_| "Call window could not be shown")?;
+        window.focusable(false)?;
         let shown = window.show();
-        let focusable = window.set_focusable(true);
-        shown.map_err(|_| "Call window could not be shown")?;
-        focusable.map_err(|_| "Call window controls are unavailable")?;
+        let focusable = window.focusable(true);
+        shown?;
+        focusable?;
     }
     Ok(())
 }
-fn schedule(app: &AppHandle) {
+fn schedule<R: tauri::Runtime>(app: &AppHandle<R>) {
     let managed = app.state::<CallOverlay>();
-    managed.dirty.store(true, Ordering::SeqCst);
-    if managed.scheduled.swap(true, Ordering::SeqCst) {
+    if !managed.request_sync() {
         return;
     }
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || loop {
+    tauri::async_runtime::spawn_blocking(move || {
         let managed = app.state::<CallOverlay>();
-        managed.dirty.store(false, Ordering::SeqCst);
-        let _ = sync(&app);
-        managed.scheduled.store(false, Ordering::SeqCst);
-        if !managed.dirty.load(Ordering::SeqCst) || managed.scheduled.swap(true, Ordering::SeqCst) {
-            break;
-        }
+        managed.drain_sync(|| {
+            let _ = sync(&managed, &NativeOverlay(&app));
+        });
     });
 }
-pub fn setup(app: &tauri::App) {
+impl CallOverlay {
+    fn request_sync(&self) -> bool {
+        self.dirty.store(true, Ordering::SeqCst);
+        !self.scheduled.swap(true, Ordering::SeqCst)
+    }
+
+    fn drain_sync(&self, mut synchronize: impl FnMut()) {
+        loop {
+            self.dirty.store(false, Ordering::SeqCst);
+            synchronize();
+            self.scheduled.store(false, Ordering::SeqCst);
+            if !self.dirty.load(Ordering::SeqCst) || self.scheduled.swap(true, Ordering::SeqCst) {
+                break;
+            }
+        }
+    }
+}
+pub fn setup<R: tauri::Runtime>(app: &tauri::App<R>) {
     if let Some(main) = app.get_webview_window("main") {
         if let Some(area) = monitor(&main) {
             if let Ok(mut inner) = app.state::<CallOverlay>().inner.lock() {
@@ -320,12 +436,12 @@ pub fn setup(app: &tauri::App) {
         }
     }
 }
-pub fn visibility_changed(app: &AppHandle) {
+pub fn visibility_changed<R: tauri::Runtime>(app: &AppHandle<R>) {
     if app.try_state::<CallOverlay>().is_some() {
         schedule(app);
     }
 }
-pub fn show_call_window(app: &AppHandle) {
+pub fn show_call_window<R: tauri::Runtime>(app: &AppHandle<R>) {
     let managed = app.state::<CallOverlay>();
     let expected = managed.inner.lock().ok().and_then(|inner| {
         if inner.closing {
@@ -340,74 +456,119 @@ pub fn show_call_window(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let managed = app.state::<CallOverlay>();
-        let Ok(_operation) = managed.operation.lock() else {
-            return;
-        };
-        let changed = managed
-            .inner
-            .lock()
-            .map(|mut inner| inner.show(&expected))
-            .unwrap_or(false);
-        if changed {
-            schedule(&app);
-        }
+        show_expected(&managed, &NativeOverlay(&app), &expected);
     });
 }
-pub fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+
+fn show_expected(managed: &CallOverlay, host: &impl OverlayHost, expected: &str) {
+    let Ok(_operation) = managed.operation.lock() else {
+        return;
+    };
+    let changed = managed
+        .inner
+        .lock()
+        .map(|mut inner| inner.show(expected))
+        .unwrap_or(false);
+    if changed {
+        host.schedule();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Change {
+    Close,
+    Destroy,
+    Geometry,
+    Move,
+    Focus,
+    Other,
+}
+
+pub fn on_window_event<R: tauri::Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
     let app = window.app_handle();
-    if window.label() == "main" {
-        if matches!(
-            event,
-            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-        ) {
-            if let Ok(mut inner) = app.state::<CallOverlay>().inner.lock() {
+    let change = match event {
+        WindowEvent::CloseRequested { .. } => Change::Close,
+        WindowEvent::Destroyed => Change::Destroy,
+        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => Change::Geometry,
+        WindowEvent::Moved(_) => Change::Move,
+        WindowEvent::Focused(_) => Change::Focus,
+        _ => Change::Other,
+    };
+    if window_changed(
+        &app.state::<CallOverlay>(),
+        &NativeOverlay(app),
+        window.label(),
+        change,
+    ) {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+        }
+    }
+}
+
+fn window_changed(
+    managed: &CallOverlay,
+    host: &impl OverlayHost,
+    label: &str,
+    change: Change,
+) -> bool {
+    if label == "main" {
+        if matches!(change, Change::Close | Change::Destroy) {
+            if let Ok(mut inner) = managed.inner.lock() {
                 inner.closing = true;
                 inner.call = None;
             }
-            if let Some(overlay) = app.get_webview_window(LABEL) {
-                let _ = overlay.destroy();
+            if let Some(overlay) = host.window(LABEL) {
+                overlay.destroy();
             }
-        } else if matches!(
-            event,
-            WindowEvent::Resized(_)
-                | WindowEvent::Focused(_)
-                | WindowEvent::Moved(_)
-                | WindowEvent::ScaleFactorChanged { .. }
-        ) {
-            schedule(app);
+        } else if matches!(change, Change::Geometry | Change::Move | Change::Focus) {
+            host.schedule();
         }
-    } else if window.label() == LABEL {
-        if let WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            if let Ok(mut inner) = app.state::<CallOverlay>().inner.lock() {
+    } else if label == LABEL {
+        if matches!(change, Change::Close) {
+            if let Ok(mut inner) = managed.inner.lock() {
                 if let Some(call_id) = inner.call.as_ref().map(|value| value.call_id.clone()) {
                     let _ = inner.hide(&call_id);
                 }
             }
-            let _ = window.hide();
-            schedule(app);
+            if let Some(window) = host.window(LABEL) {
+                let _ = window.hide();
+            }
+            host.schedule();
+            return true;
         }
-        if matches!(
-            event,
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
-        ) {
-            schedule(app);
+        if matches!(change, Change::Geometry) {
+            host.schedule();
         }
     }
+    false
 }
 #[tauri::command]
-pub async fn call_overlay_update(
-    app: AppHandle,
-    window: WebviewWindow,
+pub async fn call_overlay_update<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
     state: Option<CallState>,
 ) -> Result<(), String> {
-    if window.label() != "main" || state.as_ref().is_some_and(|value| !valid(value)) {
+    update(
+        &app.state::<CallOverlay>(),
+        &NativeOverlay(&app),
+        window.label(),
+        state,
+    )
+}
+
+fn update(
+    managed: &CallOverlay,
+    host: &impl OverlayHost,
+    label: &str,
+    state: Option<CallState>,
+) -> Result<(), String> {
+    if label != "main" || state.as_ref().is_some_and(|value| !valid(value)) {
         return Err("Invalid call window state".into());
     }
     let language = state.as_ref().map(|value| value.language.clone());
     let active = state.is_some();
     {
-        let managed = app.state::<CallOverlay>();
         let _operation = managed
             .operation
             .lock()
@@ -421,41 +582,69 @@ pub async fn call_overlay_update(
         }
         inner.update(state);
     }
-    crate::tray::call_window_changed(&app, active, language.as_deref());
-    schedule(&app);
+    host.tray_changed(active, language.as_deref());
+    host.schedule();
     Ok(())
 }
 #[tauri::command]
-pub fn call_overlay_get(
-    app: AppHandle,
-    window: WebviewWindow,
+pub fn call_overlay_get<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
 ) -> Result<Option<CallState>, String> {
-    if window.label() != LABEL {
+    get(&app.state::<CallOverlay>(), window.label())
+}
+
+fn get(managed: &CallOverlay, label: &str) -> Result<Option<CallState>, String> {
+    if label != LABEL {
         return Err("Invalid call window".into());
     }
-    app.state::<CallOverlay>()
+    managed
         .inner
         .lock()
         .map(|inner| inner.call.clone())
         .map_err(|_| "Call window is unavailable".into())
 }
 #[tauri::command]
-pub async fn call_overlay_action(
-    app: AppHandle,
-    window: WebviewWindow,
+pub async fn call_overlay_action<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
     call_id: String,
     action: String,
     request_id: String,
     muted: Option<bool>,
 ) -> Result<(), String> {
-    if window.label() != LABEL
+    act(
+        &app.state::<CallOverlay>(),
+        &NativeOverlay(&app),
+        window.label(),
+        Action {
+            call_id,
+            action,
+            request_id,
+            muted,
+        },
+    )
+}
+
+fn act(
+    managed: &CallOverlay,
+    host: &impl OverlayHost,
+    label: &str,
+    request: Action,
+) -> Result<(), String> {
+    let Action {
+        call_id,
+        action,
+        request_id,
+        muted,
+    } = &request;
+    if label != LABEL
         || !identifier(&call_id)
         || !identifier(&request_id)
         || !matches!(action.as_str(), "mute" | "hangup" | "restore" | "hide")
     {
         return Err("Invalid call window action".into());
     }
-    let managed = app.state::<CallOverlay>();
     let _operation = managed
         .operation
         .lock()
@@ -468,7 +657,7 @@ pub async fn call_overlay_action(
         let call = inner
             .call
             .as_ref()
-            .filter(|value| value.call_id == call_id)
+            .filter(|value| &value.call_id == call_id)
             .ok_or("The call changed")?;
         if inner.closing || (action == "mute" && (!call.can_mute || muted.is_none())) {
             return Err("The call action is unavailable".into());
@@ -477,7 +666,7 @@ pub async fn call_overlay_action(
             return Ok(());
         }
         inner.seen.push_back(request_id.clone());
-        while inner.seen.len() > 128 {
+        while inner.seen.len() > ACTION_HISTORY_LIMIT {
             inner.seen.pop_front();
         }
         if action == "hide" {
@@ -487,65 +676,69 @@ pub async fn call_overlay_action(
     if action == "hide" {
         // Hiding changes native visibility only. Never send it to the media or
         // task handler, and retain the call ID across ordinary status updates.
-        let hidden = app
-            .get_webview_window(LABEL)
-            .map(|overlay| {
-                overlay
-                    .hide()
-                    .map_err(|_| "Call window could not be hidden".to_string())
-            })
+        let hidden = host
+            .window(LABEL)
+            .map(|overlay| overlay.hide())
             .unwrap_or(Ok(()));
-        schedule(&app);
+        host.schedule();
         return hidden;
     }
     if action == "restore" {
-        if let Some(main) = app.get_webview_window("main") {
-            main.unminimize()
-                .map_err(|_| "The main window could not be restored")?;
-            main.show()
-                .map_err(|_| "The main window could not be shown")?;
-            main.set_focus()
-                .map_err(|_| "The main window could not be focused")?;
+        if let Some(main) = host.window("main") {
+            main.restore()?;
         }
-        schedule(&app);
+        host.schedule();
     }
-    app.emit_to(
-        "main",
-        "dant-call-overlay-action",
-        Action {
-            call_id,
-            action,
-            request_id,
-            muted,
-        },
-    )
-    .map_err(|_| "The call action was not confirmed".into())
+    host.action(request)
 }
 #[tauri::command]
-pub async fn call_overlay_drag(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    if window.label() != LABEL {
-        return Err("Invalid call window".into());
-    }
-    let active = app
-        .state::<CallOverlay>()
-        .inner
-        .lock()
-        .map(|inner| !inner.closing && inner.call.is_some())
-        .unwrap_or(false);
-    if !active {
-        return Err("The call ended".into());
-    }
+pub async fn call_overlay_drag<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<(), String> {
+    let expected = drag_allowed(&app.state::<CallOverlay>(), window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
-        window
-            .start_dragging()
-            .map_err(|_| "Call window dragging is unavailable")?;
-        if let Some(area) = monitor(&window) {
-            clamp(&window, area, false)?;
-        }
-        Ok::<(), String>(())
+        drag_current(&app.state::<CallOverlay>(), &window, &expected)
     })
     .await
     .map_err(|_| "Call window dragging stopped".to_string())?
+}
+
+fn drag_allowed(managed: &CallOverlay, label: &str) -> Result<String, String> {
+    if label != LABEL {
+        return Err("Invalid call window".into());
+    }
+    managed
+        .inner
+        .lock()
+        .ok()
+        .and_then(|inner| {
+            inner
+                .call
+                .as_ref()
+                .filter(|_| !inner.closing)
+                .map(|call| call.call_id.clone())
+        })
+        .ok_or_else(|| "The call ended".into())
+}
+
+fn drag_current(
+    managed: &CallOverlay,
+    window: &impl CallWindow,
+    expected: &str,
+) -> Result<(), String> {
+    if drag_allowed(managed, LABEL)? != expected {
+        return Err("The call changed".into());
+    }
+    drag(window)
+}
+
+fn drag(window: &impl CallWindow) -> Result<(), String> {
+    window.drag()?;
+    if let Some(area) = window.monitor() {
+        clamp(window, area, false)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

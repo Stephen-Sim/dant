@@ -436,7 +436,7 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 	}
 	ids := append([]string{}, active.messageIDs...)
 	assistantIDs := append([]string{}, active.assistantIDs...)
-	knownUnsubmitted := active.startRejected && active.startSubmitted && !active.startAcknowledged && !active.unknown
+	knownUnsubmitted := !active.startAcknowledged && !active.unknown && (!active.startSubmitted || active.startRejected)
 	value.mu.Unlock()
 	err := value.store.Mutate(value.ctx, func(state *contracts.State) error {
 		if state.ConversationID != active.conversationID {

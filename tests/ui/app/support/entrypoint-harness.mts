@@ -387,6 +387,46 @@ const telegramState = {
   paired: false,
   sync: { forwardMode: 'unread', combineReplies: true, readState: 'independent' },
 };
+if (scenario === 'work-progress') {
+  state.settings.showWorkSummary = true;
+  state.capabilities = { workReply: true, taskReopen: true };
+  Object.assign(state.messages[0]!, {
+    status: 'running',
+    turnId: 'fixture-turn',
+    workId: 'fixture-work',
+    workKind: 'task',
+  });
+  state.active = {
+    messageId: 'fixture-user',
+    turnId: 'fixture-turn',
+    workId: 'fixture-work',
+    source: 'chat',
+    status: 'running',
+    canSteer: true,
+  };
+  state.workTasks = [
+    {
+      id: 'fixture-work',
+      turnId: 'fixture-turn',
+      turnIds: ['fixture-turn'],
+      messageId: 'fixture-user',
+      title: 'A synthetic durable task',
+      status: 'running',
+      source: 'chat',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      plan: {
+        total: 2,
+        completed: 0,
+        currentStep: 'A recorded first step',
+        steps: [
+          { step: 'A recorded first step', status: 'inProgress' },
+          { step: 'A recorded second step', status: 'pending' },
+        ],
+      },
+    },
+  ];
+}
 if (scenario === 'chat-actions') {
   state.messages[1]!.text += ' https://example.invalid/synthetic';
   state.messages[1]!.attachments = [
@@ -497,7 +537,64 @@ Object.assign(globalThis, {
       });
       value = { submission: 'acknowledged' };
     } else if (route === '/api/read') value = { ok: true, messageIds: [] };
-    else if (route === '/api/connect') {
+    else if (route.startsWith('/api/tasks/fixture-work/context?')) {
+      const work = state.workTasks?.[0];
+      assert.ok(work);
+      assert.equal(options.method, 'GET');
+      value = {
+        workId: work.id,
+        turnId: work.turnId,
+        conversationId: state.conversationId,
+        title: work.title,
+        plan: work.plan,
+        projectContext: {
+          version: 1,
+          referenceDataOnly: true,
+          updatedAt: Date.now(),
+          originalRequest: {
+            messageId: 'fixture-user',
+            turnId: 'fixture-turn',
+            at: Date.now(),
+            text: 'A saved synthetic project requirement',
+            attachments: [],
+          },
+          humanUpdates: [],
+          results: [],
+        },
+      };
+    } else if (route.startsWith('/api/tasks/fixture-work/')) {
+      const work = state.workTasks?.[0];
+      assert.ok(work);
+      const body: unknown = JSON.parse(String(options.body));
+      assert.ok(body && typeof body === 'object');
+      if (route.endsWith('/priority')) {
+        assert.deepEqual(body, { kind: 'work', priority: 'high' });
+        work.progressPriority = 'high';
+        value = { ok: true };
+      } else {
+        assert.deepEqual(body, { kind: 'work', turnId: 'fixture-turn' });
+        state.active = null;
+        work.executionEndedAt = Date.now();
+        if (route.endsWith('/pause')) {
+          work.status = 'paused';
+          work.pauseReason = 'user-paused';
+          value = { paused: true };
+        } else if (route.endsWith('/resume')) {
+          work.status = 'continuing';
+          work.pauseReason = null;
+          value = { resumed: true };
+        } else {
+          assert.ok(route.endsWith('/cancel'));
+          work.status = 'cancelled';
+          value = { cancelled: true };
+        }
+        state.messages[0]!.status = route.endsWith('/pause')
+          ? 'paused'
+          : route.endsWith('/resume')
+            ? 'running'
+            : 'cancelled';
+      }
+    } else if (route === '/api/connect') {
       state.worker.status = ConnectionStatus.Online;
       value = { ok: true };
     } else if (route === '/api/service-update') {
@@ -702,6 +799,7 @@ const click = async (selector: string) => {
   await settle();
 };
 try {
+  if (scenario === 'work-progress') readAppState(state);
   await import('../../../../ui/main.mts');
   await settle();
   assert.ok(requests.includes('GET /api/session'));
@@ -717,6 +815,51 @@ try {
       '192.0.2.44',
     );
     assert.ok(page.document.querySelector('[data-recovery-form]'));
+  } else if (scenario === 'work-progress') {
+    assert.ok(page.document.querySelector('.conversation'), page.document.body.textContent ?? '');
+    FixtureEvents.instances[0]?.onopen?.();
+    await settle();
+    await click('.work-summary');
+    assert.ok(page.document.querySelector('#work-progress-panel'));
+    await click('.work-summary');
+    assert.equal(page.document.querySelector('#work-progress-panel'), null);
+    await click('[data-action="progress"]');
+    const priority = page.document.querySelector<HTMLSelectElement>(
+      '[data-task-priority="fixture-work"]',
+    );
+    assert.ok(priority);
+    priority.value = 'high';
+    priority.dispatchEvent(new page.Event('change'));
+    await settle();
+    assert.equal(state.workTasks?.[0]?.progressPriority, 'high');
+    await click('[data-task-details="fixture-work"]');
+    assert.match(
+      page.document.querySelector('.dialog')?.textContent ?? '',
+      /A saved synthetic project requirement/,
+    );
+    await click('[data-action="close-modal"]');
+    await click('[data-task-work-reply="fixture-work"]');
+    assert.match(
+      page.document.querySelector('.task-reply-preview')?.textContent ?? '',
+      /A synthetic durable task/,
+    );
+    await click('[data-task-reply-cancel]');
+    await click('[data-task-pause="fixture-work"]');
+    assert.equal(state.workTasks?.[0]?.status, 'paused');
+    await click('[data-task-work-resume="fixture-work"]');
+    assert.equal(state.workTasks?.[0]?.status, 'continuing');
+    await click('[data-task-cancel="fixture-work"]');
+    const confirmation = page.document.querySelector('[data-key="progress-cancel-confirmation"]');
+    assert.ok(confirmation);
+    assert.ok(confirmation.closest('.registered-work'));
+    await click('[data-progress-task-cancel-back]');
+    assert.equal(page.document.querySelector('[data-key="progress-cancel-confirmation"]'), null);
+    await click('[data-task-cancel="fixture-work"]');
+    await click('[data-progress-task-cancel-confirm]');
+    assert.equal(state.workTasks?.[0]?.status, 'cancelled');
+    assert.ok(page.document.querySelector('[data-task-dismiss="fixture-work"]'));
+    assert.match(page.document.body.textContent ?? '', /A synthetic answer/);
+    assert.deepEqual(unexpected, []);
   } else if (scenario === 'speech') {
     FixtureEvents.instances[0]?.onopen?.();
     await settle();
@@ -876,70 +1019,74 @@ try {
     assert.equal(page.document.querySelector<HTMLTextAreaElement>('#composer')?.value, '');
     assert.equal(requests.filter((value) => value === 'POST /api/messages').length, sentCount);
     assert.deepEqual(unexpected, []);
-  } else if (scenario === 'settings-operations') {
+  } else if (['settings-operations', 'telegram-settings', 'voice-settings'].includes(scenario)) {
     FixtureEvents.instances[0]?.onopen?.();
     await settle();
     await click('[data-action="settings"]');
-    await click('[data-settings-category="appearance"]');
-    await click('[data-accent="#8660D9"]');
-    assert.equal(state.settings.accentColor, '#8660D9');
-    await click('[data-reset-color="backgroundColor"]');
-    assert.equal(state.settings.backgroundColor, null);
-    const size = page.document.querySelector<HTMLInputElement>('#appearance-size');
-    assert.ok(size);
-    size.value = '16';
-    size.dispatchEvent(new page.Event('change'));
-    await settle();
-    assert.equal(state.settings.fontSize, 16);
-    await click('[data-font="mono"]');
-    assert.equal(state.settings.font, 'mono');
-    await click('#appearance-export');
-    await click('[data-settings-category="telegram"]');
-    const tokenInput = page.document.querySelector<HTMLInputElement>('#telegram-token');
-    assert.ok(tokenInput);
-    tokenInput.value = 'synthetic-token';
-    page.document
-      .querySelector('#telegram-token-form')
-      ?.dispatchEvent(new page.Event('submit', { bubbles: true, cancelable: true }));
-    await settle();
-    assert.equal(telegramState.configured, true);
-    assert.equal(page.document.querySelector<HTMLInputElement>('#telegram-token')?.value, '');
-    await click('[data-action="telegram-toggle"]');
-    assert.equal(telegramState.enabled, true);
-    await click('[data-action="telegram-pair"]');
-    assert.match(
-      page.document.querySelector('.telegram-pair-code')?.textContent ?? '',
-      /SYNTHETIC/,
-    );
-    await click('[data-action="telegram-unpair"]');
-    assert.equal(page.document.querySelector('.telegram-pair-code'), null);
-    const forwarding = page.document.querySelector<HTMLSelectElement>('#telegram-forward-mode');
-    assert.ok(forwarding);
-    forwarding.value = 'all';
-    forwarding.dispatchEvent(new page.Event('change'));
-    await settle();
-    assert.equal(telegramState.sync.forwardMode, 'all');
-    const combine = page.document.querySelector<HTMLInputElement>('#telegram-combine-replies');
-    assert.ok(combine);
-    combine.checked = false;
-    combine.dispatchEvent(new page.Event('change'));
-    await settle();
-    assert.equal(telegramState.sync.combineReplies, false);
-    await click('[data-action="telegram-remove"]');
-    assert.equal(telegramState.configured, false);
-    await click('[data-settings-category="voice"]');
-    const key = page.document.querySelector<HTMLInputElement>('#voice-api-key');
-    assert.ok(key);
-    key.value = 'synthetic-key';
-    page.document
-      .querySelector('#voice-key-form')
-      ?.dispatchEvent(new page.Event('submit', { bubbles: true, cancelable: true }));
-    await settle();
-    assert.ok(requests.includes('POST /api/voice-key'));
-    await click('#voice-key-remove');
-    assert.ok(requests.includes('DELETE /api/voice-key'));
-    await click('[data-action="schedules"]');
-    assert.ok(page.document.querySelector('.schedules-page'));
+    if (scenario === 'settings-operations') {
+      await click('[data-settings-category="appearance"]');
+      await click('[data-accent="#8660D9"]');
+      assert.equal(state.settings.accentColor, '#8660D9');
+      await click('[data-reset-color="backgroundColor"]');
+      assert.equal(state.settings.backgroundColor, null);
+      const size = page.document.querySelector<HTMLInputElement>('#appearance-size');
+      assert.ok(size);
+      size.value = '16';
+      size.dispatchEvent(new page.Event('change'));
+      await settle();
+      assert.equal(state.settings.fontSize, 16);
+      await click('[data-font="mono"]');
+      assert.equal(state.settings.font, 'mono');
+      await click('#appearance-export');
+    } else if (scenario === 'telegram-settings') {
+      await click('[data-settings-category="telegram"]');
+      const tokenInput = page.document.querySelector<HTMLInputElement>('#telegram-token');
+      assert.ok(tokenInput);
+      tokenInput.value = 'synthetic-token';
+      page.document
+        .querySelector('#telegram-token-form')
+        ?.dispatchEvent(new page.Event('submit', { bubbles: true, cancelable: true }));
+      await settle();
+      assert.equal(telegramState.configured, true);
+      assert.equal(page.document.querySelector<HTMLInputElement>('#telegram-token')?.value, '');
+      await click('[data-action="telegram-toggle"]');
+      assert.equal(telegramState.enabled, true);
+      await click('[data-action="telegram-pair"]');
+      assert.match(
+        page.document.querySelector('.telegram-pair-code')?.textContent ?? '',
+        /SYNTHETIC/,
+      );
+      await click('[data-action="telegram-unpair"]');
+      assert.equal(page.document.querySelector('.telegram-pair-code'), null);
+      const forwarding = page.document.querySelector<HTMLSelectElement>('#telegram-forward-mode');
+      assert.ok(forwarding);
+      forwarding.value = 'all';
+      forwarding.dispatchEvent(new page.Event('change'));
+      await settle();
+      assert.equal(telegramState.sync.forwardMode, 'all');
+      const combine = page.document.querySelector<HTMLInputElement>('#telegram-combine-replies');
+      assert.ok(combine);
+      combine.checked = false;
+      combine.dispatchEvent(new page.Event('change'));
+      await settle();
+      assert.equal(telegramState.sync.combineReplies, false);
+      await click('[data-action="telegram-remove"]');
+      assert.equal(telegramState.configured, false);
+    } else {
+      await click('[data-settings-category="voice"]');
+      const key = page.document.querySelector<HTMLInputElement>('#voice-api-key');
+      assert.ok(key);
+      key.value = 'synthetic-key';
+      page.document
+        .querySelector('#voice-key-form')
+        ?.dispatchEvent(new page.Event('submit', { bubbles: true, cancelable: true }));
+      await settle();
+      assert.ok(requests.includes('POST /api/voice-key'));
+      await click('#voice-key-remove');
+      assert.ok(requests.includes('DELETE /api/voice-key'));
+      await click('[data-action="schedules"]');
+      assert.ok(page.document.querySelector('.schedules-page'));
+    }
     assert.deepEqual(unexpected, []);
   } else if (scenario === 'computer-controls') {
     FixtureEvents.instances[0]?.onopen?.();
@@ -1181,18 +1328,11 @@ try {
     assert.ok(page.document.querySelector('#message-form'));
     await click('[data-action="settings"]');
     assert.ok(page.document.querySelector('[data-settings-category="history"]'));
-    for (const category of [
-      'appearance',
-      'voice',
-      'computer',
-      'account',
-      'usage',
-      'credentials',
-      'history',
-      'telegram',
-      'about',
-      'general',
-    ]) {
+    const categories =
+      scenario === 'settings-information'
+        ? ['credentials', 'history', 'telegram', 'about', 'general']
+        : ['appearance', 'voice', 'computer', 'account', 'usage'];
+    for (const category of categories) {
       await click(`[data-settings-category="${category}"]`);
       assert.equal(
         page.document.querySelector(`[data-settings-panel="${category}"]`)?.hasAttribute('hidden'),

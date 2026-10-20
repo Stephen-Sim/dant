@@ -26,7 +26,7 @@
 | 新电脑的资源默认值与范围 | `resources/config/computer.json` | 创建表单和 Go、PowerShell、Python 启动器共用；用户显式选择优先，现有电脑保留原规格。 |
 | 固定协议与安全上限       | 所属功能中的命名常量             | 授权规则、字节上限、路由白名单和执行归属不能通过环境变量改写。                       |
 
-`npm run generate:contracts` 更新 Go 内嵌协议及 Tauri 配置的网络字段；`npm run check:contracts` 拒绝生成结果漂移。Rust 读取内嵌的规范协议，Python 的 `vm/network_config.py` 对源码目录、种子镜像及已安装辅助程序读取同一协议并校验。种子镜像包含该资源，引导与就绪检查共用 guest 端点，不再各写一个端口。Go 部署器内嵌首次连接检查所需的 Python 源码，显式传入已校验的原生端点和路由，因此尚未安装辅助程序时也能检查。
+`npm run generate:contracts` 更新 Go 内嵌协议及 Tauri 配置的网络字段；`npm run check:contracts` 拒绝生成结果漂移。Rust 读取内嵌的规范协议，Python 的 `vm/network_config.py` 对源码目录、种子镜像及已安装辅助程序读取同一协议并校验。种子镜像包含该资源，各就绪检查选择其服务对应的规范端点，引导桥和部署后的桌面桥使用不同端口。Go 部署器内嵌首次连接检查所需的 Python 源码，显式传入已校验的原生端点和路由，因此尚未安装辅助程序时也能检查。
 
 规范协议要求固定主回环地址、精确回环白名单、互异合法端口，以及有界、互异的根路径；重复 JSON 字段、未知键和无效值均被拒绝。修改共享协议值属于源码／构建契约变更，与调整开发 `.env` 参数分开。Tauri 开发窗口使用生成的规范开发端点，独立运行的 Vite 使用 `DANT_DEV_PORT`。
 

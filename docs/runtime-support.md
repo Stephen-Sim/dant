@@ -45,6 +45,8 @@ npm run dev
 
 Preparation builds the UI and Windows/Linux binaries and stages the verified runtime under `src-tauri/resources` (or the configured Cargo resources location). The native debug host uses that prepared root and keeps development data separate. `npm start` and `npm run dev` validate prepared manifests and require rebuilding from a clean commit when backend resources change.
 
+The development launcher validates both core and Vite configuration before starting a child. It owns their shutdown: when either child exits or the parent receives a termination signal, it closes the core's managed input, stops the dev server, joins both children and releases its signal handlers. It attempts to kill an unresponsive child after the fixed 25-second shutdown deadline. A failed stop returns an explicit unconfirmed-shutdown error after the other children finish cleanup; it does not invent an exit acknowledgement or repeat the kill. This deadline only bounds process cleanup; it never resubmits agent work.
+
 The portable ZIP keeps `dant.exe` beside its complete `backend/` directory, containing Go executables, UI, fixed helpers, protocol JSON, licenses and provenance manifests. Secrets and runtime state are excluded. Replacing individual binaries requires rebuilding and verifying their manifests.
 
 ## VM update compatibility

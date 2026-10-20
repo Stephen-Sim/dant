@@ -3,7 +3,10 @@ package work
 import (
 	"context"
 	"encoding/json"
+	"errors"
+
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
+	"github.com/Stephen-Sim/dant/core/internal/store"
 )
 
 func (value *Engine) Followup(ctx context.Context, message *contracts.ChatMessage, expectedTurnID string) (json.RawMessage, error) {
@@ -43,7 +46,7 @@ func (value *Engine) followup(ctx context.Context, message *contracts.ChatMessag
 	if !value.current(active) {
 		return nil, ErrStaleOwner
 	}
-	if _, err := value.store.Update(ctx, message.ID, patch(contracts.RawObject{"status": raw(contracts.TaskStatusRunning), "submission": raw(contracts.SubmissionStatusPreparing), "parentTaskId": raw(active.messageID), "pauseReason": json.RawMessage("null")})); err != nil {
+	if err := value.updateFollowup(ctx, active, message.ID, contracts.RawObject{"status": raw(contracts.TaskStatusRunning), "submission": raw(contracts.SubmissionStatusPreparing), "parentTaskId": raw(active.messageID), "pauseReason": json.RawMessage("null")}); err != nil {
 		return nil, err
 	}
 	input, err := value.prepareInput(active, message)
@@ -56,7 +59,7 @@ func (value *Engine) followup(ctx context.Context, message *contracts.ChatMessag
 		return nil, ErrStaleOwner
 	}
 	value.mu.Unlock()
-	if _, err = value.store.Update(value.ctx, message.ID, patch(contracts.RawObject{"submission": raw(contracts.SubmissionStatusSubmitting)})); err != nil {
+	if err = value.updateFollowup(value.ctx, active, message.ID, contracts.RawObject{"submission": raw(contracts.SubmissionStatusSubmitting)}); err != nil {
 		return nil, err
 	}
 	_, err = value.requestOwned(active.prepare, "turn/steer", contracts.RawObject{"threadId": raw(active.threadID), "expectedTurnId": raw(expectedTurnID), "input": input}, func() bool {
@@ -67,7 +70,7 @@ func (value *Engine) followup(ctx context.Context, message *contracts.ChatMessag
 	if err != nil {
 		unknown := operationUnknown(err)
 		value.mu.Lock()
-		if unknown {
+		if unknown && value.currentLocked(active) {
 			active.unknown = true
 			value.paused = true
 		}
@@ -76,10 +79,17 @@ func (value *Engine) followup(ctx context.Context, message *contracts.ChatMessag
 		if unknown {
 			submission = contracts.SubmissionStatusUnknown
 		}
-		_, _ = value.store.Update(value.ctx, message.ID, patch(contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "submission": raw(submission), "unknownOutcome": raw(unknown), "pauseReason": raw("submission-unknown")}))
+		_ = value.updateFollowup(value.ctx, active, message.ID, contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "submission": raw(submission), "unknownOutcome": raw(unknown), "pauseReason": raw("submission-unknown")})
 		return nil, err
 	}
-	if _, err = value.store.Update(value.ctx, message.ID, patch(contracts.RawObject{"submission": raw(contracts.SubmissionStatusConfirmed), "turnId": raw(expectedTurnID), "executorConfirmedAt": raw(value.Timestamp())})); err != nil {
+	if err = value.updateFollowup(value.ctx, active, message.ID, contracts.RawObject{"submission": raw(contracts.SubmissionStatusConfirmed), "turnId": raw(expectedTurnID), "executorConfirmedAt": raw(value.Timestamp())}); err != nil {
+		value.mu.Lock()
+		if value.currentLocked(active) {
+			active.unknown = true
+			value.paused = true
+			value.changeLocked()
+		}
+		value.mu.Unlock()
 		return nil, err
 	}
 	value.mu.Lock()
@@ -94,4 +104,12 @@ func (value *Engine) followup(ctx context.Context, message *contracts.ChatMessag
 	value.changeLocked()
 	value.mu.Unlock()
 	return raw(contracts.RawObject{"queued": raw(false), "turnId": raw(expectedTurnID)}), nil
+}
+
+func (value *Engine) updateFollowup(ctx context.Context, active *execution, id string, changes contracts.RawObject) error {
+	_, err := value.store.UpdateConversation(ctx, active.conversationID, id, patch(changes))
+	if errors.Is(err, store.ErrMessageConflict) {
+		return ErrStaleOwner
+	}
+	return err
 }

@@ -98,6 +98,18 @@ func (value *Store) Add(ctx context.Context, input *contracts.ChatMessage) (*con
 }
 
 func (value *Store) Update(ctx context.Context, id string, patch contracts.MessagePatch) (*contracts.ChatMessage, error) {
+	return value.updateMessage(ctx, "", id, patch)
+}
+
+// UpdateConversation commits a message patch only within its captured conversation.
+func (value *Store) UpdateConversation(ctx context.Context, conversationID, id string, patch contracts.MessagePatch) (*contracts.ChatMessage, error) {
+	if conversationID == "" {
+		return nil, ErrMessageConflict
+	}
+	return value.updateMessage(ctx, conversationID, id, patch)
+}
+
+func (value *Store) updateMessage(ctx context.Context, conversationID, id string, patch contracts.MessagePatch) (*contracts.ChatMessage, error) {
 	for _, key := range []string{"id", "role", "time", "ts"} {
 		if _, exists := patch[key]; exists {
 			return nil, ErrInvalidState
@@ -105,6 +117,9 @@ func (value *Store) Update(ctx context.Context, id string, patch contracts.Messa
 	}
 	var result *contracts.ChatMessage
 	err := value.Mutate(ctx, func(state *contracts.State) error {
+		if conversationID != "" && state.ConversationID != conversationID {
+			return ErrMessageConflict
+		}
 		message, err := FindMessage(state, id)
 		if err != nil {
 			return err

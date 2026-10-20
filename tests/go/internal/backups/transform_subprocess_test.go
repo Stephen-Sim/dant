@@ -19,6 +19,21 @@ type transformMemoryReport struct {
 }
 
 func TestMain(tests *testing.M) {
+	if mode := os.Getenv("DANT_BACKUP_TRANSFORM_RECEIPT_FIXTURE"); mode != "" {
+		switch mode {
+		case "oversized":
+			_, _ = os.Stdout.Write(bytes.Repeat([]byte{' '}, 257))
+		case "malformed":
+			_, _ = io.WriteString(os.Stdout, `{"ok":`)
+		case "not-ok":
+			_, _ = io.WriteString(os.Stdout, `{"ok":false,"bytes":17}`)
+		case "wrong-size":
+			_, _ = io.WriteString(os.Stdout, `{"ok":true,"bytes":18}`)
+		default:
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("DANT_BACKUP_TRANSFORM_FIXTURE_CHILD") == "1" {
 		if RunTransform(context.Background(), os.Stdin, os.Stdout) != nil {
 			os.Exit(1)

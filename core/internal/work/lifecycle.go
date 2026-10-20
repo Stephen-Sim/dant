@@ -336,7 +336,8 @@ func (value *Engine) CancelProgress(ctx context.Context, target ProgressTarget, 
 		value.mu.Unlock()
 		return nil, ErrStaleOwner
 	}
-	value.mu.Unlock()
+	defer value.mu.Unlock()
+
 	err := value.store.Mutate(ctx, func(current *contracts.State) error {
 		if current.ConversationID != state.ConversationID {
 			return ErrStaleOwner
@@ -349,7 +350,10 @@ func (value *Engine) CancelProgress(ctx context.Context, target ProgressTarget, 
 			if err != nil || record.TurnID != turn {
 				return ErrStaleOwner
 			}
-			if workstate.Unconfirmed(record) || record.Continuation != nil && record.Continuation.Dispatch != nil {
+			if record.UnknownOutcome || record.Status == contracts.WorkStatusUnknown ||
+				record.Submission.Value == contracts.SubmissionStatusUnknown ||
+				record.Submission.Value == contracts.SubmissionStatusSubmitting ||
+				workstate.Unconfirmed(record) || record.Continuation != nil && record.Continuation.Dispatch != nil {
 				return ErrUnknown
 			}
 		}
@@ -369,11 +373,15 @@ func (value *Engine) CancelProgress(ctx context.Context, target ProgressTarget, 
 			return ErrStaleOwner
 		}
 		for _, message := range selected {
+			if !slices.Contains(ids, message.ID) {
+				ids = append(ids, message.ID)
+			}
 			message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusCancelled))
 			message.CancelledAt = contracts.Some(now)
 			message.PauseReason = contracts.Null[string]()
 			if pauseOnly {
 				message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusPaused))
+				message.CancelledAt = contracts.Null[float64]()
 				message.PauseReason = contracts.Some("user-paused")
 			}
 		}
@@ -382,6 +390,7 @@ func (value *Engine) CancelProgress(ctx context.Context, target ProgressTarget, 
 			record.CancelledAt = contracts.Some(now)
 			if pauseOnly {
 				record.Status = contracts.WorkStatusPaused
+				record.CancelledAt = contracts.Null[float64]()
 				record.PauseReason = contracts.Some("user-paused")
 			}
 			record.UpdatedAt = now
@@ -398,12 +407,10 @@ func (value *Engine) CancelProgress(ctx context.Context, target ProgressTarget, 
 	if err != nil {
 		return nil, err
 	}
-	value.mu.Lock()
 	value.queue = slices.DeleteFunc(value.queue, func(id string) bool {
 		return slices.Contains(ids, id)
 	})
 	value.changeLocked()
-	value.mu.Unlock()
 	return raw(contracts.RawObject{"ok": raw(true), "cancelled": raw(!pauseOnly), "paused": raw(pauseOnly)}), nil
 }
 

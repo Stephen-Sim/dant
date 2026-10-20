@@ -130,7 +130,7 @@ func (value *Engine) RunVoiceTask(ctx context.Context, text string, owner ToolCo
 
 func (value *Engine) updateExecutionMessage(active *execution, changes contracts.RawObject) error {
 	if !active.voiceTask {
-		_, err := value.store.Update(value.ctx, active.messageID, patch(changes))
+		_, err := value.store.UpdateConversation(value.ctx, active.conversationID, active.messageID, patch(changes))
 		return err
 	}
 	return value.store.Mutate(value.ctx, func(state *contracts.State) error {
