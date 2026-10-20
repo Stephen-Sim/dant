@@ -42,6 +42,8 @@ Native coverage uses Rust 1.99.1 with `llvm-tools-preview` and locked `cargo-llv
 
 `npm run test:bash:coverage` requires Linux and kcov 43 built from upstream commit `a39874f938ce13f7a65f253120d1ec946b349ffe`. CI builds that pinned source into `.tools/kcov`. It also fetches `v43`, verifies its peeled commit against the source pin, and verifies the exact tag before CMake reads the upstream Git version. A missing or moved tag fails the build. DEBUG tracing executes the original scripts through `tests/bash/runtime.test.sh` with isolated HOME and mocked commands; all maintained VM shell scripts stay in the inventory. Embedded Python heredocs have a different execution scope and are not proved by shell line coverage. A Windows run reports the unavailable collector explicitly instead of counting a platform skip as coverage.
 
+Every maintained script with executable shell lines must record an actual execution hit. A complete inventory containing only zero-hit sources fails collection; passing fixture processes alone cannot prove that instrumentation reached the production scripts. Failed reports remain available for diagnosis.
+
 Bash and PowerShell syntax checks do not create a VM or request administrator access. PowerShell coverage executes behavior fixtures with mocked host boundaries. Tests do not use real model accounts, open microphones, or contact a configured Telegram bot. Telegram tests inject a simulated Bot API and verify owner pairing, authorization, deduplication, attachment bounds, delivery results, and shutdown.
 
 ## Windows artifacts

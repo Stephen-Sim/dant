@@ -198,6 +198,8 @@ export function runBashCoverage(
       fs.appendFileSync(environment.GITHUB_STEP_SUMMARY, markdown);
     write(markdown);
     if (report.missing.length) throw Error('Bash coverage inventory is incomplete.');
+    if (report.files.some((file) => file.total > 0 && file.covered === 0))
+      throw Error('Bash coverage did not execute every maintained script.');
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }

@@ -84,4 +84,6 @@ Go profile 与语句汇总保存在 `.cache/core/coverage.out`、`.cache/core/co
 
 `npm run test:bash:coverage` 要求 Linux，以及从上游提交 `a39874f938ce13f7a65f253120d1ec946b349ffe` 构建的 kcov 43。CI 将其构建到 `.tools/kcov`，同时拉取 `v43`，校验其解引用提交与固定源码相同，并在 CMake 读取上游 Git 版本前校验精确标签；标签缺失或被移动都会令构建失败。DEBUG 跟踪使用 `tests/bash/runtime.test.sh`、隔离 HOME 和模拟命令执行原脚本；所有维护的 VM shell 脚本保留在清单中。内嵌 Python heredoc 属于不同执行范围，shell 行覆盖率不能证明它已执行。Windows 明确报告采集器不可用，不把平台跳过算作覆盖率。
 
+每个包含可执行 shell 行的维护脚本都必须记录实际命中。清单完整但源文件全部零命中的结果会令采集失败；仅夹具进程通过不能证明插桩已跟踪生产脚本。失败报告仍保留用于诊断。
+
 本地启动前先提交已审查源码，运行 `npm run package:resources`，再执行 `npm start` 或 `npm run dev`。两者均启动经校验的 Go 后端，后者同时启动 Vite；原生 `desktop` 也先准备同一份资源。详见[运行支持](runtime-support.md)。完整测试、打包程序启动与用户设备验收是独立门禁，工作流定义不代表发布已完成。

@@ -217,12 +217,14 @@ test('fixture failures and missing current instrumentation cannot reuse old pass
   }
 });
 
-test('malformed or oversized reports fail without exposing raw output; missing sources remain visible', (t) => {
+test('malformed reports fail without raw output; missing and zero-hit sources cannot pass', (t) => {
   for (const body of [
     'private-report-content',
     JSON.stringify({ files: [] }),
     'oversized',
     'missing-source',
+    'zero-hit',
+    'partly-zero',
   ]) {
     const fixture = collectorFixture(t);
     const messages: string[] = [];
@@ -243,7 +245,15 @@ test('malformed or oversized reports fail without exposing raw output; missing s
             } else
               fs.writeFileSync(
                 fixture.generated,
-                body === 'missing-source' ? JSON.stringify({ files: [row(expected[0]!)] }) : body,
+                body === 'missing-source'
+                  ? JSON.stringify({ files: [row(expected[0]!)] })
+                  : body === 'zero-hit'
+                    ? JSON.stringify({ files: expected.map((file) => row(file, '0', '2')) })
+                    : body === 'partly-zero'
+                      ? JSON.stringify({
+                          files: expected.map((file, index) => row(file, String(index), '2')),
+                        })
+                      : body,
               );
             return { status: 0 };
           },
@@ -251,8 +261,15 @@ test('malformed or oversized reports fail without exposing raw output; missing s
       (error: unknown) =>
         error instanceof Error && !error.message.includes('private-report-content'),
     );
-    if (body === 'missing-source') {
-      assert.match(messages[0]!, /start-codex\.sh` \| Not measured/);
+    if (body === 'missing-source' || body === 'zero-hit' || body === 'partly-zero') {
+      assert.match(
+        messages[0]!,
+        body === 'missing-source'
+          ? /start-codex\.sh` \| Not measured/
+          : body === 'zero-hit'
+            ? /0\.00% \(0\/4\)/
+            : /25\.00% \(1\/4\)/,
+      );
       assert.equal(fixture.published().length, 3);
     } else assert.deepEqual(fixture.published(), []);
   }

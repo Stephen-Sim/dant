@@ -27,34 +27,65 @@ python3() {
     [ "$#" -eq 2 ] && [ "$2" = bootstrap-screen-check ] || return 1
     printf 'bootstrap-bridge-check\n' >> "$DANT_BASH_RECORD"
     [ "${DANT_BASH_CASE:-}" != bridge-fail ]
-  else
+  elif [ "${1:-}" = "$root/vm/install-transcription.py" ]; then
+    [ "$#" -eq 2 ] && [ "$2" = "$root/vm/transcription-requirements.txt" ] || return 1
     [ "${DANT_BASH_CASE:-}" != transcription-fail ]
+  else
+    echo 'Unexpected synthetic Python boundary' >&2
+    return 1
   fi
 }
 export -f apt-get npm install chmod loginctl chown touch sleep tee systemctl runuser python3
-run_source() {
-    bash --noprofile --norc -c 'function /usr/local/bin/codex() { printf "codex-check\n" >> "$DANT_BASH_RECORD"; }; source "$1" "${@:2}"' dant-isolated-fixture "$@"
+run_source() (
+    # kcov's DEBUG helper enables functrace, then unsets BASH_ENV. A new bash
+    # would lose that trap; a sourced subshell retains it and isolates exit/exec.
+    function /usr/local/bin/codex() { printf 'codex-check\n' >> "$DANT_BASH_RECORD"; }
+    BASH_ARGV0=$1
+    source "$1" "${@:2}"
+)
+
+expect_failure() {
+    local message=$1 status
+    shift
+    # Never invoke run_source from if/!: Bash would suppress errexit throughout
+    # the sourced script. Capture its ordinary-command status in the parent.
+    set +e
+    "$@"
+    status=$?
+    set -e
+    if [ "$status" -eq 0 ]; then
+        printf '%s\n' "$message" >&2
+        return 1
+    fi
 }
 
 run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-success.txt"
 grep -q '^ready-marker$' "$DANT_BASH_RECORD"
 grep -q '^bootstrap-bridge-check$' "$DANT_BASH_RECORD"
 : > "$DANT_BASH_RECORD"
-if DANT_BASH_CASE=bridge-fail run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-bridge-failed.txt"; then echo 'Bootstrap acknowledged a failed bridge check' >&2; exit 1; fi
+DANT_BASH_CASE=bridge-fail expect_failure 'Bootstrap acknowledged a failed bridge check' run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-bridge-failed.txt"
 grep -q '^bootstrap-bridge-check$' "$DANT_BASH_RECORD"
 ! grep -q '^ready-marker$' "$DANT_BASH_RECORD"
 ! grep -q '^codex-check$' "$DANT_BASH_RECORD"
 : > "$DANT_BASH_RECORD"
-if DANT_BASH_CASE=readiness-fail run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-not-ready.txt"; then echo 'Bootstrap acknowledged an unready guest' >&2; exit 1; fi
+DANT_BASH_CASE=readiness-fail expect_failure 'Bootstrap acknowledged an unready guest' run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-not-ready.txt"
 ! grep -q '^ready-marker$' "$DANT_BASH_RECORD"
-if DANT_BASH_CASE=packages-fail run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-packages-failed.txt"; then echo 'Bootstrap acknowledged a failed install' >&2; exit 1; fi
+! grep -q '^codex-check$' "$DANT_BASH_RECORD"
+: > "$DANT_BASH_RECORD"
+DANT_BASH_CASE=packages-fail expect_failure 'Bootstrap acknowledged a failed install' run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-packages-failed.txt"
+grep -q '^apt$' "$DANT_BASH_RECORD"
+! grep -q '^npm$' "$DANT_BASH_RECORD"
+! grep -q '^ready-marker$' "$DANT_BASH_RECORD"
+! grep -q '^codex-check$' "$DANT_BASH_RECORD"
 
 cat > "$HOME/.local/bin/codex" <<'SH'
 #!/bin/sh
 printf '%s\n' "$DISPLAY" "$CODEX_HOME" "$PWD" "$@" > "$DANT_BASH_RECORD"
+printf 'fake-codex-only\n' >> "$DANT_BASH_RECORD"
 SH
 command chmod 700 "$HOME/.local/bin/codex"
 run_source "$root/vm/start-codex.sh"
+grep -q '^fake-codex-only$' "$DANT_BASH_RECORD"
 grep -q '^app-server$' "$DANT_BASH_RECORD"
 grep -q '^stdio://$' "$DANT_BASH_RECORD"
 grep -Fqx "$HOME/work" "$DANT_BASH_RECORD"
@@ -64,9 +95,9 @@ export -f espeak-ng
 run_source "$root/vm/install-speech.sh" > "$fixture/speech-existing.txt"
 grep -q 'already available' "$fixture/speech-existing.txt"
 run_source "$root/vm/install-transcription.sh" > "$fixture/transcription.txt"
-if DANT_BASH_CASE=transcription-fail run_source "$root/vm/install-transcription.sh" > "$fixture/transcription-failed.txt"; then echo 'Recognition setup acknowledged failure' >&2; exit 1; fi
+DANT_BASH_CASE=transcription-fail expect_failure 'Recognition setup acknowledged failure' run_source "$root/vm/install-transcription.sh" > "$fixture/transcription-failed.txt"
 
 mkdir -p "$fixture/foreign-source"
-if run_source "$root/vm/install-worker.sh" "$fixture/foreign-source" > "$fixture/worker-invalid.txt" 2>&1; then echo 'Worker accepted an unowned source directory' >&2; exit 1; fi
+expect_failure 'Worker accepted an unowned source directory' run_source "$root/vm/install-worker.sh" "$fixture/foreign-source" > "$fixture/worker-invalid.txt" 2>&1
 grep -q 'Invalid worker source directory' "$fixture/worker-invalid.txt"
 printf 'Bash runtime fixtures passed with isolated HOME and fake system boundaries.\n'
