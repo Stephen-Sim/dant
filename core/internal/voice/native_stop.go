@@ -82,6 +82,7 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 		native.mu.Unlock()
 		return ErrVoiceCancelled
 	}
+	generation := s.generation
 	native.mu.Unlock()
 	s.stopMu.Lock()
 	defer s.stopMu.Unlock()
@@ -89,6 +90,10 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 	if native.session != s {
 		native.mu.Unlock()
 		return nil
+	}
+	if s.mediaID != callID || s.generation != generation {
+		native.mu.Unlock()
+		return ErrVoiceCancelled
 	}
 	if s.background && s.closed {
 		native.mu.Unlock()
@@ -100,7 +105,6 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 	}
 	s.stopping = true
 	s.status = contracts.VoiceCallStatusStopping
-	generation := s.generation
 	connectedAt := float64(s.connectedAt)
 	thread := s.threadID
 	closed := s.closed
@@ -117,12 +121,12 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 	defer cancel()
 	if queue != nil {
 		if err := queue.Close(bounded); err != nil {
-			return native.stopUnknown(s)
+			return native.stopUnknown(s, callID, generation)
 		}
 	}
 	if !closed && thread != "" {
 		if _, err := native.options.Worker.Request(bounded, "thread/realtime/stop", object(map[string]any{"threadId": thread})); err != nil {
-			return native.stopUnknown(s)
+			return native.stopUnknown(s, callID, generation)
 		}
 		native.mu.Lock()
 		signal := s.closedSignal
@@ -130,7 +134,7 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 		select {
 		case <-signal:
 		case <-bounded.Done():
-			return native.stopUnknown(s)
+			return native.stopUnknown(s, callID, generation)
 		}
 	}
 	if thread == "" {
@@ -139,18 +143,18 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 	}
 	response, err := native.options.Worker.Request(bounded, "thread/read", object(map[string]any{"threadId": thread, "includeTurns": true}))
 	if err != nil {
-		return native.stopUnknown(s)
+		return native.stopUnknown(s, callID, generation)
 	}
 	observed := objectField(response, "thread")
 	var turns []contracts.RawObject
 	if textField(observed, "id") != thread || json.Unmarshal(observed["turns"], &turns) != nil || turns == nil || len(turns) > 10000 {
-		return native.stopUnknown(s)
+		return native.stopUnknown(s, callID, generation)
 	}
 	statuses := map[string]string{}
 	for _, turn := range turns {
 		id, status := textField(turn, "id"), textField(turn, "status")
 		if !captionID(id) || statuses[id] != "" || status != "inProgress" && status != "completed" && status != "interrupted" && status != "failed" {
-			return native.stopUnknown(s)
+			return native.stopUnknown(s, callID, generation)
 		}
 		statuses[id] = status
 	}
@@ -195,7 +199,7 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 	}
 	if missing {
 		native.mu.Unlock()
-		return native.stopUnknown(s)
+		return native.stopUnknown(s, callID, generation)
 	}
 	s.background = true
 	s.closed = true
@@ -210,12 +214,12 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 				err = native.options.Engine.ContinueNativeWork(owner)
 			}
 			if err != nil {
-				return native.stopUnknown(s)
+				return native.stopUnknown(s, callID, generation)
 			}
 		} else {
 			event := runtime.Event{Method: "turn/completed", Params: object(map[string]any{"threadId": thread, "turnId": owner.TurnID, "turn": map[string]any{"id": owner.TurnID, "status": statuses[owner.TurnID]}})}
 			if err = native.options.Engine.HandleNativeEvent(bounded, owner, event); err != nil {
-				return native.stopUnknown(s)
+				return native.stopUnknown(s, callID, generation)
 			}
 			native.mu.Lock()
 			s.turns[owner.TurnID].done = true
@@ -233,14 +237,20 @@ func (native *Native) stop(ctx context.Context, callID string, reason CallEndRea
 	}
 	native.changed()
 	if len(owners) == 0 {
-		native.finish(s)
+		native.mu.Lock()
+		if native.session == s && s.mediaID == callID && s.generation == generation {
+			native.session = nil
+			s.cancel()
+		}
+		native.mu.Unlock()
+		native.changed()
 	}
 	return nil
 }
 
-func (native *Native) stopUnknown(s *nativeSession) error {
+func (native *Native) stopUnknown(s *nativeSession, callID string, generation uint64) error {
 	native.mu.Lock()
-	if native.session == s {
+	if native.session == s && s.mediaID == callID && s.generation == generation {
 		s.unknown = true
 		s.status = contracts.VoiceCallStatusStopUnconfirmed
 		s.stopping = false

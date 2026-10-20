@@ -153,6 +153,24 @@ fn launch_arguments_are_fixed_single_file_arguments_without_a_shell() {
     }
 }
 #[cfg(windows)]
+fn windows_short_alias(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetShortPathNameW(source: *const u16, target: *mut u16, capacity: u32) -> u32;
+    }
+
+    let source: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut target = vec![0; 32768];
+    let length =
+        unsafe { GetShortPathNameW(source.as_ptr(), target.as_mut_ptr(), target.len() as u32) }
+            as usize;
+    assert!(length > 0 && length < target.len());
+    PathBuf::from(std::ffi::OsString::from_wide(&target[..length]))
+}
+
+#[cfg(windows)]
 #[test]
 fn cached_unicode_text_is_closed_and_launches_with_normal_windows_paths() {
     use std::os::windows::fs::OpenOptionsExt;
@@ -171,11 +189,27 @@ fn cached_unicode_text_is_closed_and_launches_with_normal_windows_paths() {
     let canonical_target = target.canonicalize().unwrap();
     let canonical_executable = executable.canonicalize().unwrap();
     assert!(canonical_target.to_string_lossy().starts_with(r"\\?\"));
-    let command = editor_command(&canonical_executable, &canonical_target);
-    assert_eq!(command.get_program(), executable.as_os_str());
-    let args: Vec<_> = command.get_args().collect();
-    assert_eq!(args, vec![target.as_os_str()]);
-    assert_eq!(fs::read(Path::new(args[0])).unwrap(), bytes);
+    let short_target = windows_short_alias(&target);
+    let short_executable = windows_short_alias(&executable);
+    // TEMP may already contain an 8.3 ancestor. Every accepted spelling must
+    // address the exact same files; normalization need not retain that alias.
+    // Volumes without short names may return the original spelling instead.
+    for (program, file) in [
+        (&executable, &target),
+        (&canonical_executable, &canonical_target),
+        (&short_executable, &short_target),
+    ] {
+        let command = editor_command(program, file);
+        let launched = Path::new(command.get_program());
+        assert!(!launched.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(launched.canonicalize().unwrap(), canonical_executable);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args.len(), 1);
+        let opened = Path::new(args[0]);
+        assert!(!opened.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(opened.canonicalize().unwrap(), canonical_target);
+        assert_eq!(fs::read(opened).unwrap(), bytes);
+    }
     // An exclusive reader proves the cache writer has flushed and closed
     // before the external process receives the persistent file path.
     let mut reader = fs::OpenOptions::new()

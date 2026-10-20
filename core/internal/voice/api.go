@@ -35,7 +35,7 @@ func NewAPI(ctx context.Context, options APIOptions) (*API, error) {
 		options.ConnectTimeout = defaultConnectTimeout
 	}
 	if options.RequestTimeout == 0 {
-		options.RequestTimeout = 30 * time.Second
+		options.RequestTimeout = defaultAPIRequestTimeout
 	}
 	if options.HangupTimeout == 0 {
 		options.HangupTimeout = defaultMediaStopTimeout
@@ -44,7 +44,7 @@ func NewAPI(ctx context.Context, options APIOptions) (*API, error) {
 		options.ContextTimeout = defaultContextTimeout
 	}
 	for _, limit := range []time.Duration{options.ConnectTimeout, options.RequestTimeout, options.HangupTimeout, options.ContextTimeout} {
-		if limit < time.Millisecond || limit > 5*time.Minute {
+		if limit < minimumProviderTimeout || limit > maximumAPITimeout {
 			return nil, ErrCallInput
 		}
 	}
@@ -115,7 +115,7 @@ func (api *API) Start(ctx context.Context, input APIStart) (APIStartResult, erro
 		api.mu.Unlock()
 		return APIStartResult{}, ErrVoiceClosed
 	}
-	if api.session != nil {
+	if api.session != nil || api.owned != nil {
 		api.mu.Unlock()
 		return APIStartResult{}, ErrVoiceBusy
 	}
@@ -139,6 +139,7 @@ func (api *API) Start(ctx context.Context, input APIStart) (APIStartResult, erro
 	}
 	s.subtitles = NewSubtitles(s.callID, "api", func(text string) string { return api.redact(s, text) })
 	api.session = s
+	api.owned = s
 	api.lastError = nil
 	api.mu.Unlock()
 	api.changed()
@@ -251,9 +252,20 @@ func (api *API) Stop(ctx context.Context, reason string) error {
 func (api *API) Close(ctx context.Context) error {
 	api.mu.Lock()
 	api.disposed = true
+	s := api.owned
 	api.mu.Unlock()
-	return api.Stop(ctx, "shutdown")
+	if s == nil {
+		return nil
+	}
+	// An ended callback may dispose its provider, but cannot join itself. Keep
+	// the unfinished owner so another caller can still confirm its completion.
+	if ctx.Value(apiCleanupContextKey{}) == s {
+		return ErrVoiceHangup
+	}
+	return api.cleanup(ctx, s, "shutdown")
 }
+
+type apiCleanupContextKey struct{}
 
 func (api *API) cleanup(ctx context.Context, s *apiSession, reason string) error {
 	s.cleanupOnce.Do(func() { go api.finishSession(s, reason) })
@@ -266,7 +278,14 @@ func (api *API) cleanup(ctx context.Context, s *apiSession, reason string) error
 }
 
 func (api *API) finishSession(s *apiSession, reason string) {
-	defer close(s.cleanupDone)
+	defer func() {
+		api.mu.Lock()
+		if api.owned == s && s.cleanupErr == nil {
+			api.owned = nil
+		}
+		close(s.cleanupDone)
+		api.mu.Unlock()
+	}()
 	api.mu.Lock()
 	s.stopping = true
 	s.status = contracts.VoiceCallStatusStopping
@@ -326,17 +345,20 @@ func (api *API) finishSession(s *apiSession, reason string) {
 	if api.session == s {
 		api.session = nil
 	}
+	ended := api.ended
+	api.mu.Unlock()
+	if ended != nil {
+		callbackContext := context.WithValue(bounded, apiCleanupContextKey{}, s)
+		if err := ended(callbackContext, EndedEvent{CallID: s.callID, Provider: "api", Reason: CallEndReason(reason)}); err != nil && s.cleanupErr == nil {
+			s.cleanupErr = ErrCallLifecycle
+		}
+	}
+	api.mu.Lock()
 	if s.cleanupErr != nil {
 		code := s.cleanupErr.Error()
 		api.lastError = &code
 	}
-	ended := api.ended
 	api.mu.Unlock()
-	if ended != nil {
-		if err := ended(bounded, EndedEvent{CallID: s.callID, Provider: "api", Reason: CallEndReason(reason)}); err != nil && s.cleanupErr == nil {
-			s.cleanupErr = ErrCallLifecycle
-		}
-	}
 	api.changed()
 }
 

@@ -40,7 +40,7 @@ func NewNative(ctx context.Context, options NativeOptions) (*Native, error) {
 		options.ContextTimeout = defaultContextTimeout
 	}
 	for _, limit := range []time.Duration{options.ConnectTimeout, options.StopTimeout, options.ContextTimeout} {
-		if limit < time.Millisecond || limit > time.Minute {
+		if limit < minimumProviderTimeout || limit > maximumNativeTimeout {
 			return nil, ErrCallInput
 		}
 	}
@@ -160,7 +160,12 @@ func (native *Native) Start(ctx context.Context, input NativeStart) (NativeStart
 		return NativeStartResult{}, err
 	}
 	defer native.options.Engine.ReleaseCallStart(reservation)
+
 	native.mu.Lock()
+	if native.disposed {
+		native.mu.Unlock()
+		return NativeStartResult{}, ErrVoiceClosed
+	}
 	if native.session != existing {
 		native.mu.Unlock()
 		return NativeStartResult{}, ErrVoiceBusy

@@ -201,10 +201,14 @@ type apiSession struct {
 }
 
 type API struct {
-	mu        sync.Mutex
-	ctx       context.Context
-	options   APIOptions
+	mu      sync.Mutex
+	ctx     context.Context
+	options APIOptions
+
+	// session is live media; owned survives its ended callback and retains an
+	// unconfirmed cleanup result so Close cannot forget or replay that owner.
 	session   *apiSession
+	owned     *apiSession
 	disposed  bool
 	lastError *string
 	ended     EndedHandler
