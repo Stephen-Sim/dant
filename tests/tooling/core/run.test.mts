@@ -50,7 +50,7 @@ test('Linux development selects its compiled artifact and defaults data to the p
   assert.equal(launch.env.DANT_DATA, path.join(root, 'data'));
 });
 
-test('missing or changed compiled resources fail without selecting the legacy Node backend', () => {
+test('missing or changed compiled resources fail before launching the runtime', () => {
   const root = path.resolve('.cache/tests/rejected-core-launch');
   assert.throws(
     () =>

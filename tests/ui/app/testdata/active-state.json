@@ -13,8 +13,6 @@
     "callId": null,
     "canSteer": true
   },
-  "go": "1.27.2",
-  "kind": "isolated-public-Engine-snapshot",
   "withCall": {
     "messageId": "00000000-0000-4000-8000-000000000091",
     "messageIds": ["00000000-0000-4000-8000-000000000091"],

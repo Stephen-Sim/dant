@@ -21,14 +21,13 @@ const (
 	RoleBackupTransform Role = "backup-transform"
 	RoleBackupCLI       Role = "backup-cli"
 	RoleWorkerBackup    Role = "worker-backup"
-	RoleMemoryShadow    Role = "memory-shadow"
 	RoleLegacyImport    Role = "legacy-import"
 )
 
 func (role Role) Valid() bool {
 	return slices.Contains([]Role{
 		RoleController, RoleWorker, RolePrepareWorker, RoleBackupTransform,
-		RoleBackupCLI, RoleWorkerBackup, RoleMemoryShadow, RoleLegacyImport,
+		RoleBackupCLI, RoleWorkerBackup, RoleLegacyImport,
 	}, role)
 }
 

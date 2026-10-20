@@ -17,9 +17,8 @@ var dynamicToolsJSON []byte
 //go:embed assets/instructions.txt
 var instructionsTemplate string
 
-// DynamicTools returns independent canonical declarations. Schemas are shared
-// with the prior runtime through a checked source projection, never evaluated
-// as executable code or extended with a new permission by migration.
+// DynamicTools returns independent permission-specific tool declarations.
+// Callers cannot mutate the embedded definitions through a returned slice.
 func DynamicTools() []json.RawMessage {
 	var result []json.RawMessage
 	if err := json.Unmarshal(dynamicToolsJSON, &result); err != nil {

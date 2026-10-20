@@ -1,4 +1,4 @@
-import portableGolden from './testdata/portable-go-golden.json' with { type: 'json' };
+import portableFixture from './testdata/portable-backup.json' with { type: 'json' };
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,11 +15,9 @@ import type { BackupMetadata } from '../../../ui/settings/backup-types.ts';
 const ID = '00000000-0000-4000-8000-000000000009',
   TOKEN = 'a'.repeat(64),
   PASSWORD = 'isolated passphrase';
-const metadata: BackupMetadata = portableGolden.metadata;
-const portableBytes = Buffer.from(portableGolden.base64, 'base64');
+const metadata: BackupMetadata = portableFixture.metadata;
+const portableBytes = Buffer.from(portableFixture.base64, 'base64');
 test('Go, browser and native portable limits agree without importing Node runtime into the browser', () => {
-  assert.equal(portableGolden.go, '1.27.2');
-  assert.equal(portableGolden.kind, 'isolated-public-Portable-export');
   assert.ok(portableBytes.subarray(0, 22).toString().startsWith('DANT-PORTABLE-BACKUP/1'));
   const source = fs.readFileSync(
     new URL('../../../src-tauri/src/backup_transfer.rs', import.meta.url),
@@ -27,9 +25,9 @@ test('Go, browser and native portable limits agree without importing Node runtim
   );
   const match = /const MAX_PORTABLE_BYTES: u64 = ([\d_]+);/.exec(source);
   assert.ok(match?.[1]);
-  assert.equal(Number(match[1].replaceAll('_', '')), portableGolden.maxFileBytes);
-  assert.equal(BACKUP_PASSPHRASE_MIN_BYTES, portableGolden.passphraseMinBytes);
-  assert.equal(BACKUP_PASSPHRASE_MAX_BYTES, portableGolden.passphraseMaxBytes);
+  assert.equal(Number(match[1].replaceAll('_', '')), portableFixture.maxFileBytes);
+  assert.equal(BACKUP_PASSPHRASE_MIN_BYTES, portableFixture.passphraseMinBytes);
+  assert.equal(BACKUP_PASSPHRASE_MAX_BYTES, portableFixture.passphraseMaxBytes);
   assert.equal(validBackupPassphrase('中文中文'), true);
   assert.equal(validBackupPassphrase('中文'), false);
   assert.equal(validBackupPassphrase('x'.repeat(1025)), false);

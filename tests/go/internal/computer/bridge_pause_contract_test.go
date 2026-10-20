@@ -402,9 +402,9 @@ func TestBindingIdentityKeepsEveryLegacyJSONEscapeWithoutHTMLEscaping(t *testing
 	}
 }
 
-func TestBindingRecordDigestMatchesTheHistoricalNodeBackupIdentity(t *testing.T) {
-	// Golden hashes were produced with Node 22 crypto over JSON.stringify of
-	// the legacy ordered object, including omitted optional fields.
+func TestBindingRecordDigestPreservesSavedBackupIdentity(t *testing.T) {
+	// The persisted digest binds the ordered object, including omitted optional
+	// fields. Changing it would disconnect an existing backup from its VM.
 	for _, test := range []struct {
 		binding Binding
 		digest  string

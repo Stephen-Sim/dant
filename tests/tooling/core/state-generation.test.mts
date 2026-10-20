@@ -6,7 +6,6 @@ import {
   stateSchema,
   renderTypeScriptStates,
   renderGoStates,
-  renderGoProtocol,
 } from '../../../scripts/core/generate-contracts.mts';
 import * as states from '../../../ui/shared/states.mts';
 
@@ -65,25 +64,4 @@ test('Go validators reject unknown external states without changing the previous
   assert(output.indexOf('!TaskState(wire).Valid()') < output.indexOf('*value = TaskState(wire)'));
   assert(output.includes('if !value.Valid()'));
   assert(!output.includes('omitempty'));
-});
-
-test('cross-runtime transport limits have one complete positive-integer schema', () => {
-  const protocol: unknown = JSON.parse(
-    fs.readFileSync(
-      new URL('../../../resources/contracts/core-protocol.json', import.meta.url),
-      'utf8',
-    ),
-  );
-  const output = renderGoProtocol(protocol);
-  assert(output.includes('CoreRequestMaxBytes = 262144'));
-  assert(output.includes('CoreMaxSessionRequests = 4096'));
-  assert(output.includes('CoreSnapshotMaxBytes = 268435456'));
-  assert(protocol !== null && typeof protocol === 'object');
-  for (const patch of [
-    { workers: 0 },
-    { queueCapacity: 1.5 },
-    { version: 2 },
-    { secret: 'not-a-contract' },
-  ])
-    assert.throws(() => renderGoProtocol({ ...protocol, ...patch }));
 });

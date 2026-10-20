@@ -321,7 +321,7 @@ func TestMigratedPlanBoundaryRetainsNamedVocabularyAndRejectsUnknownWireValues(t
 	input := contracts.RawObject{"title": json.RawMessage(`"Verify"`), "status": json.RawMessage(`"waiting_user"`), "steps": json.RawMessage(`[{"step":"Verify","status":"pending"}]`)}
 	plan, err := workstate.ReadPlanInput(input, nil)
 	if err != nil || len(plan.Plan.Steps) != 1 || plan.Plan.Steps[0].Status != contracts.PlanStepStatusPending {
-		t.Fatal("named plan vocabulary changed during the backend migration")
+		t.Fatal("named plan vocabulary changed")
 	}
 	input["steps"] = json.RawMessage(`[{"step":"Verify","status":"in_progress"}]`)
 	if _, err := workstate.ReadPlanInput(input, nil); err == nil {

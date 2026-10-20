@@ -10,7 +10,7 @@ dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。
 
 ## Worker 部署与运行
 
-首次连接部署经验证的 Go 程序和固定 VM 辅助文件白名单，绑定精确版本、源码及文件哈希。安装器在停服务前检查空间，证明旧服务已停止，验证私有恢复归档，再离线准备并激活普通用户的 `dant-worker.service`、`dant-guest-local.service`。dant 后端不再安装 Node 或 `node_modules`；Codex 与用户工具可能独立使用 Node/npm。启用 user lingering 后，Windows Controller 退出不终止 VM 服务。旧系统桌面桥端口 4319 保留，Worker 使用本机 4320 的租约桥，均不绑定 VM 外部地址。参见[切换与中断恢复](go-core-migration.md)。
+首次连接部署经验证的 Go 程序和固定 VM 辅助文件白名单，绑定精确版本、源码及文件哈希。安装器在停服务前检查空间，证明旧服务已停止，验证私有恢复归档，再离线准备并激活普通用户的 `dant-worker.service`、`dant-guest-local.service`。Go bundle 提供服务运行时；Codex 与用户工具可能独立使用 Node/npm。启用 user lingering 后，Windows Controller 退出不终止 VM 服务。兼容系统桌面桥端口 4319 保留，Worker 使用本机 4320 的租约桥，均不绑定 VM 外部地址。参见[安装与中断恢复](go-core.md)。
 
 Worker 拒绝在 Windows、裸机 Linux、root 账号或缺少可用图形桌面的环境执行任务。更新前会检查活动任务与通话；正在工作时保留当前进程并推迟升级。相同源码版本复用已有健康服务。
 

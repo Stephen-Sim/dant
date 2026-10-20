@@ -29,7 +29,7 @@ type offlineInspection struct {
 }
 
 // AssertWorkerOffline independently confirms the stopped service, its empty
-// cgroup and any surviving owned Codex/Node/Core processes before migration.
+// cgroup and any surviving owned executor processes before preparing data.
 // Captured startup paths identify this Worker; unrelated user sessions survive.
 func AssertWorkerOffline(ctx context.Context, home, dataDir string) error {
 	if contracts.RuntimeOperatingSystem(runtime.GOOS) != contracts.RuntimeOperatingSystemLinux {

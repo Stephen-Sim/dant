@@ -17,7 +17,3 @@ const retrievalQuery = `SELECT rowid, document_key, kind, text, updated_at,
   AND (work_id IS NULL OR (work_id = :work AND :work IS NOT NULL))) OR
  (kind = 'project' AND conversation_id = :conversation AND work_id = :work AND :work IS NOT NULL)
  ) ORDER BY bm25(memory_search), document_key LIMIT :limit`
-
-const documentQuery = `SELECT document_key, kind, text, normalized_text, updated_at,
- conversation_id, work_id, status, source_json, confidence
- FROM memory_read_documents WHERE search_rowid = :rowid`

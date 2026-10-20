@@ -55,8 +55,6 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
-      - name: Compare isolated memory readers with independent Node golden results
-        run: npm run test:core:parity
       - name: Run the Linux race detector
         if: runner.os == 'Linux'
         run: npm run test:core:race

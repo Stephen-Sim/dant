@@ -4,7 +4,7 @@
 
 dant 是本地优先的桌面 Agent。Tauri 2 提供 Windows 宿主，Controller 管理工作电脑，Ubuntu Worker 负责执行和对话数据。本文描述当前源码，包括带作用域的记忆召回、SQLite 调度与本地加密备份；已发布的安装包可能仍是较早的实现。
 
-当前源码采用 **Go Agent Core + Rust Tauri + TypeScript UI**。独立的 Go Controller 与 Worker 角色拥有全部后端。TypeScript 负责浏览器与构建工具，原根目录 `src/` 后端已退役，跨语言 schema、协议与语言数据归属 `resources/`。独立冻结的合成 Node 结果保留兼容证据，不再需要另一套可执行后端；Memory 影子角色仅用于差分测试。本文描述源码，不代表新安装包已完成实机验收或发布。参见[运行支持](runtime-support.md)和[迁移与切换](go-core-migration.md)。
+dant 使用 **Go Core + Rust Tauri + TypeScript UI**。独立 Go Controller 与 Worker 角色负责全部后端，TypeScript 负责浏览器与构建工具。共享 schema、协议默认值与语言数据位于 `resources/`。参见[运行支持](runtime-support.md)和 [Go Core](go-core.md)。
 
 ## 总体系统
 
@@ -77,7 +77,7 @@ UI 展示状态并提交操作。Controller **不会创建 Engine，也不会在
 | 宿主 / VM 适配 | [`core/internal/platform/`](../../core/internal/platform/)、[`providers/`](../../core/internal/computer/) | 宿主能力及提供商的检测/创建/生命周期命令                          |
 | 本地备份       | [`core/internal/backups/`](../../core/internal/backups/)                                                  | Controller 加密归档、Worker 快照与明确的离线恢复                  |
 
-生产后端位于 `core/internal/`，通过 `application` 由小型 `core/cmd/dant-core` 入口组装。Controller 与 Worker 是编译后二进制的独立角色。前端使用 Vite、TypeScript 和 DOM/CSS；原根目录 `src/` 后端已退役。跨语言输入分别归属 `resources/contracts/`、`resources/config/`、`resources/i18n/`，生成的 Go 与 UI 契约都检查漂移。全部 Go 测试放在对应包结构的 `tests/go/`。模块与测试归属遵循[代码规范](code-style.md)。
+生产后端位于 `core/internal/`，通过 `application` 由小型 `core/cmd/dant-core` 入口组装。Controller 与 Worker 是编译后二进制的独立角色。前端使用 Vite、TypeScript 和 DOM/CSS。跨语言输入分别归属 `resources/contracts/`、`resources/config/`、`resources/i18n/`，生成的 Go 与 UI 契约都检查漂移。全部 Go 测试放在对应包结构的 `tests/go/`。模块与测试归属遵循[代码规范](code-style.md)。
 
 ## Agent loop 与执行所有权
 
@@ -115,7 +115,7 @@ sequenceDiagram
 
 Go Engine 选择排队任务，恢复当前对话对应的 Codex 线程，分派有作用域的事件和工具，并保存结果及附件。提前到达的事件有界保存，不能在有效 `turn/start` 确认之前证明执行归属。提交状态和任务状态由共享[状态 schema](../../resources/contracts/state-domains.json) 定义，生成到 Go 与 [`states.mts`](../../ui/shared/states.mts) 中的不同状态域。
 
-Go 的并发用于传输和编排，仍然只有一个执行权持有者。Engine 拥有可取消的生命周期、唤醒 channel、有界输入队列、工具并发槽和退出时等待的 worker。Memory 和 Scheduler 的事务、SQL 与行映射留在所属仓储，不进入 UI 或进程入口。网络取消仍保留请求、连接、任务和 turn 的精确身份，不能把未知副作用改成可重试。无 CGO 的编译产物移除了部署 Node 的需求；这些是架构取舍，不代表已经测得延迟提升。
+Go 的并发用于传输和编排，仍然只有一个执行权持有者。Engine 拥有可取消的生命周期、唤醒 channel、有界输入队列、工具并发槽和退出时等待的 worker。Memory 和 Scheduler 的事务、SQL 与行映射留在所属仓储，不进入 UI 或进程入口。网络取消仍保留请求、连接、任务和 turn 的精确身份，不能把未知副作用改成可重试。生产程序禁用 CGO；延迟测量和设备验收需要各自的证据。
 
 持久 `workId` 可以跨 turn 保留。`task_plan` 记录真实步骤，`task_list` 和 `task_cancel` 使用已保存身份。回复任务时，普通聊天输入携带 `workId`、预期 turn 和对话 ID；执行中的回复只送给匹配所有者，已结束任务则带着保留的项目上下文，从同一入口重开。
 
@@ -201,7 +201,7 @@ SQLite 管理持久记忆，不替代 Codex 原始对话，也不管理应用的
 
 每次读取在同一 SQLite 读事务中检查持久 revision，再决定是否复用笔记、确认条目或项目缓存。表触发器在数据变化时增加 revision，其他连接的写入也能使缓存失效；本地写入主动失效缓存。返回记录使用副本，项目缓存有数量上限，短连接在每次事务后释放句柄。缓存不能成为另一份数据权威。
 
-数据库启用 schema 版本、外键检查、有界忙等待、`synchronous=FULL`，采用 **DELETE journal**。运行时切换保留 DELETE journal 的原磁盘与备份契约。启用 WAL 需要另外验证并发和恢复行为，参见 [SQLite WAL](https://www.sqlite.org/wal.html)。
+数据库启用 schema 版本、外键检查、有界忙等待、`synchronous=FULL`，采用 **DELETE journal**。DELETE journal 属于磁盘和备份契约。启用 WAL 需要另外验证并发和恢复行为，参见 [SQLite WAL](https://www.sqlite.org/wal.html)。
 
 迁移先校验并备份旧 Markdown/项目 JSON，再导入。保留项目原 ID 和已有来源时间，不补造缺失时间。随后 SQLite 成为数据权威，修改 `.md` 快照不会静默覆盖数据库，导入导出需要显式调用。任务 JSON 可以保留历史项目快照，但回复任务时通过绑定的 SQLite adapter 读取当前上下文。迁移失败保留来源，并停止失败操作。
 
@@ -291,11 +291,11 @@ Worker 对 data 目录中的 SQLite 使用 `VACUUM INTO` 与完整性检查。�
 
 当前托管适配器仍要求 Windows。已识别 Unix 宿主的平台 ID 与 SSH 能力是扩展点，不代表已经支持 macOS/Linux 桌面发布。未来宿主还需要各自经过验证的生命周期、秘密保护、原生集成和发布适配器，并继续共享 Controller/Worker、Engine、记忆与调度；Ubuntu Worker 仍是执行权威。
 
-## 运行时更新与切换
+## 运行时更新
 
-Controller 在部署前，按版本、源码提交、长度和 SHA-256 校验打包的 Linux 二进制与固定辅助文件清单。`vm/worker-install.py` 使用内核锁串行安装，在停止现有 Worker 前，按各文件系统预检备份与迁移所需空间。它通过当前维护协议阻止新准入，或确认受支持的旧路由后停止旧 Node 服务，再核实旧服务及所属 Codex 进程停止，创建并校验私有恢复归档，使用 Go 二进制离线准备原数据。停止结果未知、空间不足、数据库不兼容或备份缺失都会阻止激活。部署使用独立的有界超时，普通 VM 请求继续使用较短限制。
+Controller 在部署前，按版本、源码提交、长度和 SHA-256 校验打包的 Linux 二进制与固定辅助文件清单。`vm/worker-install.py` 使用内核锁串行安装，在停止现有 Worker 前，按各文件系统预检备份与迁移所需空间。它通过当前维护协议阻止新准入，或确认受支持的早期维护路由后停止对应服务，再核实旧服务及所属 Codex 进程停止，创建并校验私有恢复归档，使用 Go 二进制离线准备原数据。停止结果未知、空间不足、数据库不兼容或备份缺失都会阻止激活。部署使用独立的有界超时，普通 VM 请求继续使用较短限制。
 
-Worker 服务只启动经验证的 Go 程序。版本与源码证明匹配后，Controller 才把更新标为当前。失败会保留数据与恢复归档，不回退启动 Node。Go 数据根所有权锁可以排除另一 Go owner，但不能单凭该锁证明旧 Node 执行器已停止。完整边界见[迁移说明](go-core-migration.md)。
+Worker 服务只启动经验证的 Go 程序。实际版本与源码匹配后，Controller 才标记更新完成。失败保留数据和恢复归档。数据根所有权锁排除另一写入者；替换服务前还必须有独立进程停止证明。完整所有权边界见 [Go Core](go-core.md)。
 
 中断的安装会保留执行屏障，自动更新不会重放。显式 `reconcile-stopped` 仅接受尚未进入准备阶段、已验证停止的安装：要求准确的 attempt 身份、journal 哈希和独立进程停止证明，先保留旧证据，再预留新的安装。较新的已验证 operator 可以为旧目标提供只读容量预检，但导出、准备与运行版本证明仍必须来自准确的目标 bundle。原生退出失败只报告有界原因码与阶段，仍须满足原有暂停及 VM 挂起确认要求。
 

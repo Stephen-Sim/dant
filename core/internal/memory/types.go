@@ -1,5 +1,5 @@
-// Package memory queries an owner-prepared, redacted SQLite shadow snapshot.
-// It never opens a path, refreshes FTS, writes memory, or authorizes execution.
+// Package memory owns durable notes, structured facts and scoped SQLite recall.
+// Recalled data never grants permissions or authorizes execution.
 package memory
 
 import (
@@ -33,13 +33,13 @@ var (
 	ErrUnavailable     = errors.New("memory_unavailable")
 )
 
-// Terms are prepared by the existing TypeScript sanitizer, NFKC normalization,
-// tokenizer, CJK expansion and (for retrieval) stop-word filter.
+// Terms are prepared by credential filtering, NFKC normalization, tokenization,
+// CJK expansion and, for retrieval, stop-word filtering.
 type PreparedQuery struct {
 	Terms []string `json:"terms"`
 }
 
-// Limit is required. The transport supplies defaults only for omitted values.
+// Limit is required. The API boundary supplies defaults only for omitted values.
 type SearchOptions struct {
 	Limit          int     `json:"limit"`
 	ConversationID *string `json:"conversationId,omitempty"`
@@ -49,7 +49,7 @@ type RetrieveOptions struct {
 	Limit int `json:"limit"`
 }
 
-// A nil WorkID means omitted. Explicit JSON null must be rejected by transport.
+// A nil WorkID means omitted. API boundaries reject explicit JSON null.
 type Scope struct {
 	ConversationID string  `json:"conversationId"`
 	WorkID         *string `json:"workId,omitempty"`

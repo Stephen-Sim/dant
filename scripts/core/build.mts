@@ -6,6 +6,12 @@ import { resolveGoToolchain, type GoRunner } from './go.mts';
 import { readVersion } from '../ci/version.mts';
 import { isRecord } from './manifest-json.mts';
 import {
+  captureCoreBuildStaging,
+  publishCoreBuild,
+  removeCoreBuildStaging,
+  type CorePublishOptions,
+} from './publish-build.mts';
+import {
   CORE_BUILD_MANIFEST,
   CORE_LINUX,
   CORE_WINDOWS,
@@ -20,7 +26,7 @@ const BUILD_TIMEOUT_MS = 300_000;
 const BUILD_OUTPUT_BYTES = 8 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 10_000;
 
-export interface CoreBuildOptions {
+export interface CoreBuildOptions extends CorePublishOptions {
   root?: string;
   outputDir?: string;
   run?: GoRunner;
@@ -169,6 +175,8 @@ export function buildCore({
   fileExists,
   env = process.env,
   platform = process.platform,
+  renameSync,
+  pause,
 }: CoreBuildOptions = {}): CoreBuildResult {
   if (!path.isAbsolute(root) || root.includes('\0'))
     throw Error('The Go core project root must be absolute.');
@@ -185,6 +193,8 @@ export function buildCore({
   fs.mkdirSync(path.dirname(directory), { recursive: true });
   ordinaryDirectories(path.dirname(directory));
   const staging = fs.mkdtempSync(path.join(path.dirname(directory), '.dant-core-'));
+  const ownedStaging = captureCoreBuildStaging(staging);
+  let publicationStarted = false;
   try {
     for (const [os, name] of [
       ['windows', CORE_WINDOWS],
@@ -238,11 +248,15 @@ export function buildCore({
     );
     buildDirectory(root, directory);
     fs.rmSync(directory, { recursive: true, force: true });
-    fs.renameSync(staging, directory);
+    publicationStarted = true;
+    publishCoreBuild(ownedStaging, directory, manifest, {
+      platform,
+      ...(renameSync ? { renameSync } : {}),
+      ...(pause ? { pause } : {}),
+    });
     return { directory, manifest };
   } finally {
-    ordinaryDirectories(staging);
-    fs.rmSync(staging, { recursive: true, force: true });
+    if (!publicationStarted) removeCoreBuildStaging(ownedStaging);
   }
 }
 

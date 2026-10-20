@@ -26,7 +26,7 @@ func TestJSONTextPreservesUTF16AndEscapesWithoutReplacement(t *testing.T) {
 
 func TestTinyBudgetCannotInventAnEmptyExcerpt(t *testing.T) {
 	// NFKC can lengthen normalized text. Match positions intentionally use the
-	// TypeScript normalized offset while slicing the original UTF-16 text.
+	// normalized offset while slicing the original UTF-16 text.
 	if text, matched := relevantExcerpt("x", strings.Repeat("a", 120)+"needle", []string{"needle"}, 1); matched || text.UTF16Length() != 0 {
 		t.Fatal("an empty UTF-16 slice is not a reference")
 	}

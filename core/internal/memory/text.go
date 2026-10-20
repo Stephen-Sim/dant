@@ -9,7 +9,7 @@ import (
 )
 
 // Text retains JavaScript UTF-16 slices, including a boundary that cuts a
-// surrogate pair. Converting those slices to a Go string would lose parity.
+// surrogate pair. Converting those slices to a Go string would lose text units.
 type Text struct{ units []uint16 }
 
 // UnmarshalJSON retains escaped legacy UTF-16 text without turning a lone

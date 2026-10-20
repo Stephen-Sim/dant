@@ -55,7 +55,7 @@ export function checkReactions(): void {
     .trimEnd()
     .split('\n');
   if (values.length !== 3944 || new Set(values).size !== values.length || !values.every(valid))
-    throw Error('The pinned Go reaction vocabulary differs from the Node contract.');
+    throw Error('The reaction vocabulary differs from the pinned Unicode contract.');
 }
 
 async function regenerate(): Promise<void> {
@@ -72,7 +72,7 @@ async function regenerate(): Promise<void> {
     for (const value of reactionSequences(new TextDecoder('utf-8', { fatal: true }).decode(bytes)))
       if (valid(value)) values.add(value);
   }
-  if (values.size !== 3944) throw Error('The Node reaction vocabulary requires a reviewed update.');
+  if (values.size !== 3944) throw Error('The reaction vocabulary requires a reviewed update.');
   fs.writeFileSync(path.join(directory, 'reactions.txt'), [...values].sort().join('\n') + '\n');
   checkReactions();
 }

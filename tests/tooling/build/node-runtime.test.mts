@@ -1,17 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { stripTypeScriptTypes } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import {
   assertNodeRuntime,
   NODE_RUNTIME_PROBE,
   NODE_RUNTIME_ACK,
 } from '../../../scripts/ci/node-runtime.mts';
 import type { NodeProbeRunner } from '../../../scripts/ci/node-runtime.mts';
-import {
-  sqliteProbeRunner,
-  unavailableSqliteModules,
-} from '../../support/runtime-probe-fixtures.mts';
-
-test('TypeScript and SQLite preflight executes a bounded fixed probe and requires its exact acknowledgement', () => {
+test('TypeScript tooling preflight executes a bounded fixed probe and requires its exact acknowledgement', () => {
   const calls: Parameters<NodeProbeRunner>[] = [];
   assertNodeRuntime('fixture-node', {
     run: (...args) => {
@@ -32,22 +29,48 @@ test('TypeScript and SQLite preflight executes a bounded fixed probe and require
   ]) {
     assert.throws(
       () => assertNodeRuntime('fixture-node', { run: () => result }),
-      /native TypeScript, built-in SQLite and FTS5 support is required/,
+      /native TypeScript support is required for development tooling/,
     );
   }
 });
 
-test('the current test runtime can execute erasable TypeScript and query FTS5 without a loader', () =>
+test('the current test runtime executes erasable TypeScript without a loader', () =>
   assertNodeRuntime());
 
-test('an unavailable SQLite module, FTS5 index or actual MATCH result cannot pass runtime admission', () => {
-  for (const source of unavailableSqliteModules) {
-    assert.throws(
-      () => assertNodeRuntime(process.execPath, { run: sqliteProbeRunner(source) }),
-      (error: unknown) =>
-        error instanceof Error &&
-        /native TypeScript, built-in SQLite and FTS5 support is required/.test(error.message) &&
-        !error.message.includes('PRIVATE'),
-    );
+test('runtime admission checks the supported version boundary and native TypeScript capability', () => {
+  const source = stripTypeScriptTypes(NODE_RUNTIME_PROBE);
+  for (const [node, typescript, supported] of [
+    ['22.17.0', 'strip', false],
+    ['22.18.0', 'strip', true],
+    ['23.9.0', 'transform', false],
+    ['24.0.0', 'transform', true],
+    ['25.1.0', 'strip', true],
+    ['24.0.0', undefined, false],
+    ['24.0.0', 'disabled', false],
+  ] as const) {
+    let stdout = '';
+    const probe = () =>
+      runInNewContext(
+        source,
+        {
+          process: {
+            versions: { node },
+            features: { typescript },
+            exit: (status: number) => {
+              assert.equal(status, 1);
+              throw Error('fixture_runtime_rejected');
+            },
+            stdout: { write: (value: string) => (stdout += value) },
+          },
+        },
+        { timeout: 1_000 },
+      );
+    if (supported) {
+      probe();
+      assert.equal(stdout, NODE_RUNTIME_ACK);
+    } else {
+      assert.throws(probe, /fixture_runtime_rejected/);
+      assert.equal(stdout, '');
+    }
   }
 });

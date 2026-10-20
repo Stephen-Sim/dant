@@ -5,32 +5,37 @@ import { parseLcov, assessCoverage, coverageMarkdown } from '../../../scripts/ci
 const record = (file: string, lineHit = 10) =>
   `SF:${file}\nLF:10\nLH:${lineHit}\nBRF:4\nBRH:4\nFNF:3\nFNH:3\nend_of_record\n`;
 test('LCOV coverage is weighted by executable counts and normalizes source paths', () => {
-  const files = parseLcov(record('src/a.mjs', 10) + record('src/b.mjs', 8));
+  const files = parseLcov(
+    record('ui/chat/message-window.mts', 10) + record('ui/settings/appearance.mts', 8),
+  );
   const first = files[0];
   assert.ok(first);
-  assert.equal(first.file, 'src/a.mjs');
+  assert.equal(first.file, 'ui/chat/message-window.mts');
   const result = assessCoverage(files, { required: [] });
   assert.equal(result.summary.lines, 90);
   assert.deepEqual(result.failures, []);
-  assert.match(coverageMarkdown(result), /src\/b.mjs \| 80%/);
+  assert.match(coverageMarkdown(result), /ui\/settings\/appearance.mts \| 80%/);
 });
 test('missing modules and insufficient branch, function, or line coverage fail the gate', () => {
   const files = parseLcov(
-    record('src/a.mjs', 5).replace('BRH:4', 'BRH:1').replace('FNH:3', 'FNH:1'),
+    record('ui/chat/message-window.mts', 5).replace('BRH:4', 'BRH:1').replace('FNH:3', 'FNH:1'),
   );
   const result = assessCoverage(files, {
-    required: ['src/telegram/telegram.mts', 'src/a.mjs'],
-    modules: ['src/never-tested.mjs'],
+    required: ['ui/settings/appearance.mts', 'ui/chat/message-window.mts'],
+    modules: ['ui/work/progress-actions.mts'],
   });
   assert.equal(result.failures.length, 6);
-  assert.match(result.failures.join('\n'), /Required module has no coverage: src\/telegram/);
+  assert.match(
+    result.failures.join('\n'),
+    /Required module has no coverage: ui\/settings\/appearance.mts/,
+  );
   assert.match(result.failures.join('\n'), /Application module was never loaded by a test/);
 });
 test('empty or malformed LCOV cannot masquerade as complete coverage', () => {
   assert.throws(() => parseLcov(''), /no application files/);
-  assert.throws(() => parseLcov(record('src/a.mjs', 11)), /Invalid LCOV/);
+  assert.throws(() => parseLcov(record('ui/chat/message-window.mts', 11)), /Invalid LCOV/);
   assert.throws(
-    () => parseLcov(record('src/a.mjs').replace('LF:10', 'LF:not-a-number')),
+    () => parseLcov(record('ui/chat/message-window.mts').replace('LF:10', 'LF:not-a-number')),
     /Invalid LCOV/,
   );
 });

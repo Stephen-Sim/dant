@@ -96,7 +96,7 @@ func CurrentProfileOwner() (string, error) {
 	} else if index := strings.LastIndex(username, `\`); index >= 0 {
 		username = username[index+1:]
 	}
-	value := `{"name":` + nodeJSONString(username) + `,"home":` + nodeJSONString(account.HomeDir) + `,"uid":` + strconv.FormatInt(uid, 10) + `}`
+	value := `{"name":` + canonicalJSONString(username) + `,"home":` + canonicalJSONString(account.HomeDir) + `,"uid":` + strconv.FormatInt(uid, 10) + `}`
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:]), nil
 }
@@ -141,7 +141,7 @@ func (profiles *Profiles) descriptor(directory, source string) (Profile, Binding
 		return Profile{}, Binding{}, err
 	}
 	resolved := canonicalProfile(directory)
-	key := `[` + nodeJSONString(strings.ToLower(binding.Host)) + `,` + nodeJSONString(binding.User) + `,` + strconv.Itoa(binding.Port) + `,` + nodeJSONString(binding.KeyPath) + `]`
+	key := `[` + canonicalJSONString(strings.ToLower(binding.Host)) + `,` + canonicalJSONString(binding.User) + `,` + strconv.Itoa(binding.Port) + `,` + canonicalJSONString(binding.KeyPath) + `]`
 	sum := sha256.Sum256([]byte(key))
 	return Profile{
 		ID:        hex.EncodeToString(sum[:])[:24],

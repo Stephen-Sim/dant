@@ -6,7 +6,7 @@ import (
 	"sort"
 )
 
-// The Node receipt object preserves insertion order. It matters when distinct
+// The saved receipt object preserves insertion order. It matters when distinct
 // sources share a millisecond: snapshot.lastResponse selects the last receipt.
 func orderedKeys(raw json.RawMessage) []string {
 	decoder := json.NewDecoder(bytes.NewReader(raw))

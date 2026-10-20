@@ -2,7 +2,6 @@ package i18n
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,20 +36,28 @@ func TestAllSixteenLanguagesAreEmbeddedAndKeepStableWireCodes(t *testing.T) {
 	}
 }
 
-func TestNodeIntlCountGoldenAllLanguages(t *testing.T) {
-	raw, err := os.ReadFile("node-count-goldens.json")
-	if err != nil {
-		t.Fatal(err)
+func TestCountFormatsEverySupportedLanguageWithItsGroupingRules(t *testing.T) {
+	expected := map[string]string{
+		"en": "1,234,567", "zh": "1,234,567", "zh-TW": "1,234,567",
+		"ja": "1,234,567", "ko": "1,234,567", "es": "1.234.567",
+		"fr": "1\u202f234\u202f567", "de": "1.234.567", "pt": "1.234.567",
+		"ru": "1\u00a0234\u00a0567", "ar": "1,234,567", "hi": "12,34,567",
+		"id": "1.234.567", "ms": "1,234,567", "it": "1.234.567", "tr": "1.234.567",
 	}
-	var cases []struct{ Code, Value string }
-	if err = json.Unmarshal(raw, &cases); err != nil {
-		t.Fatal(err)
+	languages, err := Languages()
+	if err != nil || len(languages) != len(expected) {
+		t.Fatal("number formatting lacks a supported language", err)
 	}
-	for _, test := range cases {
-		actual, err := Count(test.Code, 1234567, "{count}", "{count}")
-		if err != nil || actual != test.Value {
-			t.Fatalf("locale %s count differs: %q", test.Code, actual)
-		}
+	for _, language := range languages {
+		t.Run(language.Code, func(t *testing.T) {
+			actual, err := Count(language.Code, 1234567, "{count}", "{count}")
+			if err != nil || actual != expected[language.Code] {
+				t.Fatal("locale grouping or digits changed", err)
+			}
+			if zero, err := Count(language.Code, 0, "{count}", "{count}"); err != nil || zero != "0" {
+				t.Fatal("zero must remain a numeric value", err)
+			}
+		})
 	}
 }
 
@@ -67,7 +74,7 @@ func TestTimeZoneAliasesCaseAndRejectedLocalContract(t *testing.T) {
 	}
 }
 
-func TestScheduleLocalDisplayMatchesNodeEnCAContract(t *testing.T) {
+func TestScheduleLocalDisplayUsesExplicitTimeZoneAndDayPeriod(t *testing.T) {
 	for zone, want := range map[string]string{"UTC": "Oct 9, 2025, 8:53:20 a.m. UTC", "Asia/Kuala_Lumpur": "Oct 9, 2025, 4:53:20 p.m. GMT+8", "America/New_York": "Oct 9, 2025, 4:53:20 a.m. EDT", "Europe/Berlin": "Oct 9, 2025, 10:53:20 a.m. GMT+2", "Australia/Lord_Howe": "Oct 9, 2025, 7:53:20 p.m. GMT+11"} {
 		location, err := time.LoadLocation(zone)
 		if err != nil || ScheduleLocalTime(1760000000000, location) != want {

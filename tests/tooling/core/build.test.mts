@@ -187,6 +187,262 @@ test('ignored embedded assets fail provenance checks before either binary is bui
   assert.equal(fs.readFileSync(previous, 'utf8'), 'previous');
 });
 
+test('core build publication retries Windows locks without recompiling or changing verified bytes', (t) => {
+  const f = fixture(t),
+    delays: number[] = [],
+    clock = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  let attempts = 0;
+  const result = buildCore({
+    ...f.options,
+    platform: 'win32',
+    pause: (milliseconds) => {
+      delays.push(milliseconds);
+      Atomics.wait(clock, 0, 0, milliseconds);
+    },
+    renameSync: (source, destination) => {
+      if (++attempts === 1) throw Object.assign(Error('Synthetic scanner lock'), { code: 'EPERM' });
+      fs.renameSync(source, destination);
+    },
+  });
+  assert.ok(attempts >= 2 && attempts <= 6);
+  assert.deepEqual(
+    delays,
+    Array.from({ length: attempts - 1 }, (_, index) => (index + 1) * 50),
+  );
+  assert.equal(f.calls.filter((call) => call.args[0] === 'build').length, 2);
+  verifyFiles(result.directory, result.manifest);
+  assert.equal(
+    fs.readFileSync(path.join(result.directory, CORE_WINDOWS), 'utf8'),
+    'compiled windows',
+  );
+  assert.equal(fs.readFileSync(path.join(result.directory, CORE_LINUX), 'utf8'), 'compiled linux');
+});
+
+test('permanent publication locks are bounded and unrelated or non-Windows errors do not retry', (t) => {
+  for (const [code, platform, expectedAttempts] of [
+    ['EPERM', 'win32', 6],
+    ['EACCES', 'win32', 6],
+    ['EBUSY', 'win32', 6],
+    ['EINVAL', 'win32', 1],
+    ['EPERM', 'linux', 1],
+  ] as const) {
+    const f = fixture(t),
+      delays: number[] = [];
+    let attempts = 0,
+      staging = '';
+    assert.throws(
+      () =>
+        buildCore({
+          ...f.options,
+          platform,
+          pause: (milliseconds) => delays.push(milliseconds),
+          renameSync: (source) => {
+            staging = String(source);
+            attempts++;
+            throw Object.assign(Error('Synthetic permanent lock'), { code });
+          },
+        }),
+      /could not be published/,
+    );
+    assert.equal(attempts, expectedAttempts);
+    assert.deepEqual(
+      delays,
+      Array.from({ length: expectedAttempts - 1 }, (_, index) => (index + 1) * 50),
+    );
+    assert.equal(fs.existsSync(path.join(f.root, '.cache/core/build')), false);
+    assert.ok(staging);
+    const manifest = readManifest(
+      path.join(staging, CORE_BUILD_MANIFEST),
+      [CORE_WINDOWS, CORE_LINUX],
+      '1.2.3',
+      f.commit,
+    );
+    verifyFiles(staging, manifest);
+    assert.equal(f.calls.filter((call) => call.args[0] === 'build').length, 2);
+  }
+});
+
+test('a binary changed while its peer is being verified cannot become the publication baseline', (t) => {
+  const f = fixture(t),
+    originalRead = fs.readSync;
+  let linuxReads = 0,
+    renames = 0,
+    changed = '';
+  t.mock.method(
+    fs,
+    'readSync',
+    (
+      descriptor: number,
+      buffer: NodeJS.ArrayBufferView,
+      offset?: number | fs.ReadOptions,
+      length?: number,
+      position?: fs.ReadPosition | null,
+    ) => {
+      const count =
+        typeof offset === 'number'
+          ? originalRead(descriptor, buffer, offset, length ?? 0, position ?? null)
+          : originalRead(descriptor, buffer, offset);
+      const linux = f.calls.findLast(
+        (call) => call.args[0] === 'build' && call.env?.GOOS === 'linux',
+      );
+      const file = linux?.args[(linux?.args.indexOf('-o') ?? -1) + 1];
+      if (count === 0 && file && fs.existsSync(file)) {
+        const opened = fs.fstatSync(descriptor, { bigint: true }),
+          target = fs.lstatSync(file, { bigint: true });
+        if (opened.dev === target.dev && opened.ino === target.ino && ++linuxReads === 3) {
+          changed = path.join(path.dirname(file), CORE_WINDOWS);
+          fs.writeFileSync(changed, 'modified windows');
+        }
+      }
+      return count;
+    },
+  );
+  assert.throws(
+    () =>
+      buildCore({
+        ...f.options,
+        renameSync: () => {
+          renames++;
+        },
+      }),
+    /changed during publication/,
+  );
+  assert.ok(changed, 'the simulated concurrent mutation must actually run');
+  assert.equal(renames, 0);
+  assert.equal(fs.readFileSync(changed, 'utf8'), 'modified windows');
+  assert.equal(fs.existsSync(path.join(f.root, '.cache/core/build')), false);
+});
+
+test('publication aborts on changed artifacts, manifests, staging identities, parents and destinations', (t) => {
+  for (const kind of ['binary', 'manifest', 'source', 'parent', 'destination'] as const) {
+    const f = fixture(t);
+    let attempts = 0,
+      staging = '',
+      destination = '',
+      preserved = '';
+    assert.throws(
+      () =>
+        buildCore({
+          ...f.options,
+          platform: 'win32',
+          renameSync: (source, target) => {
+            staging = String(source);
+            destination = String(target);
+            attempts++;
+            throw Object.assign(Error('Synthetic scanner lock'), { code: 'EPERM' });
+          },
+          pause: () => {
+            assert.equal(path.dirname(staging), path.join(f.root, '.cache/core'));
+            assert.match(path.basename(staging), /^\.dant-core-[A-Za-z0-9]{6}$/);
+            if (kind === 'binary') {
+              preserved = path.join(staging, CORE_LINUX);
+              fs.writeFileSync(preserved, 'modified linux');
+            } else if (kind === 'manifest') {
+              preserved = path.join(staging, CORE_BUILD_MANIFEST);
+              fs.appendFileSync(preserved, '\n');
+            } else {
+              const replaced =
+                kind === 'source'
+                  ? staging
+                  : kind === 'parent'
+                    ? path.dirname(staging)
+                    : destination;
+              if (kind !== 'destination') fs.rmSync(replaced, { recursive: true });
+              fs.mkdirSync(replaced);
+              preserved = path.join(replaced, 'foreign.txt');
+              fs.writeFileSync(preserved, 'keep foreign data');
+            }
+          },
+        }),
+      /changed during publication/,
+    );
+    assert.equal(attempts, 1, 'changed ownership or content must stop before a second rename');
+    assert.ok(fs.existsSync(preserved), 'publication failure must preserve the changed tree');
+    if (kind === 'source' || kind === 'parent' || kind === 'destination') {
+      assert.equal(fs.readFileSync(preserved, 'utf8'), 'keep foreign data');
+    }
+  }
+});
+
+test('a moved-then-thrown rename is reconciled by exact identity and verified published bytes', (t) => {
+  const f = fixture(t),
+    clock = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  let attempts = 0,
+    completedMoves = 0;
+  const result = buildCore({
+    ...f.options,
+    platform: 'win32',
+    pause: (milliseconds) => Atomics.wait(clock, 0, 0, milliseconds),
+    renameSync: (source, target) => {
+      attempts++;
+      fs.renameSync(source, target);
+      completedMoves++;
+      throw Object.assign(Error('Synthetic late error'), { code: 'EPERM' });
+    },
+  });
+  assert.equal(completedMoves, 1, 'a confirmed physical move must never be replayed');
+  assert.ok(attempts >= 1 && attempts <= 6);
+  verifyFiles(result.directory, result.manifest);
+  assert.equal(fs.readFileSync(path.join(result.directory, CORE_LINUX), 'utf8'), 'compiled linux');
+});
+
+test('an unconfirmed no-op rename cannot publish or remove the verified staging tree', (t) => {
+  const f = fixture(t);
+  let attempts = 0,
+    staging = '';
+  assert.throws(
+    () =>
+      buildCore({
+        ...f.options,
+        renameSync: (source) => {
+          attempts++;
+          staging = String(source);
+        },
+      }),
+    /changed during publication/,
+  );
+  assert.equal(attempts, 1);
+  assert.equal(fs.existsSync(path.join(f.root, '.cache/core/build')), false);
+  assert.equal(fs.readFileSync(path.join(staging, CORE_LINUX), 'utf8'), 'compiled linux');
+});
+
+test('a foreign source recreated after a physical move is preserved without replay or cleanup', (t) => {
+  const f = fixture(t),
+    clock = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  let attempts = 0,
+    completedMoves = 0,
+    foreign = '';
+  assert.throws(
+    () =>
+      buildCore({
+        ...f.options,
+        platform: 'win32',
+        pause: (milliseconds) => Atomics.wait(clock, 0, 0, milliseconds),
+        renameSync: (source, destination) => {
+          attempts++;
+          fs.renameSync(source, destination);
+          completedMoves++;
+          fs.mkdirSync(source);
+          foreign = path.join(String(source), 'foreign.txt');
+          fs.writeFileSync(foreign, 'keep foreign data');
+          throw Object.assign(Error('Synthetic late error after replacement'), { code: 'EPERM' });
+        },
+      }),
+    /changed during publication/,
+  );
+  assert.equal(completedMoves, 1);
+  assert.ok(attempts >= 1 && attempts <= 6);
+  assert.equal(fs.readFileSync(foreign, 'utf8'), 'keep foreign data');
+  const output = path.join(f.root, '.cache/core/build');
+  const manifest = readManifest(
+    path.join(output, CORE_BUILD_MANIFEST),
+    [CORE_WINDOWS, CORE_LINUX],
+    '1.2.3',
+    f.commit,
+  );
+  verifyFiles(output, manifest);
+});
+
 test('VM resource allowlist matches both the Go deployer and Python cutover installer', () => {
   const go = fs.readFileSync('core/internal/computer/deployment.go', 'utf8');
   const goBlock = go.match(/var bundleAllowlist = map\[string\]bool\{([\s\S]*?)\n\}/)?.[1];

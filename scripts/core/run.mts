@@ -27,7 +27,7 @@ interface LaunchOptions {
   verify?: typeof validatePreparedResources;
 }
 
-/** Run a verified compiled artifact; source edits never silently fall back to Node. */
+/** Run verified compiled resources for the requested version and platform. */
 export function coreLaunch({
   root = PROJECT_ROOT,
   env = process.env,

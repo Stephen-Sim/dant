@@ -6,7 +6,7 @@ import (
 )
 
 func TestRecoveryMarkdownMatchesStoredMarkedDestinations(t *testing.T) {
-	// These destinations are fixed oracle results from marked. HTML entities
+	// Expected Markdown destinations follow marked's parsing rules. HTML entities
 	// remain part of token.href; punctuation escapes do not.
 	cases := []struct {
 		name, source, href string

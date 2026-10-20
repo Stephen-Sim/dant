@@ -21,7 +21,6 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/legacyimport"
 	"github.com/Stephen-Sim/dant/core/internal/platform"
 	"github.com/Stephen-Sim/dant/core/internal/security"
-	"github.com/Stephen-Sim/dant/core/internal/shadow"
 )
 
 const (
@@ -46,9 +45,6 @@ type serviceFactory func(context.Context, config.Startup, string) (service, erro
 // Child roles use their own fixed argument parser and never construct a live
 // Controller or Engine as a side effect.
 func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) > 0 && args[0] == "--role=memory-shadow" {
-		return shadow.Run(ctx, args, input, output)
-	}
 	if err := buildinfo.Validate(); err != nil {
 		return err
 	}

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestJSONTextMatchesECMAScriptCanonicalOracles(t *testing.T) {
+func TestJSONTextPreservesCanonicalEscapesAndUTF16(t *testing.T) {
 	for _, fixture := range []struct{ input, canonical string }{
 		{`"\u003c\u003e\u2028\u2029"`, "\"<>\u2028\u2029\""},
 		{`"\ud83d\ude00"`, `"😀"`},

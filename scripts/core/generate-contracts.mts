@@ -118,40 +118,6 @@ export function renderGoStates(schema: StateSchema): string {
   ].join('\n');
 }
 
-export function renderGoProtocol(value: unknown): string {
-  const fields = [
-    'version',
-    'requestMaxBytes',
-    'responseMaxBytes',
-    'requestIdMaxChars',
-    'workers',
-    'queueCapacity',
-    'defaultDeadlineMs',
-    'maxDeadlineMs',
-    'shutdownMs',
-    'maxSessionRequests',
-    'snapshotMaxBytes',
-  ] as const;
-  if (
-    !isRecord(value) ||
-    value.version !== SCHEMA_VERSION ||
-    Object.keys(value).length !== fields.length ||
-    !fields.every(
-      (name) =>
-        typeof value[name] === 'number' && Number.isSafeInteger(value[name]) && value[name] > 0,
-    )
-  )
-    throw Error('Invalid core protocol limits');
-  return [
-    '// Code generated from resources/contracts/core-protocol.json; DO NOT EDIT.',
-    'package contracts',
-    'const (',
-    ...fields.map((name) => `Core${name[0]?.toUpperCase()}${name.slice(1)} = ${value[name]}`),
-    ')',
-    '',
-  ].join('\n');
-}
-
 /** Go embeds the canonical locale data; the second physical copy is generated. */
 export async function languageResourceOutputs(
   root: string,
@@ -216,18 +182,6 @@ export async function generateContracts(root: string, check: boolean): Promise<v
     env: toolchain.env,
   });
   if (formatted.error || formatted.status !== 0) throw Error('Go contract formatting failed');
-  const protocol = JSON.parse(
-    await fs.readFile(path.join(root, 'resources/contracts/core-protocol.json'), 'utf8'),
-  );
-  const formattedProtocol = spawnSync(toolchain.gofmt, [], {
-    input: renderGoProtocol(protocol),
-    encoding: 'utf8',
-    windowsHide: true,
-    shell: false,
-    env: toolchain.env,
-  });
-  if (formattedProtocol.error || formattedProtocol.status !== 0)
-    throw Error('Go protocol formatting failed');
   const outputs = [
     [
       'ui/shared/states.mts',
@@ -239,7 +193,6 @@ export async function generateContracts(root: string, check: boolean): Promise<v
       }),
     ],
     ['core/internal/contracts/states.go', formatted.stdout],
-    ['core/internal/contracts/core_protocol.go', formattedProtocol.stdout],
     [
       'core/internal/config/assets/protocol.json',
       await fs.readFile(path.join(root, 'resources/config/protocol.json'), 'utf8'),

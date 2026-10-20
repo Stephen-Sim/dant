@@ -130,7 +130,7 @@ func mustBinding(t *testing.T, bridge *VMBridge) Binding {
 	return binding
 }
 
-func TestBindingDigestRetainsLegacyNodeJSONArrayBytes(t *testing.T) {
+func TestBindingDigestPreservesSavedJSONArrayBytes(t *testing.T) {
 	binding := Binding{Host: "192.0.2.1", User: "dant", Port: 22, KeyPath: "C:\\A&B\u2028key", KnownHosts: "C:\\known_hosts"}
 	expected := "[\"192.0.2.1\",\"dant\",22,\"C:\\\\A&B\u2028key\",\"C:\\\\known_hosts\"]"
 	if BindingIdentity(binding) != expected {

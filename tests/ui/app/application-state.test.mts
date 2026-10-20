@@ -1,4 +1,4 @@
-import goProjection from './testdata/active-go-golden.json' with { type: 'json' };
+import activeState from './testdata/active-state.json' with { type: 'json' };
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -132,9 +132,7 @@ test('application state validates the actual offline controller and partial lega
 });
 
 test('actual Go Engine wire progress with no call remains active through both UI boundaries without losing paused work', () => {
-  assert.equal(goProjection.go, '1.27.2');
-  assert.equal(goProjection.kind, 'isolated-public-Engine-snapshot');
-  const publicActive = structuredClone(goProjection.active),
+  const publicActive = structuredClone(activeState.active),
     value = snapshot();
   value.worker.status = ConnectionStatus.Online;
   value.controller = { status: ConnectionStatus.Online, cached: false };
@@ -161,10 +159,10 @@ test('actual Go Engine wire progress with no call remains active through both UI
     model.recent.find((item) => item.message?.id === 'human-paused')?.status,
     TaskStatus.Paused,
   );
-  const withCall = readAppState({ ...value, active: goProjection.withCall });
+  const withCall = readAppState({ ...value, active: activeState.withCall });
   assert.equal(withCall.active?.callId, 'call-active');
   assert.equal(workProgress(withCall).active?.cancelTarget?.callId, 'call-active');
-  assert.deepEqual(publicActive, goProjection.active);
+  assert.deepEqual(publicActive, activeState.active);
 });
 
 test('nullable active call identity never admits malformed identifiers, plans or unknown enum values', () => {

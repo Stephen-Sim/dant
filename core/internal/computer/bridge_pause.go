@@ -31,7 +31,7 @@ type pauseReceipt struct {
 	Entries       []string `json:"entries"`
 }
 
-func nodeJSONString(value string) string {
+func canonicalJSONString(value string) string {
 	var output strings.Builder
 	output.WriteByte('"')
 	for _, rune := range value {
@@ -64,23 +64,37 @@ func nodeJSONString(value string) string {
 	return output.String()
 }
 
-// BindingRecordDigest preserves the historical VM backup target identity,
-// including JSON property order and JavaScript's UTF-8 escaping behavior.
+// BindingRecordDigest binds a saved VM backup target to its ordered JSON
+// representation, preserving Unicode and omitting absent optional fields.
 func BindingRecordDigest(binding Binding) string {
-	value := `{"host":` + nodeJSONString(binding.Host) + `,"user":` + nodeJSONString(binding.User) + `,"port":` + strconv.Itoa(binding.Port) + `,"keyPath":` + nodeJSONString(binding.KeyPath) + `,"knownHosts":` + nodeJSONString(binding.KnownHosts)
-	for _, field := range []struct{ name, value string }{{"provider", string(binding.Provider)}, {"name", binding.Name}, {"vmxPath", binding.VMXPath}, {"vmwareId", binding.VMwareID}} {
+	value := `{"host":` + canonicalJSONString(binding.Host) +
+		`,"user":` + canonicalJSONString(binding.User) +
+		`,"port":` + strconv.Itoa(binding.Port) +
+		`,"keyPath":` + canonicalJSONString(binding.KeyPath) +
+		`,"knownHosts":` + canonicalJSONString(binding.KnownHosts)
+	for _, field := range []struct{ name, value string }{
+		{"provider", string(binding.Provider)},
+		{"name", binding.Name},
+		{"vmxPath", binding.VMXPath},
+		{"vmwareId", binding.VMwareID},
+	} {
 		if field.value != "" {
-			value += `,` + nodeJSONString(field.name) + `:` + nodeJSONString(field.value)
+			value += `,` + canonicalJSONString(field.name) + `:` + canonicalJSONString(field.value)
 		}
 	}
 	value += `}`
+
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 
 // BindingIdentity retains the legacy JSON-array identity used by pause/backup receipts.
 func BindingIdentity(binding Binding) string {
-	return "[" + nodeJSONString(binding.Host) + "," + nodeJSONString(binding.User) + "," + strconv.Itoa(binding.Port) + "," + nodeJSONString(binding.KeyPath) + "," + nodeJSONString(binding.KnownHosts) + "]"
+	return "[" + canonicalJSONString(binding.Host) +
+		"," + canonicalJSONString(binding.User) +
+		"," + strconv.Itoa(binding.Port) +
+		"," + canonicalJSONString(binding.KeyPath) +
+		"," + canonicalJSONString(binding.KnownHosts) + "]"
 }
 
 func BindingDigest(binding Binding) string {

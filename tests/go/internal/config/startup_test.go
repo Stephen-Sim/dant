@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestEnvironmentQuotedValuesMatchPinnedNodeFixtures(t *testing.T) {
+func TestEnvironmentQuotedValuesPreserveEscapesAndWhitespace(t *testing.T) {
 	fixtures := []struct {
 		source string
 		want   map[string]string

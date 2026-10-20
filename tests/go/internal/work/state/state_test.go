@@ -61,7 +61,7 @@ func TestContinuationEligibilityNeverRetriesUnknownOrDispatchedWork(t *testing.T
 	}
 }
 
-func TestCheckpointMatchesSavedNodeJSONGoldenWithoutUnicodeRepair(t *testing.T) {
+func TestCheckpointPreservesCanonicalJSONDigestAndUnicode(t *testing.T) {
 	for _, fixture := range []struct {
 		raw, want string
 	}{

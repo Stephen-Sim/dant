@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { checkReactions, reactionSequences } from '../../../scripts/core/generate-reactions.mts';
 
-test('the Go reaction vocabulary retains every bundled sequence under the actual Node contract', () => {
+test('the reaction vocabulary contains every supported bundled Unicode sequence', () => {
   checkReactions();
   const values = fs
     .readFileSync(

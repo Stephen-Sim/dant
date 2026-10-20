@@ -8,9 +8,8 @@ import (
 	"sync"
 )
 
-// Integer grouping is pinned to the existing Node 22 Intl locale contract.
-// Unicode separator/minimum grouping changes between CLDR versions must not
-// silently alter fixed UI copy during the runtime migration.
+// Fixed locale rules keep integer grouping and Unicode separators consistent
+// across system locale and CLDR updates.
 //
 //go:embed number-formats.json
 var numberFormatJSON []byte

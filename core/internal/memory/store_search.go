@@ -74,7 +74,7 @@ func synchronizeIndex(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
-func liveDocument(ctx context.Context, tx *sql.Tx, row candidate) (*document, error) {
+func readDocument(ctx context.Context, tx *sql.Tx, row candidate) (*document, error) {
 	value := &document{}
 	switch row.kind {
 	case "note":
@@ -127,7 +127,7 @@ func liveDocument(ctx context.Context, tx *sql.Tx, row candidate) (*document, er
 	return value, nil
 }
 
-func (s *Store) withReader(ctx context.Context, operation func(*Reader) error) error {
+func (s *Store) withReader(ctx context.Context, operation func(*queryReader) error) error {
 	return s.connection(ctx, func(db *sql.DB) error {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
@@ -150,7 +150,7 @@ func (s *Store) withReader(ctx context.Context, operation func(*Reader) error) e
 		if err = tx.Commit(); err != nil {
 			return err
 		}
-		return operation(&Reader{repository: &repository{db: db, revision: revision, live: true}})
+		return operation(&queryReader{repository: &repository{db: db, revision: revision}})
 	})
 }
 
@@ -162,7 +162,7 @@ func (s *Store) Search(ctx context.Context, query string, options SearchOptions)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result []SearchResult
-	err = s.withReader(ctx, func(reader *Reader) error {
+	err = s.withReader(ctx, func(reader *queryReader) error {
 		var err error
 		result, err = reader.Search(ctx, prepared, options)
 		return err
@@ -178,7 +178,7 @@ func (s *Store) Retrieve(ctx context.Context, query string, scope Scope, options
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result []Reference
-	err = s.withReader(ctx, func(reader *Reader) error {
+	err = s.withReader(ctx, func(reader *queryReader) error {
 		var err error
 		result, err = reader.Retrieve(ctx, prepared, scope, options)
 		return err

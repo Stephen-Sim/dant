@@ -4,24 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"slices"
-	"strings"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
 
-type Reader struct{ repository *repository }
+type queryReader struct{ repository *repository }
 
-// NewReader does not own db. The caller supplies an isolated immutable,
-// read-only shadow snapshot; no path is accepted and no live store is opened.
-func NewReader(ctx context.Context, db *sql.DB, expectedRevision int64) (*Reader, error) {
-	store, err := newRepository(ctx, db, expectedRevision)
-	if err != nil {
-		return nil, err
-	}
-	return &Reader{repository: store}, nil
-}
-
-func (r *Reader) Search(ctx context.Context, query PreparedQuery, options SearchOptions) ([]SearchResult, error) {
+func (r *queryReader) Search(ctx context.Context, query PreparedQuery, options SearchOptions) ([]SearchResult, error) {
 	query.Terms = slices.Clone(query.Terms)
 	if options.ConversationID != nil {
 		conversation := *options.ConversationID
@@ -47,18 +36,18 @@ func (r *Reader) Search(ctx context.Context, query PreparedQuery, options Search
 			return err
 		}
 		for _, row := range rows {
-			document, err := r.repository.document(ctx, tx, row)
+			document, err := readDocument(ctx, tx, row)
 			if err != nil {
 				return err
 			}
 			if document == nil || (document.status.Valid && contracts.MemoryEntryStatus(document.status.String) != contracts.MemoryEntryStatusConfirmed) {
 				continue
 			}
-			text := row.indexedText
-			if last := strings.LastIndex(text, "\n"); last >= 0 {
-				text = text[:last]
+			text := document.textUnits
+			if text == nil {
+				text = units(SanitizeText(document.text))
 			}
-			results = append(results, result(row, Text{units: unitSlice(units(text), 0, ExcerptUnits)}))
+			results = append(results, result(row, Text{units: unitSlice(text, 0, ExcerptUnits)}))
 		}
 		return nil
 	})
@@ -75,7 +64,7 @@ func sourceMatches(kind string, source *Source, scope Scope) bool {
 	return source.ConversationID != nil && *source.ConversationID == scope.ConversationID && (source.WorkID == nil || sameID(source.WorkID, scope.WorkID))
 }
 
-func (r *Reader) Retrieve(ctx context.Context, query PreparedQuery, scope Scope, options RetrieveOptions) ([]Reference, error) {
+func (r *queryReader) Retrieve(ctx context.Context, query PreparedQuery, scope Scope, options RetrieveOptions) ([]Reference, error) {
 	query.Terms = slices.Clone(query.Terms)
 	if scope.WorkID != nil {
 		work := *scope.WorkID
@@ -102,7 +91,7 @@ func (r *Reader) Retrieve(ctx context.Context, query PreparedQuery, scope Scope,
 		}
 		remaining := RetrievalBudgetUnits
 		for _, row := range rows {
-			document, err := r.repository.document(ctx, tx, row)
+			document, err := readDocument(ctx, tx, row)
 			if err != nil {
 				return err
 			}

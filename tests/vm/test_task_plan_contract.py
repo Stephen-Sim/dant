@@ -1,4 +1,4 @@
-"""Pure task-plan schema parity; no desktop, VM, network or model execution."""
+"""Pure task-plan schema contract; no desktop, VM, network or model execution."""
 import ast
 import json
 import pathlib

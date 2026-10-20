@@ -80,7 +80,7 @@ func assignmentEnd(text string, start, keyStart int) int {
 	return end
 }
 
-// SanitizeText applies the same reference-only credential redaction as Node.
+// SanitizeText removes credentials from reference text while preserving public prose.
 func SanitizeText(text string) string {
 	var out strings.Builder
 	cursor := 0

@@ -11,9 +11,8 @@ import (
 	_ "time/tzdata"
 )
 
-// Canonical names retain the Node 22 Intl wire contract, including legacy IANA
-// aliases and ASCII case-insensitive identifiers. These are fixed data, not
-// user-editable schedule policy.
+// Canonical IANA names support aliases and ASCII case-insensitive identifiers.
+// These are fixed data, not user-editable schedule policy.
 //
 //go:embed timezones.json
 var timeZoneJSON []byte

@@ -2,68 +2,77 @@ package memory
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
-
-const fixtureSchema = `PRAGMA journal_mode=DELETE; PRAGMA user_version=1;
-CREATE TABLE memory_meta(id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, search_revision INTEGER NOT NULL);
-INSERT INTO memory_meta VALUES(1,7,7);
-CREATE VIRTUAL TABLE memory_search USING fts5(document_key UNINDEXED,kind UNINDEXED,text,updated_at UNINDEXED,conversation_id UNINDEXED,work_id UNINDEXED);
-CREATE TABLE memory_read_documents(search_rowid INTEGER PRIMARY KEY,document_key TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,normalized_text TEXT NOT NULL,updated_at INTEGER,conversation_id TEXT,work_id TEXT,status TEXT,source_json TEXT,confidence REAL);`
 
 type fixture struct {
 	writer *sql.DB
-	db     *sql.DB
-	reader *Reader
-	file   string
+	store  *Store
+	reader *fixtureReader
+	nextID string
+	now    int64
 }
 
 func ptr[T any](value T) *T { return &value }
 
 func newFixture(t testing.TB) *fixture {
 	t.Helper()
-	file := filepath.Join(t.TempDir(), "snapshot.sqlite")
-	writer, err := sql.Open("sqlite", file)
+	f := &fixture{now: 1000}
+	store, err := OpenStore(context.Background(), t.TempDir(), StoreOptions{
+		Now:   func() time.Time { return time.UnixMilli(f.now) },
+		NewID: func() string { return f.nextID },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	writer, err := sql.Open("sqlite", store.DatabaseFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	writer.SetMaxOpenConns(1)
 	t.Cleanup(func() { writer.Close() })
-	if _, err := writer.Exec(fixtureSchema); err != nil {
-		t.Fatal(err)
-	}
-	uriPath := filepath.ToSlash(file)
-	if filepath.VolumeName(file) != "" {
-		uriPath = "/" + uriPath
-	}
-	uri := url.URL{Scheme: "file", Path: uriPath}
-	query := url.Values{"mode": {"ro"}, "_pragma": {"query_only(1)", "trusted_schema(OFF)", "busy_timeout(5000)"}}
-	uri.RawQuery = query.Encode()
-	db, err := sql.Open("sqlite", uri.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(4)
-	t.Cleanup(func() { db.Close() })
-	reader, err := NewReader(context.Background(), db, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &fixture{writer: writer, db: db, reader: reader, file: file}
+	f.store, f.writer, f.reader = store, writer, &fixtureReader{store: store}
+	return f
+}
+
+// Exercise prepared query validation inside the same locked Store transaction
+// used by public Search and Retrieve, without a second database representation.
+type fixtureReader struct{ store *Store }
+
+func (f *fixtureReader) Search(ctx context.Context, query PreparedQuery, options SearchOptions) ([]SearchResult, error) {
+	f.store.mu.Lock()
+	defer f.store.mu.Unlock()
+	var result []SearchResult
+	err := f.store.withReader(ctx, func(reader *queryReader) error {
+		var err error
+		result, err = reader.Search(ctx, query, options)
+		return err
+	})
+	return result, err
+}
+
+func (f *fixtureReader) Retrieve(ctx context.Context, query PreparedQuery, scope Scope, options RetrieveOptions) ([]Reference, error) {
+	f.store.mu.Lock()
+	defer f.store.mu.Unlock()
+	var result []Reference
+	err := f.store.withReader(ctx, func(reader *queryReader) error {
+		var err error
+		result, err = reader.Retrieve(ctx, query, scope, options)
+		return err
+	})
+	return result, err
 }
 
 type fixtureDocument struct {
@@ -79,43 +88,57 @@ type fixtureDocument struct {
 
 func (f *fixture) add(t testing.TB, doc fixtureDocument) {
 	t.Helper()
+	ctx := context.Background()
 	if doc.kind == "" {
 		doc.kind = "semantic"
 	}
-	if doc.kind == "semantic" || doc.kind == "episodic" {
-		if doc.status == nil {
-			doc.status = ptr("confirmed")
+	f.nextID, f.now = doc.id, 1000
+	if doc.updated != nil {
+		f.now = *doc.updated
+	}
+	switch doc.kind {
+	case "note":
+		if err := f.store.WriteNote(ctx, doc.id, doc.text); err != nil {
+			t.Fatal(err)
 		}
-		if doc.source == nil {
-			doc.source = &Source{Kind: "user", ConversationID: doc.conversation, WorkID: doc.work}
+	case "project":
+		if doc.conversation == nil || doc.work == nil {
+			t.Fatal("project fixture requires exact conversation and work")
 		}
-	}
-	if doc.kind != "note" && doc.updated == nil {
-		doc.updated = ptr(int64(1000))
-	}
-	indexed := doc.indexed
-	if indexed == "" {
-		indexed = doc.text + "\n" + strings.ToLower(doc.text)
-	}
-	inserted, err := f.writer.Exec("INSERT INTO memory_search(document_key,kind,text,updated_at,conversation_id,work_id) VALUES(?,?,?,?,?,?)", doc.id, doc.kind, indexed, doc.updated, doc.conversation, doc.work)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rowID, err := inserted.LastInsertId()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var source *string
-	if doc.source != nil {
-		encoded, err := json.Marshal(doc.source)
+		project, err := json.Marshal(ProjectContext{Version: 1, UpdatedAt: f.now, OriginalRequest: &ProjectEntry{MessageID: "request", At: f.now, Text: doc.text, Attachments: []ProjectAttachment{}}, HumanUpdates: []ProjectEntry{}, Results: []ProjectEntry{}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		source = ptr(string(encoded))
+		if _, err := f.store.WriteProject(ctx, *doc.conversation, *doc.work, project); err != nil {
+			t.Fatal(err)
+		}
+	case "semantic", "episodic":
+		if doc.source == nil {
+			doc.source = &Source{Kind: "user", ConversationID: doc.conversation, WorkID: doc.work}
+		}
+		entry, err := f.store.Propose(ctx, Proposal{Kind: doc.kind, Text: doc.text, Key: &doc.id, Source: *doc.source, Confidence: doc.confidence})
+		if err != nil || entry.ID != doc.id {
+			t.Fatal("fixture write did not retain its assigned identity", err)
+		}
+		if doc.status == nil || *doc.status == string(contracts.MemoryEntryStatusConfirmed) {
+			if _, err := f.store.Confirm(ctx, entry.ID, false); err != nil {
+				t.Fatal(err)
+			}
+		} else if *doc.status != string(contracts.MemoryEntryStatusCandidate) {
+			if _, err := f.writer.Exec("UPDATE memory_entries SET status=? WHERE id=?", *doc.status, doc.id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	default:
+		t.Fatal("unknown fixture kind")
 	}
-	_, err = f.writer.Exec("INSERT INTO memory_read_documents VALUES(?,?,?,?,?,?,?,?,?,?,?)", rowID, doc.id, doc.kind, doc.text, strings.ToLower(doc.text), doc.updated, doc.conversation, doc.work, doc.status, source, doc.confidence)
-	if err != nil {
+	if _, err := f.store.Search(ctx, "", SearchOptions{Limit: 10}); err != nil {
 		t.Fatal(err)
+	}
+	if doc.indexed != "" {
+		if _, err := f.writer.Exec("UPDATE memory_search SET text=? WHERE document_key=?", doc.indexed, doc.id); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -182,7 +205,7 @@ func TestRetrievalScopeFiltersBeforeLimit(t *testing.T) {
 	}
 }
 
-func TestSnapshotConfirmationAndAuthoritativeContent(t *testing.T) {
+func TestConfirmationAndAuthoritativeContent(t *testing.T) {
 	f := newFixture(t)
 	for _, status := range []string{"candidate", "conflicted", "rejected", "confirmed"} {
 		f.add(t, fixtureDocument{id: status, text: "Bamboo preference", status: ptr(status)})
@@ -196,7 +219,12 @@ func TestSnapshotConfirmationAndAuthoritativeContent(t *testing.T) {
 	if err != nil || len(results) != 0 {
 		t.Fatal("FTS-only content must not become an authoritative excerpt", err)
 	}
-	if _, err := f.writer.Exec("UPDATE memory_read_documents SET status='unrecognized' WHERE document_key='confirmed'"); err != nil {
+	if _, err := f.writer.Exec("UPDATE memory_entries SET status='unrecognized' WHERE id='confirmed'"); err == nil {
+		t.Fatal("schema admitted an unknown confirmation state")
+	}
+	// Simulate pre-existing disk corruption on this fixture-only connection.
+	// Production reads open a new connection with all schema checks enabled.
+	if _, err := f.writer.Exec("PRAGMA ignore_check_constraints=ON; UPDATE memory_entries SET status='unrecognized' WHERE id='confirmed'; UPDATE memory_meta SET search_revision=revision; PRAGMA ignore_check_constraints=OFF"); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.reader.Retrieve(context.Background(), PreparedQuery{Terms: []string{"bamboo"}}, Scope{ConversationID: "conv"}, RetrieveOptions{Limit: 6})
@@ -205,38 +233,54 @@ func TestSnapshotConfirmationAndAuthoritativeContent(t *testing.T) {
 	}
 }
 
-func TestSnapshotReadOnlyRevisionAndErrorBoundaries(t *testing.T) {
+func TestStoreRefreshesStaleIndexWithoutChangingAuthorityAndKeepsErrorsBounded(t *testing.T) {
 	f := newFixture(t)
 	f.add(t, fixtureDocument{id: "fact", text: "Python"})
-	before, err := os.ReadFile(f.file)
-	if err != nil {
+	var before, after string
+	if err := f.writer.QueryRow("SELECT text FROM memory_entries WHERE id='fact'").Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.reader.Search(context.Background(), PreparedQuery{Terms: []string{"python"}}, SearchOptions{Limit: 10}); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.ReadFile(f.file)
-	if err != nil || sha256.Sum256(before) != sha256.Sum256(after) {
-		t.Fatal("query changed the immutable snapshot")
+	if err := f.writer.QueryRow("SELECT text FROM memory_entries WHERE id='fact'").Scan(&after); err != nil || before != after {
+		t.Fatal("query changed authoritative authored content", err)
 	}
-	if _, err := f.db.Exec("DELETE FROM memory_meta"); err == nil {
-		t.Fatal("fixture must genuinely use a read-only database")
-	}
-	if _, err := f.writer.Exec("UPDATE memory_meta SET revision=8"); err != nil {
+	if err := f.store.WriteNote(t.Context(), "identity.md", "Fresh reference"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.reader.Search(context.Background(), PreparedQuery{}, SearchOptions{Limit: 10}); !errors.Is(err, ErrStaleSnapshot) {
-		t.Fatal("empty query must not conceal stale index", err)
+	var revision, indexed int64
+	if err := f.writer.QueryRow("SELECT revision,search_revision FROM memory_meta").Scan(&revision, &indexed); err != nil || revision == indexed {
+		t.Fatal("write did not invalidate its index", err)
 	}
-	if _, err := NewReader(context.Background(), f.db, 8); !errors.Is(err, ErrStaleSnapshot) {
-		t.Fatal("new reader must not rebuild a stale FTS index", err)
+	if _, err := f.reader.Search(context.Background(), PreparedQuery{}, SearchOptions{Limit: 10}); err != nil {
+		t.Fatal("empty search could not refresh a valid stale index", err)
+	}
+	if err := f.writer.QueryRow("SELECT revision,search_revision FROM memory_meta").Scan(&revision, &indexed); err != nil || revision != indexed {
+		t.Fatal("current index was not bound to the authority revision", err)
+	}
+	if _, err := f.writer.Exec("UPDATE memory_meta SET revision=-1"); err == nil {
+		t.Fatal("schema admitted a negative authority revision")
+	}
+	if _, err := f.writer.Exec("PRAGMA ignore_check_constraints=ON; UPDATE memory_meta SET revision=-1; PRAGMA ignore_check_constraints=OFF"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.reader.Search(context.Background(), PreparedQuery{}, SearchOptions{Limit: 10}); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("schema rejection did not retain its bounded operational failure", err)
+	}
+	var damaged int64
+	if err := f.writer.QueryRow("SELECT revision FROM memory_meta").Scan(&damaged); err != nil || damaged != -1 {
+		t.Fatal("failed query guessed a repair or committed a new authority revision", err)
+	}
+	if _, err := f.writer.Exec("UPDATE memory_meta SET revision=?,search_revision=?", revision, indexed); err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := f.reader.Search(ctx, PreparedQuery{}, SearchOptions{Limit: 10}); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	f.db.Close()
+	f.store.Close()
 	if _, err := f.reader.Search(context.Background(), PreparedQuery{Terms: []string{"fixtureprivatevalue"}}, SearchOptions{Limit: 10}); !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), "fixtureprivatevalue") {
 		t.Fatal("operational errors must stay bounded", err)
 	}
@@ -304,7 +348,10 @@ func TestPreparedInputsAndSourceScopeStayStrict(t *testing.T) {
 	}
 	f.add(t, fixtureDocument{id: "fact", text: "Python"})
 	for _, source := range []string{`{"kind":"user","workId":null}`, `{"kind":"user","workId":"different"}`, `{"kind":"user","extra":"fixtureprivatevalue"}`, `{"kind":"unrecognized"}`} {
-		if _, err := f.writer.Exec("UPDATE memory_read_documents SET source_json=?", source); err != nil {
+		if _, err := f.writer.Exec("UPDATE memory_entries SET source_json=? WHERE id='fact'", source); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.writer.Exec("UPDATE memory_meta SET search_revision=revision"); err != nil {
 			t.Fatal(err)
 		}
 		_, err := f.reader.Retrieve(context.Background(), PreparedQuery{Terms: []string{"python"}}, Scope{ConversationID: "conv"}, RetrieveOptions{Limit: 6})
@@ -327,21 +374,21 @@ func TestSearchNFKCExpansionRetainsTheOriginalUTF16Contract(t *testing.T) {
 	}
 }
 
-func TestNodeNumberFTSTimestampsMatchIntegerAuthorityWithoutCoercion(t *testing.T) {
+func TestIntegralRealFTSTimestampsMatchIntegerAuthorityWithoutCoercion(t *testing.T) {
 	f := newFixture(t)
 	query := PreparedQuery{Terms: []string{"cobalt"}}
 	for _, timestamp := range []int64{1, 1760000000000, maxTimestamp} {
 		id := fmt.Sprintf("time-%d", timestamp)
 		f.add(t, fixtureDocument{id: id, text: "cobalt", updated: ptr(timestamp)})
 	}
-	// This is the SQLite storage shape produced by DatabaseSync.run(JS number):
-	// REAL in FTS UNINDEXED columns, INTEGER in the authority's affinity column.
+	// SQLite may store an integral REAL in an untyped FTS column while the
+	// authoritative table stores the same value with INTEGER affinity.
 	if _, err := f.writer.Exec("UPDATE memory_search SET updated_at=CAST(updated_at AS REAL)"); err != nil {
 		t.Fatal(err)
 	}
 	var indexedType, authorityType string
-	if err := f.writer.QueryRow("SELECT typeof(s.updated_at),typeof(a.updated_at) FROM memory_search s JOIN memory_read_documents a ON a.search_rowid=s.rowid LIMIT 1").Scan(&indexedType, &authorityType); err != nil || indexedType != "real" || authorityType != "integer" {
-		t.Fatal("fixture did not preserve the cross-runtime SQLite number types", err)
+	if err := f.writer.QueryRow("SELECT typeof(s.updated_at),typeof(a.updated_at) FROM memory_search s JOIN memory_entries a ON a.id=s.document_key LIMIT 1").Scan(&indexedType, &authorityType); err != nil || indexedType != "real" || authorityType != "integer" {
+		t.Fatal("fixture did not preserve the distinct SQLite number types", err)
 	}
 	results, err := f.reader.Search(context.Background(), query, SearchOptions{Limit: 10})
 	if err != nil || len(results) != 3 || results[0].UpdatedAt == nil || *results[0].UpdatedAt != maxTimestamp {
@@ -370,7 +417,7 @@ func TestNodeNumberFTSTimestampsMatchIntegerAuthorityWithoutCoercion(t *testing.
 	}
 }
 
-func TestConcurrentRequestsReuseTheReadOnlyPool(t *testing.T) {
+func TestConcurrentStoreReadsKeepTheirExactConversationScope(t *testing.T) {
 	f := newFixture(t)
 	f.add(t, fixtureDocument{id: "shared", text: "Python renderer", conversation: ptr("conv")})
 	var group sync.WaitGroup
@@ -393,43 +440,26 @@ func TestConcurrentRequestsReuseTheReadOnlyPool(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if f.db.Stats().OpenConnections > 4 {
-		t.Fatal("query unexpectedly expanded the caller-owned pool")
-	}
 }
 
-func TestMalformedSnapshotCannotLookLikeAnEmptySuccessfulSearch(t *testing.T) {
-	f := newFixture(t)
-	if _, err := NewReader(context.Background(), nil, 7); !errors.Is(err, ErrInvalidSnapshot) {
-		t.Fatal(err)
-	}
-	if _, err := NewReader(context.Background(), f.db, -1); !errors.Is(err, ErrInvalidSnapshot) {
-		t.Fatal(err)
-	}
-	if _, err := f.writer.Exec("PRAGMA user_version=2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewReader(context.Background(), f.db, 7); !errors.Is(err, ErrInvalidSnapshot) {
-		t.Fatal(err)
-	}
-	if _, err := f.writer.Exec("PRAGMA user_version=1; ALTER TABLE memory_read_documents ADD COLUMN unexpected TEXT"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewReader(context.Background(), f.db, 7); !errors.Is(err, ErrInvalidSnapshot) {
-		t.Fatal(err)
+func TestMalformedStoreSchemaCannotLookLikeAnEmptySuccessfulSearch(t *testing.T) {
+	for _, statement := range []string{"PRAGMA user_version=2", "ALTER TABLE notes ADD COLUMN unexpected TEXT"} {
+		t.Run(statement, func(t *testing.T) {
+			f := newFixture(t)
+			if _, err := f.writer.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.Search(t.Context(), "", SearchOptions{Limit: 10}); !errors.Is(err, ErrInvalidSnapshot) {
+				t.Fatal("invalid authoritative schema was accepted as an empty result", err)
+			}
+		})
 	}
 }
 
 func BenchmarkMemoryRetrieve(b *testing.B) {
 	f := newFixture(b)
-	if _, err := f.writer.Exec("BEGIN IMMEDIATE"); err != nil {
-		b.Fatal(err)
-	}
 	for index := 0; index < 1000; index++ {
 		f.add(b, fixtureDocument{id: fmt.Sprintf("fact-%04d", index), text: "Python renderer uses Cairo. " + strings.Repeat("reference text ", 12), conversation: ptr(fmt.Sprintf("conv-%d", index%16))})
-	}
-	if _, err := f.writer.Exec("COMMIT"); err != nil {
-		b.Fatal(err)
 	}
 	query, scope := PreparedQuery{Terms: []string{"python", "renderer"}}, Scope{ConversationID: "conv-0"}
 	b.ReportAllocs()
@@ -443,14 +473,8 @@ func BenchmarkMemoryRetrieve(b *testing.B) {
 
 func BenchmarkMemorySearch(b *testing.B) {
 	f := newFixture(b)
-	if _, err := f.writer.Exec("BEGIN IMMEDIATE"); err != nil {
-		b.Fatal(err)
-	}
 	for index := 0; index < 1000; index++ {
 		f.add(b, fixtureDocument{id: fmt.Sprintf("fact-%04d", index), text: "Python renderer uses Cairo."})
-	}
-	if _, err := f.writer.Exec("COMMIT"); err != nil {
-		b.Fatal(err)
 	}
 	query := PreparedQuery{Terms: []string{"python", "renderer"}}
 	b.ReportAllocs()

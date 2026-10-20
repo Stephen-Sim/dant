@@ -1,6 +1,6 @@
 // Package ownership grants one Go service exclusive access to its data root.
-// Legacy Node processes are stopped and verified by the installer before entry;
-// a Go lock alone cannot establish that an older process has stopped.
+// The installer verifies that every previous executor has stopped before entry;
+// acquiring this lock alone cannot establish that another process has stopped.
 package ownership
 
 import (

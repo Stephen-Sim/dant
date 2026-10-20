@@ -21,14 +21,14 @@ An AI companion for Windows that talks with you and works on its own Ubuntu comp
 You need Windows 11, Python 3.11+, OpenSSH, and Hyper-V or VMware Workstation. An existing Ubuntu desktop VM can also connect over SSH.
 
 1. Download and install dant. For portable use, extract the entire ZIP and open `dant.exe` beside its `backend` folder. Windows packages are unsigned; SHA-256 checksums are included.
-2. The first-run guide asks whether you have a dant backup. Import it, or follow the guide to create a work computer or connect an existing VM. See [setup](docs/VM.md) and [backup migration](docs/backups.md).
+2. The first-run guide asks whether you have a dant backup. Import it, or follow the guide to create a work computer or connect an existing VM. See [setup](docs/VM.md) and [backup and restore](docs/backups.md).
 3. Sign in to ChatGPT from Settings, then send your first task.
 
 Text tasks and default voice use your ChatGPT subscription allowance; voice availability depends on the account. Optional API voice is billed separately. See [voice configuration](docs/VOICE-KEY.md).
 
 ## Explore
 
-[Settings](docs/settings.md) · [Backups](docs/backups.md) · [Telegram](docs/TELEGRAM.md) · [Updates](docs/updates.md) · [Architecture](docs/architecture.md) · [Verification](docs/verification.md)
+[Settings](docs/settings.md) · [Backups](docs/backups.md) · [Telegram](docs/TELEGRAM.md) · [Updates](docs/updates.md) · [Architecture](docs/architecture.md) · [Go Core](docs/go-core.md) · [Testing](docs/testing.md) · [Verification](docs/verification.md)
 
 <details>
 <summary>Run from source</summary>
