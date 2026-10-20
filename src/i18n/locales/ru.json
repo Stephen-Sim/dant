@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Используйте пути scripts/, references/ или assets/, а также файлы README.md, LICENSE и NOTICE в корневой папке. Можно редактировать до 128 текстовых файлов, по 256 KiB каждый и 1 MiB суммарно. Более крупные текстовые файлы и другие форматы сохраняются как вспомогательные файлы только для чтения.",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Выберите SKILL.md или ZIP с одним навыком размером до 10 MiB.",
   "No starred messages yet.": "Пока нет избранных сообщений.",
-  "Star a message from its menu to keep it here.": "Добавьте сообщение в избранное через его меню, чтобы найти его здесь."
+  "Star a message from its menu to keep it here.": "Добавьте сообщение в избранное через его меню, чтобы найти его здесь.",
+  "A backup or restore is in progress.": "Выполняется резервное копирование или восстановление.",
+  "Another VM operation is in progress.": "Уже выполняется другая операция виртуальной машины.",
+  "Another update or exit operation is in progress.": "Уже выполняется другое обновление или выход.",
+  "The VM connection or suspension record changed or could not be verified.": "Подключение или запись о приостановке виртуальной машины изменились либо не прошли проверку.",
+  "The backup or restore outcome is unconfirmed.": "Результат резервного копирования или восстановления не подтверждён.",
+  "The exit outcome could not be confirmed.": "Результат выхода не удалось подтвердить.",
+  "This VM connection does not support verified suspension.": "Это подключение виртуальной машины не поддерживает подтверждаемую приостановку.",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Не удалось подтвердить приостановку виртуальной машины. Проверьте её состояние и запросы подтверждения администратора.",
+  "Work pause could not be confirmed.": "Не удалось подтвердить приостановку работы.",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant остаётся открытым. Перед выходом проверьте состояние операции в настройках."
 }

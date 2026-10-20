@@ -28,11 +28,6 @@ const commandReceiptMaxBytes = 32768
 const lifecycleCleanupTimeout = time.Second
 const maxGuestAddresses = 16
 
-type LifecycleError struct{ Reason string }
-
-func (err *LifecycleError) Error() string  { return "vm_lifecycle_" + err.Reason }
-func lifecycleFailure(reason string) error { return &LifecycleError{Reason: reason} }
-
 type CommandRunner func(context.Context, string, []string, io.Reader) ([]byte, error)
 type LifecycleOptions struct {
 	DataDir     string
@@ -109,7 +104,7 @@ func operationUUID() string {
 
 func NewLifecycle(options LifecycleOptions) (*VMLifecycle, error) {
 	if !filepath.IsAbs(options.DataDir) || !filepath.IsAbs(options.ProjectRoot) {
-		return nil, lifecycleFailure("invalid_identity")
+		return nil, lifecycleFailure(LifecycleReasonInvalidIdentity)
 	}
 
 	if options.Run == nil {
@@ -129,7 +124,7 @@ func NewLifecycle(options LifecycleOptions) (*VMLifecycle, error) {
 	}
 
 	if options.Timeout <= 0 || options.Timeout > VMOperationTimeout {
-		return nil, lifecycleFailure("invalid_timeout")
+		return nil, lifecycleFailure(LifecycleReasonInvalidTimeout)
 	}
 
 	return &VMLifecycle{options: options, providers: NewProviders(options.Host, ProviderDetection{}), file: filepath.Join(options.DataDir, "vm-lifecycle.json")}, nil
@@ -142,16 +137,16 @@ func (lifecycle *VMLifecycle) binding() (*lifecycleBinding, error) {
 	}
 
 	if err != nil {
-		return nil, lifecycleFailure("invalid_identity")
+		return nil, lifecycleFailure(LifecycleReasonInvalidIdentity)
 	}
 	raw = bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf})
 	object, err := contracts.DecodeObject(raw, bindingMaxBytes)
 	if err != nil {
-		return nil, lifecycleFailure("invalid_identity")
+		return nil, lifecycleFailure(LifecycleReasonInvalidIdentity)
 	}
 	var binding lifecycleBinding
 	if json.Unmarshal(raw, &binding) != nil {
-		return nil, lifecycleFailure("invalid_identity")
+		return nil, lifecycleFailure(LifecycleReasonInvalidIdentity)
 	}
 	sum := sha256.Sum256(raw)
 	binding.digest = hex.EncodeToString(sum[:])
@@ -224,15 +219,15 @@ func (lifecycle *VMLifecycle) receipt() (*lifecycleReceipt, error) {
 	}
 
 	if err != nil {
-		return nil, lifecycleFailure("invalid_receipt")
+		return nil, lifecycleFailure(LifecycleReasonInvalidReceipt)
 	}
 	var receipt lifecycleReceipt
 	if json.Unmarshal(raw, &receipt) != nil || receipt.Version != 1 || !receipt.Phase.Valid() || (receipt.Provider != contracts.VmProviderIdHyperV && receipt.Provider != contracts.VmProviderIdVMware) || !bindingDigest.MatchString(receipt.Binding) || (receipt.VMID != nil && !vmIdentity.MatchString(*receipt.VMID)) {
-		return nil, lifecycleFailure("invalid_receipt")
+		return nil, lifecycleFailure(LifecycleReasonInvalidReceipt)
 	}
 
 	if (receipt.OperationID != "" || receipt.ExpiresAt != 0) && (!operationID.MatchString(receipt.OperationID) || receipt.ExpiresAt <= 0) {
-		return nil, lifecycleFailure("invalid_receipt")
+		return nil, lifecycleFailure(LifecycleReasonInvalidReceipt)
 	}
 
 	return &receipt, nil
@@ -241,7 +236,7 @@ func (lifecycle *VMLifecycle) receipt() (*lifecycleReceipt, error) {
 func (lifecycle *VMLifecycle) write(ctx context.Context, receipt lifecycleReceipt) error {
 	data, err := json.Marshal(receipt)
 	if err != nil {
-		return lifecycleFailure("invalid_receipt")
+		return lifecycleFailure(LifecycleReasonInvalidReceipt)
 	}
 
 	return files.WriteAtomic(ctx, lifecycle.file, data, 0600)
@@ -279,35 +274,35 @@ func (lifecycle *VMLifecycle) command(ctx context.Context, action string, bindin
 	}
 	command, err := lifecycle.providers.LifecycleCommand(receipt.Provider, LifecycleInput{ProjectRoot: lifecycle.options.ProjectRoot, DataDir: lifecycle.options.DataDir, Action: action, Binding: binding.digest, VMID: vmID, OperationID: receipt.OperationID, ExpiresAt: receipt.ExpiresAt})
 	if err != nil {
-		return lifecycleCommandResult{}, lifecycleFailure("unsupported")
+		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonUnsupported)
 	}
 	ctx, cancel := context.WithTimeout(ctx, lifecycle.options.Timeout)
 	defer cancel()
 	raw, err := lifecycle.options.Run(ctx, command.Executable, command.Args, nil)
 	if err != nil || len(raw) > commandReceiptMaxBytes {
-		return lifecycleCommandResult{}, lifecycleFailure("unconfirmed")
+		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
 	}
 	var result lifecycleCommandResult
 	if json.Unmarshal(bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf}), &result) != nil || !result.OK || result.Provider != receipt.Provider || !vmIdentity.MatchString(result.VMID) || (receipt.VMID != nil && !strings.EqualFold(*receipt.VMID, result.VMID)) || !result.State.Valid() || result.Changed == nil || len(result.Addresses) > maxGuestAddresses {
-		return lifecycleCommandResult{}, lifecycleFailure("unconfirmed")
+		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
 	}
 	seen := make(map[string]struct{}, len(result.Addresses))
 	for _, address := range result.Addresses {
 		if !validGuestAddress(address) {
-			return lifecycleCommandResult{}, lifecycleFailure("unconfirmed")
+			return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
 		}
 		if _, duplicate := seen[address]; duplicate {
-			return lifecycleCommandResult{}, lifecycleFailure("unconfirmed")
+			return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
 		}
 		seen[address] = struct{}{}
 	}
 	current, err := lifecycle.binding()
 	if err != nil || current == nil || current.digest != binding.digest {
-		return lifecycleCommandResult{}, lifecycleFailure("binding_changed")
+		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonBindingChanged)
 	}
 
 	if !lifecycle.current(receipt) {
-		return lifecycleCommandResult{}, lifecycleFailure("intent_changed")
+		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonIntentChanged)
 	}
 
 	return result, nil
@@ -334,7 +329,7 @@ func (lifecycle *VMLifecycle) enter() error {
 	lifecycle.mu.Lock()
 	defer lifecycle.mu.Unlock()
 	if lifecycle.busy {
-		return lifecycleFailure("busy")
+		return lifecycleFailure(LifecycleReasonBusy)
 	}
 	lifecycle.busy = true
 	return nil
@@ -365,7 +360,7 @@ func (lifecycle *VMLifecycle) Suspend(ctx context.Context) (SuspendResult, error
 	}
 
 	if previous != nil && (previous.Binding != binding.digest || previous.Provider != provider) {
-		return SuspendResult{}, lifecycleFailure("binding_changed")
+		return SuspendResult{}, lifecycleFailure(LifecycleReasonBindingChanged)
 	}
 	receipt := lifecycleReceipt{Version: 1, Provider: provider, Binding: binding.digest}
 	if previous != nil {
@@ -385,7 +380,7 @@ func (lifecycle *VMLifecycle) Suspend(ctx context.Context) (SuspendResult, error
 	}
 
 	if result.State != contracts.VmPowerStateSuspended && result.State != contracts.VmPowerStateOff {
-		return SuspendResult{}, lifecycleFailure("unconfirmed")
+		return SuspendResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
 	}
 
 	if *result.Changed || previous != nil {
@@ -434,7 +429,7 @@ func (lifecycle *VMLifecycle) resume(ctx context.Context, explicit bool) (Resume
 	}
 
 	if binding == nil || provider == "" || !lifecycle.options.Host.Capabilities.ManagedVM || (previous != nil && (previous.Binding != binding.digest || previous.Provider != provider)) {
-		return ResumeResult{}, lifecycleFailure("binding_changed")
+		return ResumeResult{}, lifecycleFailure(LifecycleReasonBindingChanged)
 	}
 	receipt := lifecycleReceipt{Version: 1, Provider: provider, Binding: binding.digest}
 	if previous != nil {
@@ -450,11 +445,11 @@ func (lifecycle *VMLifecycle) resume(ctx context.Context, explicit bool) (Resume
 	}
 
 	if result.State != contracts.VmPowerStateRunning && result.State != contracts.VmPowerStateOff {
-		return ResumeResult{}, lifecycleFailure("unconfirmed")
+		return ResumeResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
 	}
 
 	if !lifecycle.current(receipt) {
-		return ResumeResult{}, lifecycleFailure("intent_changed")
+		return ResumeResult{}, lifecycleFailure(LifecycleReasonIntentChanged)
 	}
 
 	if err := os.Remove(lifecycle.file); err != nil {
@@ -464,12 +459,12 @@ func (lifecycle *VMLifecycle) resume(ctx context.Context, explicit bool) (Resume
 	if provider == contracts.VmProviderIdHyperV && result.State == contracts.VmPowerStateRunning && len(result.Addresses) == 1 && result.Addresses[0] != binding.Host {
 		current, err := lifecycle.binding()
 		if err != nil || current == nil || current.digest != binding.digest {
-			return ResumeResult{}, lifecycleFailure("binding_changed")
+			return ResumeResult{}, lifecycleFailure(LifecycleReasonBindingChanged)
 		}
 		binding.raw["host"], _ = json.Marshal(result.Addresses[0])
 		raw, err := json.Marshal(binding.raw)
 		if err != nil {
-			return ResumeResult{}, lifecycleFailure("invalid_identity")
+			return ResumeResult{}, lifecycleFailure(LifecycleReasonInvalidIdentity)
 		}
 		if err := files.WriteAtomic(ctx, filepath.Join(lifecycle.options.DataDir, "vm.json"), raw, 0600); err != nil {
 			return ResumeResult{}, err

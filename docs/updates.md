@@ -18,11 +18,15 @@ A failed or rate-limited request shows a retry message rather than claiming the 
 
 ## Work computer service updates
 
-### Go Core migration in 0.4.7-beta.14
+### Go Core migration in 0.4.7-beta.15
 
 The Windows Controller and Ubuntu Worker now use compiled Go programs; Tauri remains Rust and the interface remains TypeScript. Updates verify the running Worker role, protocol, version and source commit. A durable installation journal prevents a reboot or an independent service start from bypassing offline backup and preparation. Only a matching successful preparation receipt permits activation. Existing chats, SQLite memory/schedules, skills and workspace keep their saved paths. See [architecture](architecture.md) and [migration](go-core-migration.md).
 
 RPC responses retain their matching request result when the subprocess disconnects concurrently. Cancellation prevents a queued frame from starting later, including tool approvals and notifications. Operations whose transmission has begun retain an unknown outcome until a matching result confirms it; malformed provider responses do not permit automatic replay.
+
+Attachment-only messages, call records and empty assistant placeholders retain an explicit empty text field; the interface also accepts supported older omissions without changing cached content. Exit failures distinguish a running backup, an unconfirmed work pause and an unconfirmed VM suspension using bounded fixed codes and the actual failure phase. A failed confirmation keeps the application open.
+
+Complete deployment uses a bounded 45-minute budget plus connection allowance; the matching native deployment routes allow the full operation while ordinary requests keep their shorter deadlines. A read-only storage preflight checks temporary capture, encoded recovery archives and preparation space before stopping an existing Worker. Interrupted pre-preparation attempts require explicit, identity-bound reconciliation; automatic checks do not discard their journals or repeat installation.
 
 ### Startup compatibility in 0.4.7-beta.10
 

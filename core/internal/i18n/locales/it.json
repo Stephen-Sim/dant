@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Usa i percorsi scripts/, references/ o assets/, oppure i file README.md, LICENSE e NOTICE nella radice. Modifica fino a 128 file di testo, di 256 KiB ciascuno e 1 MiB in totale. I file di testo più grandi e gli altri formati vengono conservati come file di supporto di sola lettura.",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Scegli SKILL.md o uno ZIP contenente una skill, fino a 10 MiB.",
   "No starred messages yet.": "Non ci sono ancora messaggi importanti.",
-  "Star a message from its menu to keep it here.": "Aggiungi un messaggio agli importanti dal suo menu per ritrovarlo qui."
+  "Star a message from its menu to keep it here.": "Aggiungi un messaggio agli importanti dal suo menu per ritrovarlo qui.",
+  "A backup or restore is in progress.": "È in corso un backup o un ripristino.",
+  "Another VM operation is in progress.": "È in corso un’altra operazione della macchina virtuale.",
+  "Another update or exit operation is in progress.": "È in corso un altro aggiornamento o un’altra uscita.",
+  "The VM connection or suspension record changed or could not be verified.": "La connessione o il registro di sospensione della macchina virtuale è cambiato o non è stato verificato.",
+  "The backup or restore outcome is unconfirmed.": "L’esito del backup o del ripristino non è confermato.",
+  "The exit outcome could not be confirmed.": "Non è stato possibile confermare l’esito dell’uscita.",
+  "This VM connection does not support verified suspension.": "Questa connessione alla macchina virtuale non supporta una sospensione verificabile.",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Non è stato possibile confermare la sospensione della macchina virtuale. Verifica il suo stato ed eventuali richieste di conferma dell’amministratore.",
+  "Work pause could not be confirmed.": "Non è stato possibile confermare la pausa del lavoro.",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant rimane aperto. Verifica lo stato dell’operazione nelle Impostazioni prima di uscire."
 }

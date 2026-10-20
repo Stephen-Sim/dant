@@ -39,7 +39,7 @@ func parseBackupCLI(args []string) (backupCLIArguments, error) {
 	}
 	result := backupCLIArguments{command: args[0]}
 	switch result.command {
-	case "restore", "inspect", "recover", "export", "finish", "outcome":
+	case "restore", "inspect", "recover", "export", "finish", "outcome", "preflight":
 	default:
 		return result, ErrInvalid
 	}
@@ -64,7 +64,7 @@ func parseBackupCLI(args []string) (backupCLIArguments, error) {
 		return result, ErrInvalid
 	}
 
-	if result.command == "export" {
+	if result.command == "export" || result.command == "preflight" {
 		if result.id != "" || !sourceIdentity.MatchString(result.source) {
 			return result, ErrInvalid
 		}
@@ -76,8 +76,9 @@ func parseBackupCLI(args []string) (backupCLIArguments, error) {
 	return result, nil
 }
 
-// RunCLI accepts only fixed operation flags and an authenticated archive on
-// stdin. It never starts a worker after a failed or unconfirmed restoration.
+// RunCLI accepts fixed operation flags. Read-only preflight needs no offline
+// lease; all archive mutations retain their existing ownership fences. A failed
+// or unconfirmed restoration never starts a worker.
 func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Writer, settings ...CLIOptions) error {
 	arguments, err := parseBackupCLI(args)
 	if err != nil {
@@ -91,6 +92,21 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 	if len(settings) == 1 {
 		configuration = settings[0]
 	}
+	if arguments.command == "preflight" {
+		footprint, err := PreflightWorkerBackup(ctx, WorkerPreflightOptions{
+			DataDir:       arguments.data,
+			WorkspaceRoot: arguments.workspace,
+			SourceID:      arguments.source,
+		})
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(footprint)
+	}
+
 	service := configuration.Service
 	production := service == nil
 	if service == nil {

@@ -9,6 +9,21 @@ use std::{
 
 // Matches the Controller and Worker JSON parser limit in config/network.mts.
 const API_JSON_BODY_BYTES: usize = 3 * 1024 * 1024;
+const API_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+const WORKER_DEPLOYMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(48 * 60);
+
+fn api_request_timeout(method: &str, route: &str) -> Duration {
+    if method == "POST"
+        && matches!(
+            route,
+            "/api/connect" | "/api/prepare" | "/api/service-update"
+        )
+    {
+        WORKER_DEPLOYMENT_REQUEST_TIMEOUT
+    } else {
+        API_REQUEST_TIMEOUT
+    }
+}
 
 fn validate_json_body(body: Option<&str>) -> Result<(), &'static str> {
     if body.is_some_and(|value| value.len() > API_JSON_BODY_BYTES) {
@@ -52,7 +67,8 @@ pub async fn api_request(
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(180))
+        .timeout(api_request_timeout(&method, &route))
+        .retry(reqwest::retry::never())
         .build()
         .map_err(|_| "Local API transport is unavailable")?;
     let mut request = client.request(
@@ -191,8 +207,30 @@ pub fn existing_controller(source: &str) -> Result<bool, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compatible_controller, validate_json_body, API_JSON_BODY_BYTES, CORE_PROTOCOL_VERSION,
+        api_request_timeout, compatible_controller, validate_json_body, API_JSON_BODY_BYTES,
+        API_REQUEST_TIMEOUT, CORE_PROTOCOL_VERSION, WORKER_DEPLOYMENT_REQUEST_TIMEOUT,
     };
+
+    #[test]
+    fn deployment_requests_keep_the_full_upgrade_budget_without_extending_other_requests() {
+        for route in ["/api/connect", "/api/prepare", "/api/service-update"] {
+            assert_eq!(
+                api_request_timeout("POST", route),
+                WORKER_DEPLOYMENT_REQUEST_TIMEOUT
+            );
+            assert_eq!(api_request_timeout("GET", route), API_REQUEST_TIMEOUT);
+        }
+
+        for route in [
+            "/api/state",
+            "/api/chat",
+            "/api/desktop/exit",
+            "/api/connect/other",
+            "/api/connect?unexpected=true",
+        ] {
+            assert_eq!(api_request_timeout("POST", route), API_REQUEST_TIMEOUT);
+        }
+    }
 
     #[test]
     fn controller_reuse_requires_the_same_go_build_and_role() {

@@ -156,7 +156,7 @@ type ChatMessage struct {
 	ID                         string                     `json:"id"`
 	Role                       Role                       `json:"role"`
 	Time                       Optional[float64]          `json:"time,omitzero"`
-	Text                       string                     `json:"text,omitempty"`
+	Text                       string                     `json:"text"`
 	Status                     Optional[MessageStatus]    `json:"status,omitzero"`
 	Submission                 Optional[SubmissionStatus] `json:"submission,omitzero"`
 	Read                       bool                       `json:"read"`

@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "scripts/, references/, assets/ 경로 또는 루트의 README.md, LICENSE, NOTICE 파일을 사용하세요. 텍스트 파일은 최대 128개까지 편집할 수 있으며 파일당 256 KiB, 총 1 MiB입니다. 더 큰 텍스트 파일과 다른 형식의 파일은 읽기 전용 보조 파일로 보존됩니다.",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md 또는 스킬 하나가 포함된 ZIP을 선택하세요. 최대 크기는 10 MiB입니다.",
   "No starred messages yet.": "아직 별표 메시지가 없습니다.",
-  "Star a message from its menu to keep it here.": "메시지 메뉴에서 별표를 추가하면 여기에 표시됩니다."
+  "Star a message from its menu to keep it here.": "메시지 메뉴에서 별표를 추가하면 여기에 표시됩니다.",
+  "A backup or restore is in progress.": "백업 또는 복원이 진행 중입니다.",
+  "Another VM operation is in progress.": "다른 가상 머신 작업이 진행 중입니다.",
+  "Another update or exit operation is in progress.": "다른 업데이트 또는 종료 작업이 진행 중입니다.",
+  "The VM connection or suspension record changed or could not be verified.": "가상 머신 연결 또는 중단 기록이 변경되었거나 검증되지 않았습니다.",
+  "The backup or restore outcome is unconfirmed.": "백업 또는 복원 결과가 확인되지 않았습니다.",
+  "The exit outcome could not be confirmed.": "종료 작업의 결과를 확인하지 못했습니다.",
+  "This VM connection does not support verified suspension.": "이 가상 머신 연결은 검증 가능한 일시 중단을 지원하지 않습니다.",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "가상 머신이 일시 중단되었는지 확인하지 못했습니다. 가상 머신 상태와 관리자 확인 창을 확인하세요.",
+  "Work pause could not be confirmed.": "작업이 일시 중지되었는지 확인하지 못했습니다.",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant는 열린 상태로 유지됩니다. 종료하기 전에 설정에서 작업 상태를 확인하세요."
 }

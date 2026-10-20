@@ -16,6 +16,7 @@ type desktopBridgeFixture struct {
 	disconnected int
 	connected    int
 	pause        func()
+	pauseErr     error
 }
 
 func (bridge *desktopBridgeFixture) Status() contracts.ConnectionStatus { return bridge.status }
@@ -36,7 +37,7 @@ func (bridge *desktopBridgeFixture) PauseWorkForUpdate(context.Context, string) 
 		bridge.pause()
 	}
 
-	return nil
+	return bridge.pauseErr
 }
 
 func (bridge *desktopBridgeFixture) Disconnect() {
@@ -48,10 +49,14 @@ type desktopPowerFixture struct {
 	suspended int
 	resumed   int
 	supported bool
+	err       error
 }
 
 func (power *desktopPowerFixture) Suspend(context.Context) (computer.SuspendResult, error) {
 	power.suspended++
+	if power.err != nil {
+		return computer.SuspendResult{}, power.err
+	}
 	return computer.SuspendResult{OK: true, Supported: power.supported, VMSuspended: power.supported}, nil
 }
 

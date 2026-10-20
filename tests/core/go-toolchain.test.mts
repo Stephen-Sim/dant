@@ -40,6 +40,8 @@ function fixture({
   const gofmt = path.join(goroot, 'bin', 'gofmt' + suffix);
   const calls: Call[] = [],
     output: string[] = [];
+  const overlayFile = path.join(root, '.cache', 'core', 'test-overlay-fixture', 'overlay.json');
+  let overlayClosed = 0;
   const run: GoRunner = (executable, args, options) => {
     calls.push({ executable, args, options });
     if (args[0] === 'version') return { status: 0, stdout: version };
@@ -60,8 +62,27 @@ function fixture({
     fileExists,
     env,
     write: (text: string) => output.push(text),
+    createTestOverlay: () => ({
+      file: overlayFile,
+      layout: { files: [], replacements: {} },
+      close: () => {
+        overlayClosed++;
+      },
+    }),
   };
-  return { root, go, gofmt, calls, output, run, options };
+  return {
+    root,
+    go,
+    gofmt,
+    calls,
+    output,
+    run,
+    options,
+    overlayFile,
+    get overlayClosed() {
+      return overlayClosed;
+    },
+  };
 }
 
 test('the explicit pinned install takes precedence and its own formatter is used instead of PATH gofmt', () => {
@@ -172,40 +193,43 @@ test('Go environment disables compiler selection and ambient workspace/settings 
   assert.equal(source.GOROOT, 'old-root');
 });
 
-test('integrated core checks execute format-check, vet and uncached bounded tests inside core only', () => {
+test('integrated core checks format both source roots and explicitly overlay vet and uncached bounded tests', () => {
   const f = fixture();
   runCoreGo('check', f.options);
   const commands = f.calls.slice(2);
   assert.deepEqual(
     commands.map((call) => call.args),
     [
-      ['-l', '.'],
-      ['vet', './...'],
-      ['test', '-count=1', '-timeout=120s', './...'],
+      ['-l', 'core', 'tests/go'],
+      ['vet', '-overlay=' + f.overlayFile, './...'],
+      ['test', '-overlay=' + f.overlayFile, '-count=1', '-timeout=120s', './...'],
     ],
   );
   assert.deepEqual(
     commands.map((call) => call.executable),
     [f.gofmt, f.go, f.go],
   );
-  for (const call of commands) {
-    assert.equal(call.options.cwd, path.join(f.root, 'core'));
+  for (const [index, call] of commands.entries()) {
+    assert.equal(call.options.cwd, index === 0 ? f.root : path.join(f.root, 'core'));
     assert.equal(call.options.env?.GOTOOLCHAIN, 'local');
     assert.equal(call.options.env?.GOFLAGS, '-mod=readonly');
     assert.equal(call.options.shell, false);
     assert.equal(call.options.timeout, 300000);
     assert.equal(call.options.maxBuffer, 8 * 1024 * 1024);
   }
+  assert.equal(f.overlayClosed, 1);
 });
 
 test('format writes only on the explicit format action; format-check fails before vet or tests', () => {
   const format = fixture();
   runCoreGo('format', format.options);
-  assert.deepEqual(format.calls.at(-1)?.args, ['-w', '.']);
+  assert.deepEqual(format.calls.at(-1)?.args, ['-w', 'core', 'tests/go']);
+  assert.equal(format.overlayClosed, 1);
   const dirty = fixture({ command: () => ({ status: 0, stdout: 'internal/work/work.go\n' }) });
   assert.throws(() => runCoreGo('check', dirty.options), /run npm run format:go/);
   assert.equal(dirty.calls.length, 3);
   assert.deepEqual(dirty.output, ['internal/work/work.go\n']);
+  assert.equal(dirty.overlayClosed, 1);
 });
 
 test('failed or timed out commands stop checks and report the failed stage', () => {
@@ -216,6 +240,7 @@ test('failed or timed out commands stop checks and report the failed stage', () 
     const f = fixture({ command: () => result });
     assert.throws(() => runCoreGo('vet', f.options), /Go core vet failed/);
     assert.equal(f.calls.length, 3);
+    assert.equal(f.overlayClosed, 1);
     if ('stderr' in result) assert.deepEqual(f.output, [result.stderr]);
   }
 });
@@ -231,6 +256,7 @@ test('Linux race tests require their compiler prerequisite and never turn into a
   runCoreGo('race', linux.options);
   assert.deepEqual(linux.calls.at(-1)?.args, [
     'test',
+    '-overlay=' + linux.overlayFile,
     '-race',
     '-count=1',
     '-timeout=120s',

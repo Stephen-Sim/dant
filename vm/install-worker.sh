@@ -2,20 +2,39 @@
 set -euo pipefail
 umask 077
 source_dir=$(realpath "$1")
+operator_dir=$(realpath "$(dirname -- "${BASH_SOURCE[0]}")/..")
 case "$source_dir" in "$HOME"/dant/releases/source.*) ;; *) echo 'Invalid worker source directory' >&2; exit 1;; esac
+case "$operator_dir" in "$HOME"/dant/releases/source.*) ;; *) echo 'Invalid worker operator directory' >&2; exit 1;; esac
 update_running_work=false
 guard_only=false
-for option in "${@:2}"; do
+reconcile_attempt=''
+reconcile_sha=''
+reconcile_requested=false
+shift
+while [ "$#" -gt 0 ]; do
+  option=$1
+  shift
   case "$option" in
     --update-running-work) if "$update_running_work"; then exit 1; fi; update_running_work=true ;;
     --guard-only) if "$guard_only"; then exit 1; fi; guard_only=true ;;
+    --reconcile-stopped)
+      if "$reconcile_requested" || [ "$#" -lt 2 ]; then exit 1; fi
+      reconcile_requested=true
+      reconcile_attempt=$1
+      reconcile_sha=$2
+      shift 2
+      ;;
     *) echo 'Invalid worker update option' >&2; exit 1 ;;
   esac
 done
+if "$reconcile_requested" && { "$guard_only" || "$update_running_work"; }; then
+  echo 'Invalid worker reconciliation option' >&2
+  exit 1
+fi
 test "$(id -u)" -ne 0 || { echo 'Run the worker deployment as its ordinary VM user.' >&2; exit 1; }
 # The host transfers only a fixed verified Go bundle and public network values.
 # Verify again before executing its binary or changing live services.
-public_environment=$(python3 "$source_dir/vm/worker-install.py" verify "$source_dir" "$HOME")
+public_environment=$(python3 "$operator_dir/vm/worker-install.py" verify "$source_dir" "$HOME")
 IFS=$'\t' read -r guest_host guest_port worker_port target_version target_source <<< "$public_environment"
 cd "$source_dir"
 
@@ -193,7 +212,7 @@ if "$guard_only"; then
   if "$update_running_work"; then check_idle_worker pause; else check_idle_worker final; fi
   exit 0
 fi
-if [ -f "$HOME/dant/deployed-source.json" ] && \
+if ! "$reconcile_requested" && [ -f "$HOME/dant/deployed-source.json" ] && \
   cmp -s deploy-manifest.json "$HOME/dant/deployed-source.json" && \
   systemctl --user is-active --quiet dant-worker.service && \
   systemctl --user is-active --quiet dant-guest-local.service && \
@@ -205,6 +224,12 @@ fi
 if [ -e "$HOME/dant/app" ] && [ ! -L "$HOME/dant/app" ]; then
   echo 'An existing non-symlink app directory was preserved; deployment requires manual review.' >&2
   exit 1
+fi
+if "$reconcile_requested"; then
+  # This explicit operator path proves a stopped, pre-preparation attempt under
+  # the installation lock. Automatic activation never acquires that permission.
+  exec python3 "$operator_dir/vm/worker-install.py" reconcile-stopped "$source_dir" "$HOME" \
+    --attempt-id "$reconcile_attempt" --journal-sha256 "$reconcile_sha"
 fi
 if ! "$update_running_work"; then check_idle_worker; fi
 # Optional speech dependencies prepare while the previous worker is intact.

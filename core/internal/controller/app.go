@@ -27,6 +27,7 @@ import (
 
 const cacheWriteTimeout = 5 * time.Second
 const controllerConnectTimeout = 3 * time.Minute
+const controllerDeploymentTimeout = computer.DeploymentTimeout + controllerConnectTimeout
 const controllerAutomaticInterval = 5 * time.Second
 
 type Bridge interface {
@@ -274,7 +275,8 @@ func New(ctx context.Context, options Options) (app *App, result error) {
 			_, err := computer.ReadBinding(options.DataDir)
 			return err == nil
 		},
-		Changed: app.broadcastState,
+		Changed:     app.broadcastState,
+		Diagnostics: app.diagnostics,
 	})
 	app.lease = updates.NewInstallLease(updates.LeaseOptions{Snapshot: app.installationSnapshot, Refresh: app.prepareInstallation, OnFailure: app.releasePrepared, OnRelease: app.releasePrepared, Now: options.Now})
 	vault, err := backups.NewVault(backups.VaultOptions{DataDir: options.DataDir, Protection: options.Protector, Executable: options.Executable, Transform: options.BackupTransform})
@@ -613,11 +615,11 @@ func (app *App) automatic() {
 		updatesPaused := app.configuration.ServiceUpdatesPaused
 		app.mu.Unlock()
 		if !updatesPaused && app.backgroundAllowed() && app.bindingIdentity() != "" && app.bridge.Status() != contracts.ConnectionStatusOnline {
-			bounded, stop := context.WithTimeout(app.ctx, controllerConnectTimeout)
+			bounded, stop := context.WithTimeout(app.ctx, controllerDeploymentTimeout)
 			_ = app.connect(bounded, false, true)
 			stop()
 		} else if !updatesPaused && app.backgroundAllowed() && app.bridge.Status() == contracts.ConnectionStatusOnline && app.deployer != nil {
-			bounded, stop := context.WithTimeout(app.ctx, controllerConnectTimeout)
+			bounded, stop := context.WithTimeout(app.ctx, controllerDeploymentTimeout)
 			_ = app.prepareConnection(bounded)
 			stop()
 		}

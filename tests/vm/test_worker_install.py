@@ -7,6 +7,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import tempfile
 import types
 import urllib.error
@@ -48,6 +49,9 @@ class WorkerInstallFixture(unittest.TestCase):
         self.calls = []
         self.stopped_checks = 0
         self.configuration = installer.verify_bundle(self.source, self.home)
+        self.footprint = {'files': 1, 'contentBytes': 4096, 'dataBytes': 4096,
+                          'stagingBytes': 65536, 'archiveBytes': 8192,
+                          'requiredBytes': 65536 + 8192 + installer.SPACE_HEADROOM}
 
     def write_manifests(self):
         raw = json.dumps(self.manifest, separators=(',', ':'), ensure_ascii=False).encode()
@@ -92,19 +96,360 @@ class WorkerInstallFixture(unittest.TestCase):
             stack.enter_context(patch.object(installer, 'reserve_maintenance', return_value=None))
             stack.enter_context(patch.object(installer, 'unix_username', return_value='fixture'))
             stack.enter_context(patch.object(installer, 'ensure_linger'))
+            stack.enter_context(patch.object(installer, 'backup_footprint', return_value=self.footprint))
+            stack.enter_context(patch.object(installer, 'filesystem_space', return_value=(1, 1 << 40)))
             stack.enter_context(patch.object(installer.os, 'symlink', side_effect=lambda source, target, **_: pathlib.Path(target).write_text(str(source))))
             stack.enter_context(patch.object(installer.time, 'sleep'))
             yield
 
-    def activate(self, manual=False):
+    def activate(self, manual=False, reconciliation=None):
         with contextlib.redirect_stdout(io.StringIO()):
-            installer._activate_locked(self.configuration, manual, self.service_directory)
+            installer._activate_locked(self.configuration, manual, self.service_directory, reconciliation)
+
+    def stopped_attempt(self, phase=installer.PHASE_STOPPING):
+        old_source = self.source.with_name('source.previous')
+        shutil.copytree(self.source, old_source)
+        manifest = dict(self.manifest, version='0.4.6')
+        raw = json.dumps(manifest, separators=(',', ':')).encode()
+        (old_source / installer.BUNDLE_MANIFEST).write_bytes(raw)
+        deployment = dict(self.deployment, sha256=hashlib.sha256(raw).hexdigest())
+        (old_source / 'deploy-manifest.json').write_bytes(json.dumps(deployment).encode())
+        old = installer.verify_bundle(old_source, self.home)
+        previous = {'schemaVersion': 1, 'attemptId': '12345678-1234-1234-1234-123456789abc',
+                    'source': old['digest'], 'sourceCommit': old['commit'],
+                    'version': old['version'], 'directory': old_source.name, 'phase': phase}
+        raw = json.dumps(previous, indent=2).encode() + b'\n'
+        (self.home / 'dant/install-attempt.json').write_bytes(raw)
+        return previous, raw, {'attemptId': previous['attemptId'], 'journalSha256': hashlib.sha256(raw).hexdigest()}
+
+    def prior_preparation(self, attempt_id):
+        proof = {'schemaVersion': 1, 'attemptId': attempt_id, 'source': 'b' * 64,
+                 'sourceCommit': 'b' * 40, 'version': '0.4.5', 'directory': 'source.older',
+                 'dataDir': str(self.home / 'dant/data'),
+                 'workspaceRoot': str(self.home / 'dant/workspaces'),
+                 'backup': '87654321-4321-4321-4321-cba987654321.raw',
+                 'backupBytes': 42, 'backupModifiedNS': '1234',
+                 'backupIdentity': '1:2', 'backupSha256': 'c' * 64}
+        raw = json.dumps(proof).encode()
+        (self.home / 'dant' / installer.PREPARATION_FILE).write_bytes(raw)
+        return raw
 
     def test_valid_bundle_has_exact_provenance_and_public_network(self):
         self.assertEqual(self.configuration['digest'], self.digest)
         self.assertEqual(self.configuration['guestHost'], 'localhost')
         self.assertEqual(self.configuration['guestPort'], 5540)
         self.assertEqual(self.configuration['port'], 4317)
+
+    def test_space_preflight_uses_only_the_verified_candidate_and_strict_numeric_output(self):
+        environment, _ = installer.installation_environment(self.configuration)
+        response = types.SimpleNamespace(returncode=0, stdout=json.dumps(self.footprint).encode())
+        with patch.object(installer.subprocess, 'run', return_value=response) as run:
+            self.assertEqual(installer.backup_footprint(self.configuration, environment), self.footprint)
+        arguments = run.call_args.args[0]
+        self.assertEqual(arguments[:3], [str(self.source / installer.BINARY), '--role=backup-cli', 'preflight'])
+        self.assertEqual(run.call_args.kwargs['env']['TMPDIR'], environment['TMPDIR'])
+        self.assertNotEqual(arguments[0], str(self.home / 'dant/bin/dant-core'))
+        for change in ({'files': True}, {'files': 0}, {'dataBytes': 4097}, {'contentBytes': -1},
+                       {'stagingBytes': 1}, {'requiredBytes': 0}, {'unexpected': 1}):
+            with self.subTest(change=change):
+                response.stdout = json.dumps(dict(self.footprint, **change)).encode()
+                with patch.object(installer.subprocess, 'run', return_value=response):
+                    with self.assertRaisesRegex(installer.InstallError, '^space-unconfirmed$'):
+                        installer.backup_footprint(self.configuration, environment)
+        response.stdout = b'private process content' * installer.PREFLIGHT_LIMIT
+        with patch.object(installer.subprocess, 'run', return_value=response):
+            with self.assertRaisesRegex(installer.InstallError, '^space-unconfirmed$'):
+                installer.backup_footprint(self.configuration, environment)
+
+    def test_space_is_grouped_by_filesystem_and_sequential_phase_peak(self):
+        environment, temporary = installer.installation_environment(self.configuration)
+        root = self.home / 'dant'
+        footprint = self.footprint
+        capacities = {
+            temporary: (1, footprint['stagingBytes'] + installer.SPACE_HEADROOM),
+            root / 'installation-backups': (2, footprint['archiveBytes'] + installer.SPACE_HEADROOM),
+            root / 'data': (3, footprint['dataBytes'] + installer.SPACE_HEADROOM),
+        }
+        with patch.object(installer, 'backup_footprint', return_value=footprint):
+            with patch.object(installer, 'filesystem_space', side_effect=lambda path: capacities[path]):
+                installer.assert_installation_space(self.configuration, environment, temporary)
+            shared_peak = sum(footprint[key] for key in ('stagingBytes', 'archiveBytes', 'dataBytes'))
+            with patch.object(installer, 'filesystem_space', return_value=(1, shared_peak + installer.SPACE_HEADROOM)):
+                installer.assert_installation_space(self.configuration, environment, temporary)
+            with patch.object(installer, 'filesystem_space', return_value=(1, shared_peak + installer.SPACE_HEADROOM - 1)):
+                with self.assertRaisesRegex(installer.InstallError, '^space-insufficient$'):
+                    installer.assert_installation_space(self.configuration, environment, temporary)
+
+    def test_insufficient_space_preserves_old_binary_service_and_journal(self):
+        binary = self.home / 'dant/bin/dant-core'
+        binary.write_bytes(b'unchanged old worker')
+        with self.isolated_activation():
+            with patch.object(installer, 'filesystem_space', return_value=(1, 0)):
+                with self.assertRaisesRegex(installer.InstallError, '^space-insufficient$'):
+                    self.activate()
+        self.assertEqual(binary.read_bytes(), b'unchanged old worker')
+        self.assertEqual(self.state.read_bytes(), self.original)
+        self.assertFalse((self.home / 'dant/install-attempt.json').exists())
+        self.assertFalse(any(call[1:4] == ['--user', 'stop', 'dant-worker.service'] for call in self.calls))
+
+    def test_oversized_or_unknown_filesystem_allocation_is_not_guessed(self):
+        for size in (0, installer.SPACE_ALLOCATION_LIMIT + 1, True):
+            with self.subTest(size=size):
+                capacity = types.SimpleNamespace(f_bavail=1 << 30, f_frsize=size)
+                with patch.object(installer.os, 'statvfs', return_value=capacity, create=True):
+                    with self.assertRaisesRegex(installer.InstallError, '^space-unconfirmed$'):
+                        installer.filesystem_space(self.home)
+
+    def test_separate_memory_filesystem_also_needs_migration_capacity(self):
+        memory = self.home / 'dant/data/memory/dant'
+        memory.mkdir(parents=True)
+        environment, temporary = installer.installation_environment(self.configuration)
+        def capacity(path):
+            return (2, 0) if path == memory else (1, 1 << 40)
+        with patch.object(installer, 'backup_footprint', return_value=self.footprint):
+            with patch.object(installer, 'filesystem_space', side_effect=capacity):
+                with self.assertRaisesRegex(installer.InstallError, '^space-insufficient$'):
+                    installer.assert_installation_space(self.configuration, environment, temporary)
+
+    def test_explicit_reconciliation_keeps_original_evidence_and_runs_a_whole_new_cutover(self):
+        previous, raw, request = self.stopped_attempt()
+        orphan = self.home / 'dant/installation-backups/orphan.raw'
+        orphan.write_bytes(b'incomplete original archive')
+        with self.isolated_activation():
+            self.activate(reconciliation=request)
+        history = list((self.home / 'dant' / installer.RECONCILIATION_DIRECTORY).iterdir())
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].read_bytes(), raw)
+        attempt = json.loads((self.home / 'dant/install-attempt.json').read_bytes())
+        self.assertNotEqual(attempt['attemptId'], previous['attemptId'])
+        self.assertEqual(attempt['source'], self.configuration['digest'])
+        self.assertEqual(attempt['phase'], installer.PHASE_COMMITTED)
+        self.assertEqual(orphan.read_bytes(), b'incomplete original archive')
+        self.assertEqual(sum('--role=backup-cli' in call for call in self.calls), 1)
+        self.assertEqual(sum('--role=prepare-worker' in call for call in self.calls), 1)
+
+    def test_partial_attempt_cannot_be_replayed_by_automatic_activation(self):
+        _, raw, _ = self.stopped_attempt()
+        with self.isolated_activation():
+            with self.assertRaisesRegex(installer.InstallError, '^previous-install-unconfirmed$'):
+                self.activate()
+        self.assertEqual((self.home / 'dant/install-attempt.json').read_bytes(), raw)
+        self.assertEqual(self.calls, [])
+
+    def test_explicit_same_source_reconciliation_creates_a_new_attempt_without_resuming_the_old_one(self):
+        previous, _, _ = self.stopped_attempt()
+        previous.update({'source': self.configuration['digest'], 'sourceCommit': self.configuration['commit'],
+                         'version': self.configuration['version'], 'directory': self.source.name})
+        raw = json.dumps(previous).encode()
+        (self.home / 'dant/install-attempt.json').write_bytes(raw)
+        request = {'attemptId': previous['attemptId'], 'journalSha256': hashlib.sha256(raw).hexdigest()}
+        with self.isolated_activation():
+            self.activate(reconciliation=request)
+        current = json.loads((self.home / 'dant/install-attempt.json').read_bytes())
+        self.assertNotEqual(current['attemptId'], previous['attemptId'])
+        self.assertEqual(current['source'], previous['source'])
+        self.assertEqual(current['phase'], installer.PHASE_COMMITTED)
+        self.assertEqual(sum('--role=backup-cli' in call for call in self.calls), 1)
+        self.assertEqual(sum('--role=prepare-worker' in call for call in self.calls), 1)
+
+    def test_new_operator_preflight_keeps_older_target_bundle_and_live_proof_identity(self):
+        previous, _, request = self.stopped_attempt()
+        target = installer.verify_bundle(self.home / 'dant/releases' / previous['directory'], self.home)
+        script = self.source / 'vm/worker-install.py'
+        with patch.object(installer, '__file__', str(script)):
+            configuration = installer.verify_reconciliation_operator(target)
+        self.assertEqual(configuration['source'], target['source'])
+        self.assertEqual(configuration['operatorSource'], self.source)
+        response = types.SimpleNamespace(returncode=0, stdout=json.dumps(self.footprint).encode())
+        environment, _ = installer.installation_environment(configuration)
+        with patch.object(installer.subprocess, 'run', return_value=response) as run:
+            installer.backup_footprint(configuration, environment)
+        arguments = run.call_args.args[0]
+        self.assertEqual(arguments[0], str(self.source / installer.BINARY))
+        self.assertEqual(arguments[-1], target['digest'])
+        self.configuration = configuration
+        with self.isolated_activation():
+            self.activate(reconciliation=request)
+        current = json.loads((self.home / 'dant/install-attempt.json').read_bytes())
+        self.assertEqual(current['source'], target['digest'])
+        self.assertEqual(current['sourceCommit'], target['commit'])
+        self.assertTrue(any(call[:3] == ['bash', str(target['source'] / 'vm/install-worker.sh'), str(target['source'])] for call in self.calls))
+        prepare = next(call for call in self.calls if '--role=prepare-worker' in call)
+        self.assertIn('--root=' + str(target['source']), prepare)
+        self.assertEqual((self.home / 'dant/bin/dant-core').read_bytes(), (target['source'] / installer.BINARY).read_bytes())
+        script.write_bytes(b'changed operator helper')
+        with patch.object(installer, '__file__', str(script)):
+            with self.assertRaises(installer.InstallError):
+                installer.verify_reconciliation_operator(target)
+
+    def test_reconciliation_refuses_wrong_identity_later_phases_and_any_backup_marker(self):
+        previous, _, request = self.stopped_attempt()
+        variants = [dict(previous, phase=phase) for phase in ('unknown', installer.PHASE_PREPARING,
+                                                           installer.PHASE_ACTIVATING, installer.PHASE_COMMITTED)]
+        variants += [dict(previous, backup=''), dict(previous, backupBytes=0), dict(previous, preparationSha256='a' * 64)]
+        for changed in variants:
+            with self.subTest(changed=changed):
+                raw = json.dumps(changed).encode()
+                (self.home / 'dant/install-attempt.json').write_bytes(raw)
+                exact = dict(request, journalSha256=hashlib.sha256(raw).hexdigest())
+                with self.isolated_activation():
+                    with self.assertRaisesRegex(installer.InstallError, '^reconciliation-unconfirmed$'):
+                        self.activate(reconciliation=exact)
+                self.assertEqual((self.home / 'dant/install-attempt.json').read_bytes(), raw)
+                self.assertEqual(self.calls, [])
+        raw = json.dumps(previous).encode()
+        (self.home / 'dant/install-attempt.json').write_bytes(raw)
+        for wrong in (dict(request, attemptId='00000000-0000-0000-0000-000000000000'), request):
+            with self.isolated_activation():
+                with self.assertRaisesRegex(installer.InstallError, '^reconciliation-unconfirmed$'):
+                    self.activate(reconciliation=wrong)
+        self.assertEqual(self.calls, [])
+
+    def test_reconciliation_rejects_changed_old_source_or_unstopped_processes(self):
+        previous, raw, request = self.stopped_attempt()
+        with self.isolated_activation():
+            with patch.object(installer, 'assert_stopped', side_effect=installer.InstallError('shutdown-unconfirmed')):
+                with self.assertRaisesRegex(installer.InstallError, '^shutdown-unconfirmed$'):
+                    self.activate(reconciliation=request)
+        self.assertEqual(self.calls, [])
+        old_binary = self.home / 'dant/releases' / previous['directory'] / installer.BINARY
+        old_binary.write_bytes(b'changed old provenance')
+        with self.isolated_activation():
+            with self.assertRaises(installer.InstallError):
+                self.activate(reconciliation=request)
+        self.assertEqual(self.calls, [])
+        self.assertEqual((self.home / 'dant/install-attempt.json').read_bytes(), raw)
+
+    def test_reconciliation_blocks_current_preparation_but_preserves_an_older_receipt(self):
+        previous, raw, request = self.stopped_attempt()
+        self.prior_preparation(previous['attemptId'])
+        with self.isolated_activation():
+            with self.assertRaisesRegex(installer.InstallError, '^reconciliation-unconfirmed$'):
+                self.activate(reconciliation=request)
+        self.assertEqual(self.calls, [])
+        prior = self.prior_preparation('87654321-4321-4321-4321-cba987654321')
+        with self.isolated_activation():
+            self.activate(reconciliation=request)
+        records = [path.read_bytes() for path in (self.home / 'dant' / installer.RECONCILIATION_DIRECTORY).iterdir()]
+        self.assertCountEqual(records, [raw, prior])
+
+    def test_space_or_journal_change_during_reconciliation_keeps_the_original_fence(self):
+        _, raw, request = self.stopped_attempt()
+        attempt = self.home / 'dant/install-attempt.json'
+        with self.isolated_activation():
+            with patch.object(installer, 'filesystem_space', return_value=(1, 0)):
+                with self.assertRaisesRegex(installer.InstallError, '^space-insufficient$'):
+                    self.activate(reconciliation=request)
+        self.assertEqual(attempt.read_bytes(), raw)
+        self.assertFalse((self.home / 'dant' / installer.RECONCILIATION_DIRECTORY).exists())
+
+        def changed(arguments, **kwargs):
+            self.quiet(arguments, **kwargs)
+            if '--guard-only' in arguments:
+                attempt.write_bytes(raw + b' ')
+        with self.isolated_activation(quiet=changed):
+            with self.assertRaisesRegex(installer.InstallError, '^reconciliation-unconfirmed$'):
+                self.activate(reconciliation=request)
+        self.assertEqual(attempt.read_bytes(), raw + b' ')
+        self.assertFalse((self.home / 'dant' / installer.RECONCILIATION_DIRECTORY).exists())
+        self.assertFalse(any('--role=backup-cli' in call for call in self.calls))
+
+    def test_crash_between_history_and_new_journal_never_removes_the_fence(self):
+        _, raw, request = self.stopped_attempt()
+        actual = installer.atomic_write
+        def fail_before_new_journal(path, data, mode=0o600):
+            if pathlib.Path(path).name == 'install-attempt.json':
+                history = list((self.home / 'dant' / installer.RECONCILIATION_DIRECTORY).iterdir())
+                self.assertEqual([entry.read_bytes() for entry in history], [raw])
+                installer.reject('fixture-new-journal-unconfirmed')
+            return actual(path, data, mode)
+        with self.isolated_activation():
+            with patch.object(installer, 'atomic_write', side_effect=fail_before_new_journal):
+                with self.assertRaisesRegex(installer.InstallError, '^fixture-new-journal-unconfirmed$'):
+                    self.activate(reconciliation=request)
+            before_retry = len(self.calls)
+            with self.assertRaisesRegex(installer.InstallError, '^previous-install-unconfirmed$'):
+                self.activate()
+            self.assertEqual(len(self.calls), before_retry)
+        self.assertEqual((self.home / 'dant/install-attempt.json').read_bytes(), raw)
+        self.assertFalse(any('--role=backup-cli' in call for call in self.calls))
+
+    @unittest.skipUnless(os.name == 'posix', 'kernel flock requires the Linux installer host')
+    def test_kernel_install_lock_rejects_a_second_operator_before_any_process(self):
+        import fcntl
+        lock_path = self.home / 'dant/.worker-install.lock'
+        with lock_path.open('wb') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(installer, 'run_quiet') as run:
+                with self.assertRaisesRegex(installer.InstallError, '^install-busy$'):
+                    installer.activate(self.configuration)
+                run.assert_not_called()
+        self.assertFalse((self.home / 'dant/install-attempt.json').exists())
+
+    def test_stopped_proof_rejects_an_owned_backup_or_installation_child(self):
+        proc = pathlib.Path(self.temporary.name) / 'recovery-proc'
+        child = proc / '123'
+        child.mkdir(parents=True)
+        (child / 'environ').write_bytes(b'')
+        state = {'LoadState': 'loaded', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': ''}
+        root = self.home / 'dant'
+        commands = [
+            [b'dant-core', b'--role=backup-cli', b'export', b'--data-dir', os.fsencode(str(root / 'data'))],
+            [b'dant-core', b'--role=backup-cli', b'export', b'--workspace-root=' + os.fsencode(str(root / 'workspaces'))],
+            [os.fsencode((self.source / installer.BINARY).as_posix()), b'--role=prepare-worker', b'--data-dir=' + os.fsencode(str(root / 'data'))],
+            [os.fsencode((self.source / installer.BINARY).as_posix()), b'--role=backup-cli', b'export', b'--workspace-root', os.fsencode(str(root / 'workspaces'))],
+            [b'python3.12', os.fsencode(str(self.source / 'vm/worker-install.py')), b'activate'],
+            [b'bash', os.fsencode(str(self.source / 'vm/install-worker.sh')), os.fsencode(str(self.source))],
+        ]
+        with patch.object(installer.os, 'getuid', return_value=0, create=True):
+            with patch.object(pathlib.Path, 'stat', autospec=True) as current:
+                current.return_value.st_uid = 0
+                for arguments in commands:
+                    (child / 'cmdline').write_bytes(b'\0'.join(arguments) + b'\0')
+                    with self.assertRaisesRegex(installer.InstallError, '^shutdown-unconfirmed$'):
+                        installer.assert_stopped(self.home, state, proc)
+                (child / 'cmdline').write_bytes(b'dant-core\0--data-dir\0/other/data\0')
+                installer.assert_stopped(self.home, state, proc)
+                (child / 'cmdline').write_bytes(os.fsencode((self.source / installer.BINARY).as_posix()) + b'\0--role=backup-cli\0export\0')
+                (child / 'environ').write_bytes(b'DANT_DATA=' + os.fsencode(str(root / 'data')) + b'\0')
+                with self.assertRaisesRegex(installer.InstallError, '^shutdown-unconfirmed$'):
+                    installer.assert_stopped(self.home, state, proc)
+
+    def test_stopped_proof_resolves_relative_installer_commands_and_rejects_unknown_cwd(self):
+        proc = pathlib.Path(self.temporary.name) / 'relative-proc'
+        child = proc / '123'
+        child.mkdir(parents=True)
+        (child / 'environ').write_bytes(b'')
+        state = {'LoadState': 'loaded', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': ''}
+        for arguments in (b'bash\0vm/install-worker.sh\0source.fixture\0',
+                          b'python3\0./vm/worker-install.py\0activate\0source.fixture\0'):
+            (child / 'cmdline').write_bytes(arguments)
+            with patch.object(installer.os, 'getuid', return_value=0, create=True):
+                with patch.object(pathlib.Path, 'stat', autospec=True) as current:
+                    current.return_value.st_uid = 0
+                    for cwd in (self.source, pathlib.Path(str(self.source) + ' (deleted)')):
+                        with patch.object(pathlib.Path, 'readlink', return_value=cwd):
+                            with self.assertRaisesRegex(installer.InstallError, '^shutdown-unconfirmed$'):
+                                installer.assert_stopped(self.home, state, proc)
+                    with patch.object(pathlib.Path, 'readlink', side_effect=PermissionError('private metadata')):
+                        with self.assertRaisesRegex(installer.InstallError, '^shutdown-unconfirmed$'):
+                            installer.assert_stopped(self.home, state, proc)
+                    with patch.object(pathlib.Path, 'readlink', side_effect=FileNotFoundError('private metadata')):
+                        with self.assertRaisesRegex(installer.InstallError, '^shutdown-unconfirmed$'):
+                            installer.assert_stopped(self.home, state, proc)
+                    with patch.object(pathlib.Path, 'readlink', return_value=self.home / 'other'):
+                        installer.assert_stopped(self.home, state, proc)
+
+    def test_reconciliation_arguments_cannot_fall_through_to_automatic_activation(self):
+        for arguments in (
+            ['reconcile-stopped', str(self.source), str(self.home)],
+            ['reconcile-stopped', str(self.source), str(self.home), '--attempt-id', '', '--journal-sha256', 'a' * 64],
+            ['reconcile-stopped', str(self.source), str(self.home), '--attempt-id', '12345678-1234-1234-1234-123456789abc', '--journal-sha256', 'unknown'],
+        ):
+            with patch.object(installer, 'activate') as activate:
+                with self.assertRaisesRegex(installer.InstallError, '^arguments-invalid$'):
+                    installer.main(arguments)
+                activate.assert_not_called()
 
     def test_installation_phase_constants_match_shared_contract(self):
         domains = json.loads((ROOT / 'src/contracts/state-domains.json').read_bytes())['domains']

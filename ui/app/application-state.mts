@@ -528,8 +528,23 @@ const appState = objectOf<AppState>({
   telegram: optional(telegram),
   usage: optional(usage),
 });
-export const readAppState = (value: unknown): AppState =>
-  validated(value, appState, 'application state');
+export function readAppState(value: unknown): AppState {
+  // Older Go snapshots omit empty text, including attachment and call messages.
+  // Adapt the display copy only; keep every other field under the same validator.
+  if (
+    isRecord(value) &&
+    Array.isArray(value.messages) &&
+    value.messages.some((message) => isRecord(message) && message.text === undefined)
+  ) {
+    value = {
+      ...value,
+      messages: value.messages.map((message: unknown) =>
+        isRecord(message) && message.text === undefined ? { ...message, text: '' } : message,
+      ),
+    };
+  }
+  return validated(value, appState, 'application state');
+}
 export const profiles = objectOf<VmProfiles>({
   candidates: arrayOf(
     objectOf<VmProfiles['candidates'][number]>({

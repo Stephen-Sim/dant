@@ -28,11 +28,12 @@ type OwnedVMLifecycle interface {
 }
 
 type DesktopOptions struct {
-	Bridge     DesktopBridge
-	Lifecycle  OwnedVMLifecycle
-	Binding    func() string
-	Configured func() bool
-	Changed    func()
+	Bridge      DesktopBridge
+	Lifecycle   OwnedVMLifecycle
+	Binding     func() string
+	Configured  func() bool
+	Changed     func()
+	Diagnostics DesktopDiagnostics
 }
 
 type DesktopLifecycle struct {
@@ -212,13 +213,19 @@ func (desktop *DesktopLifecycle) Prepare(ctx context.Context, options PrepareOpt
 }
 
 func (desktop *DesktopLifecycle) Exit(ctx context.Context) (DesktopResult, error) {
-	return desktop.run(ctx, func(current func() error) (DesktopResult, error) {
+	var phase contracts.DesktopPhase
+	result, err := desktop.run(ctx, func(current func() error) (DesktopResult, error) {
+		phase = contracts.DesktopPhasePausing
+		desktop.logExit("desktop.exit.stage", phase, codeDesktopExitStarted)
 		if err := desktop.pause(ctx, current, "exit"); err != nil {
 			return DesktopResult{}, err
 		}
+		desktop.logExit("desktop.exit.stage", contracts.DesktopPhasePaused, codeDesktopWorkPaused)
+		phase = contracts.DesktopPhaseSuspending
 		if err := desktop.SetPhase(contracts.DesktopPhaseSuspending); err != nil {
 			return DesktopResult{}, err
 		}
+		desktop.logExit("desktop.exit.stage", phase, codeDesktopSuspendStarted)
 		result, err := desktop.options.Lifecycle.Suspend(ctx)
 		if err != nil {
 			return DesktopResult{}, err
@@ -226,16 +233,30 @@ func (desktop *DesktopLifecycle) Exit(ctx context.Context) (DesktopResult, error
 		if err := current(); err != nil {
 			return DesktopResult{}, err
 		}
-		phase := contracts.DesktopPhasePaused
+		completedPhase := contracts.DesktopPhasePaused
 		if result.VMSuspended {
-			phase = contracts.DesktopPhaseSuspended
+			completedPhase = contracts.DesktopPhaseSuspended
 			desktop.options.Bridge.Disconnect()
 		}
-		if err := desktop.SetPhase(phase); err != nil {
+		if err := desktop.SetPhase(completedPhase); err != nil {
 			return DesktopResult{}, err
 		}
+		code := codeDesktopExitConfirmed
+		if !result.VMSuspended {
+			code = codeDesktopExitUnsupported
+		}
+		desktop.logExit("desktop.exit.confirmed", completedPhase, code)
 		return DesktopResult{OK: true, WorkPaused: true, VMSuspended: &result.VMSuspended, Unsupported: !result.VMSuspended, NotConfigured: !desktop.options.Configured()}, nil
 	})
+	if err == nil {
+		return result, nil
+	}
+	if phase.Valid() {
+		err = &desktopPhaseError{phase: phase, cause: err}
+	}
+	failure := classifyHTTPError(err)
+	desktop.logExit("desktop.exit.failed", phase, desktopDiagnosticCode(failure.body.Code))
+	return result, err
 }
 
 func (desktop *DesktopLifecycle) Cancel(ctx context.Context, managedVMAlreadyRestored bool) (DesktopResult, error) {

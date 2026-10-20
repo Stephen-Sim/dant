@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "scripts/, references/ या assets/ पथ, या रूट में README.md, LICENSE और NOTICE फ़ाइलें इस्तेमाल करें। अधिकतम 128 टेक्स्ट फ़ाइलें संपादित करें, प्रत्येक 256 KiB और कुल 1 MiB तक। बड़ी टेक्स्ट फ़ाइलें और अन्य फ़ॉर्मैट की फ़ाइलें केवल पढ़ने योग्य सहायक फ़ाइलों के रूप में सुरक्षित रखी जाती हैं।",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md या एक स्किल वाली ZIP चुनें, जिसका आकार अधिकतम 10 MiB हो।",
   "No starred messages yet.": "अभी कोई तारांकित संदेश नहीं है।",
-  "Star a message from its menu to keep it here.": "किसी संदेश के मेन्यू से उसे स्टार करें, ताकि वह यहाँ दिखाई दे।"
+  "Star a message from its menu to keep it here.": "किसी संदेश के मेन्यू से उसे स्टार करें, ताकि वह यहाँ दिखाई दे।",
+  "A backup or restore is in progress.": "बैकअप या पुनर्स्थापना चल रही है।",
+  "Another VM operation is in progress.": "वर्चुअल मशीन की दूसरी प्रक्रिया चल रही है।",
+  "Another update or exit operation is in progress.": "दूसरी अपडेट या बंद करने की प्रक्रिया चल रही है।",
+  "The VM connection or suspension record changed or could not be verified.": "वर्चुअल मशीन का कनेक्शन या निलंबन रिकॉर्ड बदल गया है या सत्यापित नहीं हो सका।",
+  "The backup or restore outcome is unconfirmed.": "बैकअप या पुनर्स्थापना के नतीजे की पुष्टि नहीं हुई है।",
+  "The exit outcome could not be confirmed.": "बंद करने की प्रक्रिया के नतीजे की पुष्टि नहीं हो सकी।",
+  "This VM connection does not support verified suspension.": "यह वर्चुअल मशीन कनेक्शन सत्यापित निलंबन का समर्थन नहीं करता।",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "वर्चुअल मशीन के निलंबन की पुष्टि नहीं हो सकी। उसकी स्थिति और प्रशासक के किसी पुष्टि अनुरोध की जाँच करें।",
+  "Work pause could not be confirmed.": "काम के रुके होने की पुष्टि नहीं हो सकी।",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant खुला रहेगा। बंद करने से पहले सेटिंग में प्रक्रिया की स्थिति जाँचें।"
 }

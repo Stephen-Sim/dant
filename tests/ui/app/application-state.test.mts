@@ -43,6 +43,54 @@ const snapshot = (): AppState => ({
   call: null,
 });
 
+test('Go snapshots with omitted empty message text decode without modifying cached history', () => {
+  const messages = [
+      { id: 'text', role: 'assistant', text: 'Keep 中文 content', time: 10 },
+      {
+        id: 'image',
+        role: 'assistant',
+        attachments: [{ id: 'photo', name: 'Screenshot.png', type: 'image/png' }],
+        time: 20,
+      },
+      { id: 'call', role: 'user', kind: 'call', seconds: 12, time: 30 },
+      { id: 'placeholder', role: 'assistant', status: 'streaming', time: 40 },
+    ],
+    wire = { ...snapshot(), messages },
+    original = structuredClone(wire),
+    decoded = readAppState(wire);
+  assert.deepEqual(wire, original, 'transport and persisted cache are never rewritten');
+  assert.notEqual(decoded, wire);
+  assert.equal(decoded.messages[0], messages[0], 'existing text is retained exactly');
+  assert.deepEqual(
+    decoded.messages.map((message) => message.text),
+    ['Keep 中文 content', '', '', ''],
+  );
+  assert.deepEqual(
+    decoded.messages.map((message) => message.id),
+    ['text', 'image', 'call', 'placeholder'],
+  );
+  assert.deepEqual(
+    decoded.messages.map((message) => message.time),
+    [10, 20, 30, 40],
+  );
+
+  for (const text of [null, false, 1, {}, []])
+    assert.throws(
+      () => readAppState({ ...wire, messages: [{ ...messages[1], text }] }),
+      /Invalid application state/,
+    );
+  for (const invalid of [
+    { id: 1, role: 'assistant' },
+    { id: 'invalid-role', role: 'unexpected' },
+    { id: 'invalid-status', role: 'assistant', status: 'unexpected' },
+    { id: 'invalid-attachment', role: 'assistant', attachments: [{ id: 'photo' }] },
+  ])
+    assert.throws(
+      () => readAppState({ ...wire, messages: [invalid] }),
+      /Invalid application state/,
+    );
+});
+
 test('optional call captions and the saved display switch validate strictly while legacy snapshots remain readable', () => {
   const value = snapshot();
   assert.equal(readAppState(value).callCaption, undefined);

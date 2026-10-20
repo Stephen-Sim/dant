@@ -746,7 +746,7 @@ const shellPath = (value: string) =>
 
 function currentDeployment(
   t: NodeTestContext,
-  { manual = false, workerActive = true, guestActive = true } = {},
+  { manual = false, workerActive = true, guestActive = true, reconcileRequested = false } = {},
 ) {
   const testRoot = path.resolve('.cache/tests');
   fs.mkdirSync(testRoot, { recursive: true });
@@ -758,7 +758,7 @@ function currentDeployment(
   fs.writeFileSync(path.join(stage, 'deploy-manifest.json'), 'same-source');
   fs.writeFileSync(path.join(home, 'dant/deployed-source.json'), 'same-source');
   const current = script.slice(
-    script.indexOf('if [ -f "$HOME/dant/deployed-source.json" ]'),
+    script.indexOf('if ! "$reconcile_requested" && [ -f "$HOME/dant/deployed-source.json" ]'),
     script.indexOf('if [ -e "$HOME/dant/app" ]'),
   );
   const harness = String.raw`
@@ -768,6 +768,7 @@ source_dir="$2"
 update_running_work="$3"
 worker_active="$4"
 guest_active="$5"
+reconcile_requested="$6"
 cd "$source_dir"
 prepare_transcription() { printf 'transcription\n' >> "$HOME/events"; }
 python3() { printf 'go-readiness:%s\n' "$*" >> "$HOME/events"; }
@@ -792,6 +793,7 @@ check_idle_worker() { printf 'pause-check\n' >> "$HOME/events"; exit 9; }
       String(manual),
       String(workerActive),
       String(guestActive),
+      String(reconcileRequested),
     ],
     { encoding: 'utf8', shell: false, timeout: 10000 },
   );
@@ -825,6 +827,14 @@ test('a current manifest with only one running service still proceeds through in
       assert.match(result.stdout, /^DANT_INSTALL_CONTINUES$/m);
       assert.doesNotMatch(result.events, /transcription|node:|pause-check|restart|stop/);
     }
+});
+
+test('explicit stopped-attempt reconciliation never mistakes the target manifest for a completed cutover', (t) => {
+  const result = currentDeployment(t, { reconcileRequested: true });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /DANT_UPDATE_CURRENT/);
+  assert.match(result.stdout, /^DANT_INSTALL_CONTINUES$/m);
+  assert.equal(result.events, '');
 });
 
 // The Go cutover replaces the former Node rollback transaction. Its isolated

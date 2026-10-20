@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "استخدم المسارات scripts/ أو references/ أو assets/، أو ملفات README.md وLICENSE وNOTICE في المجلد الرئيسي. يمكنك تحرير ما يصل إلى 128 ملفًا نصيًا، بحد 256 KiB لكل ملف و1 MiB إجمالًا. تُحفظ الملفات النصية الأكبر والصيغ الأخرى كملفات مساندة للقراءة فقط.",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "اختر SKILL.md أو ملف ZIP يحتوي على مهارة واحدة، بحجم لا يتجاوز 10 MiB.",
   "No starred messages yet.": "لا توجد رسائل مميزة بنجمة بعد.",
-  "Star a message from its menu to keep it here.": "ميّز رسالة بنجمة من قائمتها لتجدها هنا."
+  "Star a message from its menu to keep it here.": "ميّز رسالة بنجمة من قائمتها لتجدها هنا.",
+  "A backup or restore is in progress.": "هناك نسخ احتياطي أو استعادة قيد التنفيذ.",
+  "Another VM operation is in progress.": "هناك عملية أخرى للجهاز الافتراضي قيد التنفيذ.",
+  "Another update or exit operation is in progress.": "هناك عملية تحديث أو إنهاء أخرى قيد التنفيذ.",
+  "The VM connection or suspension record changed or could not be verified.": "تغير اتصال الجهاز الافتراضي أو سجل تعليقه، أو تعذر التحقق منه.",
+  "The backup or restore outcome is unconfirmed.": "لم يتم تأكيد نتيجة النسخ الاحتياطي أو الاستعادة.",
+  "The exit outcome could not be confirmed.": "تعذر تأكيد نتيجة الإنهاء.",
+  "This VM connection does not support verified suspension.": "لا يدعم اتصال الجهاز الافتراضي هذا تعليقًا يمكن التحقق منه.",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "تعذر تأكيد تعليق الجهاز الافتراضي. تحقق من حالته وأي طلب تأكيد من المسؤول.",
+  "Work pause could not be confirmed.": "تعذر تأكيد إيقاف العمل مؤقتًا.",
+  "dant remains open. Check the operation status in Settings before exiting.": "يبقى dant مفتوحًا. تحقق من حالة العملية في الإعدادات قبل الإنهاء."
 }

@@ -19,6 +19,7 @@ function fixture() {
   write('core/go.mod', 'module fixture\n');
   write('core/go.sum', 'fixture dependency checksum\n');
   write('core/internal/memory/reader.go', 'package memory\n');
+  write('tests/go/internal/memory/reader_test.go', 'package memory\n');
   write('src/contracts/core-protocol.json', '{"version":1}\n');
   write('src/work/task-project-context.mts', 'export const fixture = true;\n');
   write('src/contracts/fixture.ts', 'export type Fixture = string;\n');
@@ -31,8 +32,8 @@ test('source fingerprints are deterministic and include nested Go sources and fi
     const original = fingerprintCoreSources(f.root);
     assert.match(original.digest, /^[0-9a-f]{64}$/);
     assert.equal(original.algorithm, 'sha256');
-    assert.equal(original.version, 3);
-    assert.equal(original.files, CORE_PARITY_SOURCE_FILES.length + 6);
+    assert.equal(original.version, 4);
+    assert.equal(original.files, CORE_PARITY_SOURCE_FILES.length + 7);
     assert.deepEqual(fingerprintCoreSources(f.root), original);
     f.write('core/ignored.bin', 'not a maintained Go input');
     assert.deepEqual(fingerprintCoreSources(f.root), original);
@@ -42,6 +43,22 @@ test('source fingerprints are deterministic and include nested Go sources and fi
     assert.deepEqual(fingerprintCoreSources(f.root), original);
     f.write('scripts/core/shadow-client.mts', 'changed client');
     assert.notEqual(fingerprintCoreSources(f.root).digest, original.digest);
+  } finally {
+    f.close();
+  }
+});
+
+test('centralized recursive Go tests and their overlay tooling participate in source provenance', () => {
+  const f = fixture();
+  try {
+    const original = fingerprintCoreSources(f.root);
+    f.write('tests/go/internal/memory/reader_test.go', 'package memory\n// changed fixture\n');
+    assert.notEqual(fingerprintCoreSources(f.root).digest, original.digest);
+    f.write('tests/go/internal/memory/nested/another_test.go', 'package nested\n');
+    assert.equal(fingerprintCoreSources(f.root).files, original.files + 1);
+    const beforeToolChange = fingerprintCoreSources(f.root);
+    f.write('scripts/core/test-layout.mts', 'changed overlay policy');
+    assert.notEqual(fingerprintCoreSources(f.root).digest, beforeToolChange.digest);
   } finally {
     f.close();
   }

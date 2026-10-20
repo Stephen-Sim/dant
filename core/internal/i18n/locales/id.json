@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Gunakan jalur scripts/, references/, atau assets/, atau file README.md, LICENSE, dan NOTICE di akar. Edit hingga 128 file teks, masing-masing 256 KiB dan total 1 MiB. File teks yang lebih besar dan format lainnya dipertahankan sebagai file pendukung hanya-baca.",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Pilih SKILL.md atau ZIP yang berisi satu skill, hingga 10 MiB.",
   "No starred messages yet.": "Belum ada pesan berbintang.",
-  "Star a message from its menu to keep it here.": "Beri bintang pada pesan dari menunya agar mudah ditemukan di sini."
+  "Star a message from its menu to keep it here.": "Beri bintang pada pesan dari menunya agar mudah ditemukan di sini.",
+  "A backup or restore is in progress.": "Pencadangan atau pemulihan sedang berlangsung.",
+  "Another VM operation is in progress.": "Operasi mesin virtual lain sedang berlangsung.",
+  "Another update or exit operation is in progress.": "Pembaruan atau penutupan lain sedang berlangsung.",
+  "The VM connection or suspension record changed or could not be verified.": "Koneksi atau catatan penangguhan mesin virtual berubah atau tidak dapat diverifikasi.",
+  "The backup or restore outcome is unconfirmed.": "Hasil pencadangan atau pemulihan belum dikonfirmasi.",
+  "The exit outcome could not be confirmed.": "Hasil penutupan belum dapat dikonfirmasi.",
+  "This VM connection does not support verified suspension.": "Koneksi mesin virtual ini tidak mendukung penangguhan yang dapat diverifikasi.",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Penangguhan mesin virtual belum dapat dikonfirmasi. Periksa statusnya dan permintaan konfirmasi administrator.",
+  "Work pause could not be confirmed.": "Jeda pekerjaan belum dapat dikonfirmasi.",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant tetap terbuka. Periksa status operasi di Pengaturan sebelum keluar."
 }

@@ -59,6 +59,12 @@ SQLite 使用固定版本的纯 Go `modernc.org/sqlite`、有界忙等待、`syn
 
 Worker 在打开 Store 或 Memory 前还会检查 `install-attempt.json`，独立启动服务及系统重启也不能跳过。`reserving`、`stopping` 和 `preparing` 阶段禁止启动实时服务。离线准备只有在归档认证和全部准备步骤成功后才写入 `worker-preparation.json`，绑定本次尝试、版本、源码提交、已验证 bundle、准确的数据/工作区根目录，以及归档身份与哈希。`activating` 必须同时持有该回执和未变化的恢复归档；`committed` 保留回执并允许正常清理旧归档，不会每次启动都扫描数 GB 备份。受管 `app` 符号链接只能指向准确的已验证发布目录。完全不存在安装日志时，仍明确兼容首次或手动安装；损坏或不完整日志不能走这个例外。
 
+停止旧 Worker 前，只读容量预检按实际文件系统计算捕获临时副本、编码恢复归档、归档验证副本与迁移余量；空间不足时在停服务之前结束本次尝试。备份临时副本不需要逐文件持久刷盘；归档完整性校验与最终归档／Vault 刷盘仍是持久提交边界。
+
+后台部署与三个原生部署请求路由为完整步骤保留有界预算，不再按普通连接截止时间提前取消准备。普通 VM／API 读取仍使用较短限制。取消或最终回执丢失仍保留未知结果，不能据此再次安装。
+
+准备阶段之前中断的安装，只能通过显式运维命令 `reconcile-stopped` 协调恢复。它要求准确的 attempt ID 与原始 journal 哈希、旧／新源码清单校验、停止进程证明和独占安装锁；先持久保留原 journal 证据，再写入带保护的新 attempt。准备或激活结果未知时不能走这个入口，自动连接检查也不会调用它。
+
 ## 构建、资源与开发
 
 工具与 CI 固定 **Go 1.27.2**，关闭自动选择工具链。生产二进制使用 `CGO_ENABLED=0`、`-trimpath` 和显式版本/源码构建信息。`buildCore` 要求已提交且干净的工作树，校验预期 CI 提交，并在编译后再次检查。不能把脏源码标成另一个干净提交。
@@ -73,6 +79,8 @@ Worker 在打开 Store 或 Memory 前还会检查 `install-attempt.json`，独�
 不打包后端 TypeScript 目录、`node_modules`、Node 程序、`.env` 或运行数据。原生宿主启动编译后的 Go Controller，只接受匹配的 runtime/version/source 标记。生产环境没有 Node 回退。Python 桌面辅助工具和 Codex App Server 继续保留各自职责。
 
 提交已审查的改动后，先运行 `npm run package:resources`，再用 `npm start` 启动经校验的 Go 后端。`npm run dev` 使用同一份准备好的后端与 Vite。启动器不会暗中重编译脏源码或运行 `src/server.mts`。工具要求见[运行支持](runtime-support.md)，门禁见 [CI](ci.md)。
+
+全部 Go 测试源码集中在 `tests/go/`，镜像 `core/` 下的完整包路径。使用 `npm run check:core`、`npm run test:core` 或 `npm run test:core:race`：统一入口递归校验全部测试清单，并显式传入 Go 编译器 overlay，保留私有成员访问与平台后缀。在 `core/` 执行裸 `go test ./...` 不会发现这个模块外测试目录；不为测试访问而导出生产接口。
 
 ## 兼容证据与剩余验收
 

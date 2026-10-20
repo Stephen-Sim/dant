@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "scripts/, references/ veya assets/ yollarını ya da kökteki README.md, LICENSE ve NOTICE dosyalarını kullanın. Her biri 256 KiB ve toplamı 1 MiB olmak üzere en fazla 128 metin dosyasını düzenleyin. Daha büyük metin dosyaları ve diğer biçimler, salt okunur destek dosyaları olarak korunur.",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md veya tek bir beceri içeren, en fazla 10 MiB boyutunda bir ZIP seçin.",
   "No starred messages yet.": "Henüz yıldızlı mesaj yok.",
-  "Star a message from its menu to keep it here.": "Burada bulmak için mesajın menüsünden yıldız ekleyin."
+  "Star a message from its menu to keep it here.": "Burada bulmak için mesajın menüsünden yıldız ekleyin.",
+  "A backup or restore is in progress.": "Bir yedekleme veya geri yükleme devam ediyor.",
+  "Another VM operation is in progress.": "Başka bir sanal makine işlemi devam ediyor.",
+  "Another update or exit operation is in progress.": "Başka bir güncelleme veya çıkış işlemi devam ediyor.",
+  "The VM connection or suspension record changed or could not be verified.": "Sanal makine bağlantısı veya askıya alma kaydı değişti ya da doğrulanamadı.",
+  "The backup or restore outcome is unconfirmed.": "Yedekleme veya geri yükleme sonucu doğrulanmadı.",
+  "The exit outcome could not be confirmed.": "Çıkış işleminin sonucu doğrulanamadı.",
+  "This VM connection does not support verified suspension.": "Bu sanal makine bağlantısı doğrulanabilir askıya almayı desteklemiyor.",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Sanal makinenin askıya alındığı doğrulanamadı. Durumunu ve varsa yönetici onayını kontrol edin.",
+  "Work pause could not be confirmed.": "Çalışmanın duraklatıldığı doğrulanamadı.",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant açık kalır. Çıkmadan önce Ayarlar’dan işlemin durumunu kontrol edin."
 }

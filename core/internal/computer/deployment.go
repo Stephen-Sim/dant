@@ -29,7 +29,10 @@ const GuestBinaryPath = "resources/core/dant-core-linux-amd64"
 const bundleManifestLimit = 64 * 1024
 const bundleFileLimit = int64(512 * 1024 * 1024)
 const bundleTotalLimit = int64(1024 * 1024 * 1024)
-const deploymentTimeout = 15 * time.Minute
+
+// DeploymentTimeout bounds the whole upload and cutover, including the remote
+// backup and offline preparation stages. Each stage keeps its own tighter guard.
+const DeploymentTimeout = 45 * time.Minute
 const deploymentInspectTimeout = 10 * time.Second
 
 var ErrDeploymentUnavailable = errors.New("vm_bundle_unavailable")
@@ -396,7 +399,7 @@ func (deployer *Deployer) Prepare(ctx context.Context, binding Binding) error {
 		return ErrBridgeBusy
 	}
 	defer deployer.operation.Unlock()
-	bounded, stop := context.WithTimeout(ctx, deploymentTimeout)
+	bounded, stop := context.WithTimeout(ctx, DeploymentTimeout)
 	stopOwner := context.AfterFunc(deployer.options.Context, stop)
 	defer func() {
 		stopOwner()

@@ -26,7 +26,7 @@
 
 保留的 TypeScript 兼容测试按参考模块对应，放在 `tests/work/`、`tests/conversation/`、`tests/computer/` 等目录；界面测试放在 `tests/ui/chat/`、`tests/ui/settings/` 等对应目录。公共夹具放在 `tests/support/`，编译期契约放在 `tests/types/`，Python VM 测试放在 `tests/vm/`。`npm test` 和覆盖率检查使用同一个递归发现模块，移动目录不能漏跑测试。单独执行时使用完整路径，例如 `node --test tests/work/task-cancel.test.mts`。
 
-生产 Go 核心包放在 `core/internal/<feature>/`，行为测试 `*_test.go` 与实现放在同一个包中。相关 TypeScript 工具放在 `scripts/core/`，工具的 Node 测试放在 `tests/core/`。明确保留 Controller、Worker、浏览器与认证传输边界；Controller 离线时不能导入执行组装作为回退。
+生产 Go 核心包放在 `core/internal/<feature>/`，全部 Go 测试集中在镜像完整包路径的 `tests/go/<package>/`，例如 `tests/go/internal/memory/`。统一入口通过 Go 官方的显式 `-overlay` 选项，将这些测试编译到所属包中，不为测试导出私有实现，也不复制生产代码。相关 TypeScript 工具放在 `scripts/core/`，工具的 Node 测试放在 `tests/core/`。明确保留 Controller、Worker、浏览器与认证传输边界；Controller 离线时不能导入执行组装作为回退。
 
 ## 格式化命令
 
@@ -97,13 +97,13 @@ DOM 测试仅使用 LinkeDOM 的公开 `parseHTML` 入口。`tests/types/linkedo
 
 所属 Repository 使用固定的参数化 SQL，将数据库行映射到经校验的功能类型。JSON 边界可以临时使用 `map[string]json.RawMessage` 检查合法字段，再解码到类型明确的 DTO；不能把无类型 map 当作应用内部的数据模型。契约区分缺失、显式 null 和零时，使用指针或功能专属的可空类型明确表示。迁移须保留已有 Unicode、数值精度、顺序、作用域及旧线协议语义，不能暗中归一化。
 
-行为与失败路径测试采用 table-driven 方式，放在包旁。进程或存储边界使用隔离 SQLite 夹具与注入的窄接口，保留取消、并发和清理检查。已采用的门禁仍是固定版本的 `gofmt`、`go vet`、包测试与 Linux 竞态检测。只有证明有必要、固定可复现版本，并补齐本机和 CI 命令时，才引入其他 linter 或生成器。
+行为与失败路径测试采用 table-driven 方式，统一放在 `tests/go/` 下并镜像完整包路径。进程或存储边界使用隔离 SQLite 夹具与注入的窄接口，保留取消、并发和清理检查。已采用的门禁仍是固定版本的 `gofmt`、`go vet`、包测试与 Linux 竞态检测。只有证明有必要、固定可复现版本，并补齐本机和 CI 命令时，才引入其他 linter 或生成器。
 
 ## 验证与副作用
 
 格式和行为分别检查。实施中运行相关测试；交付集成变更前完成 [AGENTS.md](../../AGENTS.md) 列出的检查。[CI](ci.md) 在测试 runner 检查 Prettier，在 Windows 打包 runner 构建前检查 Rust 格式。
 
-`npm run check:core` 检查 Go 格式、运行 `go vet ./...`，并测试全部核心包。`npm run test:core` 运行包测试；`npm run test:core:race` 还会在 Linux 使用可用的 C 编译器运行竞态检测。核心 CI 在 Windows 与 Linux 执行检查，并在 Linux 增加竞态检测；缺少前提条件是失败，不能忽略测试。核心测试必须使用隔离数据与注入依赖，不得连接真实模型、操作 VM 或读取用户账号数据。
+`npm run check:core` 检查 Go 格式，并通过完整测试 overlay 运行 vet 与全部包测试。`npm run test:core` 运行包测试；`npm run test:core:race` 还会在 Linux 使用可用的 C 编译器运行竞态检测。这些统一命令才是受支持的完整测试入口；在 `core/` 直接执行裸 `go test ./...` 不会发现模块外的测试源码。入口递归校验全部测试映射，拒绝放错目录或未映射的测试，保留平台后缀和所属包工作目录，并在命令结束后清理私有临时 overlay。格式化同时覆盖 `core/` 与 `tests/go/`。核心 CI 在 Windows 与 Linux 执行检查，并在 Linux 增加竞态检测；缺少前提条件是失败，不能忽略测试。核心测试必须使用隔离数据与注入依赖，不得连接真实模型、操作 VM 或读取用户账号数据。
 
 `npm run test:core:parity` 明确以 `CGO_ENABLED=0` 构建只读影子工具，创建私有临时记忆夹具，对比权威 TypeScript 搜索／召回结果与持久 Go IPC 读取器。仅分数允许绝对 `1e-10` 误差，其他引用字段和顺序必须完全一致。它分别记录两个运行时各 200 次顺序读取的实验 p50／p95 统计，不保证性能提升；输出只含统计，不含夹具正文。普通 Node 测试发现不会启动这个依赖 Go 的工具，核心 CI 会显式执行。
 

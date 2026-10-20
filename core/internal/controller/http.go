@@ -39,37 +39,8 @@ func apiError(status int, code, message string) error {
 }
 
 func writeError(writer http.ResponseWriter, err error) {
-	status, code, message := http.StatusBadGateway, "request_failed", "The request could not be completed. Check the connection and its current state."
-	var api *contracts.APIError
-	var update *updates.Error
-	if errors.As(err, &api) {
-		status, code, message = api.Status, api.Code, api.Message
-	} else if errors.As(err, &update) {
-		status, code, message = update.Status, update.Code, update.Message
-	} else {
-		switch {
-		case errors.Is(err, computer.ErrBinding), errors.Is(err, backups.ErrInvalid), errors.Is(err, security.ErrAPIKey):
-			status, code, message = 400, "invalid_request", "Check the request values and try again."
-		case errors.Is(err, ErrDesktopBusy), errors.Is(err, updates.ErrInstallationDeferred):
-			status, code, message = 409, "desktop_transition_busy", "Work is paused for an update or exit."
-		case errors.Is(err, backups.ErrBusy), errors.Is(err, backups.ErrRunning):
-			status, code, message = 409, "backup_running", "A backup operation is already running."
-		case errors.Is(err, backups.ErrRestoreUnconfirmed):
-			status, code, message = 409, "backup_restore_unconfirmed", "The restore outcome is not confirmed. Check its status before continuing."
-		case errors.Is(err, backups.ErrBeforeVMChange):
-			status, code, message = 409, "backup_before_vm_change_required", "A backup is required before changing this computer."
-		case errors.Is(err, computer.ErrBridgeOffline):
-			status, code, message = 503, "vm_offline", "The work computer is offline. Reconnect before continuing."
-		case errors.Is(err, context.Canceled):
-			status, code, message = 499, "request_cancelled", "The request was cancelled."
-		case errors.Is(err, context.DeadlineExceeded):
-			status, code, message = 504, "request_timeout", "The request timed out. Check its current state before trying again."
-		}
-	}
-	writeJSON(writer, status, struct {
-		Error string `json:"error"`
-		Code  string `json:"code"`
-	}{message, code})
+	failure := classifyHTTPError(err)
+	writeJSON(writer, failure.status, failure.body)
 }
 
 func jsonRequest(request *http.Request) ([]byte, contracts.RawObject, error) {
@@ -132,7 +103,7 @@ func (app *App) serve(writer http.ResponseWriter, request *http.Request) {
 	closed := app.closed
 	app.mu.Unlock()
 	if closed {
-		writeError(writer, apiError(503, "controller_closed", "The application is closing."))
+		app.writeRequestError(writer, request, apiError(503, "controller_closed", "The application is closing."))
 		return
 	}
 	path := request.URL.Path
@@ -166,25 +137,25 @@ func (app *App) serve(writer http.ResponseWriter, request *http.Request) {
 
 	if request.Method != http.MethodGet && request.Method != http.MethodHead && request.Method != http.MethodOptions {
 		if app.backups.Phase() == contracts.BackupPhaseRestoring || app.backups.Phase() == contracts.BackupPhaseUnknown {
-			writeError(writer, backups.ErrRestoreUnconfirmed)
+			app.writeRequestError(writer, request, backups.ErrRestoreUnconfirmed)
 			return
 		}
 		if app.desktop.Blocked() && !strings.HasPrefix(path, "/api/desktop/") && !strings.HasPrefix(path, "/api/updates/") {
-			writeError(writer, ErrDesktopBusy)
+			app.writeRequestError(writer, request, ErrDesktopBusy)
 			return
 		}
 	}
 	var finish func(bool)
 	sensitive, err := updates.UpdateSensitiveRequest(request.Method, request.URL.RequestURI())
 	if err != nil {
-		writeError(writer, err)
+		app.writeRequestError(writer, request, err)
 		return
 	}
 
 	if sensitive {
 		finish, err = app.lease.Enter()
 		if err != nil {
-			writeError(writer, err)
+			app.writeRequestError(writer, request, err)
 			return
 		}
 		defer func() { finish(false) }()
@@ -195,7 +166,7 @@ func (app *App) serve(writer http.ResponseWriter, request *http.Request) {
 		if finish != nil && errors.As(err, &unknown) {
 			finish(unknown.UnknownOutcome)
 		}
-		writeError(writer, err)
+		app.writeRequestError(writer, request, err)
 	}
 }
 

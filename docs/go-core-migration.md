@@ -57,6 +57,12 @@ The installer owns this boundary because a Go-only mutex or data-root lock canno
 
 A failure preserves data, the private archive and an explicit unconfirmed installation receipt. It does not restart an old Node Worker against prepared data or replay an uncertain action. Recovery requires independent reconciliation and exclusive ownership. Restore likewise validates the archive first, pauses tasks/schedules, disables Telegram and uses the existing target-bound receipt protocol.
 
+Before stopping an existing Worker, a read-only footprint check accounts for capture staging, encoded recovery archives, validation staging and migration headroom on their actual filesystems. Insufficient capacity stops the attempt before service shutdown. Temporary backup copies do not require a durable flush for every file; archive integrity checks and final archive/vault flushes remain the persistence boundary.
+
+Background deployment and the three native deployment request routes retain a bounded budget for the complete sequence, rather than cancelling preparation at the ordinary connection deadline. Ordinary VM/API reads keep their shorter limits. Cancellation or a lost final reply still records an unknown result and does not authorize another installation.
+
+An interrupted attempt before preparation can be reconciled only through the explicit operator command `reconcile-stopped`. It requires the exact attempt ID and original journal hash, verified old/new source manifests, stopped-process proof and the installation lock. The original journal is retained as durable evidence before a new fenced attempt is written. Preparation or activation uncertainty cannot use this path, and automatic connection checks never invoke it.
+
 The Worker also checks `install-attempt.json` before opening Store or Memory, including independent service starts and reboots. `reserving`, `stopping` and `preparing` cannot start live services. Offline preparation writes `worker-preparation.json` only after archive authentication and all preparation steps succeed; this receipt binds the attempt, version, source commit, verified bundle, exact data/workspace roots and archive identity/hash. `activating` requires that receipt and the unchanged recovery archive. `committed` retains the receipt while allowing normal archive retention, without scanning a multi-gigabyte archive on every boot. The managed `app` symlink must resolve to the exact verified release directory. An absent installation journal remains an explicit fresh/manual-install compatibility case; malformed or partial journals never use that exception.
 
 ## Build, resources and development
@@ -73,6 +79,8 @@ Go **1.27.2** is pinned in tooling and CI; automatic toolchain selection is disa
 No backend TypeScript tree, `node_modules`, Node executable, `.env` or runtime data is packaged. The native host launches the compiled Go Controller and accepts only a matching runtime/version/source marker. There is no production Node fallback. Python desktop helpers and Codex App Server retain their separate roles.
 
 After committing reviewed changes, run `npm run package:resources`, then `npm start` to launch the validated compiled Go backend. `npm run dev` uses the same prepared backend with Vite. The launcher does not silently rebuild dirty source or run `src/server.mts`. See [runtime support](runtime-support.md) for tools and [CI](ci.md) for gates.
+
+All Go test sources live in `tests/go/`, mirroring the package path under `core/`. Run `npm run check:core`, `npm run test:core` or `npm run test:core:race`; the shared runner recursively validates the complete inventory and passes an explicit Go compiler overlay, preserving private package access and platform suffixes. Bare `go test ./...` from `core/` does not discover this external test tree. No production interface is exported solely for test access.
 
 ## Compatibility evidence and remaining acceptance
 

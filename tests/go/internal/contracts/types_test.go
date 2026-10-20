@@ -18,6 +18,34 @@ func object(t *testing.T, value any) RawObject {
 	}
 	return decoded
 }
+
+func TestMessageEmptyTextRemainsPresentOnThePublicWire(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{"attachment", `{"id":"attachment","role":"user","text":"","attachments":[{"id":"file","name":"image.png","type":"image/png"}]}`},
+		{"call", `{"id":"call","role":"user","text":"","kind":"call","seconds":15}`},
+		{"placeholder", `{"id":"placeholder","role":"assistant","text":"","status":"streaming"}`},
+		{"legacy omission", `{"id":"legacy","role":"assistant"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var message ChatMessage
+			if err := json.Unmarshal([]byte(test.raw), &message); err != nil {
+				t.Fatal(err)
+			}
+
+			fields := object(t, message)
+			if string(fields["text"]) != `""` {
+				t.Fatal("an empty message lost the browser's required text field")
+			}
+			if _, exists := fields["time"]; exists {
+				t.Fatal("a missing creation time was invented")
+			}
+		})
+	}
+}
+
 func TestMessageNullableFieldsAndLegacyTextSurviveUnrelatedChanges(t *testing.T) {
 	var message ChatMessage
 	if err := json.Unmarshal([]byte(`{"id":"legacy","role":"assistant","text":"old\ud800text","time":123,"turnId":null,"pinned":false,"future":{"version":3}}`), &message); err != nil {

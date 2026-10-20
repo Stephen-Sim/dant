@@ -546,9 +546,8 @@ func copyStableBackupFile(ctx context.Context, source, target string) (string, e
 	}
 	hash := sha256.New()
 	written, err := copyBounded(ctx, io.MultiWriter(output, hash), input, before.Size())
-	if err == nil {
-		err = output.Sync()
-	}
+	// This private copy is ephemeral. The archive recipient owns durable commit;
+	// close and both source/archive hash checks still precede successful export.
 	closeErr := output.Close()
 	after, statErr := ordinaryBackupFile(source)
 	changedAfter, changeErr := sourceVersion(source, after)

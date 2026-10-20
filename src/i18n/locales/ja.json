@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "scripts/、references/、assets/ のパス、またはルートの README.md、LICENSE、NOTICE ファイルを使用してください。最大 128 個のテキストファイルを編集でき、各 256 KiB、合計 1 MiB までです。大きなテキストファイルやその他の形式のファイルは、読み取り専用の補助ファイルとして保持されます。",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "SKILL.md、または 1 つのスキルを含む 10 MiB 以下の ZIP を選択してください。",
   "No starred messages yet.": "スター付きメッセージはまだありません。",
-  "Star a message from its menu to keep it here.": "メッセージのメニューからスターを付けると、ここに表示されます。"
+  "Star a message from its menu to keep it here.": "メッセージのメニューからスターを付けると、ここに表示されます。",
+  "A backup or restore is in progress.": "バックアップまたは復元が進行中です。",
+  "Another VM operation is in progress.": "別の仮想マシン操作が進行中です。",
+  "Another update or exit operation is in progress.": "別の更新または終了処理が進行中です。",
+  "The VM connection or suspension record changed or could not be verified.": "仮想マシンの接続や中断記録が変更されたか、検証できませんでした。",
+  "The backup or restore outcome is unconfirmed.": "バックアップまたは復元の結果を確認できませんでした。",
+  "The exit outcome could not be confirmed.": "終了処理の結果を確認できませんでした。",
+  "This VM connection does not support verified suspension.": "この仮想マシン接続では、検証可能な中断操作を利用できません。",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "仮想マシンの中断を確認できませんでした。仮想マシンの状態と管理者の確認画面を確認してください。",
+  "Work pause could not be confirmed.": "作業が一時停止したことを確認できませんでした。",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant は開いたままです。終了する前に設定で操作の状態を確認してください。"
 }

@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "Gunakan laluan scripts/, references/ atau assets/, atau fail README.md, LICENSE dan NOTICE di akar. Sunting sehingga 128 fail teks, setiap satu 256 KiB dan jumlah 1 MiB. Fail teks yang lebih besar dan format lain dikekalkan sebagai fail sokongan baca sahaja.",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "Pilih SKILL.md atau ZIP yang mengandungi satu kemahiran, sehingga 10 MiB.",
   "No starred messages yet.": "Belum ada mesej berbintang.",
-  "Star a message from its menu to keep it here.": "Tandakan mesej dengan bintang melalui menunya untuk mencarinya di sini."
+  "Star a message from its menu to keep it here.": "Tandakan mesej dengan bintang melalui menunya untuk mencarinya di sini.",
+  "A backup or restore is in progress.": "Sandaran atau pemulihan sedang berlangsung.",
+  "Another VM operation is in progress.": "Operasi mesin maya lain sedang berlangsung.",
+  "Another update or exit operation is in progress.": "Kemas kini atau penutupan lain sedang berlangsung.",
+  "The VM connection or suspension record changed or could not be verified.": "Sambungan atau rekod penangguhan mesin maya telah berubah atau tidak dapat disahkan.",
+  "The backup or restore outcome is unconfirmed.": "Hasil sandaran atau pemulihan belum disahkan.",
+  "The exit outcome could not be confirmed.": "Hasil penutupan belum dapat disahkan.",
+  "This VM connection does not support verified suspension.": "Sambungan mesin maya ini tidak menyokong penangguhan yang boleh disahkan.",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Penangguhan mesin maya belum dapat disahkan. Semak keadaannya dan sebarang permintaan pengesahan pentadbir.",
+  "Work pause could not be confirmed.": "Jeda kerja belum dapat disahkan.",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant kekal terbuka. Semak status operasi dalam Tetapan sebelum keluar."
 }

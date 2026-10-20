@@ -19,6 +19,7 @@ import { defaultReactions } from '../../../src/conversation/reactions.mts';
 import { canPreviewFile } from '../../../ui/files/file-preview.mts';
 import { messageHistoryScope, RECENT_MESSAGE_LIMIT } from '../../../ui/chat/message-window.mts';
 import postcss from 'postcss';
+import { readAppState } from '../../../ui/app/application-state.mts';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8'),
   part = (start: string, end: string) => sourceSection(source, start, end);
@@ -89,6 +90,36 @@ function fixture(language = 'en', theme = 'light') {
     },
   };
 }
+
+test('Go omitted-text attachment and call history passes the state boundary and actual message renderer', () => {
+  const wire = {
+      settings: { vm: {}, language: 'en' },
+      worker: { status: 'offline', models: [] },
+      messages: [
+        { id: 'text', role: 'assistant', text: 'History remains visible', time: at },
+        {
+          id: 'image',
+          role: 'assistant',
+          attachments: [{ id: 'photo', name: 'Screenshot.png', type: 'image/png' }],
+          time: at + 1000,
+        },
+        { id: 'call', role: 'user', kind: 'call', seconds: 75, time: at + 2000 },
+      ],
+    },
+    f = fixture(),
+    decoded = readAppState(wire);
+  f.state.messages = decoded.messages;
+  f.render();
+  assert.equal(f.document.querySelectorAll('article.message').length, 2);
+  assert.equal(f.document.querySelectorAll('.image-attachment img').length, 1);
+  assert.equal(f.document.querySelectorAll('.call-log').length, 1);
+  assert.match(
+    f.document.querySelector('[data-id="text"]')?.textContent ?? '',
+    /History remains visible/,
+  );
+  assert.match(f.document.querySelector('[data-id="call"]')?.textContent ?? '', /1:15/);
+  assert.equal(Object.hasOwn(wire.messages[1] ?? {}, 'text'), false);
+});
 
 test('nearby text and attachment messages share one localized divider while retaining receipts', () => {
   for (const language of ['en', 'zh'])

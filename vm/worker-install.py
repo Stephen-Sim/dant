@@ -10,6 +10,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -53,6 +54,15 @@ PHASE_ACTIVATING = 'activating'
 PHASE_COMMITTED = 'committed'
 PREPARATION_FILE = 'worker-preparation.json'
 BACKUP_LIMIT = 10 * 1024 * 1024 * 1024 * 3 // 2 + 64 * 1024 * 1024
+BACKUP_CONTENT_LIMIT = 10 * 1024 * 1024 * 1024
+BACKUP_FILE_COUNT_LIMIT = 100000
+PREFLIGHT_LIMIT = 4096
+PREFLIGHT_TIMEOUT = 3 * 60
+SPACE_HEADROOM = 1024 * 1024 * 1024
+SPACE_ALLOCATION_LIMIT = 64 * 1024
+SOURCE_DIRECTORY = re.compile(r'source\.[A-Za-z0-9._-]{1,160}\Z')
+BACKUP_NAME = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.raw\Z')
+RECONCILIATION_DIRECTORY = 'installation-history'
 
 
 class InstallError(Exception):
@@ -135,7 +145,7 @@ def verify_bundle(source, home):
     home = ordinary_directory(home)
     source = ordinary_directory(source)
     releases = home / 'dant' / 'releases'
-    if source.parent != releases or not source.name.startswith('source.'):
+    if source.parent != releases or SOURCE_DIRECTORY.fullmatch(source.name) is None:
         reject('source-invalid')
 
     manifest = json_object(read_regular(source / BUNDLE_MANIFEST, MANIFEST_LIMIT))
@@ -208,6 +218,19 @@ def verify_bundle(source, home):
             'digest': digest, 'guestHost': host, 'guestPort': int(port), 'port': worker_port}
 
 
+def verify_reconciliation_operator(configuration):
+    script = pathlib.Path(__file__).absolute()
+    source = script.parent.parent
+    operator = verify_bundle(source, configuration['home'])
+    if script != operator['source'] / 'vm/worker-install.py':
+        reject('source-invalid')
+    entry = operator['entries']['vm/worker-install.py']
+    raw = read_regular(script, FILE_LIMIT)
+    if len(raw) != entry['bytes'] or hashlib.sha256(raw).hexdigest() != entry['sha256']:
+        reject('bundle-changed')
+    return dict(configuration, operatorSource=operator['source'], operatorDigest=operator['digest'])
+
+
 def atomic_write(path, data, mode=0o600):
     path = pathlib.Path(path)
     ordinary_directory(path.parent)
@@ -276,6 +299,108 @@ def run_quiet(arguments, timeout=SERVICE_TIMEOUT, environment=None, output=None)
         reject('process-unconfirmed')
 
 
+def installation_environment(configuration):
+    root = configuration['home'] / 'dant'
+    temporary = ordinary_directory(pathlib.Path(tempfile.gettempdir()))
+    environment = dict(os.environ)
+    environment.update({
+        'DANT_DATA': str(root / 'data'),
+        'DANT_WORKSPACE_ROOT': str(root / 'workspaces'),
+        'DANT_GUEST_HOST': configuration['guestHost'],
+        'DANT_GUEST_PORT': str(configuration['guestPort']),
+        'TMPDIR': str(temporary),
+    })
+    return environment, temporary
+
+
+def backup_footprint(configuration, environment):
+    root = configuration['home'] / 'dant'
+    operator = configuration.get('operatorSource', configuration['source'])
+    if 'operatorSource' in configuration:
+        current = verify_bundle(operator, configuration['home'])
+        if current['digest'] != configuration['operatorDigest']:
+            reject('bundle-changed')
+    arguments = [str(operator / BINARY), '--role=backup-cli', 'preflight',
+                 '--data-dir', str(root / 'data'), '--workspace-root', str(root / 'workspaces'),
+                 '--source-id', configuration['digest']]
+    try:
+        result = subprocess.run(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=environment,
+                                timeout=PREFLIGHT_TIMEOUT, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        reject('space-unconfirmed')
+    if result.returncode != 0 or len(result.stdout) > PREFLIGHT_LIMIT:
+        reject('space-unconfirmed')
+    try:
+        footprint = json_object(result.stdout)
+    except Exception:
+        reject('space-unconfirmed')
+    fields = {'files', 'contentBytes', 'dataBytes', 'stagingBytes', 'archiveBytes', 'requiredBytes'}
+    if set(footprint) != fields or any(type(footprint[key]) is not int or footprint[key] < 0 for key in fields):
+        reject('space-unconfirmed')
+    if (
+        not 0 < footprint['files'] <= BACKUP_FILE_COUNT_LIMIT or
+        not 0 < footprint['contentBytes'] <= BACKUP_CONTENT_LIMIT or
+        footprint['dataBytes'] > footprint['contentBytes'] or
+        footprint['stagingBytes'] < footprint['contentBytes'] or
+        not 0 < footprint['archiveBytes'] <= BACKUP_LIMIT or
+        footprint['requiredBytes'] != footprint['stagingBytes'] + footprint['archiveBytes'] + SPACE_HEADROOM or
+        footprint['stagingBytes'] > BACKUP_CONTENT_LIMIT + 2 * BACKUP_FILE_COUNT_LIMIT * SPACE_ALLOCATION_LIMIT
+    ):
+        reject('space-unconfirmed')
+    return footprint
+
+
+def filesystem_space(path):
+    path = ordinary_directory(path)
+    before = path.lstat()
+    try:
+        capacity = os.statvfs(path)
+    except (AttributeError, OSError):
+        reject('space-unconfirmed')
+    after = path.lstat()
+    if (
+        (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino) or
+        type(capacity.f_bavail) is not int or capacity.f_bavail < 0 or
+        type(capacity.f_frsize) is not int or not 0 < capacity.f_frsize <= SPACE_ALLOCATION_LIMIT
+    ):
+        reject('space-unconfirmed')
+    return before.st_dev, capacity.f_bavail * capacity.f_frsize
+
+
+def assert_installation_space(configuration, environment, temporary):
+    footprint = backup_footprint(configuration, environment)
+    root = configuration['home'] / 'dant'
+    locations = {
+        'temporary': filesystem_space(temporary),
+        'archive': filesystem_space(root / 'installation-backups'),
+        'data': filesystem_space(root / 'data'),
+    }
+    migration_devices = {locations['data'][0]}
+    for relative in ('memory/dant', 'schedules'):
+        path = root / 'data' / relative
+        while not path.exists() and not path.is_symlink():
+            path = path.parent
+        locations[relative] = filesystem_space(path)
+        migration_devices.add(locations[relative][0])
+    available = {}
+    for device, free in locations.values():
+        available[device] = min(available.get(device, free), free)
+
+    # Capture and offline validation are sequential. The raw archive survives
+    # both phases, while schema migration can additionally grow the data root.
+    required = {}
+    for location, size in (('temporary', footprint['stagingBytes']), ('archive', footprint['archiveBytes'])):
+        device = locations[location][0]
+        required[device] = required.get(device, 0) + size
+    for device in migration_devices:
+        required[device] = required.get(device, 0) + footprint['dataBytes']
+    for device, size in required.items():
+        if available[device] < size + SPACE_HEADROOM:
+            reject('space-insufficient')
+    return footprint
+
+
 def service_state():
     try:
         result = subprocess.run(
@@ -303,6 +428,58 @@ def service_state():
     ):
         reject('shutdown-unconfirmed')
     return fields
+
+
+def installation_interpreter(command):
+    return command in ('bash', 'sh') or re.fullmatch(r'python(?:3(?:\.[0-9]{1,2})?)?', command) is not None
+
+
+def relative_installation_command(arguments):
+    parts = [os.fsdecode(part) for part in arguments.split(b'\0') if part]
+    if not parts or not installation_interpreter(pathlib.PurePosixPath(parts[0]).name):
+        return False
+    return any(not pathlib.Path(part).is_absolute() and pathlib.Path(part).name in (
+        'install-worker.sh', 'worker-install.py') for part in parts[1:])
+
+
+def owned_installation_command(arguments, home, cwd=None):
+    parts = [os.fsdecode(part) for part in arguments.split(b'\0') if part]
+    if not parts:
+        return False
+    command = pathlib.PurePosixPath(parts[0]).name
+    if not installation_interpreter(command):
+        return False
+    releases = pathlib.Path(home) / 'dant/releases'
+    for index, part in enumerate(parts[1:], 1):
+        script = pathlib.Path(part)
+        if not script.is_absolute() and cwd is not None:
+            script = pathlib.Path(os.path.normpath(str(cwd / script)))
+        if (
+            not script.is_absolute() or script.name not in ('install-worker.sh', 'worker-install.py') or
+            script.parent.name != 'vm' or script.parent.parent.parent != releases or
+            SOURCE_DIRECTORY.fullmatch(script.parent.parent.name) is None
+        ):
+            continue
+        if script.name == 'install-worker.sh':
+            return True
+        if index + 1 < len(parts) and parts[index + 1] in ('activate', 'reconcile-stopped'):
+            return True
+    return False
+
+
+def owned_data_arguments(arguments, home):
+    parts = arguments.split(b'\0')
+    values = {
+        b'--data-dir': os.fsencode(str(pathlib.Path(home) / 'dant/data')),
+        b'--workspace-root': os.fsencode(str(pathlib.Path(home) / 'dant/workspaces')),
+    }
+    for index, argument in enumerate(parts):
+        for key, expected in values.items():
+            if argument == key + b'=' + expected:
+                return True
+            if argument == key and index + 1 < len(parts) and parts[index + 1] == expected:
+                return True
+    return False
 
 
 def assert_stopped(home, state=None, proc_root=pathlib.Path('/proc'), cgroup_root=pathlib.Path('/sys/fs/cgroup')):
@@ -334,6 +511,8 @@ def assert_stopped(home, state=None, proc_root=pathlib.Path('/proc'), cgroup_roo
     for process in proc_root.iterdir():
         if not process.name.isdecimal():
             continue
+        if int(process.name) == os.getpid():
+            continue
         try:
             if process.stat().st_uid != os.getuid():
                 continue
@@ -341,9 +520,27 @@ def assert_stopped(home, state=None, proc_root=pathlib.Path('/proc'), cgroup_roo
                 arguments = stream.read(32 * 1024 + 1)
             if len(arguments) > 32 * 1024:
                 reject('shutdown-unconfirmed')
+            cwd = None
+            if relative_installation_command(arguments):
+                try:
+                    cwd = (process / 'cwd').readlink()
+                except (FileNotFoundError, ProcessLookupError):
+                    # A missing cwd is only a stopped-process witness if the
+                    # owning PID itself is gone, not merely hard to inspect.
+                    try:
+                        process.stat()
+                    except (FileNotFoundError, ProcessLookupError):
+                        continue
+                    reject('shutdown-unconfirmed')
+                if not cwd.is_absolute() or str(cwd).endswith(' (deleted)'):
+                    reject('shutdown-unconfirmed')
+            if owned_installation_command(arguments, home, cwd):
+                reject('shutdown-unconfirmed')
             command = pathlib.PurePosixPath(os.fsdecode(arguments.split(b'\0', 1)[0])).name
-            if command not in ('node', 'nodejs', 'codex', 'dant-core'):
+            if command not in ('node', 'nodejs', 'codex', 'dant-core', 'dant-core-linux-amd64'):
                 continue
+            if owned_data_arguments(arguments, home):
+                reject('shutdown-unconfirmed')
             with (process / 'environ').open('rb') as stream:
                 environment = stream.read(128 * 1024 + 1)
             if len(environment) > 128 * 1024:
@@ -506,7 +703,7 @@ def ensure_linger():
         reject('linger-unconfirmed')
 
 
-def activate(configuration, manual=False):
+def activate(configuration, manual=False, reconciliation=None):
     import fcntl
 
     home, source = configuration['home'], configuration['source']
@@ -524,7 +721,7 @@ def activate(configuration, manual=False):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             reject('install-busy')
-        _activate_locked(configuration, manual, service_directory)
+        _activate_locked(configuration, manual, service_directory, reconciliation)
 
 
 def validate_previous_attempt(previous):
@@ -567,13 +764,108 @@ def validate_previous_attempt(previous):
         reject('previous-install-unconfirmed')
 
 
-def _activate_locked(configuration, manual, service_directory):
+def validate_prior_preparation(root, previous):
+    path = root / PREPARATION_FILE
+    if not path.exists() and not path.is_symlink():
+        return None
+    raw = read_regular(path, MANIFEST_LIMIT)
+    proof = json_object(raw)
+    required = {
+        'schemaVersion', 'attemptId', 'source', 'sourceCommit', 'version', 'directory',
+        'dataDir', 'workspaceRoot', 'backup', 'backupBytes', 'backupModifiedNS',
+        'backupIdentity', 'backupSha256',
+    }
+    if (
+        set(proof) != required or type(proof.get('schemaVersion')) is not int or proof['schemaVersion'] != 1 or
+        not isinstance(proof.get('attemptId'), str) or not LEASE.fullmatch(proof['attemptId']) or
+        proof['attemptId'] == previous['attemptId'] or
+        not isinstance(proof.get('source'), str) or not SHA256.fullmatch(proof['source']) or
+        not isinstance(proof.get('sourceCommit'), str) or not COMMIT.fullmatch(proof['sourceCommit']) or
+        not isinstance(proof.get('version'), str) or not VERSION.fullmatch(proof['version']) or
+        not isinstance(proof.get('directory'), str) or not SOURCE_DIRECTORY.fullmatch(proof['directory']) or
+        proof.get('dataDir') != str(root / 'data') or proof.get('workspaceRoot') != str(root / 'workspaces') or
+        not isinstance(proof.get('backup'), str) or not BACKUP_NAME.fullmatch(proof['backup']) or
+        type(proof.get('backupBytes')) is not int or not 0 < proof['backupBytes'] <= BACKUP_LIMIT or
+        not isinstance(proof.get('backupModifiedNS'), str) or not re.fullmatch(r'-?[0-9]{1,20}', proof['backupModifiedNS']) or
+        not isinstance(proof.get('backupIdentity'), str) or not re.fullmatch(r'[a-f0-9]{1,16}:[a-f0-9]{1,16}', proof['backupIdentity']) or
+        not isinstance(proof.get('backupSha256'), str) or not SHA256.fullmatch(proof['backupSha256'])
+    ):
+        reject('reconciliation-unconfirmed')
+    return raw
+
+
+def validate_reconciliation(configuration, previous, raw, reconciliation):
+    required = {'schemaVersion', 'attemptId', 'source', 'sourceCommit', 'version', 'directory', 'phase'}
+    if (
+        set(previous) - (required | {'maintenanceId'}) or not required <= set(previous) or
+        type(previous.get('schemaVersion')) is not int or previous['schemaVersion'] != 1 or
+        not isinstance(previous.get('attemptId'), str) or not LEASE.fullmatch(previous['attemptId']) or
+        previous['attemptId'] != reconciliation['attemptId'] or
+        hashlib.sha256(raw).hexdigest() != reconciliation['journalSha256'] or
+        previous.get('phase') not in (PHASE_RESERVING, PHASE_STOPPING) or
+        not isinstance(previous.get('source'), str) or not SHA256.fullmatch(previous['source']) or
+        not isinstance(previous.get('sourceCommit'), str) or not COMMIT.fullmatch(previous['sourceCommit']) or
+        not isinstance(previous.get('version'), str) or not VERSION.fullmatch(previous['version']) or
+        not isinstance(previous.get('directory'), str) or not SOURCE_DIRECTORY.fullmatch(previous['directory']) or
+        'maintenanceId' in previous and (
+            not isinstance(previous['maintenanceId'], str) or not LEASE.fullmatch(previous['maintenanceId'])
+        )
+    ):
+        reject('reconciliation-unconfirmed')
+    root = configuration['home'] / 'dant'
+    old_source = root / 'releases' / previous['directory']
+    old = verify_bundle(old_source, configuration['home'])
+    if (old['digest'], old['commit'], old['version']) != (
+        previous['source'], previous['sourceCommit'], previous['version']
+    ):
+        reject('reconciliation-unconfirmed')
+    validate_prior_preparation(root, previous)
+    return old
+
+
+def preserve_evidence(directory, name, raw):
+    target = directory / name
+    if target.exists() or target.is_symlink():
+        if read_regular(target, MANIFEST_LIMIT) != raw:
+            reject('reconciliation-unconfirmed')
+        return
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'wb') as output:
+        output.write(raw)
+        output.flush()
+        os.fsync(output.fileno())
+    sync_directory(directory)
+    if read_regular(target, MANIFEST_LIMIT) != raw:
+        reject('reconciliation-unconfirmed')
+
+
+def preserve_reconciliation(root, raw, reconciliation, previous):
+    directory = ordinary_directory(root / RECONCILIATION_DIRECTORY, create=True)
+    sync_directory(root)
+    name = reconciliation['attemptId'] + '.' + reconciliation['journalSha256'] + '.json'
+    preserve_evidence(directory, name, raw)
+    preparation = validate_prior_preparation(root, previous)
+    if preparation is not None:
+        proof = json_object(preparation)
+        name = 'preparation.' + proof['attemptId'] + '.' + hashlib.sha256(preparation).hexdigest() + '.json'
+        preserve_evidence(directory, name, preparation)
+
+
+def _activate_locked(configuration, manual, service_directory, reconciliation=None):
     home, source = configuration['home'], configuration['source']
     root = home / 'dant'
     attempt_path = root / 'install-attempt.json'
+    previous_raw = None
     if attempt_path.exists() or attempt_path.is_symlink():
-        previous = json_object(read_regular(attempt_path, MANIFEST_LIMIT))
-        validate_previous_attempt(previous)
+        previous_raw = read_regular(attempt_path, MANIFEST_LIMIT)
+        previous = json_object(previous_raw)
+        if reconciliation is None:
+            validate_previous_attempt(previous)
+        else:
+            validate_reconciliation(configuration, previous, previous_raw, reconciliation)
+            assert_stopped(home)
+    elif reconciliation is not None:
+        reject('reconciliation-unconfirmed')
 
     # Validate busy-work policy again while owning the installation lock.
     arguments = ['bash', str(source / 'vm/install-worker.sh'), str(source), '--guard-only']
@@ -581,6 +873,22 @@ def _activate_locked(configuration, manual, service_directory):
         arguments.append('--update-running-work')
     run_quiet(arguments, timeout=PREPARE_TIMEOUT)
     observed_service = service_state()
+    environment, temporary = installation_environment(configuration)
+    assert_installation_space(configuration, environment, temporary)
+    if reconciliation is not None:
+        assert_stopped(home)
+        current_raw = read_regular(attempt_path, MANIFEST_LIMIT)
+        if current_raw != previous_raw:
+            reject('reconciliation-unconfirmed')
+        validate_reconciliation(configuration, json_object(current_raw), current_raw, reconciliation)
+        current = verify_bundle(source, home)
+        if (current['digest'], current['commit'], current['version']) != (
+            configuration['digest'], configuration['commit'], configuration['version']
+        ):
+            reject('bundle-changed')
+        preserve_reconciliation(root, previous_raw, reconciliation, previous)
+        if read_regular(attempt_path, MANIFEST_LIMIT) != previous_raw:
+            reject('reconciliation-unconfirmed')
     attempt = {
         'schemaVersion': 1, 'attemptId': str(uuid.uuid4()),
         'source': configuration['digest'], 'sourceCommit': configuration['commit'],
@@ -612,13 +920,6 @@ def _activate_locked(configuration, manual, service_directory):
     atomic_write(service_directory / 'dant-worker.service', units['dant-worker.service'])
     run_quiet(['systemctl', '--user', 'daemon-reload'])
 
-    environment = dict(os.environ)
-    environment.update({
-        'DANT_DATA': str(root / 'data'),
-        'DANT_WORKSPACE_ROOT': str(root / 'workspaces'),
-        'DANT_GUEST_HOST': configuration['guestHost'],
-        'DANT_GUEST_PORT': str(configuration['guestPort']),
-    })
     backup = root / 'installation-backups' / (str(uuid.uuid4()) + '.raw')
     backup_descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(backup_descriptor, 'wb') as output:
@@ -690,12 +991,23 @@ def _activate_locked(configuration, manual, service_directory):
 
 
 def main(arguments):
+    reconciliation = None
+    if arguments and arguments[0] == 'reconcile-stopped':
+        if (
+            len(arguments) != 7 or arguments[3] != '--attempt-id' or arguments[5] != '--journal-sha256' or
+            not LEASE.fullmatch(arguments[4]) or not SHA256.fullmatch(arguments[6])
+        ):
+            reject('arguments-invalid')
+        reconciliation = {'attemptId': arguments[4], 'journalSha256': arguments[6]}
+        arguments = arguments[:3]
     if (
-        len(arguments) not in (3, 4) or arguments[0] not in ('verify', 'current', 'activate') or
+        len(arguments) not in (3, 4) or arguments[0] not in ('verify', 'current', 'activate', 'reconcile-stopped') or
         len(arguments) == 4 and arguments[3] != '--update-running-work'
     ):
         reject('arguments-invalid')
     configuration = verify_bundle(pathlib.Path(arguments[1]), pathlib.Path(arguments[2]))
+    if reconciliation is not None:
+        configuration = verify_reconciliation_operator(configuration)
     if arguments[0] == 'verify':
         print(configuration['guestHost'], configuration['guestPort'], configuration['port'],
               configuration['version'], configuration['digest'], sep='\t')
@@ -706,7 +1018,7 @@ def main(arguments):
         return
     if os.name != 'posix' or os.getuid() == 0 or sys.platform != 'linux':
         reject('vm-user-required')
-    activate(configuration, len(arguments) == 4)
+    activate(configuration, len(arguments) == 4, reconciliation)
 
 
 if __name__ == '__main__':

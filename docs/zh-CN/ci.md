@@ -10,7 +10,7 @@
 
 浏览器、工具和保留的 Node 兼容测试使用 TypeScript，生产后端功能使用 Go。严格编译分别检查 Node 源码、浏览器源码与全部 Node 测试。测试按模块放入 `tests/<module>/`，UI 测试对应 `ui/`，共享夹具位于 `tests/support/`，Python VM 测试位于 `tests/vm/`。普通测试与覆盖率共用递归发现逻辑和最多四个隔离测试进程，限制桌面与 CI 资源占用。
 
-独立的 `Go core` 工作流在 Windows 和 Ubuntu 上固定使用 Go 1.27.2，检查生成契约、`gofmt`、`go vet`、全部 Go 包测试及隔离的 Node/Go Memory 一致性。Linux 另行运行 race 检测。Go 测试与所属功能包相邻。显式一致性工具构建私有的无 CGO 辅助进程，仅使用夹具 SQLite 快照；普通 Node 测试不要求 Go 编译器。延迟报告只描述合成负载，不能证明生产性能提升。生产资源已切换为独立编译的 Go Controller/Worker 目标；影子 reader 仅作夹具差分工具，不具有生产执行权。
+独立的 `Go core` 工作流在 Windows 和 Ubuntu 上固定使用 Go 1.27.2，检查生成契约、`gofmt`、`go vet`、全部 Go 包测试及隔离的 Node/Go Memory 一致性。Linux 另行运行 race 检测。Go 测试集中在镜像包路径的 `tests/go/`；统一 `npm run check:core` / `test:core:race` 入口显式传入编译器 overlay，完整保留包内私有测试覆盖。裸 `go test ./...` 不会发现这个外部测试源码目录。显式一致性工具构建私有的无 CGO 辅助进程，仅使用夹具 SQLite 快照；普通 Node 测试不要求 Go 编译器。延迟报告只描述合成负载，不能证明生产性能提升。生产资源已切换为独立编译的 Go Controller/Worker 目标；影子 reader 仅作夹具差分工具，不具有生产执行权。
 
 CI 保留格式、严格 TypeScript 与状态域检查，Go 工作流增加全部包检查和 Linux race 检测。Windows 发布 job 也独立执行 Go 与兼容性门禁。Windows 打包 job 自己执行这些门禁，标签不能依赖另一个 `CI` 工作流中尚未确认的结果就生成发布草稿。
 

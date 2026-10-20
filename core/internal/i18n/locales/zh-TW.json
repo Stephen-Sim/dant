@@ -1061,5 +1061,15 @@
   "Use scripts/, references/ or assets/ paths, or root README.md, LICENSE and NOTICE files. Edit up to 128 text files, 256 KiB each, 1 MiB total. Larger text and other file formats are preserved as read-only supporting files.": "使用 scripts/、references/ 或 assets/ 路徑，或根目錄的 README.md、LICENSE 和 NOTICE 檔案。最多可編輯 128 個文字檔案，每個 256 KiB，總計 1 MiB。較大的文字檔案與其他格式檔案會作為唯讀支援檔案保留。",
   "Choose SKILL.md or a ZIP containing one skill, up to 10 MiB.": "請選擇 SKILL.md 或包含一項技能的 ZIP，大小上限為 10 MiB。",
   "No starred messages yet.": "還沒有星號訊息。",
-  "Star a message from its menu to keep it here.": "在訊息選單中加上星號，就能在這裡找到。"
+  "Star a message from its menu to keep it here.": "在訊息選單中加上星號，就能在這裡找到。",
+  "A backup or restore is in progress.": "備份或還原正在進行。",
+  "Another VM operation is in progress.": "另一項虛擬機操作正在進行。",
+  "Another update or exit operation is in progress.": "另一項更新或退出操作正在進行。",
+  "The VM connection or suspension record changed or could not be verified.": "虛擬機連線或掛起記錄已變更，或無法驗證。",
+  "The backup or restore outcome is unconfirmed.": "無法確認備份或還原結果。",
+  "The exit outcome could not be confirmed.": "無法確認退出操作的結果。",
+  "This VM connection does not support verified suspension.": "此虛擬機連線不支援可驗證的掛起操作。",
+  "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "無法確認虛擬機已掛起，請核對虛擬機狀態及管理員確認。",
+  "Work pause could not be confirmed.": "無法確認工作已暫停。",
+  "dant remains open. Check the operation status in Settings before exiting.": "dant 保持開啟，請先到設定核對操作狀態，再退出。"
 }
