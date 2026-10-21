@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import type { TestContext } from 'node:test';
 import type { BashCoverageRunner } from '../../../scripts/ci/bash-coverage.mts';
 import {
@@ -18,23 +17,6 @@ const row = (file: string, covered = '1', total = '2') => ({
   covered_lines: covered,
   total_lines: total,
   percent_covered: '100.00',
-});
-test('original Bash entrypoints preserve readiness/failure and launch only synthetic fixture commands', () => {
-  const bash =
-    process.platform === 'win32'
-      ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git/bin/bash.exe')
-      : 'bash';
-  const result = spawnSync(bash, ['--noprofile', '--norc', 'tests/bash/run.test.sh'], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    shell: false,
-    windowsHide: true,
-    timeout: 30_000,
-    maxBuffer: 64 * 1024,
-  });
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Bash runtime fixtures passed/);
 });
 test('Bash coverage uses kcov executable counts, retains missing scripts and does not claim Python heredoc coverage', () => {
   const report = parseBashCoverage(

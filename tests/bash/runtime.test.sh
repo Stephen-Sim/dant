@@ -13,7 +13,17 @@ export DANT_BASH_RECORD="$fixture/actions"
 apt-get() { printf 'apt\n' >> "$DANT_BASH_RECORD"; [ "${DANT_BASH_CASE:-}" != packages-fail ]; }
 npm() { printf 'npm\n' >> "$DANT_BASH_RECORD"; }
 install() { printf 'install\n' >> "$DANT_BASH_RECORD"; }
-chmod() { printf 'chmod\n' >> "$DANT_BASH_RECORD"; }
+chmod() {
+    printf 'chmod\n' >> "$DANT_BASH_RECORD"
+    case "$*" in
+        "700 $HOME/.local/bin/espeak-ng")
+            printf 'private-speech-mode:700\n' >> "$DANT_BASH_RECORD"
+            command chmod "$@"
+            ;;
+        '+x /opt/dant/start-codex.sh /opt/dant/desktop.py') ;;
+        *) echo 'Unexpected synthetic chmod boundary' >&2; return 1 ;;
+    esac
+}
 loginctl() { printf 'linger\n' >> "$DANT_BASH_RECORD"; }
 chown() { printf 'chown\n' >> "$DANT_BASH_RECORD"; }
 touch() { [ "$*" = /home/dant/work/.dant-ready ] || return 1; printf 'ready-marker\n' >> "$DANT_BASH_RECORD"; }
@@ -30,6 +40,15 @@ python3() {
   elif [ "${1:-}" = "$root/vm/install-transcription.py" ]; then
     [ "$#" -eq 2 ] && [ "$2" = "$root/vm/transcription-requirements.txt" ] || return 1
     [ "${DANT_BASH_CASE:-}" != transcription-fail ]
+  elif [ "${1:-}" = "$root/vm/install-speech.py" ]; then
+    [ "$#" -eq 2 ] && [ "$2" = "$HOME/dant/runtime/speech" ] || return 1
+    printf 'speech-install\n' >> "$DANT_BASH_RECORD"
+    [ "${DANT_BASH_CASE:-}" != speech-install-fail ] || return 1
+    create_speech_runtime
+  elif [ "${1:-}" = "${DANT_BASH_WORKER_OPERATOR:-}/vm/worker-install.py" ] || \
+       [ "${1:-}" = "${DANT_BASH_WORKER_SOURCE:-}/vm/worker-install.py" ] || \
+       [ "${1:-}" = "${DANT_BASH_WORKER_OPERATOR:-}/vm/worker-update-guard.py" ]; then
+    worker_python "$@"
   else
     echo 'Unexpected synthetic Python boundary' >&2
     return 1
@@ -57,6 +76,17 @@ expect_failure() {
         printf '%s\n' "$message" >&2
         return 1
     fi
+}
+
+has_line() {
+    local contents
+    contents=$(< "$2")
+    case $'\n'"$contents"$'\n' in *$'\n'"$1"$'\n'*) return 0 ;; *) return 1 ;; esac
+}
+has_text() {
+    local contents
+    contents=$(< "$2")
+    case "$contents" in *"$1"*) return 0 ;; *) return 1 ;; esac
 }
 
 run_source "$root/vm/bootstrap.sh" > "$fixture/bootstrap-success.txt"
@@ -90,14 +120,9 @@ grep -q '^app-server$' "$DANT_BASH_RECORD"
 grep -q '^stdio://$' "$DANT_BASH_RECORD"
 grep -Fqx "$HOME/work" "$DANT_BASH_RECORD"
 
-espeak-ng() { printf 'No audio device is opened\n'; }
-export -f espeak-ng
-run_source "$root/vm/install-speech.sh" > "$fixture/speech-existing.txt"
-grep -q 'already available' "$fixture/speech-existing.txt"
+source "$root/tests/bash/speech.test.sh"
 run_source "$root/vm/install-transcription.sh" > "$fixture/transcription.txt"
 DANT_BASH_CASE=transcription-fail expect_failure 'Recognition setup acknowledged failure' run_source "$root/vm/install-transcription.sh" > "$fixture/transcription-failed.txt"
 
-mkdir -p "$fixture/foreign-source"
-expect_failure 'Worker accepted an unowned source directory' run_source "$root/vm/install-worker.sh" "$fixture/foreign-source" > "$fixture/worker-invalid.txt" 2>&1
-grep -q 'Invalid worker source directory' "$fixture/worker-invalid.txt"
+source "$root/tests/bash/worker.test.sh"
 printf 'Bash runtime fixtures passed with isolated HOME and fake system boundaries.\n'
