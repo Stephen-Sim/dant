@@ -573,6 +573,9 @@ def assert_stopped(home, state=None, proc_root=pathlib.Path('/proc'), cgroup_roo
 
 def service_units(configuration):
     host, port, worker_port = configuration['guestHost'], configuration['guestPort'], configuration['port']
+    # Activation verifies the app link; configuration reads require the already
+    # verified ordinary release directory, including when .env is absent.
+    source_name = configuration['source'].name
     guest = f'''[Unit]
 Description=dant local desktop bridge with shared control lease
 
@@ -600,7 +603,7 @@ Requires=dant-guest-local.service
 [Service]
 Type=simple
 WorkingDirectory=%h/dant/app
-ExecStart=%h/dant/bin/dant-core --role=worker --root=%h/dant/app --data-dir=%h/dant/data --workspace-root=%h/dant/workspaces
+ExecStart=%h/dant/bin/dant-core --role=worker --root=%h/dant/app --config-root=%h/dant/releases/{source_name} --data-dir=%h/dant/data --workspace-root=%h/dant/workspaces
 Environment=DANT_DATA=%h/dant/data
 Environment=DANT_WORKSPACE_ROOT=%h/dant/workspaces
 Environment=DISPLAY=:0

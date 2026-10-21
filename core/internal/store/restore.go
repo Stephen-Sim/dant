@@ -99,6 +99,9 @@ func restoreMessage(raw json.RawMessage, restarting bool) (*contracts.ChatMessag
 	if err = decodeLegacyFields(fields, value); err != nil {
 		return nil, err
 	}
+	if err := value.RetainLegacyPresence(fields); err != nil {
+		return nil, ErrInvalidState
+	}
 	if rawStatus, exists := fields["status"]; exists {
 		var status contracts.MessageStatus
 		if json.Unmarshal(rawStatus, &status) != nil {
@@ -119,7 +122,9 @@ func restoreMessage(raw json.RawMessage, restarting bool) (*contracts.ChatMessag
 			value.ProgressPriority = contracts.Some(contracts.TaskPriorityNormal)
 		}
 	}
-	value.Reactions = stringList(fields["reactions"])
+	if !bytes.Equal(bytes.TrimSpace(fields["reactions"]), []byte("null")) {
+		value.Reactions = stringList(fields["reactions"])
+	}
 	// Run checked DTO decoding again after normalization to capture preserved
 	// raw escaped text and nested future fields without retaining invalid enums.
 	normalized, err := json.Marshal(value)

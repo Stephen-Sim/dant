@@ -35,6 +35,7 @@ func publicMessages(messages []*contracts.ChatMessage) []*contracts.ChatMessage 
 	for index, message := range messages {
 		if message != nil {
 			copy := *message
+			copy.EnsurePublicText()
 			copy.Work = publicWorkContext(message.Work)
 			result[index] = &copy
 		}

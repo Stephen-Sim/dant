@@ -39,6 +39,8 @@ The application API uses loopback port `4317`, session tokens and validated host
 
 SQLite uses pinned pure-Go `modernc.org/sqlite`, bounded busy waits, `synchronous=FULL` and DELETE journaling. Schema or journal changes require an explicit compatibility and recovery policy. Supported earlier data formats are validated and backed up before import; identities and available timestamps are preserved, and missing values are not invented.
 
+Message and attachment persistence preserves the difference between omitted fields, explicit null, empty arrays, empty strings and false. Typed field edits still replace the saved value. The public chat projection supplies its required text field separately, so displaying a supported older record does not change that record on disk. Repeated open, update and save cycles are covered by behavioral tests.
+
 Memory checks the durable revision before reusing its bounded cache. Recall scopes candidates before ranking and limits, checks confirmed status and source, redacts references and enforces input budgets. It supplies context to admitted work; it cannot start or authorize work.
 
 Scheduler claims and JSON messages are separate durable writes. A fixed message identity is materialized before the no-replay handoff receipt. Missing acknowledgments retain uncertainty. Restart and restore keep unfinished work paused or unknown until the owning operation is reconciled.
@@ -52,6 +54,8 @@ Scheduler claims and JSON messages are separate durable writes. A fixed message 
 5. Bind successful preparation to the exact attempt, source, bundle, data/workspace roots and backup. Activate only that Worker, then confirm its live role, protocol, version and source before marking deployment current.
 
 Desktop bridge checks confirm service, process and listening-socket ownership. When `systemctl show` omits an empty `EnvironmentFiles` array, the observer resolves the unit through systemd's D-Bus manager and requires a successful typed empty-array response. Missing, unreadable, malformed or nonempty properties do not become an empty configuration. These read-only queries require no service restart or administrator approval.
+
+The Worker service passes the verified ordinary release directory through `--config-root`. Its `--root` remains the managed `app` link so activation checks still confirm the deployed target. Configuration loading never follows that link as an exception to ordinary-directory checks, and generated paths use the actual verified release name and the service user's home.
 
 `install-attempt.json` also guards independent service starts and reboots. `reserving`, `stopping` and `preparing` cannot open live services. `activating` requires the matching `worker-preparation.json` and unchanged recovery archive. `committed` retains the preparation proof while allowing normal backup retention. The managed `app` link must resolve to the verified release directory. A malformed or partial journal never becomes a fresh-install exception.
 

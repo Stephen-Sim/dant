@@ -7,6 +7,7 @@ import io
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import sys
 import tempfile
@@ -69,6 +70,36 @@ class WorkerInstallFixture(unittest.TestCase):
         verified = installer.verify_bundle(self.source, self.home)
         self.assertIn(installer.PROTOCOL_PATH, verified['entries'])
         self.assertNotIn(installer.LEGACY_PROTOCOL_PATH, verified['entries'])
+
+    def test_worker_unit_keeps_activation_link_and_uses_verified_real_configuration_root(self):
+        for name in ('source.first-candidate', 'source.next-candidate.42'):
+            with self.subTest(directory=name):
+                target = self.source.with_name(name)
+                self.source.rename(target)
+                self.source = target
+                configuration = installer.verify_bundle(self.source, self.home)
+                unit = installer.service_units(configuration)['dant-worker.service'].decode('utf-8')
+                command = next(line.removeprefix('ExecStart=') for line in unit.splitlines()
+                               if line.startswith('ExecStart='))
+                arguments = shlex.split(command)
+                expected_root = '%h/dant/releases/' + name
+
+                self.assertEqual(arguments, [
+                    '%h/dant/bin/dant-core', '--role=worker', '--root=%h/dant/app',
+                    '--config-root=' + expected_root, '--data-dir=%h/dant/data',
+                    '--workspace-root=%h/dant/workspaces',
+                ])
+                self.assertEqual(pathlib.Path(expected_root.replace('%h', str(self.home))), self.source)
+                self.assertFalse((self.source / '.env').exists())
+                self.assertIn('WorkingDirectory=%h/dant/app', unit.splitlines())
+                environment = dict(line.removeprefix('Environment=').split('=', 1)
+                                   for line in unit.splitlines() if line.startswith('Environment='))
+                self.assertEqual(environment['DANT_DATA'], '%h/dant/data')
+                self.assertEqual(environment['DANT_WORKSPACE_ROOT'], '%h/dant/workspaces')
+                self.assertEqual(environment['DANT_PORT'], str(configuration['port']))
+                self.assertEqual(environment['DANT_GUEST_HOST'], configuration['guestHost'])
+                self.assertEqual(environment['DANT_GUEST_PORT'], str(configuration['guestPort']))
+                self.assertEqual(self.calls, [])
 
     def test_new_bootstrap_and_native_ports_cannot_be_reused_by_the_deployed_guest(self):
         protocol = json.loads((ROOT / 'resources/config/protocol.json').read_bytes())

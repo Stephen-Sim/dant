@@ -69,7 +69,8 @@ class SeedPermissionTests(unittest.TestCase):
                 installer = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(installer)
                 worker_unit = installer.service_units({'guestHost': protocol['loopbackHost'],
-                    'guestPort': protocol['guestPort'], 'port': protocol['apiPort']})['dant-guest-local.service'].decode()
+                    'guestPort': protocol['guestPort'], 'port': protocol['apiPort'],
+                    'source': pathlib.Path(temporary) / 'source.seed-fixture'})['dant-guest-local.service'].decode()
                 worker_environment = dict(line.removeprefix('Environment=').split('=', 1)
                     for line in worker_unit.splitlines() if line.startswith('Environment='))
                 self.assertEqual(worker_environment['DANT_GUEST_PORT'], str(protocol['guestPort']))

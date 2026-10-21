@@ -34,6 +34,7 @@ func TestMessageEmptyTextRemainsPresentOnThePublicWire(t *testing.T) {
 			if err := json.Unmarshal([]byte(test.raw), &message); err != nil {
 				t.Fatal(err)
 			}
+			message.EnsurePublicText()
 
 			fields := object(t, message)
 			if string(fields["text"]) != `""` {

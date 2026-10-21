@@ -86,6 +86,7 @@ type Attachment struct {
 	Unavailable   Optional[bool]    `json:"unavailable,omitzero"`
 	Extra         RawObject         `json:"-"`
 	LegacyText    LegacyJSON        `json:"-"`
+	presence      messagePresence
 }
 type VMSettings struct {
 	Host       string     `json:"host"`
@@ -212,6 +213,7 @@ type ChatMessage struct {
 	ScheduleID                 string                     `json:"scheduleId,omitempty"`
 	Extra                      RawObject                  `json:"-"`
 	LegacyText                 LegacyJSON                 `json:"-"`
+	presence                   messagePresence
 }
 type Message = ChatMessage
 type MessagePatch RawObject
@@ -438,7 +440,7 @@ func unmarshalExtended(raw []byte, value any) (RawObject, error) {
 
 func (value Attachment) MarshalJSON() ([]byte, error) {
 	type wire Attachment
-	return marshalExtended(wire(value), value.Extra)
+	return marshalMessagePresence(wire(value), value.Extra, value.presence)
 }
 
 func (value *Attachment) UnmarshalJSON(raw []byte) error {
@@ -450,7 +452,12 @@ func (value *Attachment) UnmarshalJSON(raw []byte) error {
 	}
 	*value = Attachment(decoded)
 	value.Extra = extra
-	return nil
+	fields, err := DecodeObject(raw, len(raw))
+	if err != nil {
+		return err
+	}
+	value.presence, err = rememberMessagePresence(decoded, fields)
+	return err
 }
 
 func (value VMSettings) MarshalJSON() ([]byte, error) {
@@ -489,7 +496,7 @@ func (value *Settings) UnmarshalJSON(raw []byte) error {
 
 func (value ChatMessage) MarshalJSON() ([]byte, error) {
 	type wire ChatMessage
-	return marshalExtended(wire(value), value.Extra)
+	return marshalMessagePresence(wire(value), value.Extra, value.presence)
 }
 
 func (value *ChatMessage) UnmarshalJSON(raw []byte) error {
@@ -501,7 +508,12 @@ func (value *ChatMessage) UnmarshalJSON(raw []byte) error {
 	}
 	*value = ChatMessage(decoded)
 	value.Extra = extra
-	return nil
+	fields, err := DecodeObject(raw, len(raw))
+	if err != nil {
+		return err
+	}
+	value.presence, err = rememberMessagePresence(decoded, fields)
+	return err
 }
 
 func (value WorkRecord) MarshalJSON() ([]byte, error) {
