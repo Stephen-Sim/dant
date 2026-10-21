@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"math"
 	"os"
@@ -108,6 +109,18 @@ type Vault struct {
 	keyFile   string
 	gate      chan struct{}
 	now       func() time.Time
+	entropy   io.Reader
+	newAEAD   func([]byte) (cipher.AEAD, error)
+	writeFile func(context.Context, string, []byte, fs.FileMode) error
+	newID     func() (uuid.UUID, error)
+}
+
+func credentialAEAD(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }
 
 func NewVault(dataDirectory string) (*Vault, error) {
@@ -121,6 +134,10 @@ func NewVault(dataDirectory string) (*Vault, error) {
 		keyFile:   filepath.Join(directory, "master.key"),
 		gate:      make(chan struct{}, 1),
 		now:       time.Now,
+		entropy:   rand.Reader,
+		newAEAD:   credentialAEAD,
+		writeFile: files.WriteAtomic,
+		newID:     uuid.NewRandom,
 	}, nil
 }
 
@@ -171,7 +188,7 @@ func (vault *Vault) key(create bool) ([]byte, error) {
 			return nil, ErrVault
 		}
 		key := make([]byte, VaultKeyBytes)
-		if _, err := rand.Read(key); err != nil {
+		if _, err := io.ReadFull(vault.entropy, key); err != nil {
 			return nil, ErrVault
 		}
 		defer clear(key)
@@ -226,11 +243,7 @@ func (vault *Vault) read() ([]Credential, error) {
 	if ivErr != nil || tagErr != nil || dataErr != nil || len(iv) != VaultNonceBytes || len(tag) != VaultTagBytes {
 		return nil, ErrVault
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, ErrVault
-	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := vault.newAEAD(key)
 	if err != nil {
 		return nil, ErrVault
 	}
@@ -287,16 +300,12 @@ func (vault *Vault) write(ctx context.Context, entries []Credential) error {
 		return ErrVault
 	}
 	defer clear(plain)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return ErrVault
-	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := vault.newAEAD(key)
 	if err != nil {
 		return ErrVault
 	}
 	iv := make([]byte, VaultNonceBytes)
-	if _, err := rand.Read(iv); err != nil {
+	if _, err := io.ReadFull(vault.entropy, iv); err != nil {
 		return ErrVault
 	}
 	encrypted := gcm.Seal(nil, iv, plain, []byte(VaultAAD))
@@ -311,7 +320,7 @@ func (vault *Vault) write(ctx context.Context, entries []Credential) error {
 	if err != nil || len(data) > VaultMaxFileBytes {
 		return ErrVault
 	}
-	if err := files.WriteAtomic(ctx, vault.file, data, 0o600); err != nil {
+	if err := vault.writeFile(ctx, vault.file, data, 0o600); err != nil {
 		return ErrVault
 	}
 	return nil
@@ -407,7 +416,7 @@ func (vault *Vault) Upsert(ctx context.Context, input CredentialInput) (Credenti
 		if len(entries) >= VaultEntryLimit {
 			return CredentialMetadata{}, ErrVaultFull
 		}
-		id, err := uuid.NewRandom()
+		id, err := vault.newID()
 		if err != nil {
 			return CredentialMetadata{}, ErrVault
 		}

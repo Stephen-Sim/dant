@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -48,6 +49,10 @@ type SessionInfo struct {
 }
 
 func NewSessionAuth(mode string, apiPort, devPort int, builds ...SessionBuild) (*SessionAuth, error) {
+	return newSessionAuth(mode, apiPort, devPort, rand.Reader, builds...)
+}
+
+func newSessionAuth(mode string, apiPort, devPort int, entropy io.Reader, builds ...SessionBuild) (*SessionAuth, error) {
 	if (mode != "controller" && mode != "worker") || apiPort < 1 || apiPort > 65535 || devPort < 1 || devPort > 65535 {
 		return nil, errors.New("invalid_session_configuration")
 	}
@@ -62,7 +67,7 @@ func NewSessionAuth(mode string, apiPort, devPort int, builds ...SessionBuild) (
 		}
 	}
 	secret := make([]byte, SessionTokenBytes)
-	if _, err := rand.Read(secret); err != nil {
+	if _, err := io.ReadFull(entropy, secret); err != nil {
 		return nil, errors.New("session_unavailable")
 	}
 	defer clear(secret)

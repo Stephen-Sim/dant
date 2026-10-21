@@ -80,13 +80,14 @@ type CredentialRequests struct {
 	pending map[string]*credentialFuture
 	order   []string
 	closed  bool
+	newID   func() (uuid.UUID, error)
 }
 
 func NewCredentialRequests(vault CredentialRepository, change func()) *CredentialRequests {
 	if change == nil {
 		change = func() {}
 	}
-	return &CredentialRequests{vault: vault, change: change, timeout: CredentialRequestTimeout, pending: make(map[string]*credentialFuture)}
+	return &CredentialRequests{vault: vault, change: change, timeout: CredentialRequestTimeout, pending: make(map[string]*credentialFuture), newID: uuid.NewRandom}
 }
 
 func (requests *CredentialRequests) Snapshot(ctx context.Context) CredentialSnapshot {
@@ -172,7 +173,7 @@ func (requests *CredentialRequests) Request(ctx context.Context, input RequestIn
 			requests.mu.Unlock()
 			return CredentialResult{}, ErrCredentialRequestLimit
 		}
-		id, err := uuid.NewRandom()
+		id, err := requests.newID()
 		if err != nil {
 			requests.mu.Unlock()
 			return CredentialResult{}, ErrCredentialInactive

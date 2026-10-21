@@ -26,6 +26,7 @@ type Library struct {
 	disabledRoot   string
 	containsSecret func(context.Context, string) bool
 	now            func() time.Time
+	storage        libraryStorage
 	mu             sync.Mutex
 }
 
@@ -54,6 +55,7 @@ func New(workspace string, options Options) (*Library, error) {
 		disabledRoot:   filepath.Join(absolute, ".dant-disabled-skills"),
 		containsSecret: options.ContainsSecret,
 		now:            now,
+		storage:        diskLibraryStorage(),
 	}, nil
 }
 
@@ -88,7 +90,7 @@ func (library *Library) locate(ctx context.Context, name string) (*located, erro
 			return nil, err
 		}
 
-		managed, err := files.OpenManagedRoot(directory, false)
+		managed, err := library.storage.openRoot(directory, false)
 		if err != nil {
 			return nil, invalid()
 		}
@@ -139,7 +141,7 @@ func (library *Library) List(ctx context.Context) ([]Summary, error) {
 	result := []Summary{}
 	seen := map[string]bool{}
 	for _, directory := range []string{library.enabledRoot, library.disabledRoot} {
-		managed, err := files.OpenManagedRoot(directory, false)
+		managed, err := library.storage.openRoot(directory, false)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -203,7 +205,7 @@ func (library *Library) snapshot(ctx context.Context, name string) (Snapshot, er
 		return Snapshot{}, missing()
 	}
 
-	root, err := files.OpenManagedRoot(found.directory, false)
+	root, err := library.storage.openRoot(found.directory, false)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -469,10 +471,10 @@ func (library *Library) Save(ctx context.Context, input SaveInput, overwrite boo
 	if err := os.Mkdir(temporary, 0o700); err != nil {
 		return View{}, err
 	}
-	defer removeStaging(rootName, temporary)
+	defer library.storage.removeStaging(rootName, temporary)
 
 	description, instructions := contracts.TrimText(input.Description), contracts.TrimText(input.Instructions)
-	if err := files.WriteAtomic(ctx, filepath.Join(temporary, "SKILL.md"), manifestBytes(input.Name, description, instructions), 0o600); err != nil {
+	if err := library.storage.writeAtomic(ctx, filepath.Join(temporary, "SKILL.md"), manifestBytes(input.Name, description, instructions), 0o600); err != nil {
 		return View{}, err
 	}
 	for _, name := range sortedNames(output) {
@@ -480,7 +482,7 @@ func (library *Library) Save(ctx context.Context, input SaveInput, overwrite boo
 		if _, err := files.OrdinaryDirectory(filepath.Dir(target), true); err != nil {
 			return View{}, err
 		}
-		if err := files.WriteAtomic(ctx, target, output[name], 0o600); err != nil {
+		if err := library.storage.writeAtomic(ctx, target, output[name], 0o600); err != nil {
 			return View{}, err
 		}
 	}
@@ -491,31 +493,31 @@ func (library *Library) Save(ctx context.Context, input SaveInput, overwrite boo
 		Files:       sortedNames(output),
 		UpdatedAt:   float64(library.now().UnixMilli()),
 	}
-	if err := files.WriteAtomic(ctx, filepath.Join(temporary, markerName), jsonBytes(meta), 0o600); err != nil {
+	if err := library.storage.writeAtomic(ctx, filepath.Join(temporary, markerName), jsonBytes(meta), 0o600); err != nil {
 		return View{}, err
 	}
 
 	moved := false
 	if found != nil {
-		if err := files.RenameManaged(ctx, found.directory, backup); err != nil {
+		if err := library.storage.rename(ctx, found.directory, backup); err != nil {
 			return View{}, err
 		}
 		moved = true
 	}
 
-	if err := files.RenameManaged(ctx, temporary, destination); err != nil {
+	if err := library.storage.rename(ctx, temporary, destination); err != nil {
 		// A cancelled HTTP request must not prevent rollback of a local directory swap.
 		if moved {
 			rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 			defer cancel()
-			if restoreErr := files.RenameManaged(rollback, backup, found.directory); restoreErr != nil {
+			if restoreErr := library.storage.rename(rollback, backup, found.directory); restoreErr != nil {
 				return View{}, errors.Join(err, restoreErr)
 			}
 		}
 		return View{}, err
 	}
 	if moved {
-		if err := removeStaging(rootName, backup); err != nil {
+		if err := library.storage.removeStaging(rootName, backup); err != nil {
 			return View{}, err
 		}
 	}
@@ -565,7 +567,7 @@ func (library *Library) SetEnabled(ctx context.Context, name string, enabled boo
 		return View{}, err
 	}
 	target := filepath.Join(root, name)
-	if err := files.RenameManaged(ctx, filepath.Dir(snapshot.Path), target); err != nil {
+	if err := library.storage.rename(ctx, filepath.Dir(snapshot.Path), target); err != nil {
 		return View{}, err
 	}
 	snapshot.Enabled = enabled
@@ -584,10 +586,10 @@ func (library *Library) Remove(ctx context.Context, name string) error {
 		return missing()
 	}
 	tombstone := filepath.Join(filepath.Dir(found.directory), ".removed-"+uuid.NewString())
-	if err := files.RenameManaged(ctx, found.directory, tombstone); err != nil {
+	if err := library.storage.rename(ctx, found.directory, tombstone); err != nil {
 		return err
 	}
-	return removeStaging(filepath.Dir(tombstone), tombstone)
+	return library.storage.removeStaging(filepath.Dir(tombstone), tombstone)
 }
 
 func (library *Library) Context(ctx context.Context) (string, error) {
