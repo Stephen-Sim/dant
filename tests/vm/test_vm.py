@@ -211,7 +211,7 @@ class BrowserLaunchTests(unittest.TestCase):
         self.env.stop()
         self.folder.cleanup()
 
-    def launcher_fixture(self, source):
+    def launcher_fixture(self, source, *, wait_for_exit=False):
         real_popen = subprocess.Popen
         def launch(arguments, **options):
             self.assertEqual(arguments, ['xdg-open', 'https://example.invalid/private-url'])
@@ -219,6 +219,8 @@ class BrowserLaunchTests(unittest.TestCase):
                                        'stderr': subprocess.DEVNULL, 'close_fds': True, 'start_new_session': True})
             process = real_popen([sys.executable, '-c', source, str(self.output)], **options)
             self.processes.append(process)
+            if wait_for_exit:
+                self.assertEqual(process.wait(timeout=8), 0)
             return process
         return patch.object(desktop_mcp.subprocess, 'Popen', side_effect=launch)
 
@@ -319,8 +321,11 @@ class BrowserLaunchTests(unittest.TestCase):
                 launch.assert_called_once()
 
     def test_successful_launcher_exit_does_not_claim_page_loaded(self):
-        with self.launcher_fixture('pass'), patch.object(desktop_mcp, 'OPEN_URL_STARTUP_SECONDS', 2):
+        # Confirm this fixture exited before returning it; process scheduling
+        # does not guarantee a Python child exits within the startup window.
+        with self.launcher_fixture('pass', wait_for_exit=True) as launch:
             self.assertEqual(self.invoke(), {'launchRequested': True, 'launcherStatus': 'exited', 'pageVerified': False})
+            launch.assert_called_once()
 
     def test_invalid_urls_never_start_a_launcher(self):
         with patch.object(desktop_mcp.subprocess, 'Popen') as launch:

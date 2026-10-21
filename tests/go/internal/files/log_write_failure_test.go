@@ -74,7 +74,7 @@ func (file *logWriteFaultFile) WriteAt(raw []byte, offset int64) (int, error) {
 func TestOpenedLogsKeepNativeIdentityAndDoNotReplayFailedOrUnconfirmedWrites(t *testing.T) {
 	for _, reset := range []bool{false, true} {
 		for _, failure := range []string{"success", "opened stat", "closed before", "foreign before", "linked before", "cancelled before write", "write", "short write", "current missing", "linked after", "closed after", "parent closed", "replaced", "current error", "written stat", "truncate"} {
-			if !reset && failure == "truncate" || reset && failure == "written stat" {
+			if !reset && failure == "truncate" {
 				continue
 			}
 			t.Run(map[bool]string{false: "append", true: "reset"}[reset]+"/"+failure, func(t *testing.T) {
@@ -167,6 +167,15 @@ func TestOpenedLogsKeepNativeIdentityAndDoNotReplayFailedOrUnconfirmedWrites(t *
 				}
 				if !errors.Is(err, wanted) || fault.writes > 1 || fault.truncates > 1 {
 					t.Fatal("unconfirmed native log operation was acknowledged or replayed", err)
+				}
+				if failure == "closed after" || failure == "written stat" {
+					want := "originalnew record"
+					if reset {
+						want = "new record"
+					}
+					if raw, readErr := os.ReadFile(name); readErr != nil || string(raw) != want || fault.writes != 1 {
+						t.Fatal("unconfirmed written bytes were lost or repeated", readErr)
+					}
 				}
 				if failure == "replaced" {
 					if raw, err := os.ReadFile(name); err != nil || string(raw) != "replacement must survive" {

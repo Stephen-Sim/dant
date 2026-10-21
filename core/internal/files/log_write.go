@@ -77,9 +77,11 @@ func (write logWrite) reset(ctx context.Context, data []byte) error {
 	if count != len(data) {
 		return io.ErrShortWrite
 	}
-	current, err := write.current()
-	if err != nil || !os.SameFile(opened, current) ||
-		!openedSingleLink(write.file, current) || !write.unchanged() {
+	after, err := write.file.Stat()
+	current, pathErr := write.current()
+	if err != nil || pathErr != nil || after.Size() != int64(count) ||
+		!os.SameFile(opened, after) || !os.SameFile(opened, current) ||
+		!openedSingleLink(write.file, after) || !write.unchanged() {
 		return ErrFileChanged
 	}
 	return nil
