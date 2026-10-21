@@ -16,6 +16,7 @@ import (
 type destination struct {
 	managed *files.ManagedRoot
 	root    *os.Root
+	create  func(string) (publicationFile, error)
 }
 
 func openDestination(directory string) (*destination, error) {
@@ -39,7 +40,9 @@ func openDestination(directory string) (*destination, error) {
 		_ = managed.Close()
 		return nil, ErrChanged
 	}
-	return &destination{managed: managed, root: root}, nil
+	target := &destination{managed: managed, root: root}
+	target.create = target.openExclusive
+	return target, nil
 }
 
 func (target *destination) close() {
@@ -54,11 +57,16 @@ func (target *destination) exclusive(ctx context.Context, name string, data []by
 	if filepath.Base(name) != name || !target.managed.Unchanged() {
 		return ErrChanged
 	}
-	file, err := target.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	file, err := target.create(name)
 	if err != nil {
 		return ErrUnconfirmed
 	}
-	defer file.Close()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+	}()
 	count, err := file.Write(data)
 	if err != nil || count != len(data) {
 		return ErrUnconfirmed
@@ -69,9 +77,10 @@ func (target *destination) exclusive(ctx context.Context, name string, data []by
 	info, err := file.Stat()
 	current, statErr := target.root.Lstat(name)
 	if err != nil || statErr != nil || !os.SameFile(info, current) ||
-		!files.SingleLink(file) || !target.managed.Unchanged() {
+		!file.SingleLink() || !target.managed.Unchanged() {
 		return ErrChanged
 	}
+	closed = true
 	if err := file.Close(); err != nil {
 		return ErrUnconfirmed
 	}
@@ -103,9 +112,6 @@ func safeName(value string) string {
 }
 
 func (value *source) archive(ctx context.Context, target *destination, directory string) (map[string]contracts.Attachment, []archivedFile, []string, error) {
-	mapped := map[string]contracts.Attachment{}
-	archived := []archivedFile{}
-	warnings := []string{}
 	var attachments *destination
 	if len(value.files) > 0 {
 		if err := target.root.Mkdir("attachments", 0700); err != nil {
@@ -124,6 +130,13 @@ func (value *source) archive(ctx context.Context, target *destination, directory
 		}
 		defer attachments.close()
 	}
+	return value.archiveFiles(ctx, attachments, directory)
+}
+
+func (value *source) archiveFiles(ctx context.Context, attachments *destination, directory string) (map[string]contracts.Attachment, []archivedFile, []string, error) {
+	mapped := map[string]contracts.Attachment{}
+	archived := []archivedFile{}
+	warnings := []string{}
 	for _, item := range value.files {
 		if item.Unavailable {
 			warnings = append(warnings, "attachment_missing")
