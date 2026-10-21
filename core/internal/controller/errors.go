@@ -9,6 +9,7 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/computer"
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/security"
+	"github.com/Stephen-Sim/dant/core/internal/settings"
 	"github.com/Stephen-Sim/dant/core/internal/updates"
 )
 
@@ -80,7 +81,7 @@ func classifyHTTPError(err error) httpFailure {
 		}
 	default:
 		switch {
-		case errors.Is(err, computer.ErrBinding), errors.Is(err, backups.ErrInvalid), errors.Is(err, security.ErrAPIKey):
+		case errors.Is(err, computer.ErrBinding), errors.Is(err, backups.ErrInvalid), errors.Is(err, security.ErrAPIKey), errors.Is(err, settings.ErrInvalidAppearance):
 			failure.status, failure.body.Code, failure.body.Error = 400, codeInvalidRequest, "Check the request values and try again."
 		case errors.Is(err, ErrDesktopBusy), errors.Is(err, computer.ErrBridgeBusy), errors.Is(err, updates.ErrInstallationDeferred):
 			failure.status, failure.body.Code, failure.body.Error = 409, codeDesktopBusy, "Work is paused for an update or exit."
