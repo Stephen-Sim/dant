@@ -273,7 +273,7 @@ Worker export runs cancellable file copying, SQLite snapshots, hashing and archi
 
 Atomic publication retains the file identity captured from its opened handle, then verifies the written size and snapshot again after closing. Backup retention also verifies its selected file before deletion. An identity mismatch stops publication or cleanup; recapturing a path cannot authorize publishing or deleting its new contents. Windows file IDs and user/system directories come from the current operating system and opened files, independently of drive letters and account names.
 
-After a restore commits, cleanup of the previous data and workspace directories checks the identities recorded for that restore attempt. A replacement keeps the journal pending even when the separate receipt confirms the restored data. Another archive cannot be read until that cleanup has been reconciled.
+After a restore commits, cleanup of the previous data and workspace directories checks the identities recorded for that restore attempt. Incoming and rollback staging names must already be absent; unexpected entries there are preserved. A replacement keeps the journal pending even when the separate receipt confirms the restored data. Another archive cannot be read until that cleanup has been reconciled.
 
 Memory backup validation uses a read-only SQLite connection and checks both database integrity and the canonical tables' stored types, allowed values and byte limits. An integrity-check result alone does not establish those application constraints. Validation never repairs the source database. Markdown and JSON recovery snapshots share complete-write, sync and close checks, and an unconfirmed snapshot cannot mark an import complete.
 

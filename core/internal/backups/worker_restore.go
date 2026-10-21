@@ -134,17 +134,27 @@ func recoverPending(ctx context.Context, options RestoreOptions, journal restore
 			}
 		}
 	}
-	for _, target := range []struct {
+	type cleanupTarget struct {
 		name     string
 		expected *directoryID
-	}{
-		{locations.dataNew, nil},
-		{locations.workspaceNew, nil},
+	}
+	targets := []cleanupTarget{
 		{locations.dataPrevious, &journal.Data},
 		{locations.workspacePrevious, &journal.Workspace},
-		{locations.dataFailed, nil},
-		{locations.workspaceFailed, nil},
-	} {
+	}
+	if journal.Phase == contracts.WorkerRestorePhaseCommitted {
+		// All incoming roots were installed before this phase; rollback roots
+		// are never created by a committed attempt. Their names grant no owner.
+		for _, name := range []string{locations.dataNew, locations.workspaceNew, locations.dataFailed, locations.workspaceFailed} {
+			if _, err := os.Lstat(name); !errors.Is(err, os.ErrNotExist) {
+				return ErrRestoreFailed
+			}
+		}
+	} else {
+		targets = append([]cleanupTarget{{locations.dataNew, nil}, {locations.workspaceNew, nil}}, targets...)
+		targets = append(targets, cleanupTarget{locations.dataFailed, nil}, cleanupTarget{locations.workspaceFailed, nil})
+	}
+	for _, target := range targets {
 		if err := removeRestoreDirectoryWithIdentity(locations, target.name, target.expected); err != nil {
 			return err
 		}
