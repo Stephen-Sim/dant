@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"strings"
 	"sync"
 
@@ -30,40 +31,48 @@ var catalogs map[string]map[string]string
 var loadError error
 
 func initialize() {
-	byCode = map[string]Language{}
-	catalogs = map[string]map[string]string{}
-	raw, err := assets.ReadFile("language-registry.json")
-	if err != nil || json.Unmarshal(raw, &registry) != nil {
-		loadError = errors.New("language_registry_invalid")
-		return
+	data, err := readLanguages(assets)
+	registry, byCode, catalogs, loadError = data.registry, data.byCode, data.catalogs, err
+}
+
+type languageData struct {
+	registry []Language
+	byCode   map[string]Language
+	catalogs map[string]map[string]string
+}
+
+// readLanguages validates one complete embedded resource set. Keeping parsing
+// separate from the once-owned cache avoids mutable global test fixtures.
+func readLanguages(source fs.ReadFileFS) (languageData, error) {
+	data := languageData{byCode: map[string]Language{}, catalogs: map[string]map[string]string{}}
+	raw, err := source.ReadFile("language-registry.json")
+	if err != nil || json.Unmarshal(raw, &data.registry) != nil {
+		return data, errors.New("language_registry_invalid")
 	}
-	for _, info := range registry {
+	for _, info := range data.registry {
 		if info.Code == "" || info.Direction != "ltr" && info.Direction != "rtl" {
-			loadError = errors.New("language_registry_invalid")
-			return
+			return data, errors.New("language_registry_invalid")
 		}
-		if _, exists := byCode[info.Code]; exists {
-			loadError = errors.New("language_registry_invalid")
-			return
+		if _, exists := data.byCode[info.Code]; exists {
+			return data, errors.New("language_registry_invalid")
 		}
-		byCode[info.Code] = info
+		data.byCode[info.Code] = info
 		if info.Code == "en" || info.Code == "zh" {
 			continue
 		}
-		raw, err := assets.ReadFile("locales/" + info.Code + ".json")
+		raw, err := source.ReadFile("locales/" + info.Code + ".json")
 		var catalog map[string]string
 		if err != nil || json.Unmarshal(raw, &catalog) != nil {
-			loadError = errors.New("language_catalog_invalid")
-			return
+			return data, errors.New("language_catalog_invalid")
 		}
 		for key, value := range catalog {
 			if key == "" || contracts.TrimText(value) == "" {
-				loadError = errors.New("language_catalog_invalid")
-				return
+				return data, errors.New("language_catalog_invalid")
 			}
 		}
-		catalogs[info.Code] = catalog
+		data.catalogs[info.Code] = catalog
 	}
+	return data, nil
 }
 
 func Languages() ([]Language, error) {
