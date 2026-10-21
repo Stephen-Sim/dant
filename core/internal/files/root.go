@@ -190,18 +190,6 @@ func closeRoots(roots []*os.Root) {
 	}
 }
 
-type guardedRead struct {
-	context context.Context
-	reader  io.Reader
-}
-
-func (reader guardedRead) Read(buffer []byte) (int, error) {
-	if err := reader.context.Err(); err != nil {
-		return 0, err
-	}
-	return reader.reader.Read(buffer)
-}
-
 // read feeds a verified file into a bounded consumer while every directory
 // capability remains open. It never follows a symlink or a hard-linked file.
 func (managed *ManagedRoot) read(ctx context.Context, name string, max int64, consume func(io.Reader) error) (fs.FileInfo, error) {
@@ -230,28 +218,14 @@ func (managed *ManagedRoot) read(ctx context.Context, name string, max int64, co
 		return nil, err
 	}
 	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil || !sameFile(before, opened) || !openedSingleLink(file, opened) {
-		return nil, ErrFileChanged
+	read := fileRead{
+		file: file, before: before, maximum: max,
+		current: func() (fs.FileInfo, error) { return root.Lstat(leaf) },
+		unchanged: func() bool {
+			return managed.Unchanged() && guardsUnchanged(guards)
+		},
 	}
-	limited := &io.LimitedReader{R: guardedRead{context: ctx, reader: file}, N: max + 1}
-	if err := consume(limited); err != nil {
-		return nil, err
-	}
-	if max+1-limited.N > max {
-		return nil, ErrFileLimit
-	}
-	after, afterErr := file.Stat()
-	current, pathErr := root.Lstat(leaf)
-	if afterErr != nil || pathErr != nil || !sameFile(opened, after) ||
-		!sameFile(opened, current) || !openedSingleLink(file, after) ||
-		!managed.Unchanged() || !guardsUnchanged(guards) {
-		return nil, ErrFileChanged
-	}
-	if max+1-limited.N != opened.Size() {
-		return nil, ErrFileChanged
-	}
-	return opened, nil
+	return read.consume(ctx, consume)
 }
 
 func (managed *ManagedRoot) ReadFile(ctx context.Context, name string, max int64) ([]byte, error) {

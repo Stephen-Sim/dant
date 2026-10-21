@@ -80,21 +80,18 @@ func ReadRegular(name string, maxBytes int64) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil || !sameFile(before, opened) {
-		return nil, ErrFileChanged
+	read := fileRead{
+		file: file, before: before, maximum: maxBytes,
+		current: func() (fs.FileInfo, error) { return os.Lstat(name) },
 	}
-	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	var data []byte
+	_, err = read.consume(context.Background(), func(reader io.Reader) error {
+		var err error
+		data, err = io.ReadAll(reader)
+		return err
+	})
 	if err != nil {
 		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, ErrFileLimit
-	}
-	after, err := file.Stat()
-	pathAfter, pathErr := os.Lstat(name)
-	if err != nil || pathErr != nil || !sameFile(opened, after) || !sameFile(opened, pathAfter) || int64(len(data)) != opened.Size() {
-		return nil, ErrFileChanged
 	}
 	return data, nil
 }
