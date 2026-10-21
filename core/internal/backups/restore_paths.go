@@ -151,6 +151,10 @@ func restoreRename(ctx context.Context, options RestoreOptions, from, to string)
 }
 
 func removeRestoreDirectory(locations restorePaths, name string) error {
+	return removeRestoreDirectoryWithIdentity(locations, name, nil)
+}
+
+func removeRestoreDirectoryWithIdentity(locations restorePaths, name string, expected *directoryID) error {
 	allowed := false
 	for _, candidate := range []string{locations.dataNew, locations.workspaceNew, locations.dataPrevious, locations.workspacePrevious, locations.dataFailed, locations.workspaceFailed} {
 		if name == candidate {
@@ -173,6 +177,13 @@ func removeRestoreDirectory(locations restorePaths, name string) error {
 
 	if err != nil || !stat.IsDir() || stat.Mode()&os.ModeSymlink != 0 {
 		return ErrRestoreFailed
+	}
+
+	if expected != nil {
+		current, err := directoryIdentity(name)
+		if err != nil || current != *expected {
+			return ErrRestoreFailed
+		}
 	}
 
 	return os.RemoveAll(name)

@@ -134,8 +134,18 @@ func recoverPending(ctx context.Context, options RestoreOptions, journal restore
 			}
 		}
 	}
-	for _, name := range []string{locations.dataNew, locations.workspaceNew, locations.dataPrevious, locations.workspacePrevious, locations.dataFailed, locations.workspaceFailed} {
-		if err := removeRestoreDirectory(locations, name); err != nil {
+	for _, target := range []struct {
+		name     string
+		expected *directoryID
+	}{
+		{locations.dataNew, nil},
+		{locations.workspaceNew, nil},
+		{locations.dataPrevious, &journal.Data},
+		{locations.workspacePrevious, &journal.Workspace},
+		{locations.dataFailed, nil},
+		{locations.workspaceFailed, nil},
+	} {
+		if err := removeRestoreDirectoryWithIdentity(locations, target.name, target.expected); err != nil {
 			return err
 		}
 	}
