@@ -80,7 +80,7 @@ Go profile 与语句汇总保存在 `.cache/core/coverage.out`、`.cache/core/co
 
 `npm run coverage:inventory` 写入 `.cache/coverage/inventory.json`、`inventory.md` 并向 job summary 追加源码索引，记录源码提交／dirty 状态、平台及原始报告 SHA-256，检查源码是否在报告后变化，分别列出已测、零命中和未测文件。普通跨平台 CI 不运行全部原生采集器，对应行保持未测，不因此令库存失败或编造完整覆盖率；非法报告和不安全源码路径仍会失败。
 
-原生覆盖率使用 Rust 1.99.1 的 `llvm-tools-preview` 及锁定的 `cargo-llvm-cov` 0.9.1。Python 使用 `scripts/ci/python-coverage-requirements.txt` 中的 coverage.py 7.16.2，安装到解释器环境以启用子进程插桩。PowerShell 使用 Pester 5.9.0，通过 `Save-Module` 保存到 `.tools/powershell/Modules`，再按精确 manifest 路径导入；其命令分母与行、分支覆盖率不同。Rust 测试模块位于 `tests/native/rust/`，仅通过 `#[cfg(test)]` 引入，LLVM 运行时代码报告不包含这些测试文件。
+原生覆盖率使用 Rust 1.99.1 的 `llvm-tools-preview` 及锁定的 `cargo-llvm-cov` 0.9.1。Python 使用 `scripts/ci/python-coverage-requirements.txt` 中的 coverage.py 7.16.2，安装到解释器环境以启用子进程插桩。PowerShell 使用 Pester 5.9.0，由共用的 `scripts/ci/install-pester.ps1` 保存到 `.tools/powershell/Modules`，再按精确 manifest 路径导入。安装器仅在 PSGallery 缺失时注册默认源，验证官方 HTTPS 地址，并检查已保存模块的名称和精确版本；保留仓库原有信任策略，查询、注册、下载或 manifest 验证失败都会拒绝继续。隔离测试模拟这些边界，安装器也计入 PowerShell 覆盖率分母。命令覆盖率与行、分支覆盖率不同。Rust 测试模块位于 `tests/native/rust/`，仅通过 `#[cfg(test)]` 引入，LLVM 运行时代码报告不包含这些测试文件。
 
 `npm run test:bash:coverage` 要求 Linux，以及从上游提交 `a39874f938ce13f7a65f253120d1ec946b349ffe` 构建的 kcov 43。CI 将其构建到 `.tools/kcov`，同时拉取 `v43`，校验其解引用提交与固定源码相同，并在 CMake 读取上游 Git 版本前校验精确标签；标签缺失或被移动都会令构建失败。DEBUG 跟踪使用 `tests/bash/runtime.test.sh`、隔离 HOME 和模拟命令执行原脚本；所有维护的 VM shell 脚本保留在清单中。内嵌 Python heredoc 属于不同执行范围，shell 行覆盖率不能证明它已执行。Windows 明确报告采集器不可用，不把平台跳过算作覆盖率。
 

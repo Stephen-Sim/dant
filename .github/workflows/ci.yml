@@ -66,9 +66,7 @@ jobs:
       - name: Install the pinned PowerShell coverage tool
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force .tools/powershell/Modules | Out-Null
-          Save-Module -Name Pester -RequiredVersion 5.9.0 -Path .tools/powershell/Modules -Repository PSGallery -Force -AcceptLicense
+        run: ./scripts/ci/install-pester.ps1
       - name: Instrument and test maintained PowerShell commands
         if: runner.os == 'Windows'
         run: npm run test:powershell:coverage

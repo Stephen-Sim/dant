@@ -9,68 +9,130 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
 
 func TestManagementPageScopesRedactsAndPaginatesStoredMemory(t *testing.T) {
-	s := openStoreFixture(t)
-	ctx := t.Context()
-	for name, text := range map[string]string{"identity.md": "A multilingual identity 世界", "working-memory.md": "Local working notes"} {
-		if err := s.WriteNote(ctx, name, text); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := range 43 {
-		conversation := "current"
-		if i == 42 {
-			conversation = "other"
-		}
-		_, err := s.Propose(ctx, Proposal{Kind: "semantic", Text: fmt.Sprintf("Memory record %02d", i), Source: Source{Kind: "user", ConversationID: &conversation}})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	page, err := s.ManagementPage(ctx, "current", "", 0, nil)
-	if err != nil || page.Storage != "sqlite" || page.Total != 44 || len(page.Records) != ManagementPageSize || !page.HasMore || !strings.Contains(page.Identity.Text, "dant") {
-		t.Fatal("management page lost its SQL scope, identity or pagination", page, err)
-	}
-	last, err := s.ManagementPage(ctx, "current", "", ManagementPageSize, nil)
-	if err != nil || len(last.Records) != 4 || last.HasMore || last.Revision != page.Revision {
-		t.Fatal("remaining records did not retain the snapshot revision", last, err)
-	}
-	empty, err := s.ManagementPage(ctx, "current", "", 9999, nil)
-	if err != nil || len(empty.Records) != 0 || empty.Total != 44 {
-		t.Fatal("out-of-range page changed the total", empty, err)
-	}
-	redact := func(text string) string {
-		return strings.ReplaceAll(strings.ReplaceAll(text, "current", "[hidden]"), "record 01", "[hidden]")
-	}
-	filtered, err := s.ManagementPage(ctx, "current", "Memory", 0, redact)
-	if err != nil || filtered.Total != 42 || len(filtered.Projects) != 0 {
-		t.Fatal("query included unscoped records", filtered, err)
-	}
-	redacted := false
-	for _, record := range filtered.Records {
-		if record.Kind != "semantic" || record.Source == nil || record.Source.ConversationID != nil || record.Status == nil || *record.Status != contracts.MemoryEntryStatusCandidate {
-			t.Fatal("management source exposed redacted identity", record)
-		}
-		redacted = redacted || record.Redacted
-	}
-	if !redacted {
-		t.Fatal("changed record text was not marked redacted")
-	}
-	view, err := s.View(ctx, "current", func(text string) string { return "redacted context" })
-	if err != nil || !view.ReadOnly || view.Memory.Text != "redacted context" || view.ConversationID != "current" {
-		t.Fatal("read-only context did not use its redactor", view, err)
-	}
-	for _, input := range []struct {
-		conversation, query string
-		offset              int
-	}{{"", "", 0}, {"current", "", -1}, {"current", "", 10000}, {"current", "a\x00b", 0}, {"current", strings.Repeat("x", MaxQueryUnits+1), 0}} {
-		if _, err := s.ManagementPage(ctx, input.conversation, input.query, input.offset, nil); !errors.Is(err, ErrInvalidMemory) {
-			t.Fatal("invalid management scope or pagination accepted", err)
-		}
+	for _, scenario := range []struct {
+		name         string
+		targetID     string
+		advanceClock bool
+		targetPage   int
+	}{
+		{"fixed-clock-target-on-first-page", "00000000-0000-4000-8000-000000000001", false, 0},
+		{"fixed-clock-target-on-second-page", "ffffffff-ffff-4fff-8fff-ffffffffffff", false, 1},
+		{"advancing-clock-target-on-second-page", "00000000-0000-4000-8000-000000000001", true, 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx := t.Context()
+			clock := time.UnixMilli(1760000000000)
+			nextID := 0
+			s, err := OpenStore(ctx, t.TempDir(), StoreOptions{
+				Now: func() time.Time {
+					if scenario.advanceClock {
+						clock = clock.Add(time.Millisecond)
+					}
+					return clock
+				},
+				NewID: func() string {
+					index := nextID
+					nextID++
+					if index == 1 {
+						return scenario.targetID
+					}
+					return fmt.Sprintf("10000000-0000-4000-8000-%012x", index)
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { s.Close() })
+
+			for name, text := range map[string]string{"identity.md": "A multilingual identity 世界", "working-memory.md": "Local working notes"} {
+				if err := s.WriteNote(ctx, name, text); err != nil {
+					t.Fatal(err)
+				}
+			}
+			expected := map[string]string{}
+			targetID := ""
+			for i := range 43 {
+				conversation := "current"
+				if i == 42 {
+					conversation = "other"
+				}
+				text := fmt.Sprintf("Memory record %02d", i)
+				entry, err := s.Propose(ctx, Proposal{Kind: "semantic", Text: text, Source: Source{Kind: "user", ConversationID: &conversation}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if conversation == "current" {
+					expected[entry.ID] = text
+				}
+				if i == 1 {
+					targetID = entry.ID
+				}
+			}
+
+			page, err := s.ManagementPage(ctx, "current", "", 0, nil)
+			if err != nil || page.Storage != "sqlite" || page.Total != 44 || len(page.Records) != ManagementPageSize || !page.HasMore || !strings.Contains(page.Identity.Text, "dant") {
+				t.Fatal("management page lost its SQL scope, identity or pagination", page, err)
+			}
+			last, err := s.ManagementPage(ctx, "current", "", ManagementPageSize, nil)
+			if err != nil || len(last.Records) != 4 || last.HasMore || last.Revision != page.Revision {
+				t.Fatal("remaining records did not retain the snapshot revision", last, err)
+			}
+			empty, err := s.ManagementPage(ctx, "current", "", 9999, nil)
+			if err != nil || len(empty.Records) != 0 || empty.Total != 44 {
+				t.Fatal("out-of-range page changed the total", empty, err)
+			}
+
+			redact := func(text string) string {
+				return strings.ReplaceAll(strings.ReplaceAll(text, "current", "[hidden]"), "record 01", "[hidden]")
+			}
+			seen := map[string]bool{}
+			redactedCount, targetPage := 0, -1
+			for offset := 0; offset < 42; offset += ManagementPageSize {
+				filtered, err := s.ManagementPage(ctx, "current", "Memory", offset, redact)
+				if err != nil || filtered.Total != 42 || len(filtered.Projects) != 0 || filtered.Revision != page.Revision || filtered.HasMore != (offset+ManagementPageSize < 42) {
+					t.Fatal("query lost its scope, revision or pagination", filtered, err)
+				}
+				for _, record := range filtered.Records {
+					original, belongs := expected[record.ID]
+					if !belongs || seen[record.ID] {
+						t.Fatal("query returned an unscoped or duplicate record", record.ID)
+					}
+					seen[record.ID] = true
+					if record.Kind != "semantic" || record.Source == nil || record.Source.ConversationID != nil || record.Status == nil || *record.Status != contracts.MemoryEntryStatusCandidate {
+						t.Fatal("management source exposed redacted identity", record)
+					}
+					if record.Redacted != (record.ID == targetID) || record.Text != redact(original) {
+						t.Fatal("redaction did not follow the stored record identity", record.ID)
+					}
+					if record.Redacted {
+						redactedCount++
+						targetPage = offset / ManagementPageSize
+					}
+				}
+			}
+			if len(seen) != 42 || redactedCount != 1 || targetPage != scenario.targetPage {
+				t.Fatal("pagination lost records or changed the redaction target", len(seen), redactedCount, targetPage)
+			}
+
+			view, err := s.View(ctx, "current", func(text string) string { return "redacted context" })
+			if err != nil || !view.ReadOnly || view.Memory.Text != "redacted context" || view.ConversationID != "current" {
+				t.Fatal("read-only context did not use its redactor", view, err)
+			}
+			for _, input := range []struct {
+				conversation, query string
+				offset              int
+			}{{"", "", 0}, {"current", "", -1}, {"current", "", 10000}, {"current", "a\x00b", 0}, {"current", strings.Repeat("x", MaxQueryUnits+1), 0}} {
+				if _, err := s.ManagementPage(ctx, input.conversation, input.query, input.offset, nil); !errors.Is(err, ErrInvalidMemory) {
+					t.Fatal("invalid management scope or pagination accepted", err)
+				}
+			}
+		})
 	}
 }
 
