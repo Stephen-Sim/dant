@@ -126,7 +126,7 @@ func (app *WorkerApp) Snapshot(ctx context.Context) (contracts.WorkerSnapshot, e
 			"telegram":    encode(app.telegram.Status()),
 			"computer":    encode(control),
 			"callCaption": encode(app.callCaptions.Snapshot()),
-			"schedules":   encode(state.Schedules),
+			"schedules":   encode(append([]json.RawMessage{}, state.Schedules...)),
 			"provisioning": encode(struct {
 				Status contracts.ProvisioningStatus `json:"status"`
 			}{contracts.ProvisioningStatusIdle}),

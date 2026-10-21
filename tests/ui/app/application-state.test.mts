@@ -41,6 +41,30 @@ const snapshot = (): AppState => ({
   call: null,
 });
 
+test('empty Worker collection projections open chat while null schedules remain invalid', () => {
+  const value = {
+      ...snapshot(),
+      schedules: [],
+      workTasks: [],
+      completions: [],
+      memoryFiles: [],
+      skills: { items: [] },
+      credentials: { items: [], requests: [] },
+    },
+    original = structuredClone(value),
+    decoded = readAppState(value);
+
+  assert.equal(decoded, value);
+  assert.deepEqual(decoded.schedules, []);
+  assert.deepEqual(decoded.worker.models, []);
+  assert.deepEqual(decoded.queue, []);
+  assert.deepEqual(decoded.memoryFiles, []);
+  assert.deepEqual(decoded.skills?.items, []);
+  assert.deepEqual(decoded.credentials?.requests, []);
+  assert.throws(() => readAppState({ ...value, schedules: null }), /Invalid application state/);
+  assert.deepEqual(value, original, 'validation must not rewrite authoritative collections');
+});
+
 test('Go snapshots with omitted empty message text decode without modifying cached history', () => {
   const messages = [
       { id: 'text', role: 'assistant', text: 'Keep 中文 content', time: 10 },

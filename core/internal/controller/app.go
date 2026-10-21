@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -405,6 +406,9 @@ func (app *App) Snapshot() contracts.WorkerSnapshot {
 	}{key.Configured, "api"})
 	if state.Extra == nil {
 		state.Extra = contracts.RawObject{}
+	}
+	if bytes.Equal(bytes.TrimSpace(state.Extra["schedules"]), []byte("null")) {
+		state.Extra["schedules"] = json.RawMessage("[]")
 	}
 	phase := contracts.DesktopPhaseIdle
 	if app.desktop != nil {

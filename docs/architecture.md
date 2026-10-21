@@ -59,6 +59,8 @@ flowchart TB
 
 The UI renders state and submits actions. The Controller **never constructs an Engine or executes agent work on Windows**. The Worker requires an ordinary user in a Linux VM with a healthy graphical desktop. Disconnecting the UI does not turn the Controller into an executor.
 
+Public state collections use JSON arrays even when empty. Worker snapshots and older Controller cache projections expose absent schedules as `[]`; this display adaptation does not rewrite persisted state or advance its revision. Unknown collection types still fail validation.
+
 Message Pin and Star actions update validated flags on the original saved message through a conversation-bound metadata route. They preserve active execution references and do not mark messages read, steer the model or authorize work. The chat menu provides search, starred messages and media/documents/HTTP links; navigation reveals the exact original message through the history window. Pinned summaries appear only when a message is pinned.
 
 Chat initially renders the latest 80 messages and prepends older batches on demand. Reading history pins its first visible boundary while new messages arrive; conversation or VM changes reset the window. Reply, search and task-result navigation reveal their exact retained message before focusing it. Only rendered messages can become read. This limits DOM and Markdown work; the current state transport still transfers the complete conversation. Unchanged state skips a render, sanitized Markdown has a bounded cache, and timestamps follow the current system time zone. Background GET requests run independently while mutations retain their ordering and stale-result fences.
