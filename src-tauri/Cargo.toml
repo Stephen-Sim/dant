@@ -1,6 +1,6 @@
 [package]
 name = "dant"
-version = "0.4.7-beta.19"
+version = "0.4.7-beta.20"
 description = "A digital companion with its own computer"
 license = "MIT"
 authors = ["dant"]
@@ -24,6 +24,7 @@ tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
+tauri-runtime = "=2.12.2"
 
 [profile.release]
 strip = true

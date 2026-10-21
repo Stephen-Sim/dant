@@ -9,19 +9,27 @@ pub(crate) struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    pub(crate) fn capture(app: &tauri::AppHandle) -> tauri::Result<Self> {
+    pub(crate) fn capture<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Self> {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let development_root = cfg!(debug_assertions).then(|| manifest.parent().unwrap());
-        let data_directory = select_data_directory(
+        Self::capture_from(
+            app,
             std::env::var_os("DANT_DATA").map(PathBuf::from),
             development_root,
-            || app.path().app_data_dir(),
-        )?;
+        )
+    }
+    fn capture_from<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        configured: Option<PathBuf>,
+        development_root: Option<&Path>,
+    ) -> tauri::Result<Self> {
+        let data_directory =
+            select_data_directory(configured, development_root, || app.path().app_data_dir())?;
         Ok(Self { data_directory })
     }
 }
 
-pub(crate) fn data_directory(app: &tauri::AppHandle) -> Option<PathBuf> {
+pub(crate) fn data_directory<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     app.try_state::<RuntimeConfig>()
         .map(|config| config.data_directory.clone())
 }

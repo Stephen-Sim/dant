@@ -4,7 +4,7 @@ use std::sync::{
     Mutex,
 };
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WebviewWindow, WindowEvent,
 };
@@ -18,13 +18,21 @@ pub struct Status {
     task: String,
     queued: u16,
 }
-struct NativeTray {
-    icon: TrayIcon,
-    open: MenuItem<tauri::Wry>,
-    progress: MenuItem<tauri::Wry>,
-    call_window: MenuItem<tauri::Wry>,
-    status: MenuItem<tauri::Wry>,
-    exit: MenuItem<tauri::Wry>,
+trait TrayTooltip {
+    fn set_tooltip(&self, value: &str) -> tauri::Result<()>;
+}
+impl<R: tauri::Runtime> TrayTooltip for TrayIcon<R> {
+    fn set_tooltip(&self, value: &str) -> tauri::Result<()> {
+        self.set_tooltip(Some(value))
+    }
+}
+struct NativeTray<R: tauri::Runtime = tauri::Wry, I: TrayTooltip = TrayIcon<R>> {
+    icon: I,
+    open: MenuItem<R>,
+    progress: MenuItem<R>,
+    call_window: MenuItem<R>,
+    status: MenuItem<R>,
+    exit: MenuItem<R>,
 }
 
 struct TrayState {
@@ -63,7 +71,19 @@ trait TraySurface {
     fn tooltip(&mut self, value: &str) -> Result<(), String>;
 }
 
-impl TraySurface for NativeTray {
+impl<S: TraySurface + ?Sized> TraySurface for Box<S> {
+    fn text(&mut self, item: Item, value: &str) -> Result<(), String> {
+        (**self).text(item, value)
+    }
+    fn call_enabled(&mut self, active: bool) -> Result<(), String> {
+        (**self).call_enabled(active)
+    }
+    fn tooltip(&mut self, value: &str) -> Result<(), String> {
+        (**self).tooltip(value)
+    }
+}
+
+impl<R: tauri::Runtime, I: TrayTooltip> TraySurface for NativeTray<R, I> {
     fn text(&mut self, item: Item, value: &str) -> Result<(), String> {
         let item = match item {
             Item::Open => &self.open,
@@ -84,7 +104,7 @@ impl TraySurface for NativeTray {
 
     fn tooltip(&mut self, value: &str) -> Result<(), String> {
         self.icon
-            .set_tooltip(Some(value))
+            .set_tooltip(value)
             .map_err(|_| "The system tray is unavailable".into())
     }
 }
@@ -92,7 +112,7 @@ impl TraySurface for NativeTray {
 pub struct BackgroundTray {
     ready: AtomicBool,
     exiting: AtomicBool,
-    inner: Mutex<Option<Tray<NativeTray>>>,
+    inner: Mutex<Option<Tray<Box<dyn TraySurface + Send>>>>,
 }
 
 fn valid(value: &Status) -> bool {
@@ -196,7 +216,7 @@ fn call_changed(tray: &mut Tray<impl TraySurface>, active: bool, language: Optio
         }
     }
 }
-fn exit(app: &AppHandle) {
+fn exit<R: tauri::Runtime>(app: &AppHandle<R>) {
     crate::lifecycle::request_exit(app);
 }
 pub fn mark_exiting<R: tauri::Runtime>(app: &AppHandle<R>) {
@@ -226,9 +246,9 @@ trait TrayActions {
     fn exit(&self);
 }
 
-struct NativeActions<'a>(&'a AppHandle);
+struct NativeActions<'a, R: tauri::Runtime>(&'a AppHandle<R>);
 
-impl TrayActions for NativeActions<'_> {
+impl<R: tauri::Runtime> TrayActions for NativeActions<'_, R> {
     fn restore(&self) {
         restore(self.0);
     }
@@ -256,7 +276,25 @@ fn activate(actions: &impl TrayActions, item: &str) {
     }
 }
 
-pub fn setup(app: &tauri::App) -> tauri::Result<()> {
+fn menu_event<R: tauri::Runtime>(app: &AppHandle<R>, event: MenuEvent) {
+    activate(&NativeActions(app), event.id.as_ref());
+}
+
+fn tray_icon_event<R: tauri::Runtime>(app: &AppHandle<R>, event: TrayIconEvent) {
+    if left_click(&event) {
+        restore(app);
+    }
+}
+
+struct NativeMenu<R: tauri::Runtime> {
+    open: MenuItem<R>,
+    progress: MenuItem<R>,
+    call_window: MenuItem<R>,
+    status: MenuItem<R>,
+    exit: MenuItem<R>,
+    menu: Menu<R>,
+}
+fn native_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<NativeMenu<R>> {
     let open = MenuItem::with_id(app, "dant-open", "打开 dant", true, None::<&str>)?;
     let progress = MenuItem::with_id(app, "dant-progress", "任务进度", true, None::<&str>)?;
     let call_window = MenuItem::with_id(
@@ -280,41 +318,64 @@ pub fn setup(app: &tauri::App) -> tauri::Result<()> {
             &exit_item,
         ],
     )?;
+    Ok(NativeMenu {
+        open,
+        progress,
+        call_window,
+        status,
+        exit: exit_item,
+        menu,
+    })
+}
+pub fn setup<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    setup_using(app, |builder| builder.build(app))
+}
+fn left_click(event: &TrayIconEvent) -> bool {
+    matches!(
+        event,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+    )
+}
+fn setup_using<R: tauri::Runtime, I: TrayTooltip + Send + 'static>(
+    app: &tauri::App<R>,
+    create: impl FnOnce(TrayIconBuilder<R>) -> tauri::Result<I>,
+) -> tauri::Result<()> {
+    let NativeMenu {
+        open,
+        progress,
+        call_window,
+        status,
+        exit: exit_item,
+        menu,
+    } = native_menu(app)?;
     let icon = app
         .default_window_icon()
         .ok_or_else(|| tauri::Error::AssetNotFound("default app icon".into()))?
         .clone();
-    let icon = TrayIconBuilder::with_id(ID)
+    let builder = TrayIconBuilder::with_id(ID)
         .icon(icon)
         .menu(&menu)
         .tooltip("dant · 连接中")
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| activate(&NativeActions(app), event.id.as_ref()))
-        .on_tray_icon_event(|tray, event| {
-            if matches!(
-                event,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-            ) {
-                restore(tray.app_handle());
-            }
-        })
-        .build(app)?;
+        .on_menu_event(menu_event)
+        .on_tray_icon_event(|tray, event| tray_icon_event(tray.app_handle(), event));
+    let icon = create(builder)?;
     let state = app.state::<BackgroundTray>();
     install_tray(
         &state.ready,
         &state.inner,
-        NativeTray {
+        Box::new(NativeTray {
             icon,
             open,
             progress,
             call_window,
             status,
             exit: exit_item,
-        },
+        }) as Box<dyn TraySurface + Send>,
     );
     Ok(())
 }
@@ -326,7 +387,7 @@ fn install_tray<S>(ready: &AtomicBool, target: &Mutex<Option<Tray<S>>>, surface:
     });
     ready.store(true, Ordering::SeqCst);
 }
-pub fn on_window_event(window: &tauri::Window, event: &WindowEvent) -> bool {
+pub fn on_window_event<R: tauri::Runtime>(window: &tauri::Window<R>, event: &WindowEvent) -> bool {
     let Some(state) = window.app_handle().try_state::<BackgroundTray>() else {
         return false;
     };

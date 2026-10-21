@@ -1,4 +1,66 @@
 use super::*;
+
+struct TooltipFixture {
+    values: std::cell::RefCell<Vec<String>>,
+    fail: std::cell::Cell<bool>,
+}
+impl TrayTooltip for TooltipFixture {
+    fn set_tooltip(&self, value: &str) -> tauri::Result<()> {
+        if self.fail.get() {
+            return Err(tauri::Error::AssetNotFound(
+                "synthetic unavailable icon".into(),
+            ));
+        }
+        self.values.borrow_mut().push(value.into());
+        Ok(())
+    }
+}
+
+#[test]
+fn native_menu_adapter_updates_only_owned_menu_handles_without_creating_a_tray_icon() {
+    let app = tauri::test::mock_app();
+    let menu = native_menu(&app).unwrap();
+    assert_eq!(menu.menu.items().unwrap().len(), 6);
+    assert_eq!(menu.open.text().unwrap(), "打开 dant");
+    assert!(!menu.call_window.is_enabled().unwrap());
+    assert!(!menu.status.is_enabled().unwrap());
+    let mut surface = NativeTray {
+        icon: TooltipFixture {
+            values: Default::default(),
+            fail: Default::default(),
+        },
+        open: menu.open,
+        progress: menu.progress,
+        call_window: menu.call_window,
+        status: menu.status,
+        exit: menu.exit,
+    };
+    for (item, label) in [
+        (Item::Open, "Open"),
+        (Item::Progress, "Progress"),
+        (Item::CallWindow, "Call"),
+        (Item::Status, "Status"),
+        (Item::Exit, "Exit"),
+    ] {
+        surface.text(item, label).unwrap();
+    }
+    assert_eq!(surface.open.text().unwrap(), "Open");
+    assert_eq!(surface.progress.text().unwrap(), "Progress");
+    assert_eq!(surface.call_window.text().unwrap(), "Call");
+    assert_eq!(surface.status.text().unwrap(), "Status");
+    assert_eq!(surface.exit.text().unwrap(), "Exit");
+    surface.call_enabled(true).unwrap();
+    assert!(surface.call_window.is_enabled().unwrap());
+    surface.call_enabled(false).unwrap();
+    assert!(!surface.call_window.is_enabled().unwrap());
+    surface.tooltip("dant · synthetic").unwrap();
+    assert_eq!(*surface.icon.values.borrow(), ["dant · synthetic"]);
+    surface.icon.fail.set(true);
+    assert_eq!(
+        surface.tooltip("discarded").unwrap_err(),
+        "The system tray is unavailable"
+    );
+}
 use std::cell::RefCell;
 
 #[derive(Debug, PartialEq)]
@@ -333,9 +395,7 @@ fn menu_actions_restore_before_progress_and_never_confuse_call_visibility_with_e
 
 #[test]
 fn sdk_ipc_keeps_tray_state_metadata_only_and_does_not_construct_a_real_tray() {
-    let app = tauri::test::mock_builder()
-        .manage(BackgroundTray::default())
-        .invoke_handler(tauri::generate_handler![tray_status_update])
+    let app = crate::application_builder(tauri::test::mock_builder())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let main =
@@ -381,4 +441,237 @@ fn sdk_ipc_keeps_tray_state_metadata_only_and_does_not_construct_a_real_tray() {
     assert!(state.exiting.load(Ordering::SeqCst));
     assert!(!state.ready.load(Ordering::SeqCst));
     assert!(state.inner.lock().unwrap().is_none());
+}
+
+fn tray_context() -> tauri::Context<tauri::test::MockRuntime> {
+    let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+    context.config_mut().identifier = format!("test.dant.trayfixture.p{}", std::process::id());
+    assert_ne!(context.config().identifier, "com.dant.desktop");
+    context.set_default_window_icon(Some(tauri::image::Image::new_owned(
+        vec![0, 0, 0, 255],
+        1,
+        1,
+    )));
+    context
+}
+#[test]
+fn tray_setup_uses_the_actual_sdk_menu_builder_and_manages_only_the_supplied_surface() {
+    let app = crate::application_builder(tauri::test::mock_builder())
+        .build(tray_context())
+        .unwrap();
+    let main =
+        tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .build()
+            .unwrap();
+    setup_using(&app, |_| {
+        Ok(TooltipFixture {
+            values: Default::default(),
+            fail: Default::default(),
+        })
+    })
+    .unwrap();
+    let state = app.state::<BackgroundTray>();
+    assert!(state.ready.load(Ordering::Acquire));
+    update_status(&state.inner, "main", status()).unwrap();
+    assert_eq!(language(app.handle()), "en");
+    call_window_changed(app.handle(), true, None);
+    call_window_changed(app.handle(), false, Some("zh"));
+    {
+        let inner = state.inner.lock().unwrap();
+        let tray = inner.as_ref().unwrap();
+        assert!(!tray.state.call_active);
+        assert_eq!(tray.state.call_language, "zh");
+    }
+    use tauri::Listener;
+    let events = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = events.clone();
+    main.listen("dant-tray-progress", move |_| {
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
+    for id in ["dant-open", "dant-progress", "dant-call-window", "unknown"] {
+        menu_event(app.handle(), MenuEvent { id: id.into() });
+    }
+    // No DesktopExit state means this adapter cannot request a real transition.
+    let empty = tauri::test::mock_app();
+    let untracked = tauri::WebviewWindowBuilder::new(
+        &empty,
+        "untracked",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .build()
+    .unwrap();
+    assert!(!on_window_event(
+        &untracked.as_ref().window(),
+        &tauri::WindowEvent::Focused(true)
+    ));
+    menu_event(
+        empty.handle(),
+        MenuEvent {
+            id: "dant-exit".into(),
+        },
+    );
+    assert_eq!(events.load(Ordering::SeqCst), 1);
+    for (button, button_state, expected) in [
+        (MouseButton::Left, MouseButtonState::Up, true),
+        (MouseButton::Left, MouseButtonState::Down, false),
+        (MouseButton::Right, MouseButtonState::Up, false),
+    ] {
+        let event = TrayIconEvent::Click {
+            id: ID.into(),
+            position: tauri::PhysicalPosition::new(0.0, 0.0),
+            rect: tauri::Rect {
+                position: tauri::PhysicalPosition::new(0, 0).into(),
+                size: tauri::PhysicalSize::new(1, 1).into(),
+            },
+            button,
+            button_state,
+        };
+        assert_eq!(left_click(&event), expected);
+        tray_icon_event(app.handle(), event);
+    }
+    assert!(!left_click(&TrayIconEvent::Enter {
+        id: ID.into(),
+        position: tauri::PhysicalPosition::new(0.0, 0.0),
+        rect: tauri::Rect {
+            position: tauri::PhysicalPosition::new(0, 0).into(),
+            size: tauri::PhysicalSize::new(1, 1).into()
+        }
+    }));
+}
+#[test]
+fn missing_icon_failed_creation_and_poisoned_surface_leave_ordinary_close_available() {
+    let app = tauri::test::mock_builder()
+        .manage(BackgroundTray::default())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    assert!(setup_using(&app, |_| -> tauri::Result<TooltipFixture> {
+        panic!("No icon must not create any tray")
+    })
+    .is_err());
+    assert!(!app.state::<BackgroundTray>().ready.load(Ordering::Acquire));
+    let app = tauri::test::mock_builder()
+        .manage(BackgroundTray::default())
+        .build(tray_context())
+        .unwrap();
+    assert!(setup_using(&app, |_| -> tauri::Result<TooltipFixture> {
+        Err(tauri::Error::AssetNotFound("synthetic failed tray".into()))
+    })
+    .is_err());
+    assert!(!app.state::<BackgroundTray>().ready.load(Ordering::Acquire));
+    let state = app.state::<BackgroundTray>();
+    std::thread::scope(|scope| {
+        assert!(scope
+            .spawn(|| {
+                let _guard = state.inner.lock().unwrap();
+                std::panic::resume_unwind(Box::new(()));
+            })
+            .join()
+            .is_err());
+    });
+    call_window_changed(app.handle(), true, Some("zh"));
+    assert_eq!(language(app.handle()), "en");
+}
+#[cfg(windows)]
+#[test]
+fn sdk_close_interception_hides_then_allows_explicit_exit_inside_an_isolated_child() {
+    use std::{
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    struct OwnedChild(std::process::Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let output = tempfile::tempfile().unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "tray::tests::synthetic_tray_event_child",
+            "--nocapture",
+        ])
+        .env("DANT_NATIVE_TRAY_FIXTURE", "owned")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(output.try_clone().unwrap()))
+        .creation_flags(crate::runtime::CREATE_NO_WINDOW);
+    let mut child = OwnedChild(command.spawn().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            if !status.success() {
+                use std::io::{Read, Seek};
+                let mut output = output;
+                output.rewind().unwrap();
+                let mut bytes = Vec::new();
+                output.take(65536).read_to_end(&mut bytes).unwrap();
+                panic!(
+                    "Synthetic SDK event fixture failed: {}",
+                    String::from_utf8_lossy(&bytes)
+                );
+            }
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The isolated SDK event fixture must terminate"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+#[cfg(windows)]
+#[test]
+fn synthetic_tray_event_child() {
+    if std::env::var("DANT_NATIVE_TRAY_FIXTURE").as_deref() != Ok("owned") {
+        return;
+    }
+    let app = crate::application_builder(tauri::test::mock_builder())
+        .build(tray_context())
+        .unwrap();
+    setup_using(&app, |_| {
+        Ok(TooltipFixture {
+            values: Default::default(),
+            fail: Default::default(),
+        })
+    })
+    .unwrap();
+    let main =
+        tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .build()
+            .unwrap();
+    let closes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = closes.clone();
+    app.run(move |handle, event| {
+        // MockRuntime exposes the real close API through app events but does
+        // not dispatch registered window listeners. Feed the production entry.
+        if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
+            crate::application_window_event(
+                &handle.get_webview_window(label).unwrap().as_ref().window(),
+                event,
+            );
+        }
+        match &event {
+            tauri::RunEvent::Ready => main.close().unwrap(),
+            tauri::RunEvent::WindowEvent {
+                event: WindowEvent::CloseRequested { .. },
+                ..
+            } => {
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    assert!(handle
+                        .state::<BackgroundTray>()
+                        .ready
+                        .load(Ordering::Acquire));
+                    mark_exiting(handle);
+                    main.close().unwrap();
+                }
+            }
+            tauri::RunEvent::Exit => crate::application_event(handle, event),
+            _ => {}
+        }
+    });
+    assert_eq!(closes.load(Ordering::SeqCst), 2);
 }

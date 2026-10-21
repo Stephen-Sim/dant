@@ -17,8 +17,75 @@ use std::{
 };
 use tauri::State;
 
-#[derive(Clone, Default)]
-pub struct SpeechProcess(pub Arc<Mutex<Option<Child>>>, pub Arc<AtomicU64>);
+trait SpeechCommands: Send + Sync {
+    fn command(
+        &self,
+        mode: &str,
+        language: &str,
+        text: Option<&str>,
+    ) -> Result<(Command, String), SpeechFailure>;
+}
+struct NativeSpeechCommands;
+impl SpeechCommands for NativeSpeechCommands {
+    fn command(
+        &self,
+        mode: &str,
+        language: &str,
+        text: Option<&str>,
+    ) -> Result<(Command, String), SpeechFailure> {
+        let root = speech_system_root(
+            std::env::var_os("SystemRoot").map(PathBuf::from),
+            windows_directory,
+        )?;
+        Ok(speech_command(&root, mode, language, text))
+    }
+}
+fn speech_system_root(
+    configured: Option<PathBuf>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, SpeechFailure> {
+    configured
+        .or_else(fallback)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| failed("speech-unavailable", "process-start"))
+}
+fn windows_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        const WINDOWS_DIRECTORY_MAX_UNITS: usize = 32768;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetWindowsDirectoryW(buffer: *mut u16, size: u32) -> u32;
+        }
+        let mut buffer = vec![0u16; WINDOWS_DIRECTORY_MAX_UNITS];
+        let length =
+            unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+        if length == 0 || length >= buffer.len() {
+            return None;
+        }
+        String::from_utf16(&buffer[..length])
+            .ok()
+            .map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    None
+}
+#[derive(Clone)]
+pub struct SpeechProcess(
+    pub Arc<Mutex<Option<Child>>>,
+    pub Arc<AtomicU64>,
+    Arc<dyn SpeechCommands>,
+);
+impl SpeechProcess {
+    fn with_commands(commands: Arc<dyn SpeechCommands>) -> Self {
+        Self(Arc::default(), Arc::default(), commands)
+    }
+}
+impl Default for SpeechProcess {
+    fn default() -> Self {
+        Self::with_commands(Arc::new(NativeSpeechCommands))
+    }
+}
 
 const CODES: &[&str] = &[
     "speech-output-unavailable",
@@ -265,8 +332,11 @@ fn persist_diagnostic_with(
     mut temporary: tempfile::NamedTempFile,
     expected: DiagnosticPathIdentity,
     windows: bool,
-    mut persist: impl FnMut(tempfile::NamedTempFile, &Path) -> Result<fs::File, tempfile::PersistError>,
-    mut wait: impl FnMut(Duration),
+    persist: &mut dyn FnMut(
+        tempfile::NamedTempFile,
+        &Path,
+    ) -> Result<fs::File, tempfile::PersistError>,
+    wait: &mut dyn FnMut(Duration),
 ) -> std::io::Result<()> {
     if temporary.path().parent() != path.parent() {
         return Err(std::io::ErrorKind::InvalidInput.into());
@@ -317,7 +387,7 @@ fn ordinary_parent(parent: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
-fn diagnostic_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn diagnostic_file<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
     let data = crate::runtime::data_directory(app)?;
     Some(
         if data.is_absolute() {
@@ -335,6 +405,18 @@ fn append_diagnostic(
     outcome: &Result<String, SpeechFailure>,
     now: u64,
 ) -> std::io::Result<()> {
+    append_diagnostic_using(path, mode, language, outcome, now, |selected| {
+        fs::File::open(selected)
+    })
+}
+fn append_diagnostic_using(
+    path: &Path,
+    mode: &str,
+    language: &str,
+    outcome: &Result<String, SpeechFailure>,
+    now: u64,
+    open: impl FnOnce(&Path) -> std::io::Result<fs::File>,
+) -> std::io::Result<()> {
     use std::io::Read;
     let _guard = DIAGNOSTIC_LOCK
         .lock()
@@ -351,7 +433,7 @@ fn append_diagnostic(
         if !meta.is_file() || linked(&meta) || meta.len() > MAX_DIAGNOSTIC_BYTES {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
-        let file = fs::File::open(path)?;
+        let file = open(path)?;
         if !one_link(&file) {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
@@ -383,7 +465,20 @@ fn append_diagnostic(
                                 .is_some_and(|v| ["completed", "failed"].contains(&v))
                             && string("reason").is_some_and(|v| v == "ok" || CODES.contains(&v))
                         {
-                            records.push(serde_json::json!({"schema":"dant.native-speech.v1","event":"speech.operation","at":at,"mode":string("mode"),"language":string("language"),"phase":string("phase"),"status":string("status"),"reason":string("reason"),"numericCode":value.get("numericCode").and_then(|v|v.as_i64()).filter(|v|*v>=i32::MIN as i64&&*v<=u32::MAX as i64)}));
+                            records.push(serde_json::json!({
+                                "schema": "dant.native-speech.v1",
+                                "event": "speech.operation",
+                                "at": at,
+                                "mode": string("mode"),
+                                "language": string("language"),
+                                "phase": string("phase"),
+                                "status": string("status"),
+                                "reason": string("reason"),
+                                "numericCode": value
+                                    .get("numericCode")
+                                    .and_then(|v| v.as_i64())
+                                    .filter(|v| *v >= i32::MIN as i64 && *v <= u32::MAX as i64),
+                            }));
                         }
                     }
                 }
@@ -391,7 +486,17 @@ fn append_diagnostic(
         }
     }
     let error = outcome.as_ref().err();
-    let row = serde_json::json!({"schema":"dant.native-speech.v1","event":"speech.operation","at":now,"mode":mode,"language":language,"phase":error.map(|e|e.phase).unwrap_or("finished"),"status":if outcome.is_ok(){"completed"}else{"failed"},"reason":error.map(|e|e.code).unwrap_or("ok"),"numericCode":error.and_then(|e|e.numeric_code)});
+    let row = serde_json::json!({
+        "schema": "dant.native-speech.v1",
+        "event": "speech.operation",
+        "at": now,
+        "mode": mode,
+        "language": language,
+        "phase": error.map(|e| e.phase).unwrap_or("finished"),
+        "status": if outcome.is_ok() { "completed" } else { "failed" },
+        "reason": error.map(|e| e.code).unwrap_or("ok"),
+        "numericCode": error.and_then(|e| e.numeric_code),
+    });
     records.push(row);
     if records.len() > DIAGNOSTIC_RECORD_LIMIT {
         records.drain(..records.len() - DIAGNOSTIC_RECORD_LIMIT);
@@ -414,15 +519,119 @@ fn append_diagnostic(
         temporary,
         identity,
         cfg!(windows),
-        |file, target| file.persist(target),
-        std::thread::sleep,
+        &mut |file, target| file.persist(target),
+        &mut std::thread::sleep,
     )
 }
 
+fn speech_command(
+    system_root: &Path,
+    mode: &str,
+    language: &str,
+    text: Option<&str>,
+) -> (Command, String) {
+    let input = serde_json::json!({
+        "mode": mode,
+        "language": language,
+        "locale": crate::l10n::speech_locale(&language),
+        "text": text,
+    })
+    .to_string();
+    let script = include_str!("../../native/speech.ps1");
+    let encoded = STANDARD.encode(
+        script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    let executable = system_root.join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut command = Command::new(executable);
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            &encoded,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(crate::runtime::CREATE_NO_WINDOW);
+    (command, input)
+}
+
+fn execute_speech(
+    shared: &SpeechProcess,
+    mut command: Command,
+    input: &str,
+    timeout: Duration,
+    mut now: impl FnMut() -> Instant,
+    mut wait: impl FnMut(Duration),
+) -> Result<String, SpeechFailure> {
+    let generation;
+    {
+        let mut slot = shared
+            .0
+            .lock()
+            .map_err(|_| failed("speech-unavailable", "process-start"))?;
+        if slot.is_some() {
+            return Err(failed("speech-busy", "process-start"));
+        }
+        generation = shared.1.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut child = command
+            .spawn()
+            .map_err(|_| failed("speech-unavailable", "process-start"))?;
+        if let Some(mut input_pipe) = child.stdin.take() {
+            if input_pipe.write_all(input.as_bytes()).is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(failed("speech-unavailable", "request-write"));
+            }
+        }
+        *slot = Some(child);
+    }
+
+    let deadline = now() + timeout;
+    loop {
+        let mut slot = shared
+            .0
+            .lock()
+            .map_err(|_| failed("speech-unavailable", "process-wait"))?;
+        if shared.1.load(Ordering::SeqCst) != generation {
+            return Err(failed("speech-cancelled", "process-wait"));
+        }
+        let Some(child) = slot.as_mut() else {
+            return Err(failed("speech-cancelled", "process-wait"));
+        };
+        if now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            *slot = None;
+            return Err(failed("speech-timeout", "process-wait"));
+        }
+        if child
+            .try_wait()
+            .map_err(|_| failed("speech-unavailable", "process-wait"))?
+            .is_some()
+        {
+            let completed = slot
+                .take()
+                .unwrap()
+                .wait_with_output()
+                .map_err(|_| failed("speech-response-invalid", "process-response"))?;
+            return response_result(completed.status.success(), &completed.stdout);
+        }
+        drop(slot);
+        wait(PROCESS_POLL_INTERVAL);
+    }
+}
+
 #[tauri::command]
-pub async fn speech_start(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn speech_start<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     mode: String,
     language: String,
     text: Option<String>,
@@ -448,102 +657,22 @@ pub async fn speech_start(
     let shared = process.inner().clone();
     let diagnostic_path = diagnostic_file(&app);
     tauri::async_runtime::spawn_blocking(move || {
-        let outcome = (|| -> Result<String, SpeechFailure> {
-            let input = serde_json::json!({
-                "mode": mode,
-                "language": language,
-                "locale": crate::l10n::speech_locale(&language),
-                "text": text,
-            })
-            .to_string();
-            let script = include_str!("../../native/speech.ps1");
-            let encoded = STANDARD.encode(
-                script
-                    .encode_utf16()
-                    .flat_map(u16::to_le_bytes)
-                    .collect::<Vec<_>>(),
-            );
-            let executable = std::path::PathBuf::from(
-                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+        let request = shared.2.command(&mode, &language, text.as_deref());
+        let timeout = if mode == "speak" {
+            SPEAK_TIMEOUT
+        } else {
+            RECOGNITION_TIMEOUT
+        };
+        let outcome = request.and_then(|(command, input)| {
+            execute_speech(
+                &shared,
+                command,
+                &input,
+                timeout,
+                Instant::now,
+                std::thread::sleep,
             )
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-            let mut command = Command::new(executable);
-            command
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-EncodedCommand",
-                    &encoded,
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            #[cfg(windows)]
-            command.creation_flags(crate::runtime::CREATE_NO_WINDOW);
-
-            let generation;
-            {
-                let mut slot = shared
-                    .0
-                    .lock()
-                    .map_err(|_| failed("speech-unavailable", "process-start"))?;
-                if slot.is_some() {
-                    return Err(failed("speech-busy", "process-start"));
-                }
-                generation = shared.1.fetch_add(1, Ordering::SeqCst) + 1;
-                let mut child = command
-                    .spawn()
-                    .map_err(|_| failed("speech-unavailable", "process-start"))?;
-                if let Some(mut input_pipe) = child.stdin.take() {
-                    if input_pipe.write_all(input.as_bytes()).is_err() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(failed("speech-unavailable", "request-write"));
-                    }
-                }
-                *slot = Some(child);
-            }
-
-            let deadline = Instant::now()
-                + if mode == "speak" {
-                    SPEAK_TIMEOUT
-                } else {
-                    RECOGNITION_TIMEOUT
-                };
-            loop {
-                let mut slot = shared
-                    .0
-                    .lock()
-                    .map_err(|_| failed("speech-unavailable", "process-wait"))?;
-                if shared.1.load(Ordering::SeqCst) != generation {
-                    return Err(failed("speech-cancelled", "process-wait"));
-                }
-                let Some(child) = slot.as_mut() else {
-                    return Err(failed("speech-cancelled", "process-wait"));
-                };
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    *slot = None;
-                    return Err(failed("speech-timeout", "process-wait"));
-                }
-                if child
-                    .try_wait()
-                    .map_err(|_| failed("speech-unavailable", "process-wait"))?
-                    .is_some()
-                {
-                    let completed = slot
-                        .take()
-                        .unwrap()
-                        .wait_with_output()
-                        .map_err(|_| failed("speech-response-invalid", "process-response"))?;
-                    return response_result(completed.status.success(), &completed.stdout);
-                }
-                drop(slot);
-                std::thread::sleep(PROCESS_POLL_INTERVAL);
-            }
-        })();
+        });
         if let Some(path) = diagnostic_path {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -558,17 +687,19 @@ pub async fn speech_start(
 }
 
 pub fn stop(process: &SpeechProcess) {
-    if let Ok(mut slot) = process.0.lock() {
-        process.1.fetch_add(1, Ordering::SeqCst);
-        if let Some(mut child) = slot.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    let mut slot = process
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    process.1.fetch_add(1, Ordering::SeqCst);
+    if let Some(mut child) = slot.take() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 #[tauri::command]
-pub fn speech_stop(
-    window: tauri::WebviewWindow,
+pub fn speech_stop<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
     process: State<'_, SpeechProcess>,
 ) -> Result<(), String> {
     if window.label() != "main" {

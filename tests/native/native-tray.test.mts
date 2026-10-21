@@ -207,8 +207,12 @@ test('native lifecycle installs one instance first, hides only after successful 
   assert.match(backend, /drop\(child\.stdin\.take\(\)\)/);
   assert.match(tray, /window\.hide\(\)\.is_ok\(\)[\s\S]*api\.prevent_close\(\)/);
   assert.match(tray, /fn install_tray[\s\S]*target\.lock\(\)\.unwrap\(\)[\s\S]*ready\.store\(true/);
-  assert.match(tray, /\.build\(app\)\?;[\s\S]*install_tray\(\s*&state\.ready,\s*&state\.inner,/);
-  assert.match(tray, /fn exit\(app:[\s\S]*crate::lifecycle::request_exit\(app\)/);
+  assert.match(tray, /setup_using\(app, \|builder\| builder\.build\(app\)\)/);
+  assert.match(
+    tray,
+    /let icon = create\(builder\)\?;[\s\S]*install_tray\(\s*&state\.ready,\s*&state\.inner,/,
+  );
+  assert.match(tray, /fn exit(?:<[^>]*>)?\(app:[\s\S]*crate::lifecycle::request_exit\(app\)/);
   assert.match(main, /ExitRequested\s*\{\s*api,\s*\.\.\s*\}[\s\S]*api\.prevent_exit\(\)/);
   assert.match(
     tray,

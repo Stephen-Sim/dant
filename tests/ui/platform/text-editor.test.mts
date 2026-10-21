@@ -502,7 +502,17 @@ test('native editor opens only safe cached text with a fixed Notepad or picked e
     ),
     protocol = validateProtocol(canonical);
   assert.match(source, /window\.label\(\) == "main"/);
-  assert.match(source, /crate::protocol::api_url\(&format!\(\s*"files\/\{file_id\}"\s*\)\)/);
+  assert.match(
+    source,
+    /fn attachment_endpoint\(&self\) -> std::net::SocketAddr\s*\{\s*crate::protocol::controller_endpoint\(\)/,
+  );
+  assert.match(
+    source,
+    /attachment_text_at\(host\.attachment_endpoint\(\), &file_id, &token, &file_name\)/,
+  );
+  assert.match(source, /async fn attachment_text_at\(/);
+  assert.match(source, /"http:\/\/\{endpoint\}\{\}\/files\/\{file_id\}"/);
+  assert.match(source, /crate::protocol::api_prefix\(\)/);
   assert.equal(protocol.loopbackHost, '127.0.0.1');
   assert.equal(protocol.apiPort, canonical.apiPort);
   assert.match(
@@ -515,12 +525,13 @@ test('native editor opens only safe cached text with a fixed Notepad or picked e
   assert.match(protocolSource, /SocketAddrV4::new\(\s*host\s*,\s*value\.api_port\s*\)/);
   assert.doesNotMatch(
     source,
-    /pub\s+async\s+fn\s+open_attachment_in_editor\s*\([^)]*\b(?:url|endpoint|destination|path)\s*:/,
+    /pub\s+async\s+fn\s+open_attachment_in_editor(?:<[^>]*>)?\s*\([^)]*\b(?:url|endpoint|destination|path)\s*:/,
   );
   assert.match(source, /no_proxy\(\)\s*\.redirect\(reqwest::redirect::Policy::none\(\)\)/);
   assert.match(source, /Command::new\(crate::runtime_path\(executable\.to_path_buf\(\)\)\)/);
   assert.match(source, /command\s*\.arg\(target\)/);
-  assert.match(source, /editor_command\(&executable, &target\)\s*\.spawn\(\)/);
+  assert.match(source, /host\.launch\(&mut editor_command\(&executable, &target\)\)/);
+  assert.match(source, /fn launch\(&self, command: &mut Command\)[\s\S]*command\.spawn\(\)/);
   assert.match(source, /editor_cache_root\(std::env::temp_dir\(\)\)/);
   assert.doesNotMatch(source, /app_cache_dir\(/);
   assert.doesNotMatch(source, /cmd\s*\/c|powershell|opener\(\)|open_path|shell_execute/i);

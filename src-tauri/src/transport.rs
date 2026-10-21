@@ -48,8 +48,29 @@ struct LocalRequest<'a> {
     token: &'a str,
 }
 
-fn local_endpoint() -> SocketAddr {
-    crate::protocol::controller_endpoint()
+#[derive(Clone, Copy)]
+pub(crate) struct ControllerLink {
+    endpoint: SocketAddr,
+}
+impl Default for ControllerLink {
+    fn default() -> Self {
+        Self {
+            endpoint: crate::protocol::controller_endpoint(),
+        }
+    }
+}
+impl ControllerLink {
+    pub(crate) fn json(
+        &self,
+        route: &str,
+        token: Option<&str>,
+        body: Option<&str>,
+    ) -> Option<serde_json::Value> {
+        local_json_at(self.endpoint, route, token, body)
+    }
+    pub(crate) fn existing(&self, source: &str) -> Result<bool, &'static str> {
+        existing_controller_at(self.endpoint, source)
+    }
 }
 
 fn validate_request<'a>(
@@ -88,8 +109,8 @@ fn validate_request<'a>(
 }
 
 #[tauri::command]
-pub async fn api_request(
-    window: tauri::WebviewWindow,
+pub async fn api_request<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
     route: String,
     method: Option<String>,
     body: Option<String>,
@@ -102,7 +123,7 @@ pub async fn api_request(
         body.as_deref(),
         token.as_deref(),
     )?;
-    request_at(local_endpoint(), request).await
+    request_at(ControllerLink::default().endpoint, request).await
 }
 
 // Only the native wrapper chooses the production address. Tests supply their
@@ -166,14 +187,6 @@ async fn request_at(endpoint: SocketAddr, input: LocalRequest<'_>) -> Result<Api
     })
 }
 
-pub fn local_json(
-    route: &str,
-    token: Option<&str>,
-    body: Option<&str>,
-) -> Option<serde_json::Value> {
-    local_json_at(local_endpoint(), route, token, body)
-}
-
 fn local_json_at(
     endpoint: SocketAddr,
     route: &str,
@@ -210,6 +223,12 @@ const CORE_PROTOCOL_VERSION: u64 = 1;
 const RESOURCE_MANIFEST_BYTES: u64 = 64 * 1024;
 
 pub fn bundled_source(root: &Path) -> Result<String, &'static str> {
+    bundled_source_using(root, |path| fs::read(path))
+}
+fn bundled_source_using(
+    root: &Path,
+    read: impl FnOnce(&Path) -> std::io::Result<Vec<u8>>,
+) -> Result<String, &'static str> {
     let path = root.join("resource-manifest.json");
     let metadata =
         fs::symlink_metadata(&path).map_err(|_| "The Go core resource manifest is missing")?;
@@ -219,7 +238,7 @@ pub fn bundled_source(root: &Path) -> Result<String, &'static str> {
     {
         return Err("The Go core resource manifest is invalid");
     }
-    let bytes = fs::read(path).map_err(|_| "The Go core resource manifest could not be read")?;
+    let bytes = read(&path).map_err(|_| "The Go core resource manifest could not be read")?;
     if bytes.len() as u64 > RESOURCE_MANIFEST_BYTES {
         return Err("The Go core resource manifest is invalid");
     }
@@ -253,10 +272,6 @@ fn unidentified_controller_error() -> &'static str {
     MESSAGE.get_or_init(|| format!("The local service could not be identified. Close the application using port {} before starting dant.", crate::protocol::controller_endpoint().port()))
 }
 
-pub fn existing_controller(source: &str) -> Result<bool, &'static str> {
-    existing_controller_at(local_endpoint(), source)
-}
-
 fn existing_controller_at(endpoint: SocketAddr, source: &str) -> Result<bool, &'static str> {
     if let Some(value) = local_json_at(endpoint, crate::protocol::session_path(), None, None) {
         if compatible_controller(&value, source) {
@@ -273,3 +288,6 @@ fn existing_controller_at(endpoint: SocketAddr, source: &str) -> Result<bool, &'
 #[cfg(test)]
 #[path = "../../tests/native/rust/transport.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::isolated_http_link;

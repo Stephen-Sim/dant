@@ -42,6 +42,14 @@ fn synthetic_backend_child() {
     }
     let mut discarded = Vec::new();
     std::io::stdin().read_to_end(&mut discarded).unwrap();
+    if matches!(mode.as_str(), "silent" | "foreign" | "oversized") {
+        // These owned fixtures intentionally ignore graceful stdin closure so
+        // readiness failure and reader cancellation exercise forced kill/wait.
+        // Returning here could race that kill with the child's exit handlers.
+        loop {
+            std::thread::park();
+        }
+    }
     if let Some(path) = std::env::var_os("DANT_SYNTHETIC_BACKEND_EXIT_RECEIPT") {
         fs::write(path, b"stdin-closed-gracefully").unwrap();
     }

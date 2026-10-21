@@ -176,6 +176,41 @@ trait CallWindow: Clone {
     fn drag(&self) -> Result<(), String>;
 }
 
+#[derive(Clone, Copy)]
+enum WindowFailure {
+    Size,
+    Position,
+    Hide,
+    Show,
+    Focusable(bool),
+    Restore,
+    MainShow,
+    MainFocus,
+    Drag,
+    Create,
+    Action,
+}
+impl WindowFailure {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Size => "Call window size is unavailable",
+            Self::Position => "Call window position is unavailable",
+            Self::Hide => "Call window could not be hidden",
+            Self::Show | Self::Focusable(false) => "Call window could not be shown",
+            Self::Focusable(true) => "Call window controls are unavailable",
+            Self::Restore => "The main window could not be restored",
+            Self::MainShow => "The main window could not be shown",
+            Self::MainFocus => "The main window could not be focused",
+            Self::Drag => "Call window dragging is unavailable",
+            Self::Create => "Call window could not be created",
+            Self::Action => "The call action was not confirmed",
+        }
+    }
+}
+fn redacted_result<T>(result: tauri::Result<T>, failure: WindowFailure) -> Result<T, String> {
+    result.map_err(|_| failure.message().into())
+}
+
 impl<R: tauri::Runtime> CallWindow for WebviewWindow<R> {
     fn minimized(&self) -> bool {
         self.is_minimized().unwrap_or(false)
@@ -187,42 +222,28 @@ impl<R: tauri::Runtime> CallWindow for WebviewWindow<R> {
         monitor(self)
     }
     fn size(&self) -> Result<(u32, u32), String> {
-        self.outer_size()
+        redacted_result(self.outer_size(), WindowFailure::Size)
             .map(|size| (size.width, size.height))
-            .map_err(|_| "Call window size is unavailable".into())
     }
     fn position(&self) -> Option<PhysicalPosition<i32>> {
         self.outer_position().ok()
     }
     fn move_to(&self, point: PhysicalPosition<i32>) -> Result<(), String> {
-        self.set_position(point)
-            .map_err(|_| "Call window position is unavailable".into())
+        redacted_result(self.set_position(point), WindowFailure::Position)
     }
     fn hide(&self) -> Result<(), String> {
-        self.hide()
-            .map_err(|_| "Call window could not be hidden".into())
+        redacted_result(self.hide(), WindowFailure::Hide)
     }
     fn show(&self) -> Result<(), String> {
-        self.show()
-            .map_err(|_| "Call window could not be shown".into())
+        redacted_result(self.show(), WindowFailure::Show)
     }
     fn focusable(&self, value: bool) -> Result<(), String> {
-        self.set_focusable(value).map_err(|_| {
-            if value {
-                "Call window controls are unavailable"
-            } else {
-                "Call window could not be shown"
-            }
-            .into()
-        })
+        redacted_result(self.set_focusable(value), WindowFailure::Focusable(value))
     }
     fn restore(&self) -> Result<(), String> {
-        self.unminimize()
-            .map_err(|_| "The main window could not be restored")?;
-        self.show()
-            .map_err(|_| "The main window could not be shown")?;
-        self.set_focus()
-            .map_err(|_| "The main window could not be focused".into())
+        redacted_result(self.unminimize(), WindowFailure::Restore)?;
+        redacted_result(self.show(), WindowFailure::MainShow)?;
+        redacted_result(self.set_focus(), WindowFailure::MainFocus)
     }
     fn publish(&self, call: &CallState) {
         let _ = self.emit("dant-call-overlay-state", call);
@@ -236,8 +257,7 @@ impl<R: tauri::Runtime> CallWindow for WebviewWindow<R> {
         let _ = self.destroy();
     }
     fn drag(&self) -> Result<(), String> {
-        self.start_dragging()
-            .map_err(|_| "Call window dragging is unavailable".into())
+        redacted_result(self.start_dragging(), WindowFailure::Drag)
     }
 }
 
@@ -262,28 +282,30 @@ impl<R: tauri::Runtime> OverlayHost for NativeOverlay<'_, R> {
     fn create_overlay(&self) -> Result<Self::Window, String> {
         // Creating WebView2 from a synchronous window event can deadlock. The
         // caller runs on an async-runtime worker, never the UI thread.
-        WebviewWindowBuilder::new(self.0, LABEL, WebviewUrl::App("call-overlay.html".into()))
-            .title("dant call")
-            .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
-            .decorations(false)
-            .resizable(false)
-            .maximizable(false)
-            .minimizable(false)
-            .closable(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .visible(false)
-            .focused(false)
-            .transparent(true)
-            .shadow(true)
-            .on_navigation(allowed_navigation)
-            .build()
-            .map_err(|_| "Call window could not be created".into())
+        let result =
+            WebviewWindowBuilder::new(self.0, LABEL, WebviewUrl::App("call-overlay.html".into()))
+                .title("dant call")
+                .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
+                .decorations(false)
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
+                .closable(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .visible(false)
+                .focused(false)
+                .transparent(true)
+                .shadow(true)
+                .on_navigation(allowed_navigation)
+                .build();
+        redacted_result(result, WindowFailure::Create)
     }
     fn action(&self, action: Action) -> Result<(), String> {
-        self.0
-            .emit_to("main", "dant-call-overlay-action", action)
-            .map_err(|_| "The call action was not confirmed".into())
+        redacted_result(
+            self.0.emit_to("main", "dant-call-overlay-action", action),
+            WindowFailure::Action,
+        )
     }
     fn schedule(&self) {
         schedule(self.0);
@@ -429,10 +451,14 @@ impl CallOverlay {
 }
 pub fn setup<R: tauri::Runtime>(app: &tauri::App<R>) {
     if let Some(main) = app.get_webview_window("main") {
-        if let Some(area) = monitor(&main) {
-            if let Ok(mut inner) = app.state::<CallOverlay>().inner.lock() {
-                inner.main_area = Some(area);
-            }
+        capture_main_area(&app.state::<CallOverlay>(), &main);
+    }
+}
+
+fn capture_main_area(managed: &CallOverlay, main: &impl CallWindow) {
+    if let Some(area) = main.monitor() {
+        if let Ok(mut inner) = managed.inner.lock() {
+            inner.main_area = Some(area);
         }
     }
 }

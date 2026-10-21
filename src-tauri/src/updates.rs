@@ -61,7 +61,12 @@ struct Progress<'a> {
     total: u64,
     status: &'a str,
 }
-fn progress(app: &tauri::AppHandle, asset: &Asset, received: u64, status: &str) {
+fn progress<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    asset: &Asset,
+    received: u64,
+    status: &str,
+) {
     let _ = app.emit_to(
         "main",
         "dant-update-progress",
@@ -200,13 +205,21 @@ pub(crate) fn directory(path: &Path, create: bool) -> Result<(), String> {
     Ok(())
 }
 pub(crate) fn json_file(path: &Path, max: usize) -> Result<serde_json::Value, String> {
+    json_file_using(path, max, |selected| fs::File::open(selected))
+}
+
+fn json_file_using(
+    path: &Path,
+    max: usize,
+    open: impl FnOnce(&Path) -> std::io::Result<fs::File>,
+) -> Result<serde_json::Value, String> {
     directory(path.parent().ok_or(FAILED)?, false)?;
     let meta = fs::symlink_metadata(path).map_err(|_| FAILED)?;
     if !meta.is_file() || linked(&meta) || meta.len() > max as u64 {
         return Err(FAILED.into());
     }
     let mut bytes = Vec::new();
-    fs::File::open(path)
+    open(path)
         .map_err(|_| FAILED)?
         .take(max as u64 + 1)
         .read_to_end(&mut bytes)
@@ -230,11 +243,19 @@ pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), Stri
         .map_err(|_| FAILED)?;
     temp.write_all(&serde_json::to_vec(value).map_err(|_| FAILED)?)
         .map_err(|_| FAILED)?;
-    temp.as_file().sync_all().map_err(|_| FAILED)?;
-    temp.persist(path).map_err(|_| FAILED)?;
+    crate::atomic_file::publish(temp, path, crate::atomic_file::FlushPolicy::SyncOnly)
+        .map_err(|_| FAILED)?;
     Ok(())
 }
 pub(crate) fn verify_file(path: &Path, asset: &Asset) -> Result<(), String> {
+    verify_file_using(path, asset, |selected| fs::File::open(selected))
+}
+
+fn verify_file_using(
+    path: &Path,
+    asset: &Asset,
+    open: impl FnOnce(&Path) -> std::io::Result<fs::File>,
+) -> Result<(), String> {
     if !valid_asset(asset) {
         return Err(FAILED.into());
     }
@@ -243,7 +264,7 @@ pub(crate) fn verify_file(path: &Path, asset: &Asset) -> Result<(), String> {
     if !meta.is_file() || linked(&meta) || meta.len() != asset.size {
         return Err(FAILED.into());
     }
-    let mut file = fs::File::open(path).map_err(|_| FAILED)?;
+    let mut file = open(path).map_err(|_| FAILED)?;
     let mut hash = Sha256::new();
     let mut buffer = [0; DOWNLOAD_BUFFER_BYTES];
     let mut total = 0;
@@ -263,7 +284,7 @@ pub(crate) fn verify_file(path: &Path, asset: &Asset) -> Result<(), String> {
     }
     Ok(())
 }
-fn cache(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn cache<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let root = crate::runtime_path(app.path().app_cache_dir().map_err(|_| FAILED)?).join("updates");
     directory(&root, true)?;
     Ok(root)
@@ -389,7 +410,11 @@ fn stream_payload(
     }
     Ok(())
 }
-fn download(app: &tauri::AppHandle, root: &Path, asset: &Asset) -> Result<(), String> {
+fn download<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    root: &Path,
+    asset: &Asset,
+) -> Result<(), String> {
     download_using(
         root,
         asset,
@@ -469,8 +494,8 @@ fn download_using(
         if !child.wait().map_err(|_| FAILED)?.success() {
             return Err(FAILED.into());
         }
-        output.as_file().sync_all().map_err(|_| FAILED)?;
-        output.persist(&target).map_err(|_| FAILED)?;
+        crate::atomic_file::publish(output, &target, crate::atomic_file::FlushPolicy::SyncOnly)
+            .map_err(|_| FAILED)?;
         write_json(&target.parent().ok_or(FAILED)?.join("asset.json"), asset)?;
         Ok(())
     })();
@@ -481,9 +506,9 @@ fn download_using(
     result
 }
 #[tauri::command]
-pub async fn download_update(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn download_update<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     channel: String,
     token: String,
     expected_version: String,
@@ -508,12 +533,12 @@ trait DownloadEffects {
     fn progress(&self, asset: &Asset, received: u64, status: &str);
 }
 
-struct NativeDownloadEffects<'a> {
-    app: &'a tauri::AppHandle,
+struct NativeDownloadEffects<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
     token: &'a str,
 }
 
-impl DownloadEffects for NativeDownloadEffects<'_> {
+impl<R: tauri::Runtime> DownloadEffects for NativeDownloadEffects<'_, R> {
     async fn metadata(&self, channel: &str) -> Result<serde_json::Value, String> {
         controller(
             &format!("updates?channel={channel}"),
@@ -638,7 +663,7 @@ pub struct Capabilities {
     install: bool,
     reason: Option<&'static str>,
 }
-fn owns_controller(app: &tauri::AppHandle) -> bool {
+fn owns_controller<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     let Some(state) = app.try_state::<crate::Backend>() else {
         return false;
     };
@@ -650,16 +675,19 @@ fn owns_controller(app: &tauri::AppHandle) -> bool {
         .is_some_and(|child| child.try_wait().is_ok_and(|status| status.is_none()))
 }
 #[tauri::command]
-pub fn update_capabilities(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub fn update_capabilities<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
 ) -> Result<Capabilities, String> {
     if window.label() != "main" {
         return Err(FAILED.into());
     }
     let installed = !cfg!(debug_assertions) && crate::update_helper::supported_layout();
     let own = owns_controller(&app);
-    Ok(Capabilities {
+    Ok(capabilities(installed, own))
+}
+fn capabilities(installed: bool, own: bool) -> Capabilities {
+    Capabilities {
         download: cfg!(windows),
         install: installed && own,
         reason: if !installed {
@@ -669,60 +697,77 @@ pub fn update_capabilities(
         } else {
             None
         },
-    })
+    }
 }
+
 #[tauri::command]
-pub async fn install_update(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn install_update<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     package_id: String,
     token: String,
 ) -> Result<InstallResult, String> {
-    if window.label() != "main" || cfg!(debug_assertions) || package_id.len() != 64 {
-        return Err(BLOCKED.into());
-    }
-    let state = app.state::<Updates>();
-    let asset = state
-        .packages
-        .lock()
-        .map_err(|_| FAILED)?
-        .get(&package_id)
-        .cloned()
-        .ok_or(FAILED)?;
-    if !install_allowed(
-        &controller(
-            crate::protocol::state_route(),
-            &token,
-            crate::protocol::API_RESPONSE_MAX_BYTES,
-        )
-        .await?,
-    ) {
-        return Err(BLOCKED.into());
-    }
-    let controller_id = {
-        let state = app.state::<crate::Backend>();
-        let mut locked = state.0.lock().map_err(|_| BLOCKED)?;
-        let child = locked.as_mut().ok_or(BLOCKED)?;
-        if child.try_wait().map_err(|_| BLOCKED)?.is_some() {
-            return Err(BLOCKED.into());
-        }
-        child.id()
-    };
-    let root = cache(&app)?;
-    let installer = package(&root, &asset)?;
-    verify_file(&installer, &asset)?;
-    install_verified(
+    let state = app.try_state::<Updates>();
+    install_selected(
         &NativeInstallEffects {
             app: &app,
             token: &token,
         },
-        &state,
-        asset,
-        root,
-        installer,
-        controller_id,
+        state.as_deref(),
+        InstallRequest {
+            window: window.label(),
+            packaged: !cfg!(debug_assertions),
+            package_id: &package_id,
+        },
+        || cache(&app),
+        || owned_controller_id(&app),
     )
     .await
+}
+struct InstallRequest<'a> {
+    window: &'a str,
+    packaged: bool,
+    package_id: &'a str,
+}
+fn owned_controller_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<u32, String> {
+    let state = app.try_state::<crate::Backend>().ok_or(BLOCKED)?;
+    let mut locked = state.0.lock().map_err(|_| BLOCKED)?;
+    let child = locked.as_mut().ok_or(BLOCKED)?;
+    if child.try_wait().map_err(|_| BLOCKED)?.is_some() {
+        return Err(BLOCKED.into());
+    }
+    Ok(child.id())
+}
+async fn install_selected(
+    host: &impl InstallEffects,
+    state: Option<&Updates>,
+    request: InstallRequest<'_>,
+    cache_root: impl FnOnce() -> Result<PathBuf, String>,
+    controller_id: impl FnOnce() -> Result<u32, String>,
+) -> Result<InstallResult, String> {
+    if request.window != "main" || !request.packaged || request.package_id.len() != 64 {
+        return Err(BLOCKED.into());
+    }
+    let state = state.ok_or(BLOCKED)?;
+    let asset = state
+        .packages
+        .lock()
+        .map_err(|_| FAILED)?
+        .get(request.package_id)
+        .cloned()
+        .ok_or(FAILED)?;
+    if !install_allowed(
+        &host
+            .request(crate::protocol::state_route(), reqwest::Method::GET, None)
+            .await?,
+    ) {
+        return Err(BLOCKED.into());
+    }
+    let controller_id = controller_id()?;
+    let root = cache_root()?;
+    let installer = package(&root, &asset)?;
+    verify_file(&installer, &asset)?;
+    install_verified(host, state, asset, root, installer, controller_id).await
 }
 
 // Installation owns one narrow set of effects. The state machine still performs
@@ -747,12 +792,20 @@ trait InstallEffects {
     fn schedule_exit(&self);
 }
 
-struct NativeInstallEffects<'a> {
-    app: &'a tauri::AppHandle,
+struct NativeInstallEffects<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
     token: &'a str,
 }
 
-impl InstallEffects for NativeInstallEffects<'_> {
+fn install_response_limit(route: &str, method: &reqwest::Method) -> usize {
+    if route == crate::protocol::state_route() && *method == reqwest::Method::GET {
+        crate::protocol::API_RESPONSE_MAX_BYTES
+    } else {
+        UPDATE_ACTION_RESPONSE_MAX_BYTES
+    }
+}
+
+impl<R: tauri::Runtime> InstallEffects for NativeInstallEffects<'_, R> {
     async fn request(
         &self,
         route: &str,
@@ -762,7 +815,7 @@ impl InstallEffects for NativeInstallEffects<'_> {
         controller_request(
             route,
             self.token,
-            UPDATE_ACTION_RESPONSE_MAX_BYTES,
+            install_response_limit(route, &method),
             method,
             body,
         )
@@ -799,12 +852,17 @@ impl InstallEffects for NativeInstallEffects<'_> {
     }
 
     fn schedule_exit(&self) {
-        let handle = self.app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(PREPARED_EXIT_DELAY);
-            crate::lifecycle::prepared_update_exit(&handle);
-        });
+        let _ = spawn_prepared_exit(self.app.clone());
     }
+}
+
+fn spawn_prepared_exit<R: tauri::Runtime>(
+    handle: tauri::AppHandle<R>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        std::thread::sleep(PREPARED_EXIT_DELAY);
+        crate::lifecycle::prepared_update_exit(&handle);
+    })
 }
 
 async fn install_verified(

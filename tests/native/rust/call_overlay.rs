@@ -1,6 +1,96 @@
 use super::*;
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
+#[test]
+fn sdk_window_failures_keep_the_exact_operation_message_and_redact_native_error_contents() {
+    for (failure, expected) in [
+        (WindowFailure::Size, "Call window size is unavailable"),
+        (
+            WindowFailure::Position,
+            "Call window position is unavailable",
+        ),
+        (WindowFailure::Hide, "Call window could not be hidden"),
+        (WindowFailure::Show, "Call window could not be shown"),
+        (
+            WindowFailure::Focusable(false),
+            "Call window could not be shown",
+        ),
+        (
+            WindowFailure::Focusable(true),
+            "Call window controls are unavailable",
+        ),
+        (
+            WindowFailure::Restore,
+            "The main window could not be restored",
+        ),
+        (
+            WindowFailure::MainShow,
+            "The main window could not be shown",
+        ),
+        (
+            WindowFailure::MainFocus,
+            "The main window could not be focused",
+        ),
+        (WindowFailure::Drag, "Call window dragging is unavailable"),
+        (WindowFailure::Create, "Call window could not be created"),
+        (WindowFailure::Action, "The call action was not confirmed"),
+    ] {
+        assert_eq!(
+            redacted_result::<()>(
+                Err(tauri::Error::AssetNotFound(
+                    "owned private native path".into()
+                )),
+                failure
+            )
+            .unwrap_err(),
+            expected
+        );
+    }
+    assert_eq!(
+        redacted_result(Ok(tauri::PhysicalSize::new(800, 600)), WindowFailure::Size).unwrap(),
+        tauri::PhysicalSize::new(800, 600)
+    );
+    assert_eq!(
+        redacted_result::<tauri::PhysicalSize<u32>>(
+            Err(tauri::Error::AssetNotFound(
+                "owned private size error".into()
+            )),
+            WindowFailure::Size
+        )
+        .unwrap_err(),
+        "Call window size is unavailable"
+    );
+}
+
+#[test]
+fn sdk_monitor_conversion_uses_the_work_area_and_scale_instead_of_full_screen_bounds() {
+    let native = tauri_runtime::monitor::Monitor {
+        name: Some("owned synthetic monitor".into()),
+        position: PhysicalPosition::new(-1920, -80),
+        size: tauri::PhysicalSize::new(1920, 1080),
+        work_area: tauri::PhysicalRect {
+            position: PhysicalPosition::new(-1900, -60),
+            size: tauri::PhysicalSize::new(1880, 1020),
+        },
+        scale_factor: 1.5,
+    };
+    let actual = area(native.into());
+    assert_eq!(
+        actual,
+        Area {
+            x: -1900,
+            y: -60,
+            width: 1880,
+            height: 1020,
+            scale: 1.5
+        }
+    );
+    assert_eq!(
+        position(actual, 360, 76, None),
+        PhysicalPosition::new(-404, 860)
+    );
+}
+
 #[derive(Clone)]
 struct FakeWindow(Rc<RefCell<WindowState>>);
 
@@ -730,14 +820,7 @@ fn ipc(
 
 #[test]
 fn sdk_ipc_decodes_real_commands_and_enforces_the_call_window_identity_without_native_windows() {
-    let app = tauri::test::mock_builder()
-        .manage(active_overlay())
-        .invoke_handler(tauri::generate_handler![
-            call_overlay_get,
-            call_overlay_update,
-            call_overlay_action,
-            call_overlay_drag
-        ])
+    let app = crate::application_commands(tauri::test::mock_builder().manage(active_overlay()))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let main = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
@@ -859,10 +942,10 @@ fn sdk_commands_deliver_valid_actions_and_reconcile_updates_without_a_native_tra
     use std::time::{Duration, Instant};
     use tauri::Listener;
 
-    let app = tauri::test::mock_builder()
-        .manage(CallOverlay::default())
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
-        .unwrap();
+    let app =
+        crate::application_commands(tauri::test::mock_builder().manage(CallOverlay::default()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
     let main = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
         .build()
         .unwrap();
@@ -877,16 +960,16 @@ fn sdk_commands_deliver_valid_actions_and_reconcile_updates_without_a_native_tra
             std::thread::yield_now();
         }
     };
-    tauri::async_runtime::block_on(call_overlay_update(
-        app.handle().clone(),
-        main.clone(),
-        Some(call("call-a")),
-    ))
+    ipc(
+        &main,
+        "call_overlay_update",
+        serde_json::json!({"state":call("call-a")}),
+    )
     .unwrap();
     wait_for_sync();
     assert_eq!(
-        call_overlay_get(app.handle().clone(), overlay.clone()).unwrap(),
-        Some(call("call-a"))
+        ipc(&overlay, "call_overlay_get", serde_json::json!({})).unwrap(),
+        serde_json::to_value(call("call-a")).unwrap()
     );
     let actions = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
     let received = actions.clone();
@@ -896,27 +979,20 @@ fn sdk_commands_deliver_valid_actions_and_reconcile_updates_without_a_native_tra
             .unwrap()
             .push(serde_json::from_str(event.payload()).unwrap());
     });
-    tauri::async_runtime::block_on(call_overlay_action(
-        app.handle().clone(),
-        overlay.clone(),
-        "call-a".into(),
-        "hangup".into(),
-        "one".into(),
-        None,
-    ))
+    ipc(
+        &overlay,
+        "call_overlay_action",
+        serde_json::json!({"callId":"call-a","action":"hangup","requestId":"one","muted":null}),
+    )
     .unwrap();
     assert_eq!(actions.lock().unwrap().len(), 1);
     assert_eq!(actions.lock().unwrap()[0]["callId"], "call-a");
-    tauri::async_runtime::block_on(call_overlay_drag(app.handle().clone(), overlay.clone()))
-        .unwrap();
-    tauri::async_runtime::block_on(call_overlay_action(
-        app.handle().clone(),
-        overlay.clone(),
-        "call-a".into(),
-        "hide".into(),
-        "two".into(),
-        None,
-    ))
+    ipc(&overlay, "call_overlay_drag", serde_json::json!({})).unwrap();
+    ipc(
+        &overlay,
+        "call_overlay_action",
+        serde_json::json!({"callId":"call-a","action":"hide","requestId":"two","muted":null}),
+    )
     .unwrap();
     wait_for_sync();
     show_call_window(app.handle());
@@ -986,6 +1062,46 @@ fn poisoned_state_returns_fixed_errors_and_never_dispatches_controls_or_panics_d
             assert!(window_changed(&managed, &host, LABEL, Change::Close));
         }
     }
+}
+
+#[test]
+fn startup_captures_the_supplied_monitor_and_preserves_prior_area_when_unavailable() {
+    let managed = CallOverlay::default();
+    let window = FakeWindow::new(true);
+    let expected = window.0.borrow().area;
+    capture_main_area(&managed, &window);
+    assert_eq!(managed.inner.lock().unwrap().main_area, expected);
+
+    window.0.borrow_mut().area = None;
+    capture_main_area(&managed, &window);
+    assert_eq!(managed.inner.lock().unwrap().main_area, expected);
+
+    std::thread::scope(|scope| {
+        assert!(scope
+            .spawn(|| {
+                let _owner = managed.inner.lock().unwrap();
+                std::panic::resume_unwind(Box::new(()));
+            })
+            .join()
+            .is_err());
+    });
+    window.0.borrow_mut().area = Some(Area {
+        x: -1920,
+        y: 100,
+        width: 1920,
+        height: 1080,
+        scale: 1.5,
+    });
+    capture_main_area(&managed, &window);
+    assert_eq!(
+        managed
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .main_area,
+        expected
+    );
+    assert!(window.0.borrow().operations.is_empty());
 }
 
 #[test]

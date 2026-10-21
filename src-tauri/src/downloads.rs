@@ -67,21 +67,47 @@ fn atomic_save(destination: &Path, bytes: &[u8]) -> Result<(), String> {
         .tempfile_in(parent)
         .map_err(|_| FAILED)?;
     temporary.write_all(bytes).map_err(|_| FAILED)?;
-    temporary.flush().map_err(|_| FAILED)?;
-    temporary.as_file().sync_all().map_err(|_| FAILED)?;
-    temporary.persist(destination).map_err(|_| FAILED)?;
+    crate::atomic_file::publish(
+        temporary,
+        destination,
+        crate::atomic_file::FlushPolicy::BeforeSync,
+    )
+    .map_err(|_| FAILED)?;
     Ok(())
 }
 
 // The main renderer owns authentication and the user's click. Neither remote
 // URLs nor filesystem destinations can be supplied through this command.
 #[tauri::command]
-pub async fn save_attachment(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn save_attachment<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     file_id: String,
     token: String,
     file_name: String,
+) -> Result<bool, String> {
+    save_attachment_using(
+        app,
+        window,
+        file_id,
+        token,
+        file_name,
+        crate::protocol::controller_endpoint(),
+        tauri_plugin_dialog::FileDialogBuilder::blocking_save_file,
+    )
+    .await
+}
+
+async fn save_attachment_using<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
+    file_id: String,
+    token: String,
+    file_name: String,
+    endpoint: std::net::SocketAddr,
+    choose: impl FnOnce(tauri_plugin_dialog::FileDialogBuilder<R>) -> Option<tauri_plugin_dialog::FilePath>
+        + Send
+        + 'static,
 ) -> Result<bool, String> {
     if window.label() != "main"
         || !valid_id(&file_id)
@@ -90,6 +116,33 @@ pub async fn save_attachment(
     {
         return Err("Invalid attachment download".into());
     }
+    let bytes = attachment_at(endpoint, &file_id, &token).await?;
+    if app.get_webview_window("main").is_none() {
+        return Err(FAILED.into());
+    }
+    let name = safe_name(&file_name);
+    // The dialog and atomic filesystem write run outside both the UI thread and
+    // the serialized JSON API transport, so call controls remain responsive.
+    tauri::async_runtime::spawn_blocking(move || {
+        let chosen = choose(app.dialog().file().set_parent(&window).set_file_name(&name));
+        let Some(chosen) = chosen else {
+            return Ok(false);
+        };
+        let destination = chosen.into_path().map_err(|_| FAILED)?;
+        atomic_save(&destination, &bytes)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|_| FAILED.to_string())?
+}
+
+// IPC chooses the fixed Controller address; only isolated native tests inject
+// an exclusively bound loopback listener into the HTTP boundary.
+async fn attachment_at(
+    endpoint: std::net::SocketAddr,
+    file_id: &str,
+    token: &str,
+) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -97,9 +150,10 @@ pub async fn save_attachment(
         .build()
         .map_err(|_| FAILED)?;
     let mut response = client
-        .get(crate::protocol::api_url(&format!(
-            "files/{file_id}?download=1"
-        )))
+        .get(format!(
+            "http://{endpoint}{}/files/{file_id}?download=1",
+            crate::protocol::api_prefix()
+        ))
         .header("X-Dant-Token", token)
         .send()
         .await
@@ -118,28 +172,7 @@ pub async fn save_attachment(
         }
         bytes.extend_from_slice(&chunk);
     }
-    if app.get_webview_window("main").is_none() {
-        return Err(FAILED.into());
-    }
-    let name = safe_name(&file_name);
-    // The dialog and atomic filesystem write run outside both the UI thread and
-    // the serialized JSON API transport, so call controls remain responsive.
-    tauri::async_runtime::spawn_blocking(move || {
-        let chosen = app
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .set_file_name(&name)
-            .blocking_save_file();
-        let Some(chosen) = chosen else {
-            return Ok(false);
-        };
-        let destination = chosen.into_path().map_err(|_| FAILED)?;
-        atomic_save(&destination, &bytes)?;
-        Ok(true)
-    })
-    .await
-    .map_err(|_| FAILED.to_string())?
+    Ok(bytes)
 }
 
 #[cfg(test)]

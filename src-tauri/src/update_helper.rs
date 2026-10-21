@@ -9,6 +9,10 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(8);
+const HELPER_READY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_secs(60);
+const PROCESS_EXIT_POLL_MILLISECONDS: u32 = 100;
 const FAILED: &str =
     "The update handoff could not be prepared. The verified installer remains in the update cache.";
 #[derive(Serialize, Deserialize)]
@@ -26,6 +30,9 @@ struct Job {
 mod process {
     use sha2::Digest;
     use std::ffi::c_void;
+    const PROCESS_IDS_LIMIT: usize = 8192;
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 258;
     #[repr(C)]
     #[derive(Default)]
     struct FileTime {
@@ -117,23 +124,20 @@ mod process {
         true
     }
     pub fn app_running(app: &std::path::Path) -> Result<bool, String> {
-        let mut values = [0u32; 8192];
+        let mut values = [0u32; PROCESS_IDS_LIMIT];
         let mut needed = 0;
-        if unsafe {
+        let result = unsafe {
             EnumProcesses(
                 values.as_mut_ptr(),
                 std::mem::size_of_val(&values) as u32,
                 &mut needed,
             )
-        } == 0
-            || needed as usize >= std::mem::size_of_val(&values)
-        {
-            return Err(super::FAILED.into());
-        }
+        };
+        let count = process_count(result, needed, std::mem::size_of_val(&values))?;
         let expected = crate::runtime_path(app.canonicalize().map_err(|_| super::FAILED)?)
             .to_string_lossy()
             .to_lowercase();
-        for pid in values.into_iter().take(needed as usize / 4) {
+        for pid in values.into_iter().take(count) {
             if let Ok(handle) = Handle::open(pid) {
                 let mut name = [0u16; 32768];
                 let mut length = name.len() as u32;
@@ -152,6 +156,23 @@ mod process {
             }
         }
         Ok(false)
+    }
+    pub(super) fn process_count(
+        result: i32,
+        needed: u32,
+        capacity_bytes: usize,
+    ) -> Result<usize, String> {
+        if result == 0 || needed as usize >= capacity_bytes {
+            return Err(super::FAILED.into());
+        }
+        Ok(needed as usize / std::mem::size_of::<u32>())
+    }
+    pub(super) fn wait_status(status: u32) -> Result<bool, String> {
+        match status {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(super::FAILED.into()),
+        }
     }
     pub struct Handle(*mut c_void);
     impl Drop for Handle {
@@ -191,15 +212,22 @@ mod process {
             Ok(handle)
         }
         pub fn wait(&self, cancelled: impl Fn() -> bool) -> Result<(), String> {
+            self.wait_until(super::PROCESS_EXIT_TIMEOUT, cancelled)
+        }
+        pub(super) fn wait_until(
+            &self,
+            timeout: super::Duration,
+            cancelled: impl Fn() -> bool,
+        ) -> Result<(), String> {
             let started = std::time::Instant::now();
-            while started.elapsed() < std::time::Duration::from_secs(60) {
+            while started.elapsed() < timeout {
                 if cancelled() {
                     return Err(super::FAILED.into());
                 }
-                match unsafe { WaitForSingleObject(self.0, 100) } {
-                    0 => return Ok(()),
-                    258 => {}
-                    _ => return Err(super::FAILED.into()),
+                if wait_status(unsafe {
+                    WaitForSingleObject(self.0, super::PROCESS_EXIT_POLL_MILLISECONDS)
+                })? {
+                    return Ok(());
                 }
             }
             Err(super::FAILED.into())
@@ -228,8 +256,11 @@ fn default_install_location(app: &Path) -> bool {
     let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
         return false;
     };
-    if !default_install_path(app, &local)
-        || updates::directory(&local, false).is_err()
+    default_install_location_at(app, &local)
+}
+fn default_install_location_at(app: &Path, local: &Path) -> bool {
+    if !default_install_path(app, local)
+        || updates::directory(local, false).is_err()
         || updates::directory(app.parent().unwrap_or(Path::new("")), false).is_err()
         || !fs::symlink_metadata(app).is_ok_and(|meta| meta.is_file() && !updates::linked(&meta))
     {
@@ -241,12 +272,17 @@ fn default_install_location(app: &Path) -> bool {
     }
 }
 fn installed_version(app: &Path, expected: &str) -> bool {
-    default_install_location(app)
-        && updates::json_file(
-            &app.parent().unwrap().join("backend/package.json"),
-            128 * 1024,
-        )
-        .is_ok_and(|value| value.get("version").and_then(|v| v.as_str()) == Some(expected))
+    default_install_location(app) && manifest_version(app, expected)
+}
+fn installed_version_at(app: &Path, expected: &str, local: &Path) -> bool {
+    default_install_location_at(app, local) && manifest_version(app, expected)
+}
+fn manifest_version(app: &Path, expected: &str) -> bool {
+    updates::json_file(
+        &app.parent().unwrap().join("backend/package.json"),
+        128 * 1024,
+    )
+    .is_ok_and(|value| value.get("version").and_then(|v| v.as_str()) == Some(expected))
 }
 pub fn supported_layout() -> bool {
     tauri::utils::platform::bundle_type() == Some(tauri::utils::config::BundleType::Nsis)
@@ -295,21 +331,16 @@ fn phases(
     restart()
 }
 #[cfg(windows)]
-fn failure_notice() {
-    #[link(name = "user32")]
-    extern "system" {
-        fn MessageBoxW(
-            window: *mut std::ffi::c_void,
-            text: *const u16,
-            title: *const u16,
-            kind: u32,
-        ) -> i32;
-    }
-    let text:Vec<u16>="The dant update was not confirmed. Work and VM suspension records were preserved. Open dant to restore its VM connection, or install the retained release package again.\n\ndant 更新未获确认，已保留任务和虚拟机挂起记录。请打开 dant 恢复虚拟机连接，或重新运行保留的安装包。".encode_utf16().chain(Some(0)).collect();
-    let title: Vec<u16> = "dant update / 更新".encode_utf16().chain(Some(0)).collect();
-    unsafe {
-        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10);
-    }
+fn failure_notice(sink: &dyn crate::native_dialog::MessageSink) {
+    crate::native_dialog::error(
+        sink,
+        "dant update / 更新",
+        concat!(
+            "The dant update was not confirmed. Work and VM suspension records were preserved. ",
+            "Open dant to restore its VM connection, or install the retained release package again.\n\n",
+            "dant 更新未获确认，已保留任务和虚拟机挂起记录。请打开 dant 恢复虚拟机连接，或重新运行保留的安装包。",
+        ),
+    );
 }
 pub fn startup_fenced() -> bool {
     #[cfg(windows)]
@@ -321,29 +352,91 @@ pub fn startup_fenced() -> bool {
 }
 
 #[cfg(windows)]
+trait PreparedChild {
+    fn exited(&mut self) -> Result<bool, String>;
+}
+#[cfg(windows)]
+impl PreparedChild for std::process::Child {
+    fn exited(&mut self) -> Result<bool, String> {
+        self.try_wait()
+            .map(|status| status.is_some())
+            .map_err(|_| FAILED.into())
+    }
+}
+#[cfg(windows)]
+trait PreparationHost {
+    type Child: PreparedChild;
+    fn installed_bundle(&self) -> bool;
+    fn current_exe(&self) -> Result<PathBuf, String>;
+    fn local_data(&self) -> Result<PathBuf, String>;
+    fn parent_id(&self) -> u32;
+    fn created(&self, pid: u32) -> Result<u64, String>;
+    fn spawn(&self, command: &mut Command) -> Result<Self::Child, String>;
+    fn now(&self) -> Instant;
+    fn wait(&self, duration: Duration);
+}
+#[cfg(windows)]
+impl PreparationHost for NativeHelper {
+    type Child = std::process::Child;
+    fn installed_bundle(&self) -> bool {
+        tauri::utils::platform::bundle_type() == Some(tauri::utils::config::BundleType::Nsis)
+    }
+    fn current_exe(&self) -> Result<PathBuf, String> {
+        HelperHost::current_exe(self)
+    }
+    fn local_data(&self) -> Result<PathBuf, String> {
+        HelperHost::local_data(self)
+    }
+    fn parent_id(&self) -> u32 {
+        std::process::id()
+    }
+    fn created(&self, pid: u32) -> Result<u64, String> {
+        process::Handle::open(pid)?.created()
+    }
+    fn spawn(&self, command: &mut Command) -> Result<Self::Child, String> {
+        command.spawn().map_err(|_| FAILED.into())
+    }
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn wait(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+#[cfg(windows)]
 pub fn prepare(
     root: &Path,
     installer: &Path,
     asset: &Asset,
     controller: u32,
 ) -> Result<PathBuf, String> {
-    if tauri::utils::platform::bundle_type() != Some(tauri::utils::config::BundleType::Nsis) {
+    prepare_with(&NativeHelper, root, installer, asset, controller)
+}
+#[cfg(windows)]
+fn prepare_with(
+    host: &impl PreparationHost,
+    root: &Path,
+    installer: &Path,
+    asset: &Asset,
+    controller: u32,
+) -> Result<PathBuf, String> {
+    if !host.installed_bundle() {
         return Err("Automatic installation requires an installed NSIS version of dant.".into());
     }
     updates::verify_file(installer, asset)?;
-    let app = crate::runtime_path(std::env::current_exe().map_err(|_| FAILED)?);
-    if !installed_version(&app, env!("CARGO_PKG_VERSION")) {
+    let app = crate::runtime_path(host.current_exe()?);
+    if !installed_version_at(&app, env!("CARGO_PKG_VERSION"), &host.local_data()?) {
         return Err(FAILED.into());
     }
-    let parent = std::process::id();
+    let parent = host.parent_id();
     let job = Job {
         asset: asset.clone(),
         app: app.clone(),
         previous_version: env!("CARGO_PKG_VERSION").into(),
         parent,
-        parent_created: process::Handle::open(parent)?.created()?,
+        parent_created: host.created(parent)?,
         controller,
-        controller_created: process::Handle::open(controller)?.created()?,
+        controller_created: host.created(controller)?,
     };
     let folder = tempfile::Builder::new()
         .prefix("handoff-")
@@ -362,23 +455,53 @@ pub fn prepare(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(crate::runtime::CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|_| FAILED)?;
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(8) {
-        if updates::json_file(&folder.join("ready.json"), 1024).is_ok_and(|value| {
-            value.get("parent").and_then(|v| v.as_u64()) == Some(parent as u64)
-                && value.get("sha256").and_then(|v| v.as_str()) == Some(asset.sha256.as_str())
-        }) {
-            return Ok(folder);
+    let mut child = match host.spawn(&mut command) {
+        Ok(child) => child,
+        Err(_) => {
+            let _ = updates::write_json(&folder.join("cancel.json"), &true);
+            return Err(FAILED.into());
         }
-        if child.try_wait().map_err(|_| FAILED)?.is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
+    };
+    let ready = wait_for_helper_ready(
+        &folder,
+        parent,
+        &asset.sha256,
+        &mut child,
+        &mut || host.now(),
+        &mut |duration| host.wait(duration),
+    );
+    if matches!(ready, Ok(true)) {
+        return Ok(folder);
     }
     let _ = updates::write_json(&folder.join("cancel.json"), &true);
     Err(FAILED.into())
 }
+
+#[cfg(windows)]
+fn wait_for_helper_ready(
+    folder: &Path,
+    parent: u32,
+    sha256: &str,
+    child: &mut dyn PreparedChild,
+    now: &mut dyn FnMut() -> Instant,
+    wait: &mut dyn FnMut(Duration),
+) -> Result<bool, String> {
+    let started = now();
+    while now().duration_since(started) < HELPER_READY_TIMEOUT {
+        if updates::json_file(&folder.join("ready.json"), 1024).is_ok_and(|value| {
+            value.get("parent").and_then(|v| v.as_u64()) == Some(parent as u64)
+                && value.get("sha256").and_then(|v| v.as_str()) == Some(sha256)
+        }) {
+            return Ok(true);
+        }
+        if child.exited()? {
+            break;
+        }
+        wait(HELPER_READY_POLL_INTERVAL);
+    }
+    Ok(false)
+}
+
 #[cfg(not(windows))]
 pub fn prepare(_: &Path, _: &Path, _: &Asset, _: u32) -> Result<PathBuf, String> {
     Err(FAILED.into())
@@ -401,20 +524,86 @@ fn installer_command(installer: &Path, directory: &Path) -> Command {
     command
 }
 #[cfg(windows)]
+trait HelperProcess {
+    fn wait(&self, cancelled: &dyn Fn() -> bool) -> Result<(), String>;
+}
+#[cfg(windows)]
+impl HelperProcess for process::Handle {
+    fn wait(&self, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+        self.wait(cancelled)
+    }
+}
+#[cfg(windows)]
+trait HelperHost {
+    type Process: HelperProcess;
+    type Fence;
+    fn current_exe(&self) -> Result<PathBuf, String>;
+    fn local_data(&self) -> Result<PathBuf, String>;
+    fn process(&self, pid: u32, created: u64) -> Result<Self::Process, String>;
+    fn fence(&self, app: &Path) -> Result<Self::Fence, String>;
+    fn app_running(&self, app: &Path) -> Result<bool, String>;
+    fn install(&self, command: &mut Command) -> Result<bool, String>;
+    fn restart(&self, command: &mut Command) -> Result<(), String>;
+    fn failure_notice(&self);
+}
+#[cfg(windows)]
+struct NativeHelper;
+#[cfg(windows)]
+impl HelperHost for NativeHelper {
+    type Process = process::Handle;
+    type Fence = process::Fence;
+    fn current_exe(&self) -> Result<PathBuf, String> {
+        std::env::current_exe().map_err(|_| FAILED.into())
+    }
+    fn local_data(&self) -> Result<PathBuf, String> {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| FAILED.into())
+    }
+    fn process(&self, pid: u32, created: u64) -> Result<Self::Process, String> {
+        process::Handle::exact(pid, created)
+    }
+    fn fence(&self, app: &Path) -> Result<Self::Fence, String> {
+        process::Fence::acquire(app)
+    }
+    fn app_running(&self, app: &Path) -> Result<bool, String> {
+        process::app_running(app)
+    }
+    fn install(&self, command: &mut Command) -> Result<bool, String> {
+        command
+            .status()
+            .map(|status| status.success())
+            .map_err(|_| FAILED.into())
+    }
+    fn restart(&self, command: &mut Command) -> Result<(), String> {
+        command.spawn().map(|_| ()).map_err(|_| FAILED.into())
+    }
+    fn failure_notice(&self) {
+        failure_notice(&crate::native_dialog::NativeDialog);
+    }
+}
+#[cfg(windows)]
 fn run() -> Result<(), String> {
-    let helper = crate::runtime_path(std::env::current_exe().map_err(|_| FAILED)?);
+    run_with(&NativeHelper)
+}
+
+#[cfg(windows)]
+fn run_with(host: &impl HelperHost) -> Result<(), String> {
+    let helper = crate::runtime_path(host.current_exe()?);
     let folder = helper.parent().ok_or(FAILED)?;
-    updates::directory(folder, false)?;
-    let root = folder.parent().ok_or(FAILED)?;
-    let expected = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or(FAILED)?)
-        .join("com.dant.desktop/updates");
-    if root.canonicalize().map_err(|_| FAILED)? != expected.canonicalize().map_err(|_| FAILED)?
-        || helper.file_name().and_then(|v| v.to_str()) != Some("dant-update-helper.exe")
+    if helper.file_name().and_then(|v| v.to_str()) != Some("dant-update-helper.exe")
         || !folder
             .file_name()
             .and_then(|v| v.to_str())
             .is_some_and(|v| v.starts_with("handoff-") && v.len() < 80)
     {
+        return Err(FAILED.into());
+    }
+    updates::directory(folder, false)?;
+    let root = folder.parent().ok_or(FAILED)?;
+    let local = host.local_data()?;
+    let expected = local.join("com.dant.desktop/updates");
+    if root.canonicalize().map_err(|_| FAILED)? != expected.canonicalize().map_err(|_| FAILED)? {
         return Err(FAILED.into());
     }
     let job: Job = serde_json::from_value(updates::json_file(&folder.join("job.json"), 16384)?)
@@ -424,13 +613,13 @@ fn run() -> Result<(), String> {
         || job.controller == 0
         || job.parent == job.controller
         || !job.app.is_absolute()
-        || !installed_version(&job.app, &job.previous_version)
+        || !installed_version_at(&job.app, &job.previous_version, &local)
     {
         return Err(FAILED.into());
     }
-    let mut fence = Some(process::Fence::acquire(&job.app)?);
-    let parent = process::Handle::exact(job.parent, job.parent_created)?;
-    let controller = process::Handle::exact(job.controller, job.controller_created)?;
+    let mut fence = Some(host.fence(&job.app)?);
+    let parent = host.process(job.parent, job.parent_created)?;
+    let controller = host.process(job.controller, job.controller_created)?;
     let installer = root.join(&job.asset.sha256).join(&job.asset.name);
     updates::verify_file(&installer, &job.asset)?;
     updates::write_json(
@@ -439,23 +628,23 @@ fn run() -> Result<(), String> {
     )?;
     let originals_exited = std::cell::Cell::new(false);
     let result = phases(
-        || parent.wait(|| folder.join("cancel.json").exists()),
+        || parent.wait(&|| folder.join("cancel.json").exists()),
         || {
-            controller.wait(|| folder.join("cancel.json").exists())?;
+            controller.wait(&|| folder.join("cancel.json").exists())?;
             originals_exited.set(true);
             Ok(())
         },
         || {
-            if !installed_version(&job.app, &job.previous_version)
+            if !installed_version_at(&job.app, &job.previous_version, &local)
                 || !authorized(folder, &job.asset.sha256)
-                || process::app_running(&job.app)?
+                || host.app_running(&job.app)?
             {
                 return Err(FAILED.into());
             }
             updates::verify_file(&installer, &job.asset)
         },
         || {
-            if !default_install_location(&job.app) {
+            if !default_install_location_at(&job.app, &local) {
                 return Err(FAILED.into());
             }
             let directory = crate::runtime_path(
@@ -466,13 +655,10 @@ fn run() -> Result<(), String> {
                     .map_err(|_| FAILED)?,
             );
             status(folder, "installing", None);
-            Ok(installer_command(&installer, &directory)
-                .status()
-                .map_err(|_| FAILED)?
-                .success())
+            host.install(&mut installer_command(&installer, &directory))
         },
         || {
-            if !installed_version(&job.app, &job.asset.version) {
+            if !installed_version_at(&job.app, &job.asset.version, &local) {
                 return Err(FAILED.into());
             }
             drop(fence.take());
@@ -483,8 +669,7 @@ fn run() -> Result<(), String> {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .creation_flags(crate::runtime::CREATE_NO_WINDOW);
-            command.spawn().map_err(|_| FAILED)?;
-            Ok(())
+            host.restart(&mut command)
         },
     );
     match result {
@@ -500,14 +685,22 @@ fn run() -> Result<(), String> {
             );
             drop(fence.take());
             if originals_exited.get() {
-                failure_notice();
+                host.failure_notice();
             }
             Err(error)
         }
     }
 }
 pub fn run_helper_mode() -> bool {
-    let args: Vec<_> = std::env::args_os().collect();
+    helper_mode(std::env::args_os(), || {
+        #[cfg(windows)]
+        {
+            let _ = run();
+        }
+    })
+}
+fn helper_mode(args: impl IntoIterator<Item = std::ffi::OsString>, execute: impl FnOnce()) -> bool {
+    let args: Vec<_> = args.into_iter().collect();
     if !args
         .iter()
         .skip(1)
@@ -515,15 +708,12 @@ pub fn run_helper_mode() -> bool {
     {
         return false;
     }
-    if args.len() != 2 {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        let _ = run();
+    if args.len() == 2 {
+        execute();
     }
     true
 }
+
 #[cfg(test)]
 #[path = "../../tests/native/rust/update_helper.rs"]
 mod tests;

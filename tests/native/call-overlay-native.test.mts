@@ -543,9 +543,21 @@ test('child asset capabilities and CSP exclude general APIs, external pages, spe
   assert.match(rust, /always_on_top\(true\)\s*\.skip_taskbar\(true\)/);
   assert.match(rust, /visible\(false\)\s*\.focused\(false\)/);
   assert.match(rust, /work_area\(\)/);
-  const overlaySetup = main.indexOf('call_overlay::setup(app)'),
-    existingController = main.indexOf('transport::existing_controller(&source)');
+  const setup = main.slice(main.indexOf('fn application_setup'), main.indexOf('fn native_setup')),
+    controller = main.slice(
+      main.indexOf('fn configure_controller'),
+      main.indexOf('struct StartupDirectories'),
+    ),
+    overlaySetup = setup.indexOf('call_overlay::setup(app)'),
+    configureController = setup.indexOf('configure_controller('),
+    existingController = controller.indexOf('(effects.existing)(context.source)?'),
+    startController = controller.indexOf('(effects.start)(');
   assert.ok(overlaySetup >= 0);
+  assert.ok(configureController > overlaySetup);
   assert.ok(existingController >= 0);
-  assert.ok(overlaySetup < existingController);
+  assert.ok(startController > existingController);
+  assert.match(
+    main,
+    /existing:\s*\|source: &str\| transport::ControllerLink::default\(\)\.existing\(source\)/,
+  );
 });

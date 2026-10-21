@@ -1,4 +1,262 @@
 use super::*;
+
+const NO_PROGRESS: fn(u64) = |_| {};
+
+#[cfg(windows)]
+#[test]
+fn native_downloader_configuration_is_checked_in_a_private_process_before_any_transfer() {
+    use std::os::windows::process::CommandExt;
+    let root = tempfile::Builder::new()
+        .prefix("dant-downloader-environment-")
+        .tempdir()
+        .unwrap();
+    struct OwnedChild(std::process::Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "updates::tests::isolated_downloader_environment_child",
+            "--nocapture",
+        ])
+        .env("DANT_DOWNLOADER_ENVIRONMENT_FIXTURE", root.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(crate::runtime::CREATE_NO_WINDOW);
+    let mut child = OwnedChild(command.spawn().unwrap());
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert!(status.success(), "The private downloader fixture failed");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        fs::read(root.path().join("verified")).unwrap(),
+        b"no transfer"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn isolated_downloader_environment_child() {
+    let Some(root) = std::env::var_os("DANT_DOWNLOADER_ENVIRONMENT_FIXTURE").map(PathBuf::from)
+    else {
+        return;
+    };
+    assert!(root.is_absolute());
+    assert!(root
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("dant-downloader-environment-"));
+    assert!(root
+        .canonicalize()
+        .unwrap()
+        .starts_with(std::env::temp_dir().canonicalize().unwrap()));
+    let system_root = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+    assert!(system_root.is_absolute());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut selected = asset();
+    selected.url = format!(
+        "https://{}/must-not-contact",
+        listener.local_addr().unwrap()
+    );
+    let app = tauri::test::mock_app();
+    let effects = NativeDownloadEffects {
+        app: app.handle(),
+        token: "invalid",
+    };
+    for configured in [true, false] {
+        if configured {
+            std::env::set_var("SystemRoot", &root);
+        } else {
+            std::env::remove_var("SystemRoot");
+        }
+        let error =
+            tauri::async_runtime::block_on(effects.download(&root.join("cache"), &selected))
+                .unwrap_err();
+        assert_eq!(
+            error,
+            if configured {
+                "The Windows HTTPS downloader is unavailable."
+            } else {
+                FAILED
+            }
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(!root.join("System32/curl.exe").exists());
+        assert!(!package(&root.join("cache"), &selected).unwrap().exists());
+    }
+
+    let relative_system_root = Path::new("owned-relative-system-root");
+    assert!(!relative_system_root.is_absolute());
+    std::env::set_var("SystemRoot", relative_system_root);
+    let speech_app = crate::application_commands(
+        tauri::test::mock_builder().manage(crate::speech::SpeechProcess::default()),
+    )
+    .build(tauri::test::mock_context(tauri::test::noop_assets()))
+    .unwrap();
+    let speech_window = tauri::WebviewWindowBuilder::new(
+        &speech_app,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .build()
+    .unwrap();
+    assert_eq!(
+        crate::command_tests::invoke(
+            &speech_window,
+            "speech_start",
+            serde_json::json!({"mode":"capabilities","language":"en","text":null}),
+        )
+        .unwrap_err(),
+        "speech-unavailable"
+    );
+    assert!(speech_app
+        .state::<crate::speech::SpeechProcess>()
+        .0
+        .lock()
+        .unwrap()
+        .is_none());
+
+    let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+    assert!(executable
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("dant-"));
+    assert_eq!(executable.parent().unwrap().file_name().unwrap(), "deps");
+    assert!(fs::symlink_metadata(&executable).unwrap().is_file());
+    let fake_downloader = root.join("System32/curl.exe");
+    fs::create_dir(fake_downloader.parent().unwrap()).unwrap();
+    let copied_bytes = fs::copy(&executable, &fake_downloader).unwrap();
+    assert_eq!(copied_bytes, fs::metadata(&executable).unwrap().len());
+    fn digest(path: &Path) -> String {
+        let mut input = fs::File::open(path).unwrap();
+        let mut hash = Sha256::new();
+        let mut buffer = [0; 8192];
+        loop {
+            let count = input.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            hash.update(&buffer[..count]);
+        }
+        format!("{:x}", hash.finalize())
+    }
+    assert_eq!(digest(&executable), digest(&fake_downloader));
+    std::env::set_var("SystemRoot", &root);
+    let error = tauri::async_runtime::block_on(effects.download(&root.join("cache"), &selected))
+        .unwrap_err();
+    assert_eq!(error, FAILED);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(!package(&root.join("cache"), &selected).unwrap().exists());
+
+    let script = "[Console]::Out.Write('verified installer'); exit 7";
+    let mut rejected =
+        Command::new(system_root.join("System32/WindowsPowerShell/v1.0/powershell.exe"));
+    rejected
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
+        .env("SystemRoot", &system_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        rejected.creation_flags(crate::runtime::CREATE_NO_WINDOW);
+    }
+    let selected = asset();
+    let previous = package(&root.join("rejected"), &selected).unwrap();
+    fs::write(&previous, b"preserved cached bytes").unwrap();
+    let result = ChildDownloadFixture::new(DownloaderPlan::Run(Ok(rejected)))
+        .run(&root.join("rejected"), &selected);
+    assert_eq!(result.0.unwrap_err(), FAILED);
+    assert_eq!(result.1.first(), Some(&0));
+    assert_eq!(fs::read(&previous).unwrap(), b"preserved cached bytes");
+    assert_eq!(fs::read_dir(previous.parent().unwrap()).unwrap().count(), 1);
+    let guarded = tauri::test::mock_app();
+    assert!(guarded
+        .try_state::<crate::lifecycle::DesktopExit>()
+        .is_none());
+    // No DesktopExit owner means the real delay adapter can only return from
+    // prepared_update_exit's missing-state guard. This is not an SDK exit test.
+    spawn_prepared_exit(guarded.handle().clone())
+        .join()
+        .unwrap();
+    assert!(guarded
+        .try_state::<crate::lifecycle::DesktopExit>()
+        .is_none());
+    fs::write(root.join("verified"), b"no transfer").unwrap();
+}
+
+#[test]
+fn metadata_and_installer_reads_refuse_changes_after_their_snapshots_and_redact_io_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let metadata = root.path().join("metadata.json");
+    for failure in ["success", "growth", "open", "read", "malformed"] {
+        fs::write(&metadata, b"{}").unwrap();
+        let result = json_file_using(&metadata, 2, |path| match failure {
+            "success" => fs::File::open(path),
+            "growth" => {
+                fs::write(path, b"{} ").unwrap();
+                fs::File::open(path)
+            }
+            "malformed" => {
+                fs::write(path, b"x").unwrap();
+                fs::File::open(path)
+            }
+            "read" => fs::OpenOptions::new().write(true).open(path),
+            _ => Err(std::io::Error::other("private owned path failure")),
+        });
+        if failure == "success" {
+            assert_eq!(result.unwrap(), serde_json::json!({}));
+        } else {
+            assert_eq!(result.unwrap_err(), FAILED);
+        }
+    }
+
+    let selected = asset();
+    let installer = root.path().join(&selected.name);
+    for failure in ["growth", "shrink", "open", "read"] {
+        fs::write(&installer, b"verified installer").unwrap();
+        let result = verify_file_using(&installer, &selected, |path| match failure {
+            "growth" => {
+                fs::write(path, b"verified installer plus extra bytes").unwrap();
+                fs::File::open(path)
+            }
+            "shrink" => {
+                fs::write(path, b"").unwrap();
+                fs::File::open(path)
+            }
+            "read" => fs::OpenOptions::new().write(true).open(path),
+            _ => Err(std::io::Error::other("private owned installer failure")),
+        });
+        assert_eq!(result.unwrap_err(), FAILED);
+    }
+}
 use std::{
     io::Cursor,
     net::{SocketAddr, TcpListener},
@@ -11,6 +269,143 @@ use std::{
 fn asset() -> Asset {
     let data = b"verified installer";
     Asset{version:"0.5.0-beta.2".into(),channel:"beta".into(),url:"https://github.com/Stephen-Sim/dant/releases/download/v0.5.0-beta.2/dant_0.5.0-beta.2_windows_x64_setup.exe".into(),sha256:format!("{:x}",Sha256::digest(data)),size:data.len() as u64,name:"dant_0.5.0-beta.2_windows_x64_setup.exe".into()}
+}
+
+#[test]
+fn native_effect_adapters_reject_invalid_auth_before_http_and_reuse_verified_local_payloads() {
+    let app = tauri::test::mock_app();
+    let root = tempfile::tempdir().unwrap();
+    let selected = asset();
+    let target = package(root.path(), &selected).unwrap();
+    fs::write(&target, b"verified installer").unwrap();
+    let download = NativeDownloadEffects {
+        app: app.handle(),
+        token: "invalid",
+    };
+    assert!(tauri::async_runtime::block_on(download.metadata("beta")).is_err());
+    tauri::async_runtime::block_on(download.download(root.path(), &selected)).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"verified installer");
+    let install = NativeInstallEffects {
+        app: app.handle(),
+        token: "invalid",
+    };
+    assert!(tauri::async_runtime::block_on(install.request(
+        "desktop/exit",
+        reqwest::Method::POST,
+        Some("{}")
+    ))
+    .is_err());
+    assert!(!install.owns_controller());
+    assert!(install.now_ms() > 0 && install.now_ms() < u64::MAX);
+    assert!(
+        tauri::async_runtime::block_on(install.prepare(
+            root.path(),
+            &target,
+            &selected,
+            std::process::id()
+        ))
+        .is_err(),
+        "A test process has no installed NSIS layout and must never launch an installer"
+    );
+    app.manage(crate::Backend::external());
+    assert!(!install.owns_controller());
+}
+
+#[test]
+fn controller_ownership_tracks_the_owned_synthetic_child_and_never_an_external_service() {
+    let app = tauri::test::mock_app();
+    app.manage(crate::Backend::external());
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "backend::tests::synthetic_backend_child",
+            "--nocapture",
+        ])
+        .env("DANT_SYNTHETIC_BACKEND_FIXTURE", "blocked")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(crate::runtime::CREATE_NO_WINDOW);
+    *app.state::<crate::Backend>().0.lock().unwrap() = Some(command.spawn().unwrap());
+    assert!(owns_controller(app.handle()));
+    assert_eq!(
+        owned_controller_id(app.handle()).unwrap(),
+        app.state::<crate::Backend>()
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .id()
+    );
+    app.state::<crate::Backend>().stop();
+    assert!(!owns_controller(app.handle()));
+    assert_eq!(owned_controller_id(app.handle()).unwrap_err(), BLOCKED);
+    assert_eq!(
+        owned_controller_id(tauri::test::mock_app().handle()).unwrap_err(),
+        BLOCKED
+    );
+}
+
+#[test]
+fn an_already_exited_owned_controller_and_a_poisoned_owner_never_authorize_installation() {
+    let app = tauri::test::mock_app();
+    app.manage(crate::Backend::external());
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .arg("--list")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(crate::runtime::CREATE_NO_WINDOW);
+    let mut child = command.spawn().unwrap();
+    assert!(child.wait().unwrap().success());
+    *app.state::<crate::Backend>().0.lock().unwrap() = Some(child);
+    assert_eq!(owned_controller_id(app.handle()).unwrap_err(), BLOCKED);
+    assert!(!owns_controller(app.handle()));
+    app.state::<crate::Backend>().stop();
+    std::thread::scope(|scope| {
+        let owner = app.state::<crate::Backend>();
+        assert!(scope
+            .spawn(move || {
+                let _guard = owner.0.lock().unwrap();
+                panic!("isolated owner failure");
+            })
+            .join()
+            .is_err());
+    });
+    assert!(!owns_controller(app.handle()));
+    assert_eq!(owned_controller_id(app.handle()).unwrap_err(), BLOCKED);
+}
+
+#[test]
+fn native_progress_publishes_only_captured_asset_identity_and_bounded_transfer_counts() {
+    use tauri::Listener;
+    let app = tauri::test::mock_app();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let listener = Arc::clone(&observed);
+    app.listen_any("dant-update-progress", move |event| {
+        listener
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+    });
+    let selected = asset();
+    let host = NativeDownloadEffects {
+        app: app.handle(),
+        token: "unused",
+    };
+    host.progress(&selected, 7, "downloading");
+    let observed = observed.lock().unwrap();
+    assert_eq!(
+        *observed,
+        [
+            serde_json::json!({"version":selected.version,"channel":selected.channel,"sha256":selected.sha256,"received":7,"total":selected.size,"status":"downloading"})
+        ]
+    );
 }
 #[test]
 fn official_asset_and_version_validation_rejects_redirect_injection_and_downgrades() {
@@ -63,7 +458,7 @@ fn streamed_installer_requires_exact_size_and_digest_before_a_payload_can_be_com
     ] {
         let mut input = std::io::Cursor::new(bytes);
         let mut output = Vec::new();
-        let result = stream_payload(&mut input, &mut output, &a, |_| {});
+        let result = stream_payload(&mut input, &mut output, &a, NO_PROGRESS);
         assert_eq!(result.is_ok(), bytes == b"verified installer");
         assert!(output.len() <= a.size as usize);
     }
@@ -216,35 +611,59 @@ fn cache_json_and_directory_boundaries_preserve_foreign_files_and_handle_seriali
 
 #[test]
 fn payload_io_failures_never_report_success_or_write_past_the_expected_size() {
-    struct Refused;
-    impl Read for Refused {
-        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("synthetic read refusal"))
+    struct FaultingStream {
+        bytes: Cursor<Vec<u8>>,
+        read_failed: bool,
+        write_failed: bool,
+    }
+    impl Read for FaultingStream {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.read_failed {
+                Err(std::io::Error::other("synthetic read refusal"))
+            } else {
+                self.bytes.read(buffer)
+            }
         }
     }
-    impl Write for Refused {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("synthetic write refusal"))
+    impl Write for FaultingStream {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.write_failed {
+                Err(std::io::Error::other("synthetic write refusal"))
+            } else {
+                self.bytes.write(bytes)
+            }
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
-    assert_eq!(
-        stream_payload(&mut Refused, &mut Vec::new(), &asset(), |_| panic!(
-            "failed read cannot report progress"
-        )),
-        Err(FAILED.into())
-    );
-    assert_eq!(
-        stream_payload(
-            &mut Cursor::new(b"verified installer"),
-            &mut Refused,
-            &asset(),
-            |_| {}
-        ),
-        Err(FAILED.into())
-    );
+    for failure in ["none", "read", "write"] {
+        let mut input = FaultingStream {
+            bytes: Cursor::new(b"verified installer".to_vec()),
+            read_failed: failure == "read",
+            write_failed: false,
+        };
+        let mut output = FaultingStream {
+            bytes: Cursor::new(Vec::new()),
+            read_failed: false,
+            write_failed: failure == "write",
+        };
+        let mut progress = Vec::new();
+        let result = stream_payload(&mut input, &mut output, &asset(), |count| {
+            progress.push(count)
+        });
+        if failure == "none" {
+            result.unwrap();
+            assert_eq!(output.bytes.into_inner(), b"verified installer");
+        } else {
+            assert_eq!(result, Err(FAILED.into()));
+            assert!(
+                progress.is_empty(),
+                "A refused read or write cannot report progress"
+            );
+            assert!(output.bytes.into_inner().is_empty());
+        }
+    }
     struct Delayed(Cursor<Vec<u8>>);
     impl Read for Delayed {
         fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
@@ -386,6 +805,25 @@ fn update_controller_http_has_exact_token_json_and_byte_limits_without_redirects
     assert!(wire.contains(&format!("x-dant-token: {}\r\n", "a".repeat(64))));
     assert!(wire.ends_with("{}"));
     drop(requests);
+    let ordinary = ControllerFixture::new(http("200 OK", b"{}"));
+    assert_eq!(
+        tauri::async_runtime::block_on(controller_request_at(
+            ordinary.address,
+            "state",
+            &"a".repeat(64),
+            2,
+            reqwest::Method::GET,
+            None,
+        ))
+        .unwrap(),
+        serde_json::json!({})
+    );
+    let ordinary_requests = ordinary.requests.lock().unwrap();
+    assert_eq!(ordinary_requests.len(), 1);
+    assert!(
+        String::from_utf8_lossy(&ordinary_requests[0]).starts_with("GET /api/state HTTP/1.1\r\n")
+    );
+    drop(ordinary_requests);
     for raw in [
         http("500 Failed", b"{}"),
         http("302 Found", b"{}"),
@@ -463,19 +901,60 @@ fn synthetic_download_asset() -> Asset {
     selected
 }
 
+enum DownloaderPlan {
+    Run(Result<Command, String>),
+    Forbidden(&'static str),
+}
+
+struct ChildDownloadFixture {
+    plan: DownloaderPlan,
+    progress: Vec<u64>,
+    forbid_progress: bool,
+}
+
+impl ChildDownloadFixture {
+    fn new(plan: DownloaderPlan) -> Self {
+        Self {
+            plan,
+            progress: Vec::new(),
+            forbid_progress: false,
+        }
+    }
+
+    fn run(self, root: &Path, selected: &Asset) -> (Result<(), String>, Vec<u64>) {
+        let Self {
+            plan,
+            mut progress,
+            forbid_progress,
+        } = self;
+        let result = download_using(
+            root,
+            selected,
+            move || match plan {
+                DownloaderPlan::Run(command) => command,
+                DownloaderPlan::Forbidden(reason) => panic!("{reason}"),
+            },
+            |bytes| {
+                assert!(
+                    !forbid_progress,
+                    "Cache reuse must not report a new transfer"
+                );
+                progress.push(bytes);
+            },
+        );
+        (result, progress)
+    }
+}
+
 #[test]
 fn download_commits_only_a_verified_owned_child_payload_and_never_replays_a_cached_or_failed_action(
 ) {
     let root = tempfile::tempdir().unwrap();
     let selected = synthetic_download_asset();
-    let mut progress = Vec::new();
-    download_using(
-        root.path(),
-        &selected,
-        || Ok(synthetic_installer_command()),
-        |bytes| progress.push(bytes),
-    )
-    .unwrap();
+    let (result, progress) =
+        ChildDownloadFixture::new(DownloaderPlan::Run(Ok(synthetic_installer_command())))
+            .run(root.path(), &selected);
+    result.unwrap();
     let destination = package(root.path(), &selected).unwrap();
     verify_file(&destination, &selected).unwrap();
     assert_eq!(progress.first(), Some(&0));
@@ -485,55 +964,54 @@ fn download_commits_only_a_verified_owned_child_payload_and_never_replays_a_cach
         json_file(&destination.parent().unwrap().join("asset.json"), 65536).unwrap()["sha256"],
         selected.sha256
     );
-    download_using(
-        root.path(),
-        &selected,
-        || panic!("verified payload must not spawn another downloader"),
-        |_| panic!("cache reuse is not a download"),
-    )
-    .unwrap();
+    let mut cached = ChildDownloadFixture::new(DownloaderPlan::Forbidden(
+        "verified payload must not spawn another downloader",
+    ));
+    cached.forbid_progress = true;
+    cached.run(root.path(), &selected).0.unwrap();
     fs::write(&destination, b"preserved invalid cached bytes").unwrap();
     let original = fs::read(&destination).unwrap();
-    assert!(download_using(
-        root.path(),
-        &selected,
-        || Err("synthetic child not available".into()),
-        |_| {}
-    )
+    assert!(ChildDownloadFixture::new(DownloaderPlan::Run(Err(
+        "synthetic child not available".into()
+    )))
+    .run(root.path(), &selected)
+    .0
     .is_err());
     assert_eq!(fs::read(&destination).unwrap(), original);
     let mut wrong = selected.clone();
     wrong.sha256 = "b".repeat(64);
-    assert!(download_using(
-        root.path(),
-        &wrong,
-        || Ok(synthetic_installer_command()),
-        |_| {}
-    )
-    .is_err());
+    assert!(
+        ChildDownloadFixture::new(DownloaderPlan::Run(Ok(synthetic_installer_command())))
+            .run(root.path(), &wrong)
+            .0
+            .is_err()
+    );
     assert!(!package(root.path(), &wrong).unwrap().exists());
     let files = fs::read_dir(package(root.path(), &wrong).unwrap().parent().unwrap())
         .unwrap()
         .count();
     assert_eq!(files, 0);
-    assert!(download_using(
-        root.path(),
-        &selected,
-        || Ok(Command::new(root.path().join("missing-downloader.exe"))),
-        |_| {}
-    )
-    .is_err());
+    assert!(
+        ChildDownloadFixture::new(DownloaderPlan::Run(Ok(Command::new(
+            root.path().join("missing-downloader.exe")
+        ))))
+        .run(root.path(), &selected)
+        .0
+        .is_err()
+    );
     let mut no_pipe = synthetic_installer_command();
     no_pipe.stdout(Stdio::null());
-    assert!(download_using(root.path(), &selected, || Ok(no_pipe), |_| {}).is_err());
+    assert!(ChildDownloadFixture::new(DownloaderPlan::Run(Ok(no_pipe)))
+        .run(root.path(), &selected)
+        .0
+        .is_err());
     fs::remove_file(&destination).unwrap();
     fs::create_dir(&destination).unwrap();
-    assert!(download_using(
-        root.path(),
-        &selected,
-        || panic!("foreign destination must not launch a process"),
-        |_| {}
-    )
+    assert!(ChildDownloadFixture::new(DownloaderPlan::Forbidden(
+        "foreign destination must not launch a process"
+    ))
+    .run(root.path(), &selected)
+    .0
     .is_err());
 }
 
@@ -649,7 +1127,10 @@ impl InstallEffects for InstallFixture {
     ) -> Result<PathBuf, String> {
         self.prepared.fetch_add(1, Ordering::AcqRel);
         assert_eq!(root, self.root);
-        assert_eq!(installer, root.join("synthetic-installer.exe"));
+        assert!(
+            installer == root.join("synthetic-installer.exe")
+                || installer == package(root, selected).unwrap()
+        );
         assert_eq!(selected, &asset());
         assert_eq!(controller_id, 777);
         if self.prepare_failed {
@@ -1146,4 +1627,155 @@ fn locked_cache_payloads_fail_closed_without_overwriting_the_original_or_leaking
     drop(guard);
     assert_eq!(fs::read(&file).unwrap(), b"verified installer");
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+fn admissible_state() -> serde_json::Value {
+    serde_json::json!({"mode":"vm-controller","controller":{"authority":"vm","vmConfigured":true,"status":"online","cached":false,"desktopTransition":"idle","serviceUpdateBusy":false},"provisioning":{"running":false,"status":"ready"}})
+}
+#[test]
+fn release_install_selection_checks_public_identity_fresh_state_owned_controller_and_cached_hash_before_lease(
+) {
+    for mode in [
+        "success",
+        "foreign",
+        "development",
+        "bad-id",
+        "missing-state",
+        "missing-package",
+        "blocked-state",
+        "state-unknown",
+        "controller",
+        "cache",
+        "corrupted",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let selected = asset();
+        let target = package(root.path(), &selected).unwrap();
+        fs::write(
+            &target,
+            if mode == "corrupted" {
+                b"unverified payload".as_slice()
+            } else {
+                b"verified installer".as_slice()
+            },
+        )
+        .unwrap();
+        let state = Updates::default();
+        if mode != "missing-package" {
+            state
+                .packages
+                .lock()
+                .unwrap()
+                .insert(selected.sha256.clone(), selected.clone());
+        }
+        let mut replies = vec![if mode == "state-unknown" {
+            Err("synthetic unknown state".into())
+        } else if mode == "blocked-state" {
+            Ok(serde_json::json!({}))
+        } else {
+            Ok(admissible_state())
+        }];
+        replies.extend(install_replies(serde_json::json!(FIXTURE_NOW + 20000)));
+        let host = InstallFixture::new(root.path(), replies);
+        let result = tauri::async_runtime::block_on(install_selected(
+            &host,
+            if mode == "missing-state" {
+                None
+            } else {
+                Some(&state)
+            },
+            InstallRequest {
+                window: if mode == "foreign" {
+                    "call-overlay"
+                } else {
+                    "main"
+                },
+                packaged: mode != "development",
+                package_id: if mode == "bad-id" {
+                    "invalid"
+                } else {
+                    &selected.sha256
+                },
+            },
+            || {
+                if mode == "cache" {
+                    Err("synthetic inaccessible cache".into())
+                } else {
+                    Ok(root.path().to_owned())
+                }
+            },
+            || {
+                if mode == "controller" {
+                    Err(BLOCKED.into())
+                } else {
+                    Ok(777)
+                }
+            },
+        ));
+        if mode == "success" {
+            assert!(result.unwrap().launched);
+            assert_eq!(host.prepared.load(Ordering::Acquire), 1);
+            assert_eq!(host.exits.load(Ordering::Acquire), 1);
+            assert_eq!(
+                host.routes(),
+                vec![
+                    crate::protocol::state_route(),
+                    "updates/install-lease",
+                    "desktop/exit"
+                ]
+            );
+        } else {
+            assert!(result.is_err(), "{mode}");
+            assert_eq!(host.prepared.load(Ordering::Acquire), 0);
+            host.assert_no_exit_or_authorization();
+            assert!(host.requests.lock().unwrap().len() <= 1);
+        }
+    }
+}
+#[test]
+fn capability_reasons_and_update_cache_follow_packaged_ownership_and_the_actual_runtime_directory()
+{
+    for (installed, owned, reason) in [
+        (false, false, Some("installed-app-required")),
+        (false, true, Some("installed-app-required")),
+        (true, false, Some("owned-controller-required")),
+        (true, true, None),
+    ] {
+        let value = capabilities(installed, owned);
+        assert_eq!(value.install, installed && owned);
+        assert_eq!(value.reason, reason);
+    }
+    let root = tempfile::tempdir().unwrap();
+    let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+    context.config_mut().app.app_directories_override = Some(
+        tauri::utils::config::AppDirectoriesOverride::Root(root.path().to_owned()),
+    );
+    let app = tauri::test::mock_builder().build(context).unwrap();
+    let host = NativeDownloadEffects {
+        app: app.handle(),
+        token: "invalid",
+    };
+    let path = host.cache().unwrap();
+    assert!(path.starts_with(root.path()));
+    assert_eq!(
+        path,
+        crate::runtime_path(app.path().app_cache_dir().unwrap()).join("updates")
+    );
+    assert!(path.is_dir());
+}
+
+#[test]
+fn install_state_retains_the_full_state_response_budget_while_actions_remain_small() {
+    assert_eq!(
+        install_response_limit(crate::protocol::state_route(), &reqwest::Method::GET),
+        crate::protocol::API_RESPONSE_MAX_BYTES
+    );
+    assert_eq!(
+        install_response_limit(crate::protocol::state_route(), &reqwest::Method::POST),
+        UPDATE_ACTION_RESPONSE_MAX_BYTES
+    );
+    assert_eq!(
+        install_response_limit("desktop/exit", &reqwest::Method::POST),
+        UPDATE_ACTION_RESPONSE_MAX_BYTES
+    );
 }

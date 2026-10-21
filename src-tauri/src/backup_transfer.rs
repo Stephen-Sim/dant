@@ -1,3 +1,4 @@
+use crate::atomic_file::StagedOutput;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -28,6 +29,35 @@ const FAILED: &str = "backup_transfer_failed";
 const INTERRUPTED: &str = "backup_transfer_unconfirmed";
 const TOO_LARGE: &str = "backup_size_limit";
 const PASSWORD: &str = "backup_passphrase_invalid";
+
+type BackupPicker<R> = std::sync::Arc<
+    dyn Fn(tauri_plugin_dialog::FileDialogBuilder<R>) -> Option<tauri_plugin_dialog::FilePath>
+        + Send
+        + Sync,
+>;
+pub struct BackupControl<R: tauri::Runtime> {
+    endpoint: std::net::SocketAddr,
+    save: BackupPicker<R>,
+    open: BackupPicker<R>,
+}
+impl<R: tauri::Runtime> Default for BackupControl<R> {
+    fn default() -> Self {
+        Self {
+            endpoint: controller_endpoint(),
+            save: std::sync::Arc::new(tauri_plugin_dialog::FileDialogBuilder::blocking_save_file),
+            open: std::sync::Arc::new(tauri_plugin_dialog::FileDialogBuilder::blocking_pick_file),
+        }
+    }
+}
+fn platform<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> BackupControl<R> {
+    app.try_state::<BackupControl<R>>()
+        .map(|state| BackupControl {
+            endpoint: state.endpoint,
+            save: std::sync::Arc::clone(&state.save),
+            open: std::sync::Arc::clone(&state.open),
+        })
+        .unwrap_or_default()
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +130,12 @@ fn response_error(response: reqwest::blocking::Response) -> String {
     }
 }
 fn selected_file(path: &Path) -> Result<fs::File, String> {
+    selected_file_using(path, |path| fs::File::open(path))
+}
+fn selected_file_using(
+    path: &Path,
+    open: impl FnOnce(&Path) -> std::io::Result<fs::File>,
+) -> Result<fs::File, String> {
     crate::updates::directory(path.parent().ok_or(FAILED)?, false)?;
     let meta = fs::symlink_metadata(path).map_err(|_| FAILED)?;
     if !meta.is_file() || crate::updates::linked(&meta) {
@@ -111,7 +147,7 @@ fn selected_file(path: &Path) -> Result<fs::File, String> {
     if meta.len() > MAX_PORTABLE_BYTES {
         return Err(TOO_LARGE.into());
     }
-    let file = fs::File::open(path).map_err(|_| FAILED)?;
+    let file = open(path).map_err(|_| FAILED)?;
     let opened = file.metadata().map_err(|_| FAILED)?;
     if !opened.is_file()
         || opened.len() != meta.len()
@@ -126,7 +162,21 @@ fn save_stream(
     destination: &Path,
     declared: Option<u64>,
     maximum: u64,
+    active: impl FnMut() -> bool,
+) -> Result<(), String> {
+    save_stream_using(input, destination, declared, maximum, active, |parent| {
+        tempfile::Builder::new()
+            .prefix(".dant-backup-")
+            .tempfile_in(parent)
+    })
+}
+fn save_stream_using<O: StagedOutput>(
+    input: &mut impl Read,
+    destination: &Path,
+    declared: Option<u64>,
+    maximum: u64,
     mut active: impl FnMut() -> bool,
+    create: impl FnOnce(&Path) -> std::io::Result<O>,
 ) -> Result<(), String> {
     if !destination.is_absolute() || destination.file_name().is_none() {
         return Err(FAILED.into());
@@ -141,10 +191,7 @@ fn save_stream(
             return Err(FAILED.into());
         }
     }
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".dant-backup-")
-        .tempfile_in(parent)
-        .map_err(|_| FAILED)?;
+    let mut temporary = create(parent).map_err(|_| FAILED)?;
     let mut buffer = [0; BUFFER_BYTES];
     let mut received = 0u64;
     loop {
@@ -167,39 +214,71 @@ fn save_stream(
     if !active() {
         return Err(INTERRUPTED.into());
     }
-    temporary.flush().map_err(|_| FAILED)?;
-    temporary.as_file().sync_all().map_err(|_| FAILED)?;
-    crate::updates::directory(parent, false)?;
-    temporary.persist(destination).map_err(|_| FAILED)?;
+    crate::atomic_file::finish(
+        temporary,
+        destination,
+        crate::atomic_file::FlushPolicy::BeforeSync,
+        || crate::updates::directory(parent, false),
+    )
+    .map_err(backup_commit_error)?;
     Ok(())
+}
+fn backup_commit_error(failure: crate::atomic_file::CommitFailure<String>) -> String {
+    match failure {
+        crate::atomic_file::CommitFailure::Validation(error) => error,
+        _ => FAILED.into(),
+    }
 }
 
 #[tauri::command]
-pub async fn export_dant_backup(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn export_dant_backup<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     backup_id: String,
     token: String,
     passphrase: String,
+) -> Result<bool, String> {
+    let platform = platform(&app);
+    let endpoint = platform.endpoint;
+    export_selected(
+        app,
+        window,
+        backup_id,
+        token,
+        passphrase,
+        endpoint,
+        platform.save,
+    )
+    .await
+}
+
+async fn export_selected<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
+    backup_id: String,
+    token: String,
+    passphrase: String,
+    endpoint: std::net::SocketAddr,
+    choose: BackupPicker<R>,
 ) -> Result<bool, String> {
     arguments(window.label(), &token, &passphrase)?;
     if !valid_id(&backup_id) {
         return Err(FAILED.into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let chosen = app
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .add_filter("dant backup", &["dant"])
-            .set_file_name(format!("dant-backup-{backup_id}.dant"))
-            .blocking_save_file();
+        let chosen = choose(
+            app.dialog()
+                .file()
+                .set_parent(&window)
+                .add_filter("dant backup", &["dant"])
+                .set_file_name(format!("dant-backup-{backup_id}.dant")),
+        );
         let Some(chosen) = chosen else {
             return Ok(false);
         };
         let destination = chosen.into_path().map_err(|_| FAILED)?;
         export_to(
-            controller_endpoint(),
+            endpoint,
             &backup_id,
             &token,
             &passphrase,
@@ -265,25 +344,38 @@ fn export_to(
 }
 
 #[tauri::command]
-pub async fn import_dant_backup(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn import_dant_backup<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     token: String,
     passphrase: String,
 ) -> Result<Option<BackupMetadata>, String> {
+    let platform = platform(&app);
+    let endpoint = platform.endpoint;
+    import_selected(app, window, token, passphrase, endpoint, platform.open).await
+}
+
+async fn import_selected<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
+    token: String,
+    passphrase: String,
+    endpoint: std::net::SocketAddr,
+    choose: BackupPicker<R>,
+) -> Result<Option<BackupMetadata>, String> {
     arguments(window.label(), &token, &passphrase)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let chosen = app
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .add_filter("dant backup", &["dant"])
-            .blocking_pick_file();
+        let chosen = choose(
+            app.dialog()
+                .file()
+                .set_parent(&window)
+                .add_filter("dant backup", &["dant"]),
+        );
         let Some(chosen) = chosen else {
             return Ok(None);
         };
         let source = chosen.into_path().map_err(|_| FAILED)?;
-        import_from(controller_endpoint(), &source, &token, &passphrase, || {
+        import_from(endpoint, &source, &token, &passphrase, || {
             app.get_webview_window("main").is_some()
         })
     })

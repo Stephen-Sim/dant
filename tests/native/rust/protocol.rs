@@ -8,6 +8,7 @@ fn all_native_addresses_paths_and_readiness_use_the_validated_canonical_resource
     assert_eq!(raw["bootstrapGuestPort"], 4319);
     assert_eq!(raw["guestPort"], 4321);
     let host = raw["loopbackHost"].as_str().unwrap();
+    assert_eq!(loopback_host(), host);
     assert_eq!(controller_endpoint().ip(), Ipv4Addr::LOCALHOST);
     assert_eq!(
         controller_endpoint().port(),
@@ -25,6 +26,7 @@ fn all_native_addresses_paths_and_readiness_use_the_validated_canonical_resource
     assert_eq!(api_prefix(), raw["paths"]["api"]);
     assert_eq!(session_path(), raw["paths"]["session"]);
     assert_eq!(state_path(), raw["paths"]["state"]);
+    assert_eq!(state_path(), format!("{}/{}", api_prefix(), state_route()));
     assert_eq!(
         controller_url(session_path()),
         format!("{}{session}", controller_origin(), session = session_path())

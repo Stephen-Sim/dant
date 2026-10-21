@@ -120,6 +120,53 @@ pub struct EditorChoice {
 pub struct InstalledTextEditors {
     editors: Vec<EditorChoice>,
 }
+// The native host owns discovery, file selection and process launch. Commands
+// consume these capabilities without exposing executable paths or addresses to IPC.
+trait EditorPlatform<R: tauri::Runtime>: Send + Sync {
+    fn preference_path(&self, app: &tauri::AppHandle<R>) -> Result<PathBuf, String>;
+    fn installed(&self) -> Vec<InstalledEditor>;
+    fn cache_root(&self) -> PathBuf;
+    fn choose(
+        &self,
+        dialog: tauri_plugin_dialog::FileDialogBuilder<R>,
+    ) -> Option<tauri_plugin_dialog::FilePath>;
+    fn launch(&self, command: &mut Command) -> Result<(), String>;
+    fn attachment_endpoint(&self) -> std::net::SocketAddr;
+}
+struct NativeEditors;
+impl<R: tauri::Runtime> EditorPlatform<R> for NativeEditors {
+    fn preference_path(&self, app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+        preferences_path(app)
+    }
+    fn installed(&self) -> Vec<InstalledEditor> {
+        detected_editors()
+    }
+    fn cache_root(&self) -> PathBuf {
+        editor_cache_root(std::env::temp_dir())
+    }
+    fn choose(
+        &self,
+        dialog: tauri_plugin_dialog::FileDialogBuilder<R>,
+    ) -> Option<tauri_plugin_dialog::FilePath> {
+        dialog.blocking_pick_file()
+    }
+    fn launch(&self, command: &mut Command) -> Result<(), String> {
+        command.spawn().map(|_| ()).map_err(|_| FAILED.into())
+    }
+    fn attachment_endpoint(&self) -> std::net::SocketAddr {
+        crate::protocol::controller_endpoint()
+    }
+}
+pub struct TextEditors<R: tauri::Runtime>(std::sync::Arc<dyn EditorPlatform<R>>);
+impl<R: tauri::Runtime> Default for TextEditors<R> {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(NativeEditors))
+    }
+}
+fn platform<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::sync::Arc<dyn EditorPlatform<R>> {
+    std::sync::Arc::clone(&app.state::<TextEditors<R>>().0)
+}
+
 struct InstalledEditor {
     spec: &'static EditorSpec,
     executable: PathBuf,
@@ -135,7 +182,7 @@ fn editor_basename(path: &Path, spec: &EditorSpec) -> bool {
     })
 }
 
-fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn main_only<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     if window.label() == "main" {
         Ok(())
     } else {
@@ -171,6 +218,13 @@ fn ordinary_directory(path: &Path, create: bool) -> Result<(), String> {
     Ok(())
 }
 fn bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    bounded_file_using(path, limit, |selected| fs::File::open(selected))
+}
+fn bounded_file_using(
+    path: &Path,
+    limit: usize,
+    open: impl FnOnce(&Path) -> std::io::Result<fs::File>,
+) -> Result<Vec<u8>, String> {
     ordinary_directory(path.parent().ok_or(FAILED)?, false)?;
     let meta = fs::symlink_metadata(path).map_err(|_| FAILED)?;
     if !meta.is_file() || linked(&meta) || meta.len() > limit as u64 {
@@ -178,7 +232,7 @@ fn bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     }
     use std::io::Read;
     let mut data = Vec::new();
-    fs::File::open(path)
+    open(path)
         .map_err(|_| FAILED)?
         .take(limit as u64 + 1)
         .read_to_end(&mut data)
@@ -188,7 +242,7 @@ fn bounded_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     }
     Ok(data)
 }
-fn preferences_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn preferences_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_config_dir()
@@ -264,18 +318,23 @@ fn valid_editor(path: &Path) -> bool {
 fn default_editor() -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
-        let path = PathBuf::from(std::env::var_os("SystemRoot").ok_or(FAILED)?)
-            .join("System32")
-            .join("notepad.exe");
-        if valid_editor(&path) {
-            Ok(path)
-        } else {
-            Err(FAILED.into())
-        }
+        default_editor_from(std::env::var_os("SystemRoot").map(PathBuf::from))
     }
     #[cfg(not(windows))]
     {
         Err("The built-in text editor is available on Windows.".into())
+    }
+}
+
+fn default_editor_from(system_root: Option<PathBuf>) -> Result<PathBuf, String> {
+    let path = system_root
+        .ok_or(FAILED)?
+        .join("System32")
+        .join("notepad.exe");
+    if valid_editor(&path) {
+        Ok(path)
+    } else {
+        Err(FAILED.into())
     }
 }
 
@@ -453,174 +512,46 @@ fn common_candidates(
 }
 
 #[cfg(windows)]
-mod registry {
-    use super::*;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    type Hkey = isize;
-    #[link(name = "advapi32")]
-    extern "system" {
-        fn RegOpenKeyExW(
-            key: Hkey,
-            name: *const u16,
-            options: u32,
-            access: u32,
-            result: *mut Hkey,
-        ) -> i32;
-        fn RegQueryValueExW(
-            key: Hkey,
-            name: *const u16,
-            reserved: *mut u32,
-            kind: *mut u32,
-            data: *mut u8,
-            length: *mut u32,
-        ) -> i32;
-        fn RegEnumKeyExW(
-            key: Hkey,
-            index: u32,
-            name: *mut u16,
-            length: *mut u32,
-            reserved: *mut u32,
-            class: *mut u16,
-            class_length: *mut u32,
-            modified: *mut core::ffi::c_void,
-        ) -> i32;
-        fn RegCloseKey(key: Hkey) -> i32;
-    }
-    struct Key(Hkey);
-    impl Drop for Key {
-        fn drop(&mut self) {
-            unsafe {
-                RegCloseKey(self.0);
-            }
+#[path = "text_editor/registry.rs"]
+mod registry;
+
+struct EditorRoots {
+    system: Option<PathBuf>,
+    local: Option<PathBuf>,
+    programs: Vec<PathBuf>,
+}
+impl EditorRoots {
+    fn capture() -> Self {
+        Self {
+            system: std::env::var_os("SystemRoot").map(PathBuf::from),
+            local: std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+            programs: ["ProgramFiles", "ProgramFiles(x86)"]
+                .iter()
+                .filter_map(std::env::var_os)
+                .map(PathBuf::from)
+                .collect(),
         }
-    }
-    fn wide(value: &str) -> Vec<u16> {
-        std::ffi::OsStr::new(value)
-            .encode_wide()
-            .chain(Some(0))
-            .collect()
-    }
-    fn open(parent: Hkey, name: &str, view: u32) -> Option<Key> {
-        let mut key = 0;
-        if unsafe { RegOpenKeyExW(parent, wide(name).as_ptr(), 0, 0x20019 | view, &mut key) } == 0 {
-            Some(Key(key))
-        } else {
-            None
-        }
-    }
-    fn value(key: &Key, name: &str) -> Option<String> {
-        let mut kind = 0;
-        let mut data = [0u16; 4096];
-        let mut length = (data.len() * 2) as u32;
-        if unsafe {
-            RegQueryValueExW(
-                key.0,
-                wide(name).as_ptr(),
-                std::ptr::null_mut(),
-                &mut kind,
-                data.as_mut_ptr().cast(),
-                &mut length,
-            )
-        } != 0
-            || !matches!(kind, 1 | 2)
-            || length % 2 != 0
-            || length as usize > data.len() * 2
-        {
-            return None;
-        }
-        let units = &data[..length as usize / 2];
-        let end = units
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(units.len());
-        let result = std::ffi::OsString::from_wide(&units[..end])
-            .into_string()
-            .ok()?;
-        if result.contains('%') || result.contains('\0') {
-            None
-        } else {
-            Some(result)
-        }
-    }
-    pub(super) fn candidates() -> Vec<(String, PathBuf)> {
-        let mut result = Vec::new();
-        for hive in [0x80000001u32 as i32 as isize, 0x80000002u32 as i32 as isize] {
-            for view in [0x100, 0x200] {
-                // Shared JetBrains executable names do not identify the installed edition.
-                for spec in EDITORS.iter().filter(|spec| {
-                    ![
-                        "notepad",
-                        "intellij",
-                        "intellij-community",
-                        "pycharm",
-                        "pycharm-community",
-                    ]
-                    .contains(&spec.id)
-                }) {
-                    for executable in spec.executables {
-                        if let Some(path) = open(hive, &format!("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable}"), view).and_then(|key| value(&key, "")) { result.push((spec.id.into(), PathBuf::from(path.trim_matches('"')))); }
-                    }
-                }
-                if let Some(parent) = open(
-                    hive,
-                    "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-                    view,
-                ) {
-                    for index in 0..512 {
-                        let mut name = [0u16; 512];
-                        let mut length = name.len() as u32;
-                        let status = unsafe {
-                            RegEnumKeyExW(
-                                parent.0,
-                                index,
-                                name.as_mut_ptr(),
-                                &mut length,
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                            )
-                        };
-                        if status == 259 {
-                            break;
-                        }
-                        if status != 0 {
-                            continue;
-                        }
-                        let Some(name) = String::from_utf16(&name[..length as usize]).ok() else {
-                            continue;
-                        };
-                        let Some(key) = open(parent.0, &name, 0) else {
-                            continue;
-                        };
-                        let (Some(display), Some(location)) =
-                            (value(&key, "DisplayName"), value(&key, "InstallLocation"))
-                        else {
-                            continue;
-                        };
-                        let Some(id) = jetbrains_id(&display) else {
-                            continue;
-                        };
-                        add_install(&mut result, id, Path::new(&location));
-                    }
-                }
-            }
-        }
-        result
     }
 }
-fn detected_editors() -> Vec<InstalledEditor> {
-    let system = std::env::var_os("SystemRoot").map(PathBuf::from);
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let roots: Vec<_> = ["ProgramFiles", "ProgramFiles(x86)"]
-        .iter()
-        .filter_map(std::env::var_os)
-        .map(PathBuf::from)
-        .collect();
-    let mut candidates = common_candidates(system.as_deref(), local.as_deref(), &roots);
-    #[cfg(windows)]
-    candidates.extend(registry::candidates());
+fn detected_with(
+    roots: &EditorRoots,
+    registered: impl IntoIterator<Item = (String, PathBuf)>,
+) -> Vec<InstalledEditor> {
+    let mut candidates = common_candidates(
+        roots.system.as_deref(),
+        roots.local.as_deref(),
+        &roots.programs,
+    );
+    candidates.extend(registered);
     installed_from_candidates(&candidates)
+}
+fn detected_editors() -> Vec<InstalledEditor> {
+    let roots = EditorRoots::capture();
+    #[cfg(windows)]
+    let registered = registry::candidates();
+    #[cfg(not(windows))]
+    let registered = Vec::new();
+    detected_with(&roots, registered)
 }
 fn resolve_preference(
     value: &Preference,
@@ -859,74 +790,80 @@ fn expire_cache(root: &Path) {
 }
 
 #[tauri::command]
-pub fn editor_preferences(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub fn editor_preferences<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
 ) -> Result<EditorPreference, String> {
     main_only(&window)?;
-    Ok(preference_view(&read_preference(&preferences_path(&app)?)?))
+    Ok(preference_view(&read_preference(
+        &platform(&app).preference_path(&app)?,
+    )?))
 }
 #[tauri::command]
-pub async fn installed_text_editors(
-    window: tauri::WebviewWindow,
+pub async fn installed_text_editors<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
 ) -> Result<InstalledTextEditors, String> {
     main_only(&window)?;
-    tauri::async_runtime::spawn_blocking(|| Ok(inventory_view(&detected_editors())))
+    let host = platform(&app);
+    tauri::async_runtime::spawn_blocking(move || Ok(inventory_view(&host.installed())))
         .await
         .map_err(|_| FAILED.to_string())?
 }
 #[tauri::command]
-pub async fn select_text_editor(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn select_text_editor<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     editor_id: String,
 ) -> Result<EditorPreference, String> {
     main_only(&window)?;
+    let host = platform(&app);
     tauri::async_runtime::spawn_blocking(move || {
         if editor_spec(&editor_id).is_none() {
             return Err(FAILED.into());
         }
-        let value = selected_preference(&editor_id, &detected_editors())?;
-        write_preference(&preferences_path(&app)?, &value)?;
+        let value = selected_preference(&editor_id, &host.installed())?;
+        write_preference(&host.preference_path(&app)?, &value)?;
         Ok(preference_view(&value))
     })
     .await
     .map_err(|_| FAILED.to_string())?
 }
 #[tauri::command]
-pub fn reset_text_editor(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub fn reset_text_editor<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
 ) -> Result<EditorPreference, String> {
     main_only(&window)?;
     let value = Preference::default();
-    write_preference(&preferences_path(&app)?, &value)?;
+    write_preference(&platform(&app).preference_path(&app)?, &value)?;
     Ok(preference_view(&value))
 }
 #[tauri::command]
-pub async fn choose_text_editor(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub async fn choose_text_editor<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
 ) -> Result<Option<EditorPreference>, String> {
     main_only(&window)?;
-    tauri::async_runtime::spawn_blocking(move || { let chosen = app.dialog().file().set_parent(&window).add_filter("Text editor", &["exe"]).blocking_pick_file(); let Some(chosen) = chosen else { return Ok(None) }; let path = chosen.into_path().map_err(|_| FAILED)?; if !valid_editor(&path) { return Err("Choose a supported text editor executable, such as Code.exe, notepad++.exe or sublime_text.exe.".into()) } let value = Preference { executable: Some(path), editor_id: None }; write_preference(&preferences_path(&app)?, &value)?; Ok(Some(preference_view(&value))) }).await.map_err(|_| FAILED.to_string())?
+    let host = platform(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let chosen = host.choose(app.dialog().file().set_parent(&window).add_filter("Text editor", &["exe"]));
+        let Some(chosen) = chosen else { return Ok(None) };
+        let path = chosen.into_path().map_err(|_| FAILED)?;
+        if !valid_editor(&path) {
+            return Err("Choose a supported text editor executable, such as Code.exe, notepad++.exe or sublime_text.exe.".into());
+        }
+        let value = Preference { executable: Some(path), editor_id: None };
+        write_preference(&host.preference_path(&app)?, &value)?;
+        Ok(Some(preference_view(&value)))
+    }).await.map_err(|_| FAILED.to_string())?
 }
-#[tauri::command]
-pub async fn open_attachment_in_editor(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-    file_id: String,
-    token: String,
-    file_name: String,
-) -> Result<serde_json::Value, String> {
-    main_only(&window)?;
-    if !valid_id(&file_id)
-        || token.len() != crate::protocol::CONTROLLER_TOKEN_HEX_CHARS
-        || !token.bytes().all(|b| b.is_ascii_hexdigit())
-        || file_name.len() > 1024
-    {
-        return Err(FAILED.into());
-    }
+async fn attachment_text_at(
+    endpoint: std::net::SocketAddr,
+    file_id: &str,
+    token: &str,
+    file_name: &str,
+) -> Result<Vec<u8>, String> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -934,7 +871,10 @@ pub async fn open_attachment_in_editor(
         .build()
         .map_err(|_| FAILED)?;
     let mut response = client
-        .get(crate::protocol::api_url(&format!("files/{file_id}")))
+        .get(format!(
+            "http://{endpoint}{}/files/{file_id}",
+            crate::protocol::api_prefix()
+        ))
         .header("X-Dant-Token", token)
         .send()
         .await
@@ -959,18 +899,38 @@ pub async fn open_attachment_in_editor(
         }
         bytes.extend_from_slice(&chunk);
     }
-    if !text_payload(&bytes, &file_name, &mime) {
+    if !text_payload(&bytes, file_name, &mime) {
         return Err(FAILED.into());
     }
+    Ok(bytes)
+}
+
+#[tauri::command]
+pub async fn open_attachment_in_editor<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
+    file_id: String,
+    token: String,
+    file_name: String,
+) -> Result<serde_json::Value, String> {
+    main_only(&window)?;
+    if !valid_id(&file_id)
+        || token.len() != crate::protocol::CONTROLLER_TOKEN_HEX_CHARS
+        || !token.bytes().all(|b| b.is_ascii_hexdigit())
+        || file_name.len() > 1024
+    {
+        return Err(FAILED.into());
+    }
+    let host = platform(&app);
+    let bytes =
+        attachment_text_at(host.attachment_endpoint(), &file_id, &token, &file_name).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        let preference = read_preference(&preferences_path(&app)?)?;
-        let executable = resolve_preference(&preference, &detected_editors())?;
-        let root = editor_cache_root(std::env::temp_dir());
+        let preference = read_preference(&host.preference_path(&app)?)?;
+        let executable = resolve_preference(&preference, &host.installed())?;
+        let root = host.cache_root();
         expire_cache(&root);
         let target = cache_copy(&root, &file_id, &file_name, &bytes)?;
-        editor_command(&executable, &target)
-            .spawn()
-            .map_err(|_| FAILED)?;
+        host.launch(&mut editor_command(&executable, &target))?;
         Ok(serde_json::json!({"opened":true}))
     })
     .await

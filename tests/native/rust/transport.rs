@@ -2,6 +2,44 @@ use super::{
     api_request_timeout, compatible_controller, validate_json_body, API_JSON_BODY_BYTES,
     API_REQUEST_TIMEOUT, CORE_PROTOCOL_VERSION, WORKER_DEPLOYMENT_REQUEST_TIMEOUT,
 };
+#[test]
+fn bundled_manifest_read_refuses_growth_after_metadata_and_keeps_io_failures_fixed() {
+    let root = tempfile::tempdir().unwrap();
+    let manifest = root.path().join("resource-manifest.json");
+    let source = "a".repeat(40);
+    for change in ["valid", "growth", "read", "malformed", "unknown-source"] {
+        std::fs::write(
+            &manifest,
+            serde_json::json!({"sourceCommit":source}).to_string(),
+        )
+        .unwrap();
+        let result = super::bundled_source_using(root.path(), |path| {
+            assert_eq!(path, manifest);
+            match change {
+                "growth" => std::fs::write(
+                    path,
+                    vec![b' '; super::RESOURCE_MANIFEST_BYTES as usize + 1],
+                )
+                .unwrap(),
+                "read" => return Err(std::io::Error::other("owned private failure")),
+                "malformed" => std::fs::write(path, b"not JSON").unwrap(),
+                "unknown-source" => std::fs::write(path, br#"{"sourceCommit":42}"#).unwrap(),
+                "valid" => {}
+                _ => unreachable!(),
+            }
+            std::fs::read(path)
+        });
+        match change {
+            "valid" => assert_eq!(result.unwrap(), source),
+            "read" => assert_eq!(
+                result,
+                Err("The Go core resource manifest could not be read")
+            ),
+            "unknown-source" => assert_eq!(result, Err("The Go core source is missing")),
+            _ => assert_eq!(result, Err("The Go core resource manifest is invalid")),
+        }
+    }
+}
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -13,6 +51,23 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+fn isolated_link(address: SocketAddr) -> super::ControllerLink {
+    assert_eq!(
+        address.ip(),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert_ne!(address.port(), 0);
+    assert_ne!(
+        address.port(),
+        super::ControllerLink::default().endpoint.port()
+    );
+    super::ControllerLink { endpoint: address }
+}
+
+pub(crate) fn isolated_http_link(server: &crate::native_http::Server) -> super::ControllerLink {
+    isolated_link(server.address)
+}
 
 struct HttpFixture {
     address: SocketAddr,
@@ -208,7 +263,10 @@ fn json_body_rejects_overflow_by_bytes_including_multibyte_text() {
 
 #[test]
 fn ipc_validation_rejects_wrong_window_injection_methods_and_nonhex_sessions_before_transport() {
-    assert_eq!(super::local_endpoint().to_string(), "127.0.0.1:4317");
+    assert_eq!(
+        super::ControllerLink::default().endpoint.to_string(),
+        "127.0.0.1:4317"
+    );
     let valid = super::validate_request("main", "/api/session", None, None, None).unwrap();
     assert_eq!(valid.method, "GET");
     assert_eq!(valid.token, "");
@@ -408,8 +466,7 @@ fn async_http_accepts_the_exact_response_limit_and_uses_a_safe_content_type_fall
 fn sync_json_uses_the_owned_socket_and_preserves_post_body_and_token() {
     let fixture = HttpFixture::new(vec![response("200 OK", None, b"{\"ok\":true}")]);
     assert_eq!(
-        super::local_json_at(
-            fixture.address,
+        isolated_link(fixture.address).json(
             "/api/task",
             Some("synthetic-token"),
             Some("{\"x\":1}")
@@ -435,7 +492,9 @@ fn sync_json_rejects_non_success_malformed_utf8_and_json() {
         b"INVALID 200 OK\r\n\r\n{}".to_vec(),
     ] {
         let fixture = HttpFixture::new(vec![raw]);
-        assert!(super::local_json_at(fixture.address, "/api/session", None, None).is_none());
+        assert!(isolated_link(fixture.address)
+            .json("/api/session", None, None)
+            .is_none());
     }
 }
 
@@ -446,11 +505,10 @@ fn a_closed_owned_endpoint_is_absent_and_cannot_receive_an_execution_request() {
     assert_ne!(address.port(), 4317);
     drop(listener);
 
-    assert!(super::local_json_at(address, "/api/session", None, None).is_none());
-    assert_eq!(
-        super::existing_controller_at(address, &"a".repeat(40)),
-        Ok(false)
-    );
+    assert!(isolated_link(address)
+        .json("/api/session", None, None)
+        .is_none());
+    assert_eq!(isolated_link(address).existing(&"a".repeat(40)), Ok(false));
 }
 
 #[test]
@@ -460,7 +518,9 @@ fn sync_json_never_treats_a_reason_phrase_as_the_success_status() {
         None,
         b"{\"ok\":true}",
     )]);
-    assert!(super::local_json_at(fixture.address, "/api/session", None, None).is_none());
+    assert!(isolated_link(fixture.address)
+        .json("/api/session", None, None)
+        .is_none());
 }
 
 #[test]
@@ -468,7 +528,9 @@ fn sync_json_rejects_oversized_whitespace_after_a_valid_object() {
     let mut body = b"{}".to_vec();
     body.resize(super::LOCAL_JSON_RESPONSE_BYTES as usize + 1, b' ');
     let fixture = HttpFixture::new(vec![response("200 OK", None, &body)]);
-    assert!(super::local_json_at(fixture.address, "/api/session", None, None).is_none());
+    assert!(isolated_link(fixture.address)
+        .json("/api/session", None, None)
+        .is_none());
 }
 
 #[test]
@@ -480,16 +542,15 @@ fn existing_controller_requires_a_live_matching_session_and_rejects_an_unidentif
     )
     .unwrap();
     let fixture = HttpFixture::new(vec![response("200 OK", None, &session)]);
-    assert_eq!(
-        super::existing_controller_at(fixture.address, &source),
-        Ok(true)
-    );
+    assert_eq!(isolated_link(fixture.address).existing(&source), Ok(true));
     let foreign = HttpFixture::new(vec![response("200 OK", None, b"{\"product\":\"other\"}")]);
-    assert!(super::existing_controller_at(foreign.address, &source)
+    assert!(isolated_link(foreign.address)
+        .existing(&source)
         .unwrap_err()
         .starts_with("A different dant service"));
     let unknown = HttpFixture::new(vec![response("503 Busy", None, b"{}")]);
-    assert!(super::existing_controller_at(unknown.address, &source)
+    assert!(isolated_link(unknown.address)
+        .existing(&source)
         .unwrap_err()
         .starts_with("The local service could not be identified"));
 }

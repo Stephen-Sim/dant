@@ -26,7 +26,7 @@ enum ExitOutcome {
     Rejected(ExitFailure),
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExitBody {
     ok: Option<bool>,
@@ -36,6 +36,45 @@ struct ExitBody {
     not_configured: Option<bool>,
     code: Option<String>,
     phase: Option<String>,
+}
+
+struct ExitEvidence {
+    ok: bool,
+    work_paused: bool,
+    vm_suspended: bool,
+    unsupported: bool,
+    not_configured: bool,
+}
+
+impl ExitEvidence {
+    fn from_body(body: &ExitBody) -> Self {
+        Self {
+            ok: body.ok == Some(true),
+            work_paused: body.work_paused == Some(true),
+            vm_suspended: body.vm_suspended == Some(true),
+            unsupported: body.unsupported == Some(true),
+            not_configured: body.not_configured == Some(true),
+        }
+    }
+
+    fn from_value(value: &serde_json::Value) -> Self {
+        let explicit = |field| value.get(field).and_then(serde_json::Value::as_bool) == Some(true);
+        Self {
+            ok: explicit("ok"),
+            work_paused: explicit("workPaused"),
+            vm_suspended: explicit("vmSuspended"),
+            unsupported: explicit("unsupported"),
+            not_configured: explicit("notConfigured"),
+        }
+    }
+
+    fn confirmed(&self) -> bool {
+        self.ok && self.work_paused && (self.vm_suspended || self.unsupported)
+    }
+
+    fn unsupported_notice(&self) -> bool {
+        self.unsupported && !self.not_configured
+    }
 }
 
 impl ExitFailure {
@@ -123,14 +162,11 @@ fn exit_response(status: reqwest::StatusCode, bytes: &[u8]) -> ExitOutcome {
         return ExitOutcome::Rejected(ExitFailure::Unconfirmed);
     };
 
-    if status.is_success() && body.code.is_none() {
-        if let Ok(value) = serde_json::to_value(&body) {
-            if confirmed(&value) {
-                return ExitOutcome::Confirmed {
-                    unsupported_notice: unsupported_notice(&value),
-                };
-            }
-        }
+    let evidence = ExitEvidence::from_body(&body);
+    if status.is_success() && body.code.is_none() && evidence.confirmed() {
+        return ExitOutcome::Confirmed {
+            unsupported_notice: evidence.unsupported_notice(),
+        };
     }
 
     ExitOutcome::Rejected(ExitFailure::from_code(
@@ -191,32 +227,61 @@ pub struct DesktopExit {
     approved: AtomicBool,
 }
 
+trait DesktopPlatform<R: tauri::Runtime>: Send + Sync {
+    fn session(&self) -> Option<serde_json::Value>;
+    fn endpoint(&self) -> std::net::SocketAddr;
+    fn notice(&self, message: &str);
+    fn exit(&self, app: &AppHandle<R>);
+}
+#[derive(Default)]
+struct NativeDesktopPlatform {
+    link: crate::transport::ControllerLink,
+}
+impl<R: tauri::Runtime> DesktopPlatform<R> for NativeDesktopPlatform {
+    fn session(&self) -> Option<serde_json::Value> {
+        self.link.json(crate::protocol::session_path(), None, None)
+    }
+    fn endpoint(&self) -> std::net::SocketAddr {
+        crate::protocol::controller_endpoint()
+    }
+    fn notice(&self, message: &str) {
+        crate::native_dialog::warning(&crate::native_dialog::NativeDialog, "dant", message);
+    }
+    fn exit(&self, app: &AppHandle<R>) {
+        app.exit(0);
+    }
+}
+pub struct DesktopControl<R: tauri::Runtime>(std::sync::Arc<dyn DesktopPlatform<R>>);
+impl<R: tauri::Runtime> Default for DesktopControl<R> {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(NativeDesktopPlatform::default()))
+    }
+}
+fn control<R: tauri::Runtime>(app: &AppHandle<R>) -> std::sync::Arc<dyn DesktopPlatform<R>> {
+    std::sync::Arc::clone(&app.state::<DesktopControl<R>>().0)
+}
+
 fn valid_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= crate::protocol::SESSION_TOKEN_MAX_BYTES
         && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 pub(crate) fn confirmed(value: &serde_json::Value) -> bool {
-    value.get("ok").and_then(|value| value.as_bool()) == Some(true)
-        && value.get("workPaused").and_then(|value| value.as_bool()) == Some(true)
-        && (value.get("vmSuspended").and_then(|value| value.as_bool()) == Some(true)
-            || value.get("unsupported").and_then(|value| value.as_bool()) == Some(true))
-}
-fn unsupported_notice(value: &serde_json::Value) -> bool {
-    value.get("unsupported").and_then(|value| value.as_bool()) == Some(true)
-        && value.get("notConfigured").and_then(|value| value.as_bool()) != Some(true)
+    ExitEvidence::from_value(value).confirmed()
 }
 fn desktop_open_request(
     client: &reqwest::Client,
     session: &serde_json::Value,
+    endpoint: std::net::SocketAddr,
 ) -> Option<reqwest::Request> {
-    desktop_request(client, session, DesktopAction::Open)
+    desktop_request(client, session, DesktopAction::Open, endpoint)
 }
 
 fn desktop_request(
     client: &reqwest::Client,
     session: &serde_json::Value,
     action: DesktopAction,
+    endpoint: std::net::SocketAddr,
 ) -> Option<reqwest::Request> {
     if session.get("product").and_then(|value| value.as_str()) != Some("dant")
         || session.get("mode").and_then(|value| value.as_str()) != Some("controller")
@@ -227,12 +292,15 @@ fn desktop_request(
         .get("token")
         .and_then(|value| value.as_str())
         .filter(|value| valid_token(value))?;
-    let endpoint = match action {
-        DesktopAction::Open => crate::protocol::api_url("desktop/open"),
-        DesktopAction::Exit => crate::protocol::api_url("desktop/exit"),
+    let route = match action {
+        DesktopAction::Open => "desktop/open",
+        DesktopAction::Exit => "desktop/exit",
     };
     client
-        .post(endpoint)
+        .post(format!(
+            "http://{endpoint}{}/{route}",
+            crate::protocol::api_prefix()
+        ))
         .header("X-Dant-Token", token)
         .header("Content-Type", "application/json")
         .timeout(DESKTOP_TRANSITION_TIMEOUT)
@@ -246,23 +314,36 @@ fn desktop_open_confirmed(bytes: &[u8]) -> bool {
             .ok()
             .is_some_and(|value| value.get("ok").and_then(|value| value.as_bool()) == Some(true))
 }
-async fn open_controller_request() -> bool {
-    let session = tauri::async_runtime::spawn_blocking(|| {
-        crate::transport::local_json(crate::protocol::session_path(), None, None)
-    })
-    .await
-    .ok()
-    .flatten();
+async fn open_controller_request<R: tauri::Runtime>(
+    host: std::sync::Arc<dyn DesktopPlatform<R>>,
+) -> bool {
+    let session_host = std::sync::Arc::clone(&host);
+    let session = tauri::async_runtime::spawn_blocking(move || session_host.session())
+        .await
+        .ok()
+        .flatten();
     let Ok(client) = desktop_client() else {
         return false;
     };
-    let Some(request) = session
-        .as_ref()
-        .and_then(|session| desktop_open_request(&client, session))
+    open_request_with(session.as_ref(), &client, host.endpoint(), |request| {
+        client.execute(request)
+    })
+    .await
+}
+
+async fn open_request_with<
+    F: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+>(
+    session: Option<&serde_json::Value>,
+    client: &reqwest::Client,
+    endpoint: std::net::SocketAddr,
+    send: impl FnOnce(reqwest::Request) -> F,
+) -> bool {
+    let Some(request) = session.and_then(|session| desktop_open_request(client, session, endpoint))
     else {
         return false;
     };
-    let Ok(mut response) = client.execute(request).await else {
+    let Ok(mut response) = send(request).await else {
         return false;
     };
     if !response.status().is_success() {
@@ -272,38 +353,18 @@ async fn open_controller_request() -> bool {
         .await
         .is_some_and(|bytes| desktop_open_confirmed(&bytes))
 }
-fn notice(message: &str) {
-    #[cfg(windows)]
-    {
-        #[link(name = "user32")]
-        extern "system" {
-            fn MessageBoxW(
-                hwnd: *mut std::ffi::c_void,
-                text: *const u16,
-                title: *const u16,
-                kind: u32,
-            ) -> i32;
-        }
-        let text: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
-        let title: Vec<u16> = "dant".encode_utf16().chain(Some(0)).collect();
-        unsafe {
-            MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x30);
-        }
-    }
-    #[cfg(not(windows))]
-    eprintln!("{message}");
-}
-pub fn approved(app: &AppHandle) -> bool {
+pub fn approved<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     app.try_state::<DesktopExit>()
         .is_some_and(|state| state.approved.load(Ordering::SeqCst))
 }
 
 /// An external controller outlives the native process. Reopening the app must ask
 /// that same controller to restore the VM, without resuming paused task records.
-pub fn open_existing_controller(app: &AppHandle) {
+pub fn open_existing_controller<R: tauri::Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
+    let host = control(&app);
     tauri::async_runtime::spawn(async move {
-        if open_controller_request().await {
+        if open_controller_request(std::sync::Arc::clone(&host)).await {
             return;
         }
         crate::tray::restore(&app);
@@ -311,26 +372,97 @@ pub fn open_existing_controller(app: &AppHandle) {
         let message = crate::l10n::text(&crate::tray::language(&app),
             "The work computer could not be restored. dant remains open. Check Work computer before trying again.",
             "未能恢复工作电脑。dant 保持打开，请检查工作电脑后重试。");
-        notice(&message);
+        host.notice(&message);
     });
 }
 
 /// Called only after the controller's installation lease has confirmed paused
 /// work and suspended the VM. The helper's process handoff must not send it twice.
-pub fn prepared_update_exit(app: &AppHandle) {
+pub fn prepared_update_exit<R: tauri::Runtime>(app: &AppHandle<R>) {
+    prepared_update_exit_using(app, || control(app).exit(app));
+}
+fn prepared_update_exit_using<R: tauri::Runtime>(app: &AppHandle<R>, exit: impl FnOnce()) {
     let Some(state) = app.try_state::<DesktopExit>() else {
         return;
     };
     state.approved.store(true, Ordering::SeqCst);
     crate::tray::mark_exiting(app);
-    app.exit(0);
+    exit();
 }
-pub fn request_exit(app: &AppHandle) {
+
+trait DesktopEffects {
+    async fn exit_request(&self) -> ExitOutcome;
+    fn language(&self) -> String;
+    fn restore(&self);
+    fn failed(&self);
+    fn notice(&self, message: &str);
+    fn exit(&self);
+}
+
+struct NativeDesktop<'a, R: tauri::Runtime>(&'a AppHandle<R>);
+
+impl<R: tauri::Runtime> DesktopEffects for NativeDesktop<'_, R> {
+    async fn exit_request(&self) -> ExitOutcome {
+        let host = control(self.0);
+        let session_host = std::sync::Arc::clone(&host);
+        let session = tauri::async_runtime::spawn_blocking(move || session_host.session())
+            .await
+            .ok()
+            .flatten();
+        let Ok(client) = desktop_client() else {
+            return ExitOutcome::Rejected(ExitFailure::Unconfirmed);
+        };
+        let Some(request) = session.as_ref().and_then(|session| {
+            desktop_request(&client, session, DesktopAction::Exit, host.endpoint())
+        }) else {
+            return ExitOutcome::Rejected(ExitFailure::Unconfirmed);
+        };
+        execute_exit_request(&client, request).await
+    }
+    fn language(&self) -> String {
+        crate::tray::language(self.0)
+    }
+    fn restore(&self) {
+        crate::tray::restore(self.0);
+    }
+    fn failed(&self) {
+        let _ = self.0.emit_to("main", "dant-exit-failed", ());
+    }
+    fn notice(&self, message: &str) {
+        control(self.0).notice(message);
+    }
+    fn exit(&self) {
+        crate::tray::mark_exiting(self.0);
+        control(self.0).exit(self.0);
+    }
+}
+
+async fn finish_exit(state: &DesktopExit, host: &impl DesktopEffects) {
+    let response = host.exit_request().await;
+    state.pending.store(false, Ordering::SeqCst);
+    match response {
+        ExitOutcome::Confirmed { unsupported_notice } => {
+            if unsupported_notice {
+                host.notice(&crate::l10n::text(&host.language(),
+                "Work is paused. This computer connection does not provide a verified identity for suspending the whole virtual machine.",
+                "任务已暂停。此电脑连接缺少可验证的虚拟机管理信息，dant 无法挂起整台虚拟机。"));
+            }
+            state.approved.store(true, Ordering::SeqCst);
+            host.exit();
+        }
+        ExitOutcome::Rejected(failure) => {
+            host.restore();
+            host.failed();
+            host.notice(&exit_failure_message(&host.language(), failure));
+        }
+    }
+}
+pub fn request_exit<R: tauri::Runtime>(app: &AppHandle<R>) {
     let Some(state) = app.try_state::<DesktopExit>() else {
         return;
     };
     if state.approved.load(Ordering::SeqCst) {
-        app.exit(0);
+        control(app).exit(app);
         return;
     }
     if state.pending.swap(true, Ordering::SeqCst) {
@@ -338,48 +470,10 @@ pub fn request_exit(app: &AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let session = tauri::async_runtime::spawn_blocking(|| {
-            crate::transport::local_json(crate::protocol::session_path(), None, None)
-        })
-        .await
-        .ok()
-        .flatten();
-        let client = desktop_client();
-        let response = match client {
-            Ok(client) => match session
-                .as_ref()
-                .and_then(|session| desktop_request(&client, session, DesktopAction::Exit))
-            {
-                Some(request) => execute_exit_request(&client, request).await,
-                None => ExitOutcome::Rejected(ExitFailure::Unconfirmed),
-            },
-            Err(_) => ExitOutcome::Rejected(ExitFailure::Unconfirmed),
-        };
         let Some(state) = app.try_state::<DesktopExit>() else {
             return;
         };
-        state.pending.store(false, Ordering::SeqCst);
-        if let ExitOutcome::Confirmed { unsupported_notice } = response {
-            if unsupported_notice {
-                let chinese = crate::tray::language(&app).starts_with("zh");
-                notice(if chinese {
-                    "任务已暂停。此电脑连接缺少可验证的虚拟机管理信息，dant 无法挂起整台虚拟机。"
-                } else {
-                    "Work is paused. This computer connection does not provide a verified identity for suspending the whole virtual machine."
-                });
-            }
-            state.approved.store(true, Ordering::SeqCst);
-            crate::tray::mark_exiting(&app);
-            app.exit(0);
-        } else {
-            crate::tray::restore(&app);
-            let _ = app.emit_to("main", "dant-exit-failed", ());
-            let failure = match response {
-                ExitOutcome::Rejected(failure) => failure,
-                ExitOutcome::Confirmed { .. } => ExitFailure::Unconfirmed,
-            };
-            notice(&exit_failure_message(&crate::tray::language(&app), failure));
-        }
+        finish_exit(&state, &NativeDesktop(&app)).await;
     });
 }
 
