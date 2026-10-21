@@ -78,6 +78,37 @@ class GuestServiceTests(unittest.TestCase):
             return types.SimpleNamespace(returncode=code)
         return run
 
+    def bus_replies(self, user=False, object_reply=None, property_reply=b'a(sb) 0\n',
+                    object_code=0, property_code=0, error=None):
+        object_path = '/org/freedesktop/systemd1/unit/fixture_2dguest_2eservice'
+        if object_reply is None:
+            object_reply = ('o "' + object_path + '"\n').encode()
+        scope = '--user' if user else '--system'
+        unit = proof.USER_UNIT if user else proof.SYSTEM_UNIT
+        prefix = ['busctl', scope, '--no-pager']
+        calls = {
+            tuple(prefix + ['call', 'org.freedesktop.systemd1', '/org/freedesktop/systemd1',
+                            'org.freedesktop.systemd1.Manager', 'GetUnit', 's', unit]): (object_reply, object_code),
+            tuple(prefix + ['get-property', 'org.freedesktop.systemd1', object_path,
+                            'org.freedesktop.systemd1.Service', 'EnvironmentFiles']): (property_reply, property_code),
+        }
+        def run(command, **options):
+            if command[0] == 'systemctl':
+                return self.fake_run(command, **options)
+            self.calls.append(command)
+            sink = options.pop('stdout')
+            self.sinks.append(sink)
+            self.assertFalse(sink.closed)
+            self.assertEqual(options, {'stdin': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL,
+                                       'timeout': proof.SERVICE_TIMEOUT, 'check': False})
+            self.assertIn(tuple(command), calls)
+            if error is not None:
+                raise error
+            raw, code = calls[tuple(command)]
+            sink.write(raw)
+            return types.SimpleNamespace(returncode=code)
+        return run
+
     def write_process(self, script, environment, port, unit):
         if unit == proof.USER_UNIT:
             self.user['Environment'] = ' '.join(shlex.quote(key + '=' + value) for key, value in environment.items())
@@ -122,6 +153,26 @@ class GuestServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-conflict$'):
             self.observer.system_available(self.configuration)
 
+    def test_foundation_seed_still_requires_runtime_socket_ownership_and_exact_source(self):
+        historical = (ROOT / 'tests/vm/fixtures/legacy-guest-foundation.txt').read_bytes()
+        self.assertEqual(hashlib.sha256(historical).hexdigest(),
+                         '7826248268557a23c549addc0de0a8ec22933efde2b04528fa06f7daa70c31a5')
+        self.seed.write_bytes(historical)
+        observed_port = 5481
+        self.write_process(self.seed, {}, observed_port, proof.SYSTEM_UNIT)
+        self.observer.system_available(self.configuration)
+        self.configuration['guestPort'] = observed_port
+        with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-conflict$'):
+            self.observer.system_available(self.configuration)
+        self.configuration['guestPort'] = 4321
+        self.links['3'] = 'socket:[88]'
+        with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+            self.observer.system_available(self.configuration)
+        self.links['3'] = 'socket:[99]'
+        self.seed.write_bytes(historical + b'\n# unrecognized modification\n')
+        with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+            self.observer.system_available(self.configuration)
+
     def test_declared_collision_is_rejected_even_when_system_unit_is_stopped(self):
         self.system.update(MainPID='0', ActiveState='inactive', ControlGroup='', Environment='DANT_GUEST_PORT=4320')
         self.observer.system_available(self.configuration)
@@ -139,6 +190,89 @@ class GuestServiceTests(unittest.TestCase):
         self.write_process(self.seed, {'DANT_GUEST_PORT': '4320'}, 4320, proof.SYSTEM_UNIT)
         self.observer.readlink = lambda path: self.links['exe'] if path.name == 'exe' else self.fail('unrelated FD ownership was unnecessarily read')
         self.observer.system_available(self.configuration)
+
+    def test_systemd_255_omitted_empty_array_requires_typed_bus_proof(self):
+        self.system.pop('EnvironmentFiles')
+        self.observer.run = self.bus_replies()
+        self.observer.system_available(self.configuration)
+        bus_calls = [command for command in self.calls if command[0] == 'busctl']
+        self.assertEqual(len(bus_calls), 4)
+        self.assertEqual(sum('GetUnit' in command for command in bus_calls), 2)
+
+    def test_omitted_empty_array_uses_the_user_bus_for_user_ready(self):
+        self.write_process(self.candidate, self.user_environment(), 4321, proof.USER_UNIT)
+        self.namespace_listener(inode='99')
+        self.user.pop('EnvironmentFiles')
+        self.observer.run = self.bus_replies(user=True)
+        self.observer.user_ready(self.configuration)
+        self.assertTrue(all(command[1] == '--user' for command in self.calls if command[0] == 'busctl'))
+
+    def test_absent_unit_needs_complete_inactive_proof_without_querying_a_missing_service(self):
+        self.system.update(LoadState='not-found', ActiveState='inactive', MainPID='0', ControlGroup='')
+        self.system.pop('EnvironmentFiles')
+        self.observer.system_available(self.configuration)
+        self.assertTrue(all(command[0] == 'systemctl' for command in self.calls))
+
+    def test_missing_array_never_accepts_failed_unknown_or_nonempty_bus_properties(self):
+        cases = (
+            {'object_code': 1},
+            {'object_reply': b''},
+            {'object_reply': b's "/org/freedesktop/systemd1/unit/foreign"\n'},
+            {'object_reply': b'o "/private/path"\n'},
+            {'object_reply': b'o "/org/freedesktop/systemd1/unit/foreign" extra\n'},
+            {'object_reply': b'o "unterminated'},
+            {'object_reply': b'\xff'},
+            {'object_reply': b'x' * (proof.SERVICE_BYTES + 1)},
+            {'property_code': 1},
+            {'property_reply': b''},
+            {'property_reply': b's ""\n'},
+            {'property_reply': b'a(sb) 1 "/private-env" false\n'},
+            {'property_reply': b'a(sb) 00\n'},
+            {'property_reply': b'a(sb) 0 extra\n'},
+            {'property_reply': b'x' * (proof.SERVICE_BYTES + 1)},
+        )
+        self.system.pop('EnvironmentFiles')
+        for index, replies in enumerate(cases):
+            with self.subTest(case=index):
+                self.observer.run = self.bus_replies(**replies)
+                with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+                    self.observer.system_available(self.configuration)
+
+    def test_unavailable_bus_proofs_keep_the_fixed_error_and_close_captures(self):
+        self.system.pop('EnvironmentFiles')
+        for error in (FileNotFoundError('private executable'), PermissionError('private path'),
+                      subprocess.TimeoutExpired('private command', proof.SERVICE_TIMEOUT)):
+            with self.subTest(error=type(error).__name__):
+                self.observer.run = self.bus_replies(error=error)
+                with patch.object(proof, 'GuestServiceObserver', return_value=self.observer):
+                    with self.assertRaisesRegex(fixtures.installer.InstallError, '^guest-endpoint-unconfirmed$'):
+                        fixtures.installer.assert_guest_endpoint(self.configuration)
+                self.assertTrue(all(sink.closed for sink in self.sinks))
+
+    def test_missing_array_does_not_weaken_invalid_or_incomplete_unit_snapshots(self):
+        cases = (
+            {'LoadState': 'future'},
+            {'ActiveState': 'activating'},
+            {'MainPID': 'invalid'},
+            {'LoadState': 'not-found', 'ActiveState': 'inactive', 'MainPID': '1', 'ControlGroup': ''},
+            {'LoadState': 'not-found', 'ActiveState': 'active', 'MainPID': '0', 'ControlGroup': ''},
+            {'LoadState': 'not-found', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': '/foreign'},
+            {'LoadState': 'not-found', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': '',
+             'Environment': 'PRIVATE=value'},
+            {'Unexpected': ''},
+        )
+        for index, changes in enumerate(cases):
+            with self.subTest(case=index):
+                self.system = dict(self.service(proof.SYSTEM_UNIT), **changes)
+                self.system.pop('EnvironmentFiles')
+                self.observer.run = self.fake_run
+                with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+                    self.observer.system_available(self.configuration)
+        self.system = self.service(proof.SYSTEM_UNIT)
+        self.system.pop('EnvironmentFiles')
+        self.system.pop('Environment')
+        with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+            self.observer.system_available(self.configuration)
 
     def test_unknown_seed_and_process_or_service_replacement_never_pass(self):
         for mode in ('source', 'uid', 'argv', 'exe', 'cgroup', 'stat', 'service-race', 'pid-reuse', 'unowned-socket', 'wildcard'):

@@ -51,6 +51,8 @@ SQLite 使用固定版本的纯 Go `modernc.org/sqlite`、有界繁忙等待、`
 4. 生成完整私有恢复归档，在离线 `prepare-worker` 打开或更新已有数据前认证归档。准备不启动模型、调度或 Telegram 交付。
 5. 将成功准备绑定到准确尝试、源码、bundle、数据／工作区根和备份；仅激活该 Worker，确认实际角色、协议、版本及源码后才标记部署完成。
 
+桌面 bridge 检查会确认服务、进程及监听 socket 的归属。如果 `systemctl show` 省略空的 `EnvironmentFiles` 数组，观察器会通过 systemd 的 D-Bus 管理器解析服务对象，并要求查询成功且返回有类型的空数组。缺失、无法读取、格式错误或非空属性都不能被当作空配置。这些只读查询无需重启服务或管理员确认。
+
 `install-attempt.json` 同时约束独立服务启动与重启。`reserving`、`stopping` 和 `preparing` 不能打开在线服务；`activating` 要求匹配的 `worker-preparation.json` 与未变化的恢复归档；`committed` 保留准备证明，同时允许正常备份保留策略。受管理的 `app` 链接必须指向经验证的发行目录。格式错误或不完整日志不能成为首次安装例外。
 
 失败或未知操作保留日志与归档，不授予重放权限，也不能对已准备数据再启动另一个执行器。显式 `reconcile-stopped` 操作仅接受符合条件的准备前中断，要求准确尝试 ID、原日志哈希、经验证的源码清单、停止证明和安装锁。创建新尝试前保留原始证据；自动连接检查不会调用它。

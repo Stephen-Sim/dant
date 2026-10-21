@@ -18,10 +18,18 @@ SCRIPT_BYTES = 256 * 1024
 SYSTEM_UNIT = 'dant-guest.service'
 USER_UNIT = 'dant-guest-local.service'
 SERVICE_FIELDS = ('LoadState', 'ActiveState', 'MainPID', 'ControlGroup', 'Environment', 'EnvironmentFiles')
-# Exact maintained vm/guest.py bytes: Beta14 f3f0925 and bootstrap split 3e43f70.
+SYSTEMD_BUS_NAME = 'org.freedesktop.systemd1'
+SYSTEMD_MANAGER_PATH = '/org/freedesktop/systemd1'
+SYSTEMD_MANAGER_INTERFACE = 'org.freedesktop.systemd1.Manager'
+SYSTEMD_SERVICE_INTERFACE = 'org.freedesktop.systemd1.Service'
+UNIT_OBJECT_PATH = re.compile(r'/org/freedesktop/systemd1/unit/[A-Za-z0-9_]{1,768}\Z')
+# Exact maintained vm/guest.py bytes: foundation 28d96290, Beta14 f3f0925,
+# and bootstrap split 3e43f70. Historical seeds remain separately proven by
+# their process identity and owned listening socket, never by hash alone.
 # Missing legacy port environment is resolved from its owned listening socket,
 # never from the new candidate's default protocol.
 KNOWN_SEED_SOURCES = frozenset({
+    '7826248268557a23c549addc0de0a8ec22933efde2b04528fa06f7daa70c31a5',
     '62cc445b719ba49e790b0748a814836322f4e9bc1ffb059340990421b4288fd8',
     '7e145a071c10999ae901419ce2d81b52aadc2b6afa66684ae816f044a09a1ba8',
 })
@@ -93,11 +101,7 @@ class GuestServiceObserver:
         self.seed = pathlib.Path('/opt/dant/guest.py') if seed is None else pathlib.Path(seed)
         self.readlink = os.readlink if readlink is None else readlink
 
-    def service(self, user=False):
-        command = ['systemctl'] + (['--user'] if user else [])
-        command += ['show', USER_UNIT if user else SYSTEM_UNIT]
-        command += ['--property=' + field for field in SERVICE_FIELDS]
-        command += ['--no-pager']
+    def query(self, command):
         # Native output never accumulates in a pipe-backed Python heap. The
         # private anonymous file closes even on timeout; only the bounded prefix
         # may enter the parser, and no native text is copied into diagnostics.
@@ -108,16 +112,56 @@ class GuestServiceObserver:
             raw = output.read(SERVICE_BYTES + 1)
         if len(raw) > SERVICE_BYTES:
             unconfirmed()
+        return reply.returncode, raw
+
+    def assert_empty_environment_files(self, user):
+        prefix = ['busctl', '--user' if user else '--system', '--no-pager']
+        status, raw = self.query(prefix + ['call', SYSTEMD_BUS_NAME, SYSTEMD_MANAGER_PATH,
+            SYSTEMD_MANAGER_INTERFACE, 'GetUnit', 's', USER_UNIT if user else SYSTEM_UNIT])
+        if status != 0:
+            unconfirmed()
+        try:
+            identity = shlex.split(raw.decode('utf-8'))
+        except (UnicodeError, ValueError):
+            unconfirmed()
+        if len(identity) != 2 or identity[0] != 'o' or UNIT_OBJECT_PATH.fullmatch(identity[1]) is None:
+            unconfirmed()
+        status, raw = self.query(prefix + ['get-property', SYSTEMD_BUS_NAME, identity[1],
+            SYSTEMD_SERVICE_INTERFACE, 'EnvironmentFiles'])
+        # systemctl v255 omits this empty array even with --all. Missing text
+        # is never proof: require the actual Service property and exact type.
+        if status != 0 or raw.strip() != b'a(sb) 0':
+            unconfirmed()
+
+    def service(self, user=False):
+        command = ['systemctl'] + (['--user'] if user else [])
+        command += ['show', USER_UNIT if user else SYSTEM_UNIT]
+        command += ['--property=' + field for field in SERVICE_FIELDS]
+        command += ['--no-pager']
+        status, raw = self.query(command)
         fields = environment_values(raw.decode('utf-8').replace('\n', '\x00'), 'nul')
-        if set(fields) != set(SERVICE_FIELDS) or fields['EnvironmentFiles']:
+        expected = set(SERVICE_FIELDS)
+        missing_environment_files = set(fields) == expected - {'EnvironmentFiles'}
+        if set(fields) != expected and not missing_environment_files:
             unconfirmed()
         pid = fields['MainPID']
         if re.fullmatch(r'0|[1-9][0-9]{0,9}', pid) is None or int(pid) > 2147483647:
             unconfirmed()
         if fields['LoadState'] == 'not-found':
-            if reply.returncode not in (0, 1) or fields['ActiveState'] != 'inactive' or pid != '0' or fields['ControlGroup']:
+            if status not in (0, 1) or fields['ActiveState'] != 'inactive' or pid != '0' or fields['ControlGroup']:
                 unconfirmed()
-        elif reply.returncode != 0 or fields['LoadState'] != 'loaded' or fields['ActiveState'] not in ('active', 'inactive', 'failed'):
+        elif status != 0 or fields['LoadState'] != 'loaded' or fields['ActiveState'] not in ('active', 'inactive', 'failed'):
+            unconfirmed()
+        if missing_environment_files:
+            if fields['LoadState'] == 'not-found':
+                # The complete inactive/not-found projection proves absence;
+                # querying its nonexistent Service interface cannot add proof.
+                if fields['Environment']:
+                    unconfirmed()
+            else:
+                self.assert_empty_environment_files(user)
+            fields['EnvironmentFiles'] = ''
+        if fields['EnvironmentFiles']:
             unconfirmed()
         return fields
 
