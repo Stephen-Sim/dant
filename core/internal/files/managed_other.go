@@ -29,4 +29,6 @@ func openRegular(name string) (*os.File, error) {
 
 func retryableRename(error) bool { return false }
 
-func openedSingleLink(_ *os.File, info fs.FileInfo) bool { return singleLink("", info) }
+func openedSingleLink(_ interface{ Fd() uintptr }, info fs.FileInfo) bool {
+	return singleLink("", info)
+}

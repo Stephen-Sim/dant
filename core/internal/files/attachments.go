@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"math"
 	"os"
@@ -155,7 +156,21 @@ func writeExclusive(name string, data []byte) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, err = file.Write(data)
+	return writeExclusiveFile(file, data)
+}
+
+type attachmentWriteFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+func writeExclusiveFile(file attachmentWriteFile, data []byte) (fs.FileInfo, error) {
+	count, err := file.Write(data)
+	if err == nil && count != len(data) {
+		err = io.ErrShortWrite
+	}
 	if err == nil {
 		err = file.Sync()
 	}

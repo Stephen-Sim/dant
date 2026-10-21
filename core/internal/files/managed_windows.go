@@ -44,7 +44,7 @@ func retryableRename(err error) bool {
 	return errors.Is(err, windows.ERROR_ACCESS_DENIED) || errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }
 
-func openedSingleLink(file *os.File, _ fs.FileInfo) bool {
+func openedSingleLink(file interface{ Fd() uintptr }, _ fs.FileInfo) bool {
 	var info windows.ByHandleFileInformation
 	return windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info) == nil &&
 		info.NumberOfLinks == 1 &&

@@ -352,31 +352,12 @@ func (managed *ManagedRoot) AppendFile(ctx context.Context, name string, data []
 		return err
 	}
 	defer file.Close()
-
-	opened, err := file.Stat()
-	if err != nil || !sameFile(before, opened) || !openedSingleLink(file, opened) ||
-		!managed.Unchanged() || !guardsUnchanged(guards) {
-		return ErrFileChanged
+	write := logWrite{
+		file: file, before: before,
+		current:   func() (fs.FileInfo, error) { return root.Lstat(leaf) },
+		unchanged: func() bool { return managed.Unchanged() && guardsUnchanged(guards) },
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	count, err := file.Write(data)
-	if err != nil {
-		return err
-	}
-	if count != len(data) {
-		return io.ErrShortWrite
-	}
-
-	after, err := file.Stat()
-	current, pathErr := root.Lstat(leaf)
-	if err != nil || pathErr != nil || after.Size() != opened.Size()+int64(count) ||
-		!os.SameFile(opened, after) || !os.SameFile(opened, current) ||
-		!openedSingleLink(file, after) || !managed.Unchanged() || !guardsUnchanged(guards) {
-		return ErrFileChanged
-	}
-	return nil
+	return write.append(ctx, data)
 }
 
 // ResetLog deliberately retains the existing inode used by inherited native
@@ -400,27 +381,10 @@ func (managed *ManagedRoot) ResetLog(ctx context.Context, name string, data []by
 		return err
 	}
 	defer file.Close()
-
-	opened, err := file.Stat()
-	if err != nil || !sameFile(before, opened) || !openedSingleLink(file, opened) || !managed.Unchanged() {
-		return ErrFileChanged
+	write := logWrite{
+		file: file, before: before,
+		current:   func() (fs.FileInfo, error) { return managed.root.Lstat(name) },
+		unchanged: managed.Unchanged,
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := file.Truncate(0); err != nil {
-		return err
-	}
-	count, err := file.WriteAt(data, 0)
-	if err != nil {
-		return err
-	}
-	if count != len(data) {
-		return io.ErrShortWrite
-	}
-	current, err := managed.root.Lstat(name)
-	if err != nil || !os.SameFile(opened, current) || !openedSingleLink(file, current) || !managed.Unchanged() {
-		return ErrFileChanged
-	}
-	return nil
+	return write.reset(ctx, data)
 }
