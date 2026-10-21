@@ -88,5 +88,8 @@ func PauseRestoredDatabase(ctx context.Context, file string) error {
 	if err != nil || !os.SameFile(before, after) || linked(after) || !singleLink(file, after) {
 		return ErrInvalid
 	}
+	if err = validateMetadata(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
 }

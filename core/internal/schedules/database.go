@@ -18,6 +18,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const maxRevision int64 = 1<<53 - 1
+
 type directory struct {
 	path     string
 	identity fs.FileInfo
@@ -271,6 +273,19 @@ func validateSchema(ctx context.Context, tx *sql.Tx) error {
 			}
 		}
 	}
+	return validateMetadata(ctx, tx)
+}
+
+func validateMetadata(ctx context.Context, tx *sql.Tx) error {
+	var invalid bool
+	err := tx.QueryRowContext(ctx, `SELECT
+ NOT EXISTS(SELECT 1 FROM schedule_meta WHERE id=1) OR
+ EXISTS(SELECT 1 FROM schedule_meta WHERE id<>1 OR
+ typeof(revision)<>'integer' OR revision<0 OR revision>? OR
+ typeof(imported)<>'integer' OR imported NOT IN (0,1))`, maxRevision).Scan(&invalid)
+	if err != nil || invalid {
+		return ErrInvalid
+	}
 	return nil
 }
 
@@ -290,13 +305,16 @@ func (db *Database) transaction(ctx context.Context, operation func(*sql.Tx) err
 		if err = operation(tx); err != nil {
 			return err
 		}
+		if err = validateMetadata(ctx, tx); err != nil {
+			return err
+		}
 		return tx.Commit()
 	})
 }
 
 func revision(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var value int64
-	if err := tx.QueryRowContext(ctx, "SELECT revision FROM schedule_meta WHERE id=1").Scan(&value); err != nil || value < 0 || value > 9007199254740991 {
+	if err := tx.QueryRowContext(ctx, "SELECT revision FROM schedule_meta WHERE id=1").Scan(&value); err != nil || value < 0 || value > maxRevision {
 		return 0, ErrInvalid
 	}
 	return value, nil

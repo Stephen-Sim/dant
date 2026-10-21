@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -58,9 +59,9 @@ func TestOutboundPumpConsumesWakeAndTimerAndJoinsOnCancellation(t *testing.T) {
 		gateway := fixture.Gateway
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		observations := 0
+		var observations atomic.Int64
 		gateway.options.Now = func() time.Time {
-			observations++
+			observations.Add(1)
 			return time.UnixMilli(fixture.Now.Load())
 		}
 		done := make(chan struct{})
@@ -69,16 +70,16 @@ func TestOutboundPumpConsumesWakeAndTimerAndJoinsOnCancellation(t *testing.T) {
 			gateway.outboundLoop(ctx)
 		}()
 		synctest.Wait()
-		before := observations
+		before := observations.Load()
 		gateway.Wake()
 		synctest.Wait()
-		if observations <= before {
+		if observations.Load() <= before {
 			t.Fatal("outbound wake did not recheck persisted intent")
 		}
-		before = observations
+		before = observations.Load()
 		time.Sleep(30 * time.Second)
 		synctest.Wait()
-		if observations <= before {
+		if observations.Load() <= before {
 			t.Fatal("outbound timer did not recheck persisted intent")
 		}
 		cancel()
