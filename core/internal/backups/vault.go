@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,6 +70,16 @@ type Vault struct {
 	staging    string
 	protection platform.SecretProtection
 	transform  func(context.Context, TransformRequest) error
+	entropy    io.Reader
+	create     func(string, int, fs.FileMode) (vaultWriteFile, error)
+}
+
+type vaultWriteFile interface {
+	Write([]byte) (int, error)
+	Stat() (fs.FileInfo, error)
+	Truncate(int64) error
+	Sync() error
+	Close() error
 }
 
 type inspectedBackup struct {
@@ -119,7 +130,16 @@ func NewVault(options VaultOptions) (*Vault, error) {
 		options.Transform = func(ctx context.Context, request TransformRequest) error { return Transform(ctx, executable, request) }
 	}
 
-	return &Vault{directory: directory, staging: staging, protection: options.Protection, transform: options.Transform}, nil
+	return &Vault{
+		directory:  directory,
+		staging:    staging,
+		protection: options.Protection,
+		transform:  options.Transform,
+		entropy:    rand.Reader,
+		create: func(name string, flags int, mode fs.FileMode) (vaultWriteFile, error) {
+			return os.OpenFile(name, flags, mode)
+		},
+	}, nil
 }
 
 func (vault *Vault) Protected() bool { return vault.protection != nil }
@@ -191,20 +211,23 @@ func (vault *Vault) stage(ctx context.Context, input io.Reader, reserve bool) (p
 		return privateStage{}, 0, ErrInvalid
 	}
 	name, _ := stageName(vault.staging, NewID())
-	file, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	file, err := vault.create(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return privateStage{}, 0, ErrInvalid
 	}
 	identity, err := file.Stat()
 	if err != nil {
 		file.Close()
-		os.Remove(name)
+		// A reused name cannot be cleaned up without the captured file identity.
 		return privateStage{}, 0, ErrInvalid
 	}
 	stage := privateStage{file: name, identity: identity}
 	keep := false
+	closed := false
 	defer func() {
-		file.Close()
+		if !closed {
+			file.Close()
+		}
 		if !keep {
 			_ = cleanStage(stage)
 		}
@@ -229,6 +252,11 @@ func (vault *Vault) stage(ctx context.Context, input io.Reader, reserve bool) (p
 	}
 
 	if file.Sync() != nil {
+		return privateStage{}, 0, ErrInvalid
+	}
+	err = file.Close()
+	closed = true
+	if err != nil {
 		return privateStage{}, 0, ErrInvalid
 	}
 	keep = true
@@ -360,12 +388,12 @@ func (vault *Vault) Save(ctx context.Context, input io.Reader, metadata Metadata
 		return ErrInvalid
 	}
 	key := make([]byte, gcmKeyBytes)
+	defer clear(key)
 	nonce := make([]byte, gcmNonceBytes)
-	if _, err := rand.Read(key); err != nil {
+	if _, err := io.ReadFull(vault.entropy, key); err != nil {
 		return ErrInvalid
 	}
-	defer clear(key)
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := io.ReadFull(vault.entropy, nonce); err != nil {
 		return ErrInvalid
 	}
 	keyText := []byte(hex.EncodeToString(key))
@@ -388,13 +416,19 @@ func (vault *Vault) Save(ctx context.Context, input io.Reader, metadata Metadata
 		return err
 	}
 	temporary := filepath.Join(vault.directory, "."+NewID()+".partial")
-	output, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	output, err := vault.create(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return ErrInvalid
 	}
+	outputIdentity, err := output.Stat()
+	if err != nil {
+		output.Close()
+		return ErrInvalid
+	}
+	publication := privateStage{file: temporary, identity: outputIdentity}
 	defer func() {
 		output.Close()
-		os.Remove(temporary)
+		_ = cleanStage(publication)
 	}()
 	prefix := make([]byte, len(localMagic)+4)
 	copy(prefix, localMagic)
@@ -416,11 +450,15 @@ func (vault *Vault) Save(ctx context.Context, input io.Reader, metadata Metadata
 		return ErrInvalid
 	}
 
-	if output.Sync() != nil || output.Close() != nil {
+	if output.Sync() != nil {
+		return ErrInvalid
+	}
+	written, err := output.Stat()
+	if err != nil || !os.SameFile(outputIdentity, written) || written.Size() != int64(len(prefix)+len(aad))+count+gcmTagBytes || output.Close() != nil {
 		return ErrInvalid
 	}
 
-	if err := files.RenameManaged(ctx, temporary, destination); err != nil {
+	if err := files.RenameManagedFile(ctx, temporary, destination, written); err != nil {
 		return ErrInvalid
 	}
 

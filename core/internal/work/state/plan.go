@@ -3,7 +3,6 @@ package state
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 	"unicode/utf16"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
@@ -39,22 +38,6 @@ func SliceText(value string, limit int) string {
 		return value
 	}
 	return string(utf16.Decode(units[:limit]))
-}
-
-func visible(
-	value string,
-	limit int,
-	redact func(string) string) string {
-	if redact != nil {
-		value = redact(value)
-	}
-	value = strings.Map(func(character rune) rune {
-		if character < 0x20 || character == 0x7f {
-			return ' '
-		}
-		return character
-	}, value)
-	return SliceText(contracts.TrimText(value), limit)
 }
 
 func publicText(

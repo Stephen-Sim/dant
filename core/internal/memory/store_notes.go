@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
-	"github.com/Stephen-Sim/dant/core/internal/files"
 )
 
 func (s *Store) readMarkdown(name string) (string, error) {
@@ -20,14 +19,14 @@ func (s *Store) readMarkdown(name string) (string, error) {
 		return "", ErrInvalidMemory
 	}
 	file := filepath.Join(s.dir, name)
-	before, err := os.Lstat(file)
+	before, err := s.markdown.lstat(file)
 	if err != nil {
 		return "", err
 	}
 	if !before.Mode().IsRegular() || isLinked(before) || !oneLink(file, before) || before.Size() > MaxNoteBytes {
 		return "", ErrInvalidMemory
 	}
-	handle, err := os.Open(file)
+	handle, err := s.markdown.open(file)
 	if err != nil {
 		return "", err
 	}
@@ -58,28 +57,31 @@ func (s *Store) writeMarkdown(ctx context.Context, name, text string) error {
 		return err
 	}
 	file := filepath.Join(s.dir, name)
-	if info, err := os.Lstat(file); err == nil {
+	if info, err := s.markdown.lstat(file); err == nil {
 		if !info.Mode().IsRegular() || isLinked(info) || !oneLink(file, info) {
 			return ErrInvalidSnapshot
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return files.WriteAtomic(ctx, file, []byte(text), 0600)
+	return s.markdown.writeAtomic(ctx, file, []byte(text), 0600)
 }
 
 func (s *Store) backupNotes(notes []Note) error {
 	directory := filepath.Join(s.dir, "markdown-backup-"+newUUID())
-	if err := os.Mkdir(directory, 0700); err != nil {
+	if err := s.markdown.mkdir(directory, 0700); err != nil {
 		return err
 	}
 	for _, note := range notes {
 		file := filepath.Join(directory, note.Name)
-		handle, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		handle, err := s.markdown.create(file)
 		if err != nil {
 			return err
 		}
-		_, err = io.WriteString(handle, note.Text)
+		written, err := io.WriteString(handle, note.Text)
+		if err == nil && written != len(note.Text) {
+			err = io.ErrShortWrite
+		}
 		if err == nil {
 			err = handle.Sync()
 		}

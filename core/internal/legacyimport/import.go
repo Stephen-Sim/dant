@@ -2,7 +2,6 @@ package legacyimport
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/Stephen-Sim/dant/core/internal/ownership"
-	"github.com/google/uuid"
 )
 
 func importPaths(options Options) (Options, error) {
@@ -112,73 +110,5 @@ func Import(ctx context.Context, options Options) (result Result, failure error)
 		return Result{}, ErrConflict
 	}
 
-	id, err := uuid.NewRandom()
-	if err != nil {
-		return Result{}, ErrUnconfirmed
-	}
-	intent := journal{
-		SchemaVersion: 1, AttemptID: id.String(), ManifestID: value.id,
-		SourceDir: options.SourceDir, TargetDir: options.TargetDir,
-		ManifestSHA256: hash(value.manifestRaw), SourceStateSHA256: hash(value.stateRaw), Files: value.files,
-	}
-	encodedIntent, err := json.Marshal(intent)
-	if err != nil || len(encodedIntent) > receiptMaxBytes {
-		return Result{}, ErrCapacity
-	}
-	if err := target.exclusive(ctx, journalName, encodedIntent); err != nil {
-		return Result{}, err
-	}
-
-	if err := target.exclusive(ctx, originalManifestName, value.manifestRaw); err != nil {
-		return Result{}, err
-	}
-	if err := target.exclusive(ctx, originalStateName, value.stateRaw); err != nil {
-		return Result{}, err
-	}
-
-	mapped, archived, warnings, err := value.archive(ctx, target, options.TargetDir)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := current(); err != nil {
-		return Result{}, err
-	}
-	state, err := value.transform(mapped, warnings)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := target.exclusive(ctx, stateName, state); err != nil {
-		return Result{}, err
-	}
-
-	proof := importProof{
-		SchemaVersion: 1, AttemptID: intent.AttemptID, JournalSHA256: hash(encodedIntent),
-		StateSHA256: hash(state), Files: archived,
-	}
-	receipt := copyObject(value.manifest)
-	receipt["warnings"] = wire(warnings)
-	receipt["proof"] = wire(proof)
-	encodedReceipt, err := json.Marshal(receipt)
-	if err != nil || len(encodedReceipt) > receiptMaxBytes {
-		return Result{}, ErrCapacity
-	}
-	if err := target.exclusive(ctx, receiptName, encodedReceipt); err != nil {
-		return Result{}, err
-	}
-
-	if err := value.verifyOutputs(ctx, options, target, intent, proof); err != nil {
-		return Result{}, err
-	}
-	if err := current(); err != nil {
-		return Result{}, err
-	}
-
-	complete := completion{
-		SchemaVersion: 1, AttemptID: intent.AttemptID,
-		JournalSHA256: hash(encodedIntent), ReceiptSHA256: hash(encodedReceipt),
-	}
-	if err := target.exclusive(ctx, completionName, wire(complete)); err != nil {
-		return Result{}, err
-	}
-	return Result{OK: true, Files: len(archived), Unavailable: len(warnings)}, nil
+	return value.publishImport(ctx, options, target, current, target.exclusive)
 }

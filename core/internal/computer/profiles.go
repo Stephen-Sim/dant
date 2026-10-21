@@ -82,13 +82,17 @@ func DefaultProfileRegistry(home string, environment map[string]string) string {
 }
 
 func CurrentProfileOwner() (string, error) {
-	account, err := user.Current()
+	return readProfileOwner(runtime.GOOS, user.Current)
+}
+
+func readProfileOwner(goos string, current func() (*user.User, error)) (string, error) {
+	account, err := current()
 	if err != nil {
 		return "", ErrBinding
 	}
 	uid := int64(-1)
 	username := account.Username
-	if runtime.GOOS != "windows" {
+	if contracts.RuntimeOperatingSystem(goos) != contracts.RuntimeOperatingSystemWindows {
 		uid, err = strconv.ParseInt(account.Uid, 10, 64)
 		if err != nil {
 			return "", ErrBinding

@@ -63,7 +63,14 @@ func TestManagedRootRejectsReplacedDirectory(t *testing.T) {
 	}
 	defer root.Close()
 	if err := os.Rename(directory, filepath.Join(parent, "original")); err != nil {
-		t.Skipf("platform forbids rename of held directory: %v", err)
+		if !directoryRenameDenied(err) {
+			t.Fatal("directory rename failed without a confirmed ownership fence", err)
+		}
+		data, readErr := root.ReadFile(t.Context(), "result.txt", 100)
+		if readErr != nil || string(data) != "original" || !root.Unchanged() {
+			t.Fatal("OS ownership fence did not retain the opened original directory", readErr)
+		}
+		return
 	}
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)

@@ -2,7 +2,6 @@ package voice
 
 import (
 	"encoding/json"
-	"strconv"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
@@ -21,7 +20,6 @@ func objectField(object contracts.RawObject, key string) contracts.RawObject {
 	return value
 }
 
-func fmtInt(value int) string { return strconv.Itoa(value) }
 func rawValue(value any) json.RawMessage {
 	raw, err := json.Marshal(value)
 	if err != nil {

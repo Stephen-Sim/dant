@@ -9,8 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"os/user"
 	"time"
 
 	"github.com/Stephen-Sim/dant/core/internal/app"
@@ -45,6 +43,18 @@ type serviceFactory func(context.Context, config.Startup, string) (service, erro
 // Child roles use their own fixed argument parser and never construct a live
 // Controller or Engine as a side effect.
 func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
+	return runApplication(ctx, args, input, output, newProcessHost(), assembleService, prepareWorker)
+}
+
+func runApplication(
+	ctx context.Context,
+	args []string,
+	input io.Reader,
+	output io.Writer,
+	host processHost,
+	construct serviceFactory,
+	prepare func(context.Context, config.Startup) error,
+) error {
 	if err := buildinfo.Validate(); err != nil {
 		return err
 	}
@@ -59,7 +69,7 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 			}
 			return backups.RunTransform(ctx, input, output)
 		case "--role=" + string(config.RoleBackupCLI):
-			home, err := os.UserHomeDir()
+			home, err := host.home()
 			if err != nil {
 				return config.ErrStartup
 			}
@@ -71,29 +81,29 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 		}
 	}
 
-	working, err := os.Getwd()
+	working, err := host.working()
 	if err != nil {
 		return config.ErrStartup
 	}
-	executable, err := os.Executable()
+	executable, err := host.executable()
 	if err != nil {
 		return config.ErrStartup
 	}
-	home, err := os.UserHomeDir()
+	home, err := host.home()
 	if err != nil {
 		return config.ErrStartup
 	}
-	hostname, err := os.Hostname()
+	hostname, err := host.hostname()
 	if err != nil {
 		return config.ErrStartup
 	}
-	account, err := user.Current()
+	account, err := host.account()
 	if err != nil {
 		return config.ErrStartup
 	}
 	startup, err := config.LoadStartup(config.StartupInput{
 		Arguments:        args,
-		Environment:      os.Environ(),
+		Environment:      host.environment(),
 		WorkingDirectory: working,
 		Executable:       executable,
 		Home:             home,
@@ -104,10 +114,10 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 		return err
 	}
 	if startup.Role == config.RolePrepareWorker {
-		return prepareWorker(ctx, startup)
+		return prepare(ctx, startup)
 	}
 
-	return runService(ctx, startup, executable, input, output, assembleService)
+	return runService(ctx, startup, executable, input, output, construct)
 }
 
 func assembleService(ctx context.Context, startup config.Startup, executable string) (service, error) {

@@ -9,12 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
-)
-
-const (
-	RenameAttempts = 6
-	RenameDelay    = 20 * time.Millisecond
 )
 
 var (
@@ -127,96 +121,26 @@ func unchanged(name string, expected fs.FileInfo) bool {
 	return err == nil && sameFile(expected, current) && singleLink(name, current)
 }
 
-// WriteAtomic keeps the old destination intact on pre-commit failure. Only a
-// confirmed Windows lock error is retried, with unchanged source/target/parent.
-func WriteAtomic(ctx context.Context, name string, data []byte, mode fs.FileMode) error {
-	if !filepath.IsAbs(name) || ctx.Err() != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+func RenameManaged(ctx context.Context, source, destination string) error {
+	return renameManaged(ctx, source, destination, nil, os.Rename, renameWait)
+}
+
+// RenameManagedFile retains the caller's opened file snapshot through publication.
+// A reused source path must not become the new publication's ownership baseline.
+func RenameManagedFile(ctx context.Context, source, destination string, identity fs.FileInfo) error {
+	if identity == nil || !identity.Mode().IsRegular() {
 		return ErrManagedPath
 	}
-	directory, err := OrdinaryDirectory(filepath.Dir(name), true)
-	if err != nil {
-		return err
-	}
-	parent, err := CaptureIdentity(directory)
-	if err != nil {
-		return err
-	}
-	original, err := optionalIdentity(name)
-	if err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, ".dant-write-*")
-	if err != nil {
-		return err
-	}
-	source := temporary.Name()
-	createdInfo, err := temporary.Stat()
-	if err != nil {
-		temporary.Close()
-		return err
-	}
-	defer func() {
-		if current, err := os.Lstat(source); err == nil && os.SameFile(createdInfo, current) {
-			_ = os.Remove(source)
-		}
-	}()
-	if err = temporary.Chmod(mode); err == nil {
-		var count int
-		count, err = temporary.Write(data)
-		if err == nil && count != len(data) {
-			err = io.ErrShortWrite
-		}
-	}
-	if err == nil {
-		err = temporary.Sync()
-	}
-	closeErr := temporary.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	sourceInfo, err := CaptureIdentity(source)
-	if err != nil {
-		return err
-	}
-	for attempt := 0; attempt < RenameAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		currentParent, parentErr := os.Lstat(directory)
-		if parentErr != nil || !os.SameFile(parent, currentParent) || !unchanged(name, original) || !unchanged(source, sourceInfo) {
-			return ErrFileChanged
-		}
-		if err = os.Rename(source, name); err == nil {
-			return nil
-		}
-		if runtime.GOOS != "windows" || !retryableRename(err) || attempt+1 == RenameAttempts {
-			return err
-		}
-		if err = renameWait(ctx, attempt); err != nil {
-			return err
-		}
-	}
-	return err
+	return renameManaged(ctx, source, destination, identity, os.Rename, renameWait)
 }
 
-func renameWait(ctx context.Context, attempt int) error {
-	timer := time.NewTimer(RenameDelay * time.Duration(attempt+1))
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func RenameManaged(ctx context.Context, source, destination string) error {
+func renameManaged(
+	ctx context.Context,
+	source, destination string,
+	identity fs.FileInfo,
+	rename func(string, string) error,
+	wait func(context.Context, int) error,
+) error {
 	if !filepath.IsAbs(source) || !filepath.IsAbs(destination) {
 		return ErrManagedPath
 	}
@@ -238,6 +162,9 @@ func RenameManaged(ctx context.Context, source, destination string) error {
 	if before.Mode()&fs.ModeSymlink != 0 {
 		return ErrManagedPath
 	}
+	if identity != nil && (!sameFile(identity, before) || !singleLink(source, before)) {
+		return ErrFileChanged
+	}
 	if _, err = os.Lstat(destination); !errors.Is(err, fs.ErrNotExist) {
 		return ErrFileChanged
 	}
@@ -255,19 +182,20 @@ func RenameManaged(ctx context.Context, source, destination string) error {
 			}
 		}
 		current, readErr := os.Lstat(source)
-		if readErr != nil || !os.SameFile(before, current) {
+		if readErr != nil || !os.SameFile(before, current) ||
+			identity != nil && (!sameFile(identity, current) || !singleLink(source, current)) {
 			return ErrFileChanged
 		}
 		if _, destinationErr := os.Lstat(destination); !errors.Is(destinationErr, fs.ErrNotExist) {
 			return ErrFileChanged
 		}
-		if err = os.Rename(source, destination); err == nil {
+		if err = rename(source, destination); err == nil {
 			return nil
 		}
 		if runtime.GOOS != "windows" || !retryableRename(err) || attempt+1 == RenameAttempts {
 			return err
 		}
-		if err = renameWait(ctx, attempt); err != nil {
+		if err = wait(ctx, attempt); err != nil {
 			return err
 		}
 	}

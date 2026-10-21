@@ -39,6 +39,7 @@ type Store struct {
 	newID        func() string
 	closed       bool
 	contextCache *contextSnapshot
+	markdown     markdownStorage
 }
 
 func newUUID() string {
@@ -57,7 +58,12 @@ func OpenStore(ctx context.Context, dataDir string, options StoreOptions) (*Stor
 	if err != nil {
 		return nil, ErrInvalidMemory
 	}
-	s := &Store{dir: filepath.Join(root, "memory", "dant"), now: options.Now, newID: options.NewID}
+	s := &Store{
+		dir:      filepath.Join(root, "memory", "dant"),
+		now:      options.Now,
+		newID:    options.NewID,
+		markdown: diskMarkdownStorage(),
+	}
 	if s.now == nil {
 		s.now = time.Now
 	}

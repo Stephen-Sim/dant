@@ -322,7 +322,7 @@ func (value *Store) Confirm(ctx context.Context, id string) (*contracts.ChatMess
 		}
 		for index := range state.WorkTasks {
 			record := &state.WorkTasks[index]
-			if (record.TurnID == message.TurnID.Value || record.ID == message.WorkID || record.MessageID.Value == message.ID) && record.Continuation != nil && (workstate.Unconfirmed(record) || record.Continuation.Dispatch != nil) {
+			if (record.TurnID == message.TurnID.Value || record.ID == message.WorkID || record.MessageID.Value == message.ID) && (progressEntry{work: record}).unconfirmed() {
 				return continuationConflict()
 			}
 		}

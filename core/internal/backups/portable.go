@@ -229,7 +229,7 @@ func cleanupExtraction(parent, directory string, identity directoryID) error {
 }
 
 type boundedFileWriter struct {
-	file  *os.File
+	file  io.Writer
 	count int64
 }
 
@@ -282,18 +282,21 @@ func (portable *Portable) Export(ctx context.Context, id, passphrase string, out
 	metadata.Files = manifest.Files
 	metadata.Bytes = manifest.Bytes
 	name, _ := stageName(portable.vault.staging, NewID())
-	file, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	file, err := portable.vault.create(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return Metadata{}, ErrInvalid
 	}
 	stat, err := file.Stat()
 	if err != nil {
 		file.Close()
-		os.Remove(name)
+		// An uncaptured handle does not authorize deleting the current path.
 		return Metadata{}, ErrInvalid
 	}
 	stage := privateStage{file: name, identity: stat}
-	defer cleanStage(stage)
+	defer func() {
+		file.Close()
+		_ = cleanStage(stage)
+	}()
 	writer := &boundedFileWriter{file: file}
 	if err := WriteArchive(ctx, writer, archive); err != nil {
 		file.Close()

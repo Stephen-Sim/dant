@@ -175,7 +175,7 @@ func completedProgress(state *contracts.State, entry progressEntry) bool {
 		}
 		for index := range state.WorkTasks {
 			record := &state.WorkTasks[index]
-			if (record.TurnID == turn || record.ID == entry.message.WorkID || record.MessageID.Value == entry.message.ID) && (workstate.Unconfirmed(record) || record.Continuation != nil && record.Continuation.Dispatch != nil) {
+			if (record.TurnID == turn || record.ID == entry.message.WorkID || record.MessageID.Value == entry.message.ID) && (progressEntry{work: record}).unconfirmed() {
 				return false
 			}
 		}
