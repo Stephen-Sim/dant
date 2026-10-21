@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
+	"github.com/Stephen-Sim/dant/core/internal/files"
 	_ "modernc.org/sqlite"
 )
 
@@ -51,7 +52,7 @@ func OpenDatabase(ctx context.Context, dataDir string, legacy []json.RawMessage,
 		if err = os.MkdirAll(path, 0700); err != nil {
 			return nil, ErrUnavailable
 		}
-		stat, err := os.Lstat(path)
+		stat, err := files.CaptureIdentity(path)
 		if err != nil || !stat.IsDir() || linked(stat) {
 			return nil, ErrInvalid
 		}

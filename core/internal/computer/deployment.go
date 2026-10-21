@@ -426,7 +426,7 @@ func (deployer *Deployer) Prepare(ctx context.Context, binding Binding) error {
 		return ErrDeploymentUnavailable
 	}
 	_ = os.Chmod(directory, 0700)
-	identity, err := os.Lstat(directory)
+	identity, err := files.CaptureIdentity(directory)
 	if err != nil {
 		return ErrDeploymentUnavailable
 	}
@@ -497,7 +497,22 @@ func writeBundleTar(ctx context.Context, root, target string, manifest BundleMan
 		return ErrDeploymentUnavailable
 	}
 	defer file.Close()
-	archive := tar.NewWriter(file)
+	if err := writeBundleArchive(ctx, root, file, manifest, raw, fingerprint, publicEnvironment); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func writeBundleArchive(
+	ctx context.Context,
+	root string,
+	output io.Writer,
+	manifest BundleManifest,
+	raw []byte,
+	fingerprint string,
+	publicEnvironment config.PublicVMEnvironment,
+) error {
+	archive := tar.NewWriter(output)
 	for _, entry := range manifest.Files {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -564,5 +579,5 @@ func writeBundleTar(ctx context.Context, root, target string, manifest BundleMan
 		return ErrDeploymentUnavailable
 	}
 
-	return file.Sync()
+	return nil
 }

@@ -51,6 +51,15 @@ type mappedStage interface {
 // RunTransform is an isolated process role. It mutates only its exclusive private
 // staging file, and never emits plaintext or reports success before GCM auth.
 func RunTransform(ctx context.Context, input io.Reader, output io.Writer) error {
+	return runTransformMapped(ctx, input, output, mapStage)
+}
+
+func runTransformMapped(
+	ctx context.Context,
+	input io.Reader,
+	output io.Writer,
+	mapFile func(*os.File, int) (mappedStage, error),
+) error {
 	raw, err := io.ReadAll(io.LimitReader(input, TransformRequestMaxBytes+1))
 	if err != nil || len(raw) > TransformRequestMaxBytes {
 		return ErrInvalid
@@ -117,7 +126,7 @@ func RunTransform(ctx context.Context, input io.Reader, output io.Writer) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	mapped, err := mapStage(file, int(before.Size()))
+	mapped, err := mapFile(file, int(before.Size()))
 	if err != nil {
 		return ErrInvalid
 	}

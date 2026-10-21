@@ -25,7 +25,10 @@ func TestWorkerToolOwnershipIsRecheckedAcrossHumanControlAndReadOnlyCompletion(t
 	}
 	checks := 0
 	late := owner
-	late.IsCurrent = func() bool { checks++; return checks == 1 }
+	late.IsCurrent = func() bool {
+		checks++
+		return checks == 1
+	}
 	if _, err := app.Execute(t.Context(), "skill_list", contracts.RawObject{}, late); !errors.Is(err, work.ErrStaleOwner) || checks != 2 {
 		t.Fatal("read-only tool published a result after its caller retired", err)
 	}
