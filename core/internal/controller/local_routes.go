@@ -56,7 +56,12 @@ func (app *App) desktopRoute(writer http.ResponseWriter, request *http.Request) 
 				return err
 			}
 		}
-		result, err := app.desktop.Exit(request.Context())
+		var result DesktopResult
+		if reason == "install" {
+			result, err = app.desktop.ExitForInstall(request.Context())
+		} else {
+			result, err = app.desktop.Exit(request.Context())
+		}
 		if err != nil {
 			if reason == "install" {
 				_ = app.lease.Release(leaseID)

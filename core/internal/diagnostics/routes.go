@@ -8,7 +8,7 @@ var routes = func() map[string]bool {
 	for _, route := range []string{
 		"/api/:unknown", "/api/session", "/api/events", "/api/state", "/api/version", "/api/diagnostics",
 		"/api/desktop/exit", "/api/desktop/cancel-exit", "/api/desktop/open",
-		"/api/provision", "/api/connect", "/api/prepare", "/api/vm/profiles", "/api/vm/providers", "/api/vm/import",
+		"/api/provision", "/api/connect", "/api/prepare", "/api/service-update", "/api/vm/profiles", "/api/vm/providers", "/api/vm/import",
 		"/api/fonts", "/api/notifications/pending", "/api/notifications/:id/ack", "/api/internal/credentials",
 		"/api/messages", "/api/messages/:id", "/api/messages/:id/reaction", "/api/messages/:id/metadata",
 		"/api/messages/:id/output-link/resolve", "/api/history", "/api/credentials", "/api/credentials/:id",

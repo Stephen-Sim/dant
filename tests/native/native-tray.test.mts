@@ -214,10 +214,7 @@ test('native lifecycle installs one instance first, hides only after successful 
   );
   assert.match(tray, /fn exit(?:<[^>]*>)?\(app:[\s\S]*crate::lifecycle::request_exit\(app\)/);
   assert.match(main, /ExitRequested\s*\{\s*api,\s*\.\.\s*\}[\s\S]*api\.prevent_exit\(\)/);
-  assert.match(
-    tray,
-    /update_status\(\s*&app\.state::<BackgroundTray>\(\)\.inner,\s*window\.label\(\),\s*status/,
-  );
+  assert.match(tray, /update_status_on_main_thread\(\s*&app,\s*window\.label\(\),\s*status\)/);
   assert.match(tray, /if label != "main" \|\| !valid\(&status\)/);
   assert.match(tray, /dant-tray-progress/);
   assert.doesNotMatch(tray, /process::exit|api\/call\/stop|turn\/interrupt/);

@@ -22,6 +22,7 @@ type DesktopBridge interface {
 }
 
 type OwnedVMLifecycle interface {
+	Inspect(context.Context) (computer.InspectResult, error)
 	Suspend(context.Context) (computer.SuspendResult, error)
 	Resume(context.Context) (computer.ResumeResult, error)
 	ResumeForReconnect(context.Context) (computer.ResumeResult, error)
@@ -45,11 +46,13 @@ type DesktopLifecycle struct {
 }
 
 type DesktopResult struct {
-	OK            bool  `json:"ok"`
-	WorkPaused    bool  `json:"workPaused,omitempty"`
-	VMSuspended   *bool `json:"vmSuspended,omitempty"`
-	Unsupported   bool  `json:"unsupported,omitempty"`
-	NotConfigured bool  `json:"notConfigured,omitempty"`
+	OK                bool                   `json:"ok"`
+	WorkPaused        bool                   `json:"workPaused,omitempty"`
+	VMSuspended       *bool                  `json:"vmSuspended,omitempty"`
+	Unsupported       bool                   `json:"unsupported,omitempty"`
+	NotConfigured     bool                   `json:"notConfigured,omitempty"`
+	VMAlreadyInactive bool                   `json:"vmAlreadyInactive,omitempty"`
+	VMState           contracts.VmPowerState `json:"vmState,omitempty"`
 }
 
 type PrepareOptions struct {
@@ -213,10 +216,53 @@ func (desktop *DesktopLifecycle) Prepare(ctx context.Context, options PrepareOpt
 }
 
 func (desktop *DesktopLifecycle) Exit(ctx context.Context) (DesktopResult, error) {
+	return desktop.exit(ctx, true)
+}
+
+func (desktop *DesktopLifecycle) ExitForInstall(ctx context.Context) (DesktopResult, error) {
+	return desktop.exit(ctx, false)
+}
+
+func (desktop *DesktopLifecycle) exit(ctx context.Context, allowInactive bool) (DesktopResult, error) {
 	var phase contracts.DesktopPhase
 	result, err := desktop.run(ctx, func(current func() error) (DesktopResult, error) {
 		phase = contracts.DesktopPhasePausing
 		desktop.logExit("desktop.exit.stage", phase, codeDesktopExitStarted)
+		if allowInactive && desktop.options.Configured() && desktop.options.Bridge.Status() != contracts.ConnectionStatusOnline {
+			if err := current(); err != nil {
+				return DesktopResult{}, err
+			}
+			if err := desktop.SetPhase(contracts.DesktopPhasePausing); err != nil {
+				return DesktopResult{}, err
+			}
+			if err := current(); err != nil {
+				return DesktopResult{}, err
+			}
+			observed, err := desktop.options.Lifecycle.Inspect(ctx)
+			if err != nil {
+				return DesktopResult{}, err
+			}
+			if err := current(); err != nil {
+				return DesktopResult{}, err
+			}
+			if !observed.OK || observed.Supported && !observed.State.Valid() {
+				return DesktopResult{}, &computer.LifecycleError{Reason: computer.LifecycleReasonUnconfirmed}
+			}
+			if observed.Supported && (observed.State == contracts.VmPowerStateSuspended || observed.State == contracts.VmPowerStateOff) {
+				desktop.options.Bridge.Disconnect()
+				if err := desktop.SetPhase(contracts.DesktopPhaseSuspended); err != nil {
+					return DesktopResult{}, err
+				}
+				inactive := true
+				desktop.logExit("desktop.exit.confirmed", contracts.DesktopPhaseSuspended, codeDesktopExitConfirmed)
+				return DesktopResult{
+					OK:                true,
+					VMSuspended:       &inactive,
+					VMAlreadyInactive: true,
+					VMState:           observed.State,
+				}, nil
+			}
+		}
 		if err := desktop.pause(ctx, current, "exit"); err != nil {
 			return DesktopResult{}, err
 		}

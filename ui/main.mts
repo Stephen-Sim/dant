@@ -671,6 +671,7 @@ function errorText(cause: unknown, prefix = 'requestError'): string {
       'The work computer service has not finished updating automatically. Check its status in Settings → Work computer, then try again. Your draft has been kept.',
       '工作电脑服务尚未完成自动更新，请在设置 → 工作电脑查看状态后再试；草稿已保留。',
     );
+  if (error.code === 'vm_update_unconfirmed') return t('serviceUpdateUnconfirmed');
   if (/^vm_update_[a-z_]+$/.test(error.code || '')) return t('serviceUpdateError');
   const message = typeof cause === 'string' ? cause : error.message || t('messageError');
   const exact = Object.keys(zh).find(

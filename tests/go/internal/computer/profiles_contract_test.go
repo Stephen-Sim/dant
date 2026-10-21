@@ -24,6 +24,64 @@ func profileManager(t *testing.T, options ProfileOptions) *Profiles {
 	return profiles
 }
 
+func TestProfileDiscoveryJSONOmitsAbsentErrorsAndPreservesSelectionFailures(t *testing.T) {
+	root := t.TempDir()
+	current := profileFixture(t, "current.invalid")
+	registry := filepath.Join(root, "registry.json")
+	profiles := profileManager(t, ProfileOptions{
+		DataDir: current, ProjectRoot: root, RegistryFile: registry, Owner: "fixture",
+	})
+	decode := func(discovery ProfileDiscovery) map[string]json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(discovery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			t.Fatal(err)
+		}
+		return object
+	}
+
+	configured := decode(profiles.Discover())
+	if _, exists := configured["error"]; exists {
+		t.Fatal("a configured profile serialized an absent error instead of omitting it")
+	}
+	if _, exists := configured["registryError"]; exists {
+		t.Fatal("a readable registry serialized an absent warning instead of omitting it")
+	}
+	if string(configured["candidates"]) != "[]" || string(configured["current"]) == "null" {
+		t.Fatal("a configured profile lost its current connection or empty candidate list")
+	}
+
+	if err := os.WriteFile(registry, []byte("{invalid registry"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	warning := decode(profiles.Discover())
+	var message string
+	if _, exists := warning["error"]; exists || json.Unmarshal(warning["registryError"], &message) != nil || message == "" {
+		t.Fatal("a registry warning obscured a usable current connection")
+	}
+
+	missing := profileManager(t, ProfileOptions{
+		DataDir: filepath.Join(root, "missing"), ProjectRoot: root, Owner: "fixture",
+	})
+	failed := decode(missing.Discover())
+	if string(failed["current"]) != "null" || json.Unmarshal(failed["error"], &message) != nil || message == "" {
+		t.Fatal("missing configuration lost its explicit failure message")
+	}
+
+	ambiguous := profileManager(t, ProfileOptions{
+		DataDir: filepath.Join(root, "missing"), ProjectRoot: root, Owner: "fixture",
+		CandidateDirs: []string{current, profileFixture(t, "other.invalid")},
+	})
+	selection := decode(ambiguous.Discover())
+	if string(selection["requiresSelection"]) != "true" || json.Unmarshal(selection["error"], &message) != nil || message == "" {
+		t.Fatal("ambiguous discovery lost its explicit selection requirement")
+	}
+}
+
 func TestProfilesImportByReferenceAndDiscoverOnlyTheSameOwnersRegistry(t *testing.T) {
 	root := t.TempDir()
 	data := filepath.Join(root, "new-data")

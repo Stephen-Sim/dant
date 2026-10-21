@@ -240,6 +240,7 @@ func TestControllerErrorsClassifyWrappedOperationalFailuresWithoutRawDetails(t *
 		{backups.ErrBusy, 409, "backup_running"},
 		{backups.ErrRestoreUnconfirmed, 409, "backup_restore_unconfirmed"},
 		{backups.ErrBeforeVMChange, 409, "backup_before_vm_change_required"},
+		{computer.ErrDeploymentUnconfirmed, 409, "vm_update_unconfirmed"},
 		{&computer.LifecycleError{Reason: computer.LifecycleReasonInvalidTimeout}, 400, "invalid_request"},
 		{errors.New("synthetic private diagnostic"), 502, "request_failed"},
 	} {

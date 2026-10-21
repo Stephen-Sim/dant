@@ -89,6 +89,12 @@ type ResumeResult struct {
 	State   contracts.VmPowerState `json:"state,omitempty"`
 }
 
+type InspectResult struct {
+	OK        bool                   `json:"ok"`
+	Supported bool                   `json:"supported"`
+	State     contracts.VmPowerState `json:"state,omitempty"`
+}
+
 var vmIdentity = regexp.MustCompile(`(?i)^[a-f0-9-]{36}$`)
 var managedVMName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 
@@ -271,6 +277,9 @@ func validGuestAddress(value string) bool {
 }
 
 func (lifecycle *VMLifecycle) command(ctx context.Context, action string, binding *lifecycleBinding, receipt lifecycleReceipt) (lifecycleCommandResult, error) {
+	if err := ctx.Err(); err != nil {
+		return lifecycleCommandResult{}, err
+	}
 	vmID := ""
 	if receipt.VMID != nil {
 		vmID = *receipt.VMID
@@ -282,6 +291,9 @@ func (lifecycle *VMLifecycle) command(ctx context.Context, action string, bindin
 	ctx, cancel := context.WithTimeout(ctx, lifecycle.options.Timeout)
 	defer cancel()
 	raw, err := lifecycle.options.Run(ctx, command.Executable, command.Args, nil)
+	if action == "inspect" && ctx.Err() != nil {
+		return lifecycleCommandResult{}, ctx.Err()
+	}
 	if err != nil || len(raw) > commandReceiptMaxBytes {
 		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
 	}
@@ -304,7 +316,13 @@ func (lifecycle *VMLifecycle) command(ctx context.Context, action string, bindin
 		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonBindingChanged)
 	}
 
-	if !lifecycle.current(receipt) {
+	if action == "inspect" {
+		if *result.Changed ||
+			len(result.Addresses) != 0 ||
+			lifecycle.options.Now().UnixMilli() >= receipt.ExpiresAt {
+			return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonUnconfirmed)
+		}
+	} else if !lifecycle.current(receipt) {
 		return lifecycleCommandResult{}, lifecycleFailure(LifecycleReasonIntentChanged)
 	}
 
@@ -342,6 +360,77 @@ func (lifecycle *VMLifecycle) leave() {
 	lifecycle.mu.Lock()
 	lifecycle.busy = false
 	lifecycle.mu.Unlock()
+}
+
+// Inspect observes an owned VM without creating, replacing or completing a power receipt.
+func (lifecycle *VMLifecycle) Inspect(ctx context.Context) (InspectResult, error) {
+	if err := ctx.Err(); err != nil {
+		return InspectResult{}, err
+	}
+	if err := lifecycle.enter(); err != nil {
+		return InspectResult{}, err
+	}
+	defer lifecycle.leave()
+
+	binding, err := lifecycle.binding()
+	if err != nil {
+		return InspectResult{}, err
+	}
+	provider := lifecycle.managed(binding)
+	if binding == nil || provider == "" || !lifecycle.options.Host.Capabilities.ManagedVM {
+		return InspectResult{OK: true}, nil
+	}
+
+	previous, err := lifecycle.receipt()
+	if err != nil {
+		return InspectResult{}, err
+	}
+	if previous != nil && (previous.Binding != binding.digest || previous.Provider != provider) {
+		return InspectResult{}, lifecycleFailure(LifecycleReasonBindingChanged)
+	}
+
+	observation := lifecycleReceipt{
+		Version:  1,
+		Provider: provider,
+		Binding:  binding.digest,
+	}
+	if previous != nil {
+		observation.VMID = previous.VMID
+	}
+	observation.OperationID = lifecycle.options.ID()
+	observation.ExpiresAt = lifecycle.options.Now().Add(lifecycle.options.Timeout).UnixMilli()
+	result, err := lifecycle.command(ctx, "inspect", binding, observation)
+	if err != nil {
+		return InspectResult{}, err
+	}
+
+	current, err := lifecycle.receipt()
+	if err != nil {
+		return InspectResult{}, err
+	}
+	if (previous == nil) != (current == nil) ||
+		previous != nil && !sameLifecycleReceipt(*previous, *current) {
+		return InspectResult{}, lifecycleFailure(LifecycleReasonIntentChanged)
+	}
+	if lifecycle.managed(binding) != provider {
+		return InspectResult{}, lifecycleFailure(LifecycleReasonBindingChanged)
+	}
+
+	return InspectResult{
+		OK:        true,
+		Supported: true,
+		State:     result.State,
+	}, nil
+}
+
+func sameLifecycleReceipt(left, right lifecycleReceipt) bool {
+	return left.Version == right.Version &&
+		left.Phase == right.Phase &&
+		left.Provider == right.Provider &&
+		left.Binding == right.Binding &&
+		equalVMID(left.VMID, right.VMID) &&
+		left.OperationID == right.OperationID &&
+		left.ExpiresAt == right.ExpiresAt
 }
 
 func (lifecycle *VMLifecycle) Suspend(ctx context.Context) (SuspendResult, error) {

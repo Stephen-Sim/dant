@@ -336,7 +336,7 @@ fn exit_requests_require_the_controller_identity_and_fixed_authenticated_action(
         request.body().and_then(|body| body.as_bytes()),
         Some(b"{}".as_slice())
     );
-    assert_eq!(request.timeout(), Some(&DESKTOP_TRANSITION_TIMEOUT));
+    assert_eq!(request.timeout(), Some(&Duration::from_secs(300)));
     for session in [
         serde_json::json!({"product":"dant","mode":"worker","token":"ab"}),
         serde_json::json!({"product":"dant","token":"ab"}),
@@ -470,6 +470,68 @@ fn exit_responses_require_success_status_and_strong_bounded_confirmation() {
         exit_response(reqwest::StatusCode::OK, conflicting),
         ExitOutcome::Rejected(ExitFailure::WorkPauseUnconfirmed)
     );
+}
+
+#[test]
+fn ordinary_exit_accepts_confirmed_inactive_vm_without_claiming_a_guest_pause() {
+    for state in ["suspended", "off"] {
+        let value = serde_json::json!({
+            "ok": true,
+            "vmSuspended": true,
+            "vmAlreadyInactive": true,
+            "vmState": state,
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(
+            exit_response(reqwest::StatusCode::OK, &bytes),
+            ExitOutcome::Confirmed {
+                unsupported_notice: false,
+            }
+        );
+        assert!(
+            !confirmed(&value),
+            "installation must still require a guest pause"
+        );
+        assert_eq!(
+            exit_response(reqwest::StatusCode::CONFLICT, &bytes),
+            ExitOutcome::Rejected(ExitFailure::Unconfirmed)
+        );
+
+        for (key, replacement) in [
+            ("ok", serde_json::json!(false)),
+            ("vmSuspended", serde_json::json!(false)),
+            ("vmAlreadyInactive", serde_json::json!(false)),
+            ("vmState", serde_json::json!("running")),
+            ("vmState", serde_json::json!("unknown")),
+            ("vmState", serde_json::json!(true)),
+            ("vmState", serde_json::Value::Null),
+            ("unsupported", serde_json::json!(true)),
+            ("notConfigured", serde_json::json!(true)),
+            ("code", serde_json::json!("unrecognized_failure")),
+        ] {
+            let mut invalid = value.clone();
+            invalid[key] = replacement;
+            assert_eq!(
+                exit_response(
+                    reqwest::StatusCode::OK,
+                    &serde_json::to_vec(&invalid).unwrap()
+                ),
+                ExitOutcome::Rejected(ExitFailure::Unconfirmed),
+                "invalid physical confirmation field: {key}"
+            );
+        }
+        for key in ["ok", "vmSuspended", "vmAlreadyInactive", "vmState"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert_eq!(
+                exit_response(
+                    reqwest::StatusCode::OK,
+                    &serde_json::to_vec(&missing).unwrap()
+                ),
+                ExitOutcome::Rejected(ExitFailure::Unconfirmed)
+            );
+        }
+    }
 }
 
 fn isolated_exit_response(response: Vec<u8>) -> ExitOutcome {

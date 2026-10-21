@@ -766,6 +766,7 @@
   "Text chat and computer tasks from calls, as reported by the work computer.": "कार्य कंप्यूटर द्वारा रिपोर्ट किए टेक्स्ट चैट और कॉल से मिले कंप्यूटर कार्य।",
   "Text conversations and computer tasks use this subscription.": "पाठ बातचीत और कंप्यूटर कार्य इस सदस्यता का उपयोग करते हैं।",
   "Text size": "पाठ का आकार",
+  "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.": "कार्य कंप्यूटर के पिछले अपग्रेड के परिणाम की पुष्टि नहीं हुई है। अपने-आप दोबारा कोशिश करना रोक दिया गया है। कार्य कंप्यूटर में अपडेट की स्थिति देखें।",
   "The SSH private key is missing or unreadable. Import the original data folder or select its existing key.": "SSH निजी कुंजी नहीं है या पढ़ी नहीं जा सकती। मूल डेटा फ़ोल्डर आयात करें या उसकी मौजूदा कुंजी चुनें।",
   "The Telegram connection and account pairing are still active. New messages can still be sent.": "Telegram कनेक्शन और जुड़ा खाता सक्रिय हैं। नए संदेश अभी भी भेजे जा सकते हैं।",
   "The Telegram token is invalid. Check it and enter it again.": "Telegram टोकन अमान्य है। जाँचकर फिर भरें।",

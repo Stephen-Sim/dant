@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('suspend','resume')][string]$Action,
+  [Parameter(Mandatory=$true)][ValidateSet('suspend','resume','inspect')][string]$Action,
   [Parameter(Mandatory=$true)][string]$DataDirectory,
   [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{64}$')][string]$ExpectedBinding,
   [Parameter(Mandatory=$true)][ValidatePattern('^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$')][string]$ExpectedOperation,
@@ -42,6 +42,9 @@ function Binding-Digest {
 }
 function Assert-Intent([string]$Provider) {
   if ((Binding-Digest) -ne $ExpectedBinding) { throw 'VM binding changed' }
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  if ($ExpectedDeadline -le $now -or $ExpectedDeadline - $now -gt $maximumOperationMilliseconds) { throw 'VM observation expired' }
+  if ($Action -eq 'inspect') { return }
   $intent = (Read-File (Join-Path $script:dataRoot 'vm-lifecycle.json')) | ConvertFrom-Json
   $phase = if ($Action -eq 'suspend') { 'suspending' } else { 'resuming' }
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -132,6 +135,7 @@ function Invoke-Lifecycle {
     $vm = Get-VM -Id $vm.Id
     if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk)) { throw 'VM identity changed' }
     Assert-Intent $provider
+    $observedState = [string]$vm.State
     $changed = $false
     if ($Action -eq 'suspend' -and $vm.State -eq 'Running') { Save-VM -VM $vm; $changed = $true }
     elseif ($Action -eq 'resume' -and $vm.State -eq 'Saved') { Start-VM -VM $vm | Out-Null; $changed = $true }
@@ -139,6 +143,7 @@ function Invoke-Lifecycle {
     $vm = Get-VM -Id $vm.Id
     if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk)) { throw 'VM identity changed' }
     Assert-Intent $provider
+    if ($Action -eq 'inspect' -and [string]$vm.State -ne $observedState) { throw 'VM power state changed during inspection' }
     $state = switch ([string]$vm.State) { 'Saved' { 'suspended' }; 'Running' { 'running' }; 'Off' { 'off' }; default { throw 'VM power state unconfirmed' } }
     $result = @{ok=$true;provider=$provider;vmId=$vmId;state=$state;changed=$changed}
     if ($Action -eq 'resume' -and $state -eq 'running') {
@@ -162,7 +167,9 @@ function Invoke-Lifecycle {
     }
     return $result
   }
-  $manifest = (Read-File (Join-Path $script:base 'manifest.json')) | ConvertFrom-Json
+  $manifestPath = Join-Path $script:base 'manifest.json'
+  $manifestText = Read-File $manifestPath
+  $manifest = $manifestText | ConvertFrom-Json
   $script:vmx = Join-Path $script:base 'dant.vmx'; $disk = Join-Path $script:base 'dant.vmdk'
   $vmId = [string]$manifest.id
   if ($manifest.owner -ne 'dant-vmware-v1' -or $manifest.version -ne 1 -or $manifest.provider -ne 'vmware' -or $vmId -notmatch '^[a-fA-F0-9-]{36}$' -or $binding.vmwareId -ne $vmId -or ($ExpectedVmId -and $ExpectedVmId -ne $vmId) -or [System.IO.Path]::GetFullPath($manifest.vmx) -ne $script:vmx -or [System.IO.Path]::GetFullPath($manifest.disk) -ne $disk -or $manifest.phase -notin @('created','starting','started','connected')) { throw 'VMware ownership unconfirmed' }
@@ -179,7 +186,12 @@ function Invoke-Lifecycle {
   Assert-Intent $provider
   if ($Action -eq 'suspend' -and $running) { [void](Invoke-Vmrun @('-T','ws','suspend',$script:vmx,'soft')); $changed = $true }
   elseif ($Action -eq 'resume' -and !$running -and (Vmware-Saved)) { [void](Invoke-Vmrun @('-T','ws','start',$script:vmx,'nogui')); $changed = $true }
-  $state = if (Vmware-Running) { 'running' } elseif (Vmware-Saved) { 'suspended' } else { 'off' }
+  $observedRunning = Vmware-Running
+  if ($Action -eq 'inspect') {
+    if ($running -ne $observedRunning -or $manifestText -cne (Read-File $manifestPath) -or $text -cne (Read-File $script:vmx 1048576)) { throw 'VMware identity or power state changed during inspection' }
+    if (!$observedRunning -and @(Get-ChildItem -LiteralPath $script:base -Filter '*.lck' -Force -ErrorAction Stop | Select-Object -First 1).Count) { throw 'VMware power transition unconfirmed' }
+  }
+  $state = if ($observedRunning) { 'running' } elseif (Vmware-Saved) { 'suspended' } else { 'off' }
   Assert-Intent $provider
   return @{ok=$true;provider=$provider;vmId=$vmId.ToLowerInvariant();state=$state;changed=$changed}
 }

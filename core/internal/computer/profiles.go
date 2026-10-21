@@ -39,8 +39,8 @@ type ProfileDiscovery struct {
 	Current           *Profile  `json:"current"`
 	Candidates        []Profile `json:"candidates"`
 	RequiresSelection bool      `json:"requiresSelection"`
-	Error             *string   `json:"error"`
-	RegistryError     *string   `json:"registryError"`
+	Error             *string   `json:"error,omitempty"`
+	RegistryError     *string   `json:"registryError,omitempty"`
 }
 
 type registryProfile struct {

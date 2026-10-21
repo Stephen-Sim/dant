@@ -107,7 +107,9 @@ export interface VmProfile extends VmSettings {
 export interface VmProfiles {
   candidates: VmProfile[];
   current?: VmProfile | null;
-  error?: string;
+  requiresSelection?: boolean;
+  error?: string | null;
+  registryError?: string | null;
 }
 export interface LoginDetails {
   userCode: string;

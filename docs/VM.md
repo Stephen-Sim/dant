@@ -14,6 +14,10 @@ The first connection deploys a verified Go executable and fixed VM-helper allowl
 
 The Worker refuses to execute tasks on Windows, bare-metal Linux, as root, or without a working graphical desktop. Updates check for active work and calls first. An active executor is preserved and its update is deferred; an unchanged source version reuses the existing healthy services.
 
+Explicit **Exit** pauses work before saving a running managed VM. If its connection is offline and a fresh hypervisor inspection proves that the same owned VM is already saved or off, Exit leaves that VM inactive and closes without connecting to the guest. Hyper-V inspection may request administrator authorization. Unconfirmed identity, permission or power state keeps Exit unconfirmed. Update installation still requires confirmed guest preparation before VM suspension.
+
+An unconfirmed service upgrade keeps its attempt record and blocks automatic reinstallation. Reconnect can restore a usable guest connection while that upgrade remains unresolved. Check the update status before recovery; changing the connection or deleting its attempt record does not establish that the earlier upgrade stopped.
+
 New computer recovery uses a validated portable backup and an explicit restore action. The separate operator-only legacy importer accepts the early manifest/state/files export into an empty target; it is not an automatic connection step. Both preserve source data and refuse to overwrite an unrelated conversation. Codex maintains and refreshes its own authentication; deployment neither reads nor packages its authentication files.
 
 ```powershell

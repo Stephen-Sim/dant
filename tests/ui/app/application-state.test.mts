@@ -41,6 +41,45 @@ const snapshot = (): AppState => ({
   call: null,
 });
 
+test('VM profile discovery accepts omitted and legacy nullable errors while validating profile fields', () => {
+  const current = {
+      id: 'current-profile',
+      host: 'current.invalid',
+      user: 'dant',
+      port: 22,
+      source: 'current',
+    },
+    configured = { current, candidates: [], requiresSelection: false };
+
+  for (const value of [
+    configured,
+    { ...configured, error: null, registryError: null },
+    { ...configured, registryError: 'The profile registry was ignored.' },
+    { current: null, candidates: [], error: 'No valid VM connection is configured.' },
+    {
+      current: null,
+      candidates: [current, { ...current, id: 'another-profile' }],
+      requiresSelection: true,
+      error: 'Choose an existing VM connection.',
+    },
+  ]) {
+    const original = structuredClone(value);
+    assert.equal(read(value, profiles, 'VM profiles'), value);
+    assert.deepEqual(value, original, 'profile validation must not alter saved identity or errors');
+  }
+
+  for (const value of [
+    { ...configured, error: false },
+    { ...configured, error: {} },
+    { ...configured, registryError: 1 },
+    { ...configured, requiresSelection: 'false' },
+    { ...configured, current: { ...current, id: 1 } },
+    { ...configured, candidates: [{ ...current, port: '22' }] },
+    { ...configured, candidates: null },
+  ])
+    assert.throws(() => read(value, profiles, 'VM profiles'), /Invalid VM profiles/);
+});
+
 test('empty Worker collection projections open chat while null schedules remain invalid', () => {
   const value = {
       ...snapshot(),

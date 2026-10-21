@@ -593,6 +593,8 @@ export const en = Object.assign(
       'Waiting to confirm that the work computer can update safely. Existing tasks are preserved.',
     serviceUpdateError:
       'The work computer update did not finish. Saved task records are preserved. Check the update status in Work computer.',
+    serviceUpdateUnconfirmed:
+      'The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.',
     serviceTarget: 'Target version',
     serviceRunning: 'Confirmed running version',
   },
@@ -1003,6 +1005,8 @@ export const zh = Object.assign(
     serviceWaitWork: '当前任务、通话或电脑控制结束后，会自动继续更新。',
     serviceWaitConfirm: '等待工作电脑确认可安全更新；现有任务保持原状。',
     serviceUpdateError: '工作电脑更新未完成，已保存的任务记录仍保留。请查看工作电脑中的更新状态。',
+    serviceUpdateUnconfirmed:
+      '上一次工作电脑升级的结果尚未确认，已阻止自动重试。请在工作电脑中查看更新状态。',
     serviceTarget: '目标版本',
     serviceRunning: '已确认的运行版本',
   },

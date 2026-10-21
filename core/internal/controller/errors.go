@@ -22,6 +22,7 @@ const (
 	codeBackupBeforeChange     = "backup_before_vm_change_required"
 	codeVMOffline              = "vm_offline"
 	codePauseUnconfirmed       = "vm_pause_unconfirmed"
+	codeVMUpdateUnconfirmed    = "vm_update_unconfirmed"
 	codeRequestCancelled       = "request_cancelled"
 	codeRequestTimeout         = "request_timeout"
 	codeDesktopWorkPaused      = "desktop_work_paused"
@@ -87,6 +88,9 @@ func classifyHTTPError(err error) httpFailure {
 			failure.status, failure.body.Code, failure.body.Error = 409, codeDesktopBusy, "Work is paused for an update or exit."
 		case errors.Is(err, computer.ErrPauseUnconfirmed):
 			failure.status, failure.body.Code, failure.body.Error = 409, codePauseUnconfirmed, "Work pause could not be confirmed. Check Work computer before trying Exit again."
+		case errors.Is(err, computer.ErrDeploymentUnconfirmed):
+			failure.status, failure.body.Code = http.StatusConflict, codeVMUpdateUnconfirmed
+			failure.body.Error = "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer."
 		case errors.Is(err, backups.ErrBusy), errors.Is(err, backups.ErrRunning):
 			failure.status, failure.body.Code, failure.body.Error = 409, codeBackupRunning, "A backup operation is already running."
 		case errors.Is(err, backups.ErrRestoreUnconfirmed):

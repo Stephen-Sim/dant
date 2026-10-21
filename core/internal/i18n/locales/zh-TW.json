@@ -766,6 +766,7 @@
   "Text chat and computer tasks from calls, as reported by the work computer.": "工作電腦返回的文字聊天，以及通話中的電腦任務用量。",
   "Text conversations and computer tasks use this subscription.": "文字對話與工作電腦任務使用此訂閱。",
   "Text size": "字號",
+  "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.": "上一次工作電腦升級的結果尚未確認，已阻止自動重試。請在工作電腦中查看更新狀態。",
   "The SSH private key is missing or unreadable. Import the original data folder or select its existing key.": "SSH 私鑰不存在或無法讀取，請匯入原資料檔案夾或選擇已有私鑰。",
   "The Telegram connection and account pairing are still active. New messages can still be sent.": "Telegram 連接和帳號配對仍然有效，新訊息可以繼續發送。",
   "The Telegram token is invalid. Check it and enter it again.": "Telegram 權杖無效，請檢查后重新填寫。",

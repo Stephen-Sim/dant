@@ -21,6 +21,7 @@ BeforeAll {
         if ($Metadata -eq 'saved-path') { $vmxText += "`ncheckpoint.vmState = `"../foreign.vmss`"" }
         [IO.File]::WriteAllText($vmx, $vmxText)
         if ($Saved) { [IO.File]::WriteAllText((Join-Path $base 'dant.vmss'), 'synthetic saved-state marker') }
+        if ($Metadata -eq 'lock') { [void][IO.Directory]::CreateDirectory((Join-Path $base 'dant.vmx.lck')) }
         $manifest = @{owner = 'dant-vmware-v1'; version = 1; provider = 'vmware'; id = $vmId; vmx = $vmx; disk = $disk; phase = 'connected'}
         if ($Metadata -eq 'owner') { $manifest.owner = 'foreign' }
         [IO.File]::WriteAllText((Join-Path $base 'manifest.json'), ($manifest | ConvertTo-Json -Compress))
@@ -93,6 +94,19 @@ BeforeAll {
 }
 
 Describe 'Owned VMware lifecycle with an in-memory process implementation' {
+    It 'inspects running saved and off owners using only read-only vmrun listings' {
+        foreach ($options in @(@{Running = $true}, @{Saved = $true}, @{})) {
+            $result = Invoke-VmwareLifecycleFixture -Action inspect -ExpectedIdentity @options
+            $result.reply.ok | Should -BeTrue
+            $result.reply.changed | Should -BeFalse
+            $result.reply.state | Should -Be $(if ($options.Running) { 'running' } elseif ($options.Saved) { 'suspended' } else { 'off' })
+            @($result.calls | Where-Object { $_ -notmatch '"list"' }).Count | Should -Be 0
+        }
+        $locked = Invoke-VmwareLifecycleFixture -Action inspect -Metadata lock
+        $locked.reply.ok | Should -BeFalse
+        @($locked.calls | Where-Object { $_ -notmatch '"list"' }).Count | Should -Be 0
+    }
+
     It 'suspends one running owner and confirms its existing saved state' {
         $result = Invoke-VmwareLifecycleFixture -Running -Saved -ExpectedIdentity
         $result.reply.ok | Should -BeTrue

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/Stephen-Sim/dant/core/internal/computer"
@@ -12,6 +13,8 @@ const (
 	desktopExitRoute       = "/api/desktop/exit"
 	desktopCancelExitRoute = "/api/desktop/cancel-exit"
 	desktopOpenRoute       = "/api/desktop/open"
+	computerConnectRoute   = "/api/connect"
+	computerUpdateRoute    = "/api/service-update"
 )
 
 // The coordinator consumes only bounded operational logging, not a concrete
@@ -58,6 +61,22 @@ func (app *App) writeRequestError(writer http.ResponseWriter, request *http.Requ
 			fields.Method = request.Method
 			fields.Route = request.URL.Path
 			app.diagnostics.Log("desktop.request.failed", fields)
+		}
+		if request.Method == http.MethodPost && errors.Is(err, computer.ErrDeploymentUnconfirmed) {
+			route := ""
+			switch request.URL.Path {
+			case computerConnectRoute:
+				route = computerConnectRoute
+			case computerUpdateRoute:
+				route = computerUpdateRoute
+			}
+			if route != "" {
+				app.diagnostics.Log("computer.update.unconfirmed", diagnostics.Fields{
+					Code:   codeVMUpdateUnconfirmed,
+					Method: http.MethodPost,
+					Route:  route,
+				})
+			}
 		}
 	}
 

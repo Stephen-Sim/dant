@@ -11,6 +11,7 @@ BeforeAll {
             [switch]$ExpectedIdentity,
             [switch]$NoAdministrator,
             [switch]$ElevatedOutput,
+            [switch]$NoReceipt,
             [string]$Failure,
             [string]$Metadata
         )
@@ -38,7 +39,9 @@ BeforeAll {
         if ($Metadata -eq 'intent-identity') { $intent.vmId = '22222222-2222-4222-8222-222222222222' }
         if ($Metadata -eq 'intent-deadline') { $intent.expiresAt = 'not-a-timestamp' }
         if ($Metadata -eq 'oversized') { [IO.File]::WriteAllText($bindingPath, (' ' * 65537)) }
-        [IO.File]::WriteAllText((Join-Path $directory 'vm-lifecycle.json'), ($intent | ConvertTo-Json -Compress))
+        $receiptPath = Join-Path $directory 'vm-lifecycle.json'
+        $originalReceipt = $intent | ConvertTo-Json -Compress
+        if (!$NoReceipt) { [IO.File]::WriteAllText($receiptPath, $originalReceipt) }
         $global:dantCoverageFixtureVmState = $State
         $global:dantCoverageFixtureSaves = 0
         $global:dantCoverageFixtureStarts = 0
@@ -59,6 +62,7 @@ BeforeAll {
         function Get-VM {
             param($Name, $Id)
             $global:dantCoverageFixtureQueries++
+            if ($Failure -eq 'permission') { throw 'Synthetic management permission refusal' }
             if ($ChangeBinding -and $global:dantCoverageFixtureQueries -gt 1) { [IO.File]::WriteAllText($bindingPath, '{}') }
             $identity = if ($Failure -eq 'wrong-identity' -or ($Failure -eq 'post-identity' -and $global:dantCoverageFixtureQueries -gt 2)) { '22222222-2222-4222-8222-222222222222' } else { $vmIdentity }
             $observedState = if ($Failure -eq 'post-state' -and $global:dantCoverageFixtureQueries -gt 2) { 'Pausing' } elseif ($Failure -eq 'network-state' -and $global:dantCoverageFixtureQueries -gt 3) { 'Saved' } else { $global:dantCoverageFixtureVmState }
@@ -78,10 +82,14 @@ BeforeAll {
             param($FilePath, $ArgumentList, $Verb, $WindowStyle, [switch]$PassThru)
             if ($Verb -ne 'RunAs' -or $WindowStyle -ne 'Hidden' -or !$PassThru) { throw 'Unexpected synthetic elevation contract' }
             $global:dantCoverageFixtureElevations++
+            if ($Failure -eq 'elevation-refused') { throw 'Synthetic administrator authorization refusal' }
             $global:dantCoverageFixtureElevationArguments = $ArgumentList
             $index = [Array]::IndexOf($ArgumentList, '-ElevatedResult')
             $childResult = [string]$ArgumentList[$index + 1]
-            [IO.File]::WriteAllText($childResult.Trim('"'), '{"ok":true,"provider":"hyperv","state":"suspended","changed":true}')
+            $childReply = if ($Action -eq 'inspect') {
+                @{ok = $true; provider = 'hyperv'; vmId = $vmIdentity; state = $(if ($State -eq 'Saved') { 'suspended' } elseif ($State -eq 'Off') { 'off' } else { 'running' }); changed = $false} | ConvertTo-Json -Compress
+            } else { '{"ok":true,"provider":"hyperv","state":"suspended","changed":true}' }
+            [IO.File]::WriteAllText($childResult.Trim('"'), $childReply)
             $process = [pscustomobject]@{FixtureTimeout = ($Failure -eq 'elevation-timeout')}
             $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
                 param($milliseconds)
@@ -108,11 +116,58 @@ BeforeAll {
             elevations = $global:dantCoverageFixtureElevations
             arguments = $global:dantCoverageFixtureElevationArguments
             leftoverResults = @(Get-ChildItem -LiteralPath $directory -Filter '.vm-lifecycle-result-*.json').Count
+            receiptUnchanged = $(if ($NoReceipt) { !(Test-Path -LiteralPath $receiptPath) } else { [IO.File]::ReadAllText($receiptPath) -ceq $originalReceipt })
         }
     }
 }
 
 Describe 'Managed VM lifecycle with synthetic Hyper-V commands' {
+    It 'inspects Running Saved and Off owners without a receipt or a power change' {
+        foreach ($state in @('Running', 'Saved', 'Off')) {
+            $result = Invoke-LifecycleFixture -Action inspect -State $state -NoReceipt
+            $result.reply.ok | Should -BeTrue
+            $result.reply.state | Should -Be $(if ($state -eq 'Saved') { 'suspended' } else { $state.ToLowerInvariant() })
+            $result.reply.changed | Should -BeFalse
+            $result.saves | Should -Be 0
+            $result.starts | Should -Be 0
+            $result.receiptUnchanged | Should -BeTrue
+        }
+    }
+
+    It 'retains unknown power receipts while inspecting and rejects stale or unconfirmed ownership' {
+        $result = Invoke-LifecycleFixture -Action inspect -State Saved
+        $result.reply.ok | Should -BeTrue
+        $result.receiptUnchanged | Should -BeTrue
+        foreach ($options in @(@{Expired = $true}, @{ForeignDisk = $true}, @{ChangeBinding = $true}, @{State = 'Saving'}, @{Failure = 'permission'}, @{ExpectedIdentity = $true; Failure = 'wrong-identity'}, @{ExpectedIdentity = $true; Failure = 'post-identity'}, @{Failure = 'post-state'})) {
+            $result = Invoke-LifecycleFixture -Action inspect @options
+            $result.reply.ok | Should -BeFalse
+            $result.saves | Should -Be 0
+            $result.starts | Should -Be 0
+            $result.receiptUnchanged | Should -BeTrue
+        }
+    }
+
+    It 'uses bounded administrator inspection without granting permissions or writing power receipts' {
+        $result = Invoke-LifecycleFixture -Action inspect -State Saved -NoAdministrator -NoReceipt -ExpectedIdentity
+        $result.reply.ok | Should -BeTrue
+        $result.reply.changed | Should -BeFalse
+        $result.elevations | Should -Be 1
+        $result.saves | Should -Be 0
+        $result.starts | Should -Be 0
+        $result.receiptUnchanged | Should -BeTrue
+        $result.arguments | Should -Contain 'inspect'
+        $result.leftoverResults | Should -Be 0
+        foreach ($failure in @('elevation-refused', 'elevation-timeout')) {
+            $result = Invoke-LifecycleFixture -Action inspect -NoAdministrator -NoReceipt -Failure $failure
+            $result.reply.ok | Should -BeFalse
+            $result.elevations | Should -Be 1
+            $result.saves | Should -Be 0
+            $result.starts | Should -Be 0
+            $result.receiptUnchanged | Should -BeTrue
+            $result.leftoverResults | Should -Be 0
+        }
+    }
+
     It 'suspends an owned VM once and confirms its final state' {
         $result = Invoke-LifecycleFixture
         $result.reply.ok | Should -BeTrue

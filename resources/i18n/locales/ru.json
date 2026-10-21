@@ -766,6 +766,7 @@
   "Text chat and computer tasks from calls, as reported by the work computer.": "Текстовый чат и компьютерные задачи из звонков по данным рабочего компьютера.",
   "Text conversations and computer tasks use this subscription.": "Текстовые разговоры и компьютерные задачи используют эту подписку.",
   "Text size": "Размер текста",
+  "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.": "Результат предыдущего обновления рабочего компьютера не подтверждён. Автоматический повтор заблокирован. Проверьте состояние обновления в разделе «Рабочий компьютер».",
   "The SSH private key is missing or unreadable. Import the original data folder or select its existing key.": "Закрытый ключ SSH отсутствует или недоступен. Импортируйте исходную папку данных или выберите её существующий ключ.",
   "The Telegram connection and account pairing are still active. New messages can still be sent.": "Подключение Telegram и привязка аккаунта работают. Новые сообщения можно отправлять.",
   "The Telegram token is invalid. Check it and enter it again.": "Неверный токен Telegram. Проверьте и введите его заново.",

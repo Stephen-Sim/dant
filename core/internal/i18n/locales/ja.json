@@ -766,6 +766,7 @@
   "Text chat and computer tasks from calls, as reported by the work computer.": "作業用コンピューターが報告した、テキストチャットと通話からのコンピューター作業です。",
   "Text conversations and computer tasks use this subscription.": "テキスト会話とコンピューター作業はこのサブスクリプションを使用します。",
   "Text size": "文字サイズ",
+  "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.": "前回の作業用コンピューターのアップグレード結果を確認できません。自動再試行はブロックされています。作業用コンピューターで更新状況を確認してください。",
   "The SSH private key is missing or unreadable. Import the original data folder or select its existing key.": "SSH秘密鍵がないか読み取れません。元のデータフォルダーをインポートするか、既存の鍵を選択してください。",
   "The Telegram connection and account pairing are still active. New messages can still be sent.": "Telegramの接続とアカウントのペアリングは有効です。新しいメッセージは送信できます。",
   "The Telegram token is invalid. Check it and enter it again.": "Telegramトークンが無効です。確認して再入力してください。",

@@ -574,7 +574,9 @@ export const profiles = objectOf<VmProfiles>({
       }),
     ),
   ),
-  error: optional(string),
+  requiresSelection: optional(boolean),
+  error: optional(nullable(string)),
+  registryError: optional(nullable(string)),
 });
 export const login = objectOf<LoginDetails>({ userCode: string, verificationUrl: string });
 export const fonts = objectOf<FontInventory>({ fonts: strings, source: optional(string) });

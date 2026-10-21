@@ -5,6 +5,10 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 
 pub(crate) const DESKTOP_TRANSITION_TIMEOUT: Duration = Duration::from_secs(150);
+// Offline exit can additionally inspect the VM (85s), connect (30s), pause
+// the guest (45s), and suspend it (85s). Keep one bounded request for all
+// phases, with room for IPC, without extending installation transitions.
+const DESKTOP_EXIT_TIMEOUT: Duration = Duration::from_secs(300);
 const DESKTOP_RESPONSE_MAX_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,11 +31,20 @@ enum ExitOutcome {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum InactiveVmState {
+    Suspended,
+    Off,
+}
+
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExitBody {
     ok: Option<bool>,
     work_paused: Option<bool>,
     vm_suspended: Option<bool>,
+    vm_already_inactive: Option<bool>,
+    vm_state: Option<InactiveVmState>,
     unsupported: Option<bool>,
     not_configured: Option<bool>,
     code: Option<String>,
@@ -163,7 +176,10 @@ fn exit_response(status: reqwest::StatusCode, bytes: &[u8]) -> ExitOutcome {
     };
 
     let evidence = ExitEvidence::from_body(&body);
-    if status.is_success() && body.code.is_none() && evidence.confirmed() {
+    if status.is_success()
+        && body.code.is_none()
+        && (evidence.confirmed() || already_inactive_confirmed(&body, &evidence))
+    {
         return ExitOutcome::Confirmed {
             unsupported_notice: evidence.unsupported_notice(),
         };
@@ -173,6 +189,17 @@ fn exit_response(status: reqwest::StatusCode, bytes: &[u8]) -> ExitOutcome {
         body.code.as_deref(),
         body.phase.as_deref(),
     ))
+}
+
+// This evidence is accepted only by an explicit ordinary exit. Installation
+// still requires the guest pause barrier through `confirmed` below.
+fn already_inactive_confirmed(body: &ExitBody, evidence: &ExitEvidence) -> bool {
+    evidence.ok
+        && evidence.vm_suspended
+        && !evidence.unsupported
+        && !evidence.not_configured
+        && body.vm_already_inactive == Some(true)
+        && body.vm_state.is_some()
 }
 
 async fn desktop_response_bytes(response: &mut reqwest::Response) -> Option<Vec<u8>> {
@@ -297,9 +324,9 @@ fn desktop_request(
         .get("token")
         .and_then(|value| value.as_str())
         .filter(|value| valid_token(value))?;
-    let route = match action {
-        DesktopAction::Open => "desktop/open",
-        DesktopAction::Exit => "desktop/exit",
+    let (route, timeout) = match action {
+        DesktopAction::Open => ("desktop/open", DESKTOP_TRANSITION_TIMEOUT),
+        DesktopAction::Exit => ("desktop/exit", DESKTOP_EXIT_TIMEOUT),
     };
     client
         .post(format!(
@@ -308,7 +335,7 @@ fn desktop_request(
         ))
         .header("X-Dant-Token", token)
         .header("Content-Type", "application/json")
-        .timeout(DESKTOP_TRANSITION_TIMEOUT)
+        .timeout(timeout)
         .body("{}")
         .build()
         .ok()

@@ -46,10 +46,20 @@ func (bridge *desktopBridgeFixture) Disconnect() {
 }
 
 type desktopPowerFixture struct {
+	inspected int
+	inspect   func(context.Context) (computer.InspectResult, error)
 	suspended int
 	resumed   int
 	supported bool
 	err       error
+}
+
+func (power *desktopPowerFixture) Inspect(ctx context.Context) (computer.InspectResult, error) {
+	power.inspected++
+	if power.inspect != nil {
+		return power.inspect(ctx)
+	}
+	return computer.InspectResult{OK: true}, nil
 }
 
 func (power *desktopPowerFixture) Suspend(context.Context) (computer.SuspendResult, error) {

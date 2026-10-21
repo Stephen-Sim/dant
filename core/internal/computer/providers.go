@@ -255,7 +255,7 @@ var bindingDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 func (providers *Providers) LifecycleCommand(id contracts.VmProviderId, input LifecycleInput) (Command, error) {
 	capabilities, err := providers.Capabilities(id)
-	if err != nil || !capabilities.PowerLifecycle || (input.Action != "suspend" && input.Action != "resume") || !operationID.MatchString(input.OperationID) || !bindingDigest.MatchString(input.Binding) || input.ExpiresAt < 1 {
+	if err != nil || !capabilities.PowerLifecycle || (input.Action != "suspend" && input.Action != "resume" && input.Action != "inspect") || !operationID.MatchString(input.OperationID) || !bindingDigest.MatchString(input.Binding) || input.ExpiresAt < 1 {
 		return Command{}, ErrProvider
 	}
 	args := []string{

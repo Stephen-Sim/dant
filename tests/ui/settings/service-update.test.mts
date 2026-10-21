@@ -205,6 +205,22 @@ test('known update failures have short localized errors and unrelated diagnostic
   }
 });
 
+test('an unknown prior upgrade explains the retry fence without exposing diagnostics', () => {
+  for (const language of ['en', 'zh']) {
+    const f = fixture(language),
+      text = f.context.errorText({
+        code: 'vm_update_unconfirmed',
+        message: 'PRIVATE installer output /home/private',
+      });
+    assert.match(
+      text,
+      language === 'en' ? /previous.*upgrade is unconfirmed/ : /上一次.*升级.*尚未确认/,
+    );
+    assert.match(text, language === 'en' ? /Automatic retry is blocked/ : /已阻止自动重试/);
+    assert.doesNotMatch(text, /PRIVATE|installer output|\/home/);
+  }
+});
+
 test('a paused automatic update exposes resume and explicit pause-work-and-install controls', () => {
   const f = fixture('en', { status: 'failed', targetVersion: '0.4.7-beta.7' });
   f.context.state.controller.updatesPaused = true;

@@ -766,6 +766,7 @@
   "Text chat and computer tasks from calls, as reported by the work computer.": "Chat y tareas de ordenador de las llamadas, según informa el ordenador de trabajo.",
   "Text conversations and computer tasks use this subscription.": "El chat y las tareas de ordenador usan esta suscripción.",
   "Text size": "Tamaño del texto",
+  "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.": "El resultado de una actualización anterior del equipo de trabajo no está confirmado. Se ha bloqueado el reintento automático. Comprueba el estado de la actualización en Equipo de trabajo.",
   "The SSH private key is missing or unreadable. Import the original data folder or select its existing key.": "La clave privada SSH falta o no se puede leer. Importa la carpeta original o selecciona su clave existente.",
   "The Telegram connection and account pairing are still active. New messages can still be sent.": "La conexión de Telegram y la vinculación siguen activas. Pueden enviarse mensajes nuevos.",
   "The Telegram token is invalid. Check it and enter it again.": "Token de Telegram no válido. Revísalo e introdúcelo de nuevo.",

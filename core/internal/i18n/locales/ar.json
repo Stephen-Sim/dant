@@ -766,6 +766,7 @@
   "Text chat and computer tasks from calls, as reported by the work computer.": "المحادثات النصية ومهام الكمبيوتر من المكالمات، كما أبلغ عنها كمبيوتر العمل.",
   "Text conversations and computer tasks use this subscription.": "تستخدم المحادثات النصية ومهام الكمبيوتر هذا الاشتراك.",
   "Text size": "حجم النص",
+  "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.": "لم يتم تأكيد نتيجة ترقية سابقة لكمبيوتر العمل. تم حظر إعادة المحاولة التلقائية. تحقّق من حالة التحديث في كمبيوتر العمل.",
   "The SSH private key is missing or unreadable. Import the original data folder or select its existing key.": "مفتاح SSH الخاص مفقود أو غير قابل للقراءة. استورد مجلد البيانات الأصلي أو اختر مفتاحه الموجود.",
   "The Telegram connection and account pairing are still active. New messages can still be sent.": "لا يزال اتصال Telegram وربط الحساب فعالين. يمكن إرسال رسائل جديدة.",
   "The Telegram token is invalid. Check it and enter it again.": "رمز Telegram غير صالح. تحقّق منه وأدخله مجدداً.",

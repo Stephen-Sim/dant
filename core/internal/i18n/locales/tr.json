@@ -766,6 +766,7 @@
   "Text chat and computer tasks from calls, as reported by the work computer.": "İş bilgisayarının bildirdiği metin sohbeti ve görüşmelerden gelen bilgisayar görevleri.",
   "Text conversations and computer tasks use this subscription.": "Metin konuşmaları ve bilgisayar görevleri bu aboneliği kullanır.",
   "Text size": "Metin boyutu",
+  "The outcome of a previous work computer upgrade is unconfirmed. Automatic retry is blocked. Check the update status in Work computer.": "İş bilgisayarının önceki yükseltmesinin sonucu doğrulanmadı. Otomatik yeniden deneme engellendi. İş bilgisayarında güncelleme durumunu kontrol edin.",
   "The SSH private key is missing or unreadable. Import the original data folder or select its existing key.": "SSH özel anahtarı eksik veya okunamıyor. Özgün veri klasörünü içe aktarın veya mevcut anahtarını seçin.",
   "The Telegram connection and account pairing are still active. New messages can still be sent.": "Telegram bağlantısı ve hesap eşleştirmesi hâlâ etkin. Yeni mesajlar gönderilebilir.",
   "The Telegram token is invalid. Check it and enter it again.": "Telegram tokenı geçersiz. Kontrol edip yeniden girin.",

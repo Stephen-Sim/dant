@@ -10,6 +10,7 @@ use tauri::{
 };
 
 const ID: &str = "dant-background";
+const PAINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Status {
@@ -150,6 +151,10 @@ fn exit_pending_detail(language: &str) -> String {
     )
 }
 
+fn exit_pending_status(language: &str) -> String {
+    crate::l10n::text(language, "Waiting", "等待")
+}
+
 fn exit_window_title(language: &str, pending: bool) -> String {
     if pending {
         crate::l10n::text(language, "dant · Exiting…", "dant · 正在退出…")
@@ -205,14 +210,56 @@ pub fn call_window_changed<R: tauri::Runtime>(
     active: bool,
     language: Option<&str>,
 ) {
-    let Some(state) = app.try_state::<BackgroundTray>() else {
-        return;
-    };
-    let Ok(mut inner) = state.inner.lock() else {
-        return;
-    };
-    let Some(tray) = inner.as_mut() else { return };
-    call_changed(tray, active, language);
+    let language = language.map(str::to_string);
+    let _ = paint_on_main_thread(app, move |app| {
+        let Some(state) = app.try_state::<BackgroundTray>() else {
+            return Ok(());
+        };
+        let mut inner = state
+            .inner
+            .lock()
+            .map_err(|_| "The system tray is unavailable")?;
+        let Some(tray) = inner.as_mut() else {
+            return Ok(());
+        };
+        call_changed(tray, active, language.as_deref());
+        Ok(())
+    });
+}
+
+// Keep each complete native update in one UI callback. The caller must not hold
+// the tray mutex while dispatching or waiting for the callback to finish.
+fn paint_on_main_thread<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    paint: impl FnOnce(&AppHandle<R>) -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    paint_with_timeout(app, paint, PAINT_TIMEOUT)
+}
+
+fn paint_with_timeout<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    paint: impl FnOnce(&AppHandle<R>) -> Result<(), String> + Send + 'static,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let (result, received) = std::sync::mpsc::channel();
+    let queued = std::sync::Arc::new(AtomicBool::new(true));
+    let pending = queued.clone();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        // A timed-out callback that has not started must never repaint stale
+        // state after a later status or exit result has already been applied.
+        if pending.swap(false, Ordering::SeqCst) {
+            let _ = result.send(paint(&handle));
+        }
+    })
+    .map_err(|_| "The system tray is unavailable")?;
+    match received.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => {
+            queued.store(false, Ordering::SeqCst);
+            Err("The system tray is unavailable".into())
+        }
+    }
 }
 
 fn call_changed(tray: &mut Tray<impl TraySurface>, active: bool, language: Option<&str>) {
@@ -252,16 +299,34 @@ pub fn mark_exiting<R: tauri::Runtime>(app: &AppHandle<R>) {
 // Called on the owned asynchronous exit task, never while the UI thread waits
 // for the tray's state lock. Native display failures cannot approve an exit.
 pub fn exit_pending<R: tauri::Runtime>(app: &AppHandle<R>, pending: bool) {
-    let language = language(app);
     if pending {
         restore(app);
     }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.set_title(&exit_window_title(&language, pending));
-    }
+    // Retain the requested state even if the UI loop cannot repaint before the
+    // deadline. A later status update must clear a failed exit's old display.
     if let Some(state) = app.try_state::<BackgroundTray>() {
-        let _ = set_exit_pending(&state.inner, pending, &language);
+        let _ = request_exit_pending(&state.inner, pending);
     }
+    let _ = paint_on_main_thread(app, move |app| {
+        let language = language(app);
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.set_title(&exit_window_title(&language, pending));
+        }
+        if let Some(state) = app.try_state::<BackgroundTray>() {
+            set_exit_pending(&state.inner, pending, &language)?;
+        }
+        Ok(())
+    });
+}
+
+fn request_exit_pending<S>(target: &Mutex<Option<Tray<S>>>, pending: bool) -> Result<(), String> {
+    let mut inner = target
+        .lock()
+        .map_err(|_| "The system tray is unavailable")?;
+    if let Some(tray) = inner.as_mut() {
+        tray.state.exit_pending = pending;
+    }
+    Ok(())
 }
 
 fn set_exit_pending<S: TraySurface>(
@@ -478,7 +543,20 @@ pub async fn tray_status_update<R: tauri::Runtime>(
     window: WebviewWindow<R>,
     status: Status,
 ) -> Result<(), String> {
-    update_status(&app.state::<BackgroundTray>().inner, window.label(), status)
+    update_status_on_main_thread(&app, window.label(), status)
+}
+
+fn update_status_on_main_thread<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    status: Status,
+) -> Result<(), String> {
+    if label != "main" || !valid(&status) {
+        return Err("Invalid background status".into());
+    }
+    paint_on_main_thread(app, move |app| {
+        update_status(&app.state::<BackgroundTray>().inner, "main", status)
+    })
 }
 
 fn update_status<S: TraySurface>(
@@ -505,9 +583,11 @@ fn display_status(tray: &mut Tray<impl TraySurface>, status: Status) -> Result<(
         return Ok(());
     }
     let (open, progress, mut exit, mut text) = labels(&status);
+    let mut tooltip = text.clone();
     if tray.state.exit_pending {
         exit = exit_pending_label(&status.language);
-        text = exit_pending_detail(&status.language);
+        text = exit_pending_status(&status.language);
+        tooltip = exit_pending_detail(&status.language);
     }
     // Any failed native operation leaves the whole display unconfirmed. Even
     // returning to the previous status must then repaint every owned item.
@@ -519,7 +599,7 @@ fn display_status(tray: &mut Tray<impl TraySurface>, status: Status) -> Result<(
     tray.state.call_language = status.language.clone();
     tray.surface.text(Item::Exit, &exit)?;
     tray.surface.text(Item::Status, &text)?;
-    tray.surface.tooltip(&format!("dant · {text}"))?;
+    tray.surface.tooltip(&format!("dant · {tooltip}"))?;
     tray.state.last = Some(status);
     tray.state.displayed_exit_pending = Some(tray.state.exit_pending);
     Ok(())

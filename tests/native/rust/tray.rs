@@ -230,6 +230,183 @@ fn native_status_updates_all_labels_and_tooltip_once_and_deduplicates_confirmed_
 }
 
 #[test]
+fn pending_menu_rows_stay_short_and_nonempty_in_every_supported_language() {
+    let registry: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../resources/i18n/language-registry.json"
+    ))
+    .unwrap();
+    for entry in registry.as_array().unwrap() {
+        let language = entry["code"].as_str().unwrap();
+        let target = Mutex::new(Some(tray()));
+        update_status(
+            &target,
+            "main",
+            Status {
+                language: language.into(),
+                ..status()
+            },
+        )
+        .unwrap();
+        set_exit_pending(&target, true, language).unwrap();
+        let inner = target.lock().unwrap();
+        let effects = &inner.as_ref().unwrap().surface.effects;
+        for effect in &effects[effects.len() - 6..effects.len() - 1] {
+            let Effect::Text(_, text) = effect else {
+                panic!("Every tray menu row must keep its label");
+            };
+            assert!(!text.trim().is_empty(), "Missing {language} menu text");
+        }
+        let pending = exit_pending_status(language);
+        assert!(pending.chars().count() <= 24, "Oversized {language} status");
+        assert_eq!(
+            effects[effects.len() - 2],
+            Effect::Text(Item::Status, pending)
+        );
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::Tooltip(format!(
+                "dant · {}",
+                exit_pending_detail(language)
+            )))
+        );
+        if !matches!(language, "en" | "zh") {
+            assert_ne!(exit_pending_status(language), "Waiting");
+        }
+    }
+}
+
+#[test]
+fn production_tray_writers_apply_complete_paints_on_the_ui_thread() {
+    fn paint<R: tauri::Runtime>(handle: &AppHandle<R>, queued: u16, active: bool) {
+        update_status_on_main_thread(handle, "main", Status { queued, ..status() }).unwrap();
+        call_window_changed(handle, active, Some("zh"));
+        exit_pending(handle, true);
+        exit_pending(handle, false);
+    }
+
+    struct ThreadSurface {
+        owner: std::thread::ThreadId,
+        effects: std::sync::Arc<Mutex<Vec<Effect>>>,
+    }
+    impl TraySurface for ThreadSurface {
+        fn text(&mut self, item: Item, value: &str) -> Result<(), String> {
+            assert_eq!(std::thread::current().id(), self.owner);
+            self.effects
+                .lock()
+                .unwrap()
+                .push(Effect::Text(item, value.into()));
+            Ok(())
+        }
+        fn call_enabled(&mut self, active: bool) -> Result<(), String> {
+            assert_eq!(std::thread::current().id(), self.owner);
+            self.effects.lock().unwrap().push(Effect::Enabled(active));
+            Ok(())
+        }
+        fn tooltip(&mut self, value: &str) -> Result<(), String> {
+            assert_eq!(std::thread::current().id(), self.owner);
+            self.effects
+                .lock()
+                .unwrap()
+                .push(Effect::Tooltip(value.into()));
+            Ok(())
+        }
+    }
+
+    let app = tauri::test::mock_builder()
+        .manage(BackgroundTray::default())
+        .build(tray_context())
+        .unwrap();
+    let effects = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let main = WebviewWindow::builder(&app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .build()
+        .unwrap();
+    let state = app.state::<BackgroundTray>();
+    install_tray(
+        &state.ready,
+        &state.inner,
+        Box::new(ThreadSurface {
+            owner: std::thread::current().id(),
+            effects: effects.clone(),
+        }) as Box<dyn TraySurface + Send>,
+    );
+    let worker = std::sync::Arc::new(Mutex::new(None));
+    let started = worker.clone();
+    app.run(move |handle, event| {
+        if let tauri::RunEvent::Ready = event {
+            paint(handle, 2, true);
+            let handle = handle.clone();
+            let main = main.clone();
+            *started.lock().unwrap() = Some(std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    paint(&handle, 3, false);
+                }));
+                main.close().unwrap();
+                result.unwrap();
+            }));
+        }
+    });
+    worker.lock().unwrap().take().unwrap().join().unwrap();
+    let effects = effects.lock().unwrap();
+    assert_eq!(effects.len(), 40);
+    assert_eq!(effects[6], Effect::Enabled(true));
+    assert_eq!(
+        effects[7],
+        Effect::Text(Item::CallWindow, "显示通话窗口".into())
+    );
+    assert_eq!(
+        effects[12],
+        Effect::Text(Item::Status, exit_pending_status("en"))
+    );
+    assert_eq!(
+        effects[18],
+        Effect::Text(Item::Status, "Working in background · 2 queued".into())
+    );
+    assert_eq!(
+        effects.last(),
+        Some(&Effect::Tooltip(
+            "dant · Working in background · 3 queued".into()
+        ))
+    );
+}
+
+#[test]
+fn a_timed_out_queued_paint_never_runs_when_the_ui_loop_recovers() {
+    let app = tauri::test::mock_builder().build(tray_context()).unwrap();
+    let main = WebviewWindow::builder(&app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .build()
+        .unwrap();
+    let painted = std::sync::Arc::new(AtomicBool::new(false));
+    let observed = painted.clone();
+    app.run(move |handle, event| {
+        if let tauri::RunEvent::Ready = event {
+            let handle = handle.clone();
+            let painted = observed.clone();
+            let main = main.clone();
+            // Hold the isolated mock event loop here until the queued paint
+            // expires, then let it process that callback and the mock close.
+            std::thread::spawn(move || {
+                assert_eq!(
+                    paint_with_timeout(
+                        &handle,
+                        move |_| {
+                            painted.store(true, Ordering::SeqCst);
+                            Ok(())
+                        },
+                        std::time::Duration::from_millis(10),
+                    )
+                    .unwrap_err(),
+                    "The system tray is unavailable"
+                );
+                main.close().unwrap();
+            })
+            .join()
+            .unwrap();
+        }
+    });
+    assert!(!painted.load(Ordering::SeqCst));
+}
+
+#[test]
 fn each_failed_menu_or_tooltip_write_leaves_the_status_unconfirmed_and_allows_a_fresh_update() {
     for fail_at in 1..=6 {
         let mut surface = tray();
@@ -305,7 +482,7 @@ fn exit_progress_survives_normal_status_updates_and_restores_the_latest_language
         assert_eq!(last[0], Effect::Text(Item::Exit, "正在退出 dant…".into()));
         assert_eq!(
             last[1],
-            Effect::Text(Item::Status, exit_pending_detail("zh"))
+            Effect::Text(Item::Status, exit_pending_status("zh"))
         );
         assert_eq!(
             last[2],
@@ -320,6 +497,36 @@ fn exit_progress_survives_normal_status_updates_and_restores_the_latest_language
     let last = &tray.surface.effects[tray.surface.effects.len() - 3..];
     assert_eq!(last[0], Effect::Text(Item::Exit, "退出 dant".into()));
     assert_eq!(last[1], Effect::Text(Item::Status, "在线".into()));
+}
+
+#[test]
+fn a_failed_exit_clear_is_retained_until_the_ui_can_repaint() {
+    let target = Mutex::new(Some(tray()));
+    update_status(&target, "main", status()).unwrap();
+    set_exit_pending(&target, true, "en").unwrap();
+    request_exit_pending(&target, false).unwrap();
+    {
+        let inner = target.lock().unwrap();
+        let tray = inner.as_ref().unwrap();
+        assert!(!tray.state.exit_pending);
+        assert_eq!(tray.state.displayed_exit_pending, Some(true));
+    }
+
+    update_status(&target, "main", status()).unwrap();
+    let inner = target.lock().unwrap();
+    let tray = inner.as_ref().unwrap();
+    assert_eq!(tray.state.displayed_exit_pending, Some(false));
+    let effects = &tray.surface.effects;
+    assert_eq!(
+        effects[effects.len() - 3],
+        Effect::Text(Item::Exit, "Exit dant".into())
+    );
+    assert_eq!(
+        effects.last(),
+        Some(&Effect::Tooltip(
+            "dant · Working in background · 2 queued".into()
+        ))
+    );
 }
 
 #[test]
