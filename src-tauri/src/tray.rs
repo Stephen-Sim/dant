@@ -39,6 +39,8 @@ struct TrayState {
     call_active: bool,
     call_language: String,
     last: Option<Status>,
+    exit_pending: bool,
+    displayed_exit_pending: Option<bool>,
 }
 
 impl Default for TrayState {
@@ -47,6 +49,8 @@ impl Default for TrayState {
             call_active: false,
             call_language: "zh".into(),
             last: None,
+            exit_pending: false,
+            displayed_exit_pending: None,
         }
     }
 }
@@ -132,6 +136,26 @@ fn should_hide(ready: bool, exiting: bool, main: bool) -> bool {
 }
 fn call_window_label(language: &str) -> String {
     crate::l10n::text(language, "Show call window", "显示通话窗口")
+}
+
+fn exit_pending_label(language: &str) -> String {
+    crate::l10n::text(language, "Exiting dant…", "正在退出 dant…")
+}
+
+fn exit_pending_detail(language: &str) -> String {
+    crate::l10n::text(
+        language,
+        "Waiting for work to pause and the VM to suspend; Windows confirmation may be needed.",
+        "正在等待任务暂停及虚拟机挂起，可能需要 Windows 确认。",
+    )
+}
+
+fn exit_window_title(language: &str, pending: bool) -> String {
+    if pending {
+        crate::l10n::text(language, "dant · Exiting…", "dant · 正在退出…")
+    } else {
+        "dant".into()
+    }
 }
 fn labels(value: &Status) -> (String, String, String, String) {
     let (english, chinese) = if value.connection != "online" && value.task != "idle" {
@@ -223,6 +247,42 @@ pub fn mark_exiting<R: tauri::Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<BackgroundTray>() {
         state.exiting.store(true, Ordering::SeqCst);
     }
+}
+
+// Called on the owned asynchronous exit task, never while the UI thread waits
+// for the tray's state lock. Native display failures cannot approve an exit.
+pub fn exit_pending<R: tauri::Runtime>(app: &AppHandle<R>, pending: bool) {
+    let language = language(app);
+    if pending {
+        restore(app);
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_title(&exit_window_title(&language, pending));
+    }
+    if let Some(state) = app.try_state::<BackgroundTray>() {
+        let _ = set_exit_pending(&state.inner, pending, &language);
+    }
+}
+
+fn set_exit_pending<S: TraySurface>(
+    target: &Mutex<Option<Tray<S>>>,
+    pending: bool,
+    language: &str,
+) -> Result<(), String> {
+    let mut inner = target
+        .lock()
+        .map_err(|_| "The system tray is unavailable")?;
+    let Some(tray) = inner.as_mut() else {
+        return Ok(());
+    };
+    tray.state.exit_pending = pending;
+    let status = tray.state.last.clone().unwrap_or_else(|| Status {
+        language: language.into(),
+        connection: "connecting".into(),
+        task: "idle".into(),
+        queued: 0,
+    });
+    display_status(tray, status)
 }
 pub fn language<R: tauri::Runtime>(app: &AppHandle<R>) -> String {
     app.try_state::<BackgroundTray>()
@@ -435,10 +495,23 @@ fn update_status<S: TraySurface>(
     let Some(tray) = inner.as_mut() else {
         return Ok(());
     };
-    if tray.state.last.as_ref() == Some(&status) {
+    display_status(tray, status)
+}
+
+fn display_status(tray: &mut Tray<impl TraySurface>, status: Status) -> Result<(), String> {
+    if tray.state.last.as_ref() == Some(&status)
+        && tray.state.displayed_exit_pending == Some(tray.state.exit_pending)
+    {
         return Ok(());
     }
-    let (open, progress, exit, text) = labels(&status);
+    let (open, progress, mut exit, mut text) = labels(&status);
+    if tray.state.exit_pending {
+        exit = exit_pending_label(&status.language);
+        text = exit_pending_detail(&status.language);
+    }
+    // Any failed native operation leaves the whole display unconfirmed. Even
+    // returning to the previous status must then repaint every owned item.
+    tray.state.displayed_exit_pending = None;
     tray.surface.text(Item::Open, &open)?;
     tray.surface.text(Item::Progress, &progress)?;
     tray.surface
@@ -448,6 +521,7 @@ fn update_status<S: TraySurface>(
     tray.surface.text(Item::Status, &text)?;
     tray.surface.tooltip(&format!("dant · {text}"))?;
     tray.state.last = Some(status);
+    tray.state.displayed_exit_pending = Some(tray.state.exit_pending);
     Ok(())
 }
 

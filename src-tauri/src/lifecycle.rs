@@ -228,6 +228,7 @@ pub struct DesktopExit {
 }
 
 trait DesktopPlatform<R: tauri::Runtime>: Send + Sync {
+    fn progress(&self, app: &AppHandle<R>, pending: bool);
     fn session(&self) -> Option<serde_json::Value>;
     fn endpoint(&self) -> std::net::SocketAddr;
     fn notice(&self, message: &str);
@@ -238,6 +239,10 @@ struct NativeDesktopPlatform {
     link: crate::transport::ControllerLink,
 }
 impl<R: tauri::Runtime> DesktopPlatform<R> for NativeDesktopPlatform {
+    fn progress(&self, app: &AppHandle<R>, pending: bool) {
+        crate::tray::exit_pending(app, pending);
+    }
+
     fn session(&self) -> Option<serde_json::Value> {
         self.link.json(crate::protocol::session_path(), None, None)
     }
@@ -391,6 +396,7 @@ fn prepared_update_exit_using<R: tauri::Runtime>(app: &AppHandle<R>, exit: impl 
 }
 
 trait DesktopEffects {
+    fn progress(&self, pending: bool);
     async fn exit_request(&self) -> ExitOutcome;
     fn language(&self) -> String;
     fn restore(&self);
@@ -402,6 +408,10 @@ trait DesktopEffects {
 struct NativeDesktop<'a, R: tauri::Runtime>(&'a AppHandle<R>);
 
 impl<R: tauri::Runtime> DesktopEffects for NativeDesktop<'_, R> {
+    fn progress(&self, pending: bool) {
+        control(self.0).progress(self.0, pending);
+    }
+
     async fn exit_request(&self) -> ExitOutcome {
         let host = control(self.0);
         let session_host = std::sync::Arc::clone(&host);
@@ -438,7 +448,9 @@ impl<R: tauri::Runtime> DesktopEffects for NativeDesktop<'_, R> {
 }
 
 async fn finish_exit(state: &DesktopExit, host: &impl DesktopEffects) {
+    host.progress(true);
     let response = host.exit_request().await;
+    host.progress(false);
     state.pending.store(false, Ordering::SeqCst);
     match response {
         ExitOutcome::Confirmed { unsupported_notice } => {

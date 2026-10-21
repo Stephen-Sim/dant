@@ -24,6 +24,7 @@ fn native_menu_adapter_updates_only_owned_menu_handles_without_creating_a_tray_i
     assert_eq!(menu.open.text().unwrap(), "打开 dant");
     assert!(!menu.call_window.is_enabled().unwrap());
     assert!(!menu.status.is_enabled().unwrap());
+    assert!(menu.exit.is_enabled().unwrap());
     let mut surface = NativeTray {
         icon: TooltipFixture {
             values: Default::default(),
@@ -280,6 +281,183 @@ fn invalid_status_and_window_identity_never_touch_the_native_surface() {
         update_status(&poisoned, "main", status()).unwrap_err(),
         "The system tray is unavailable"
     );
+}
+
+#[test]
+fn exit_progress_survives_normal_status_updates_and_restores_the_latest_language() {
+    let target = Mutex::new(Some(tray()));
+    update_status(&target, "main", status()).unwrap();
+    set_exit_pending(&target, true, "en").unwrap();
+    let changed = Status {
+        language: "zh".into(),
+        task: "idle".into(),
+        queued: 0,
+        ..status()
+    };
+    update_status(&target, "main", changed.clone()).unwrap();
+    {
+        let inner = target.lock().unwrap();
+        let tray = inner.as_ref().unwrap();
+        assert!(tray.state.exit_pending);
+        assert_eq!(tray.state.displayed_exit_pending, Some(true));
+        assert_eq!(tray.state.last.as_ref(), Some(&changed));
+        let last = &tray.surface.effects[tray.surface.effects.len() - 3..];
+        assert_eq!(last[0], Effect::Text(Item::Exit, "正在退出 dant…".into()));
+        assert_eq!(
+            last[1],
+            Effect::Text(Item::Status, exit_pending_detail("zh"))
+        );
+        assert_eq!(
+            last[2],
+            Effect::Tooltip(format!("dant · {}", exit_pending_detail("zh")))
+        );
+    }
+    set_exit_pending(&target, false, "en").unwrap();
+    let inner = target.lock().unwrap();
+    let tray = inner.as_ref().unwrap();
+    assert!(!tray.state.exit_pending);
+    assert_eq!(tray.state.displayed_exit_pending, Some(false));
+    let last = &tray.surface.effects[tray.surface.effects.len() - 3..];
+    assert_eq!(last[0], Effect::Text(Item::Exit, "退出 dant".into()));
+    assert_eq!(last[1], Effect::Text(Item::Status, "在线".into()));
+}
+
+#[test]
+fn failed_exit_progress_display_keeps_the_requested_state_and_can_refresh_again() {
+    for pending in [true, false] {
+        for fail_at in 1..=6 {
+            let target = Mutex::new(Some(tray()));
+            update_status(&target, "main", status()).unwrap();
+            if !pending {
+                set_exit_pending(&target, true, "en").unwrap();
+            }
+            {
+                let mut inner = target.lock().unwrap();
+                let tray = inner.as_mut().unwrap();
+                tray.surface.fail_at = Some(tray.surface.effects.len() + fail_at);
+            }
+            assert!(set_exit_pending(&target, pending, "en").is_err());
+            {
+                let mut inner = target.lock().unwrap();
+                let tray = inner.as_mut().unwrap();
+                assert_eq!(tray.state.exit_pending, pending);
+                assert_eq!(tray.state.displayed_exit_pending, None);
+                tray.surface.fail_at = None;
+            }
+            update_status(&target, "main", status()).unwrap();
+            assert_eq!(
+                target
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .state
+                    .displayed_exit_pending,
+                Some(pending)
+            );
+        }
+    }
+}
+
+#[test]
+fn partial_exit_progress_is_cleared_without_an_intermediate_successful_refresh() {
+    for fail_at in 1..=6 {
+        let target = Mutex::new(Some(tray()));
+        update_status(&target, "main", status()).unwrap();
+        {
+            let mut inner = target.lock().unwrap();
+            let tray = inner.as_mut().unwrap();
+            tray.surface.fail_at = Some(tray.surface.effects.len() + fail_at);
+        }
+        assert!(set_exit_pending(&target, true, "en").is_err());
+        let partial = {
+            let mut inner = target.lock().unwrap();
+            let tray = inner.as_mut().unwrap();
+            tray.surface.fail_at = None;
+            tray.surface.effects.len()
+        };
+        set_exit_pending(&target, false, "en").unwrap();
+        let inner = target.lock().unwrap();
+        let effects = &inner.as_ref().unwrap().surface.effects;
+        assert_eq!(effects.len(), partial + 6);
+        assert_eq!(
+            effects[effects.len() - 3],
+            Effect::Text(Item::Exit, "Exit dant".into())
+        );
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::Tooltip(
+                "dant · Working in background · 2 queued".into()
+            ))
+        );
+    }
+}
+
+#[test]
+fn partial_status_change_can_return_to_the_previously_confirmed_status() {
+    for fail_at in 1..=6 {
+        let target = Mutex::new(Some(tray()));
+        update_status(&target, "main", status()).unwrap();
+        {
+            let mut inner = target.lock().unwrap();
+            let tray = inner.as_mut().unwrap();
+            tray.surface.fail_at = Some(tray.surface.effects.len() + fail_at);
+        }
+        let changed = Status {
+            language: "zh".into(),
+            connection: "offline".into(),
+            task: "idle".into(),
+            queued: 0,
+        };
+        assert!(update_status(&target, "main", changed).is_err());
+        let partial = {
+            let mut inner = target.lock().unwrap();
+            let tray = inner.as_mut().unwrap();
+            tray.surface.fail_at = None;
+            tray.surface.effects.len()
+        };
+        update_status(&target, "main", status()).unwrap();
+        let inner = target.lock().unwrap();
+        let effects = &inner.as_ref().unwrap().surface.effects;
+        assert_eq!(effects.len(), partial + 6);
+        assert_eq!(
+            effects[effects.len() - 3],
+            Effect::Text(Item::Exit, "Exit dant".into())
+        );
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::Tooltip(
+                "dant · Working in background · 2 queued".into()
+            ))
+        );
+    }
+}
+
+#[test]
+fn native_exit_progress_is_nonfatal_when_the_tray_display_is_unavailable() {
+    let app = crate::application_builder(tauri::test::mock_builder())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let main = WebviewWindow::builder(&app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .title("dant")
+        .build()
+        .unwrap();
+    std::thread::scope(|scope| {
+        let state = app.state::<BackgroundTray>();
+        assert!(scope
+            .spawn(move || {
+                let _guard = state.inner.lock().unwrap();
+                panic!("isolated unavailable tray");
+            })
+            .join()
+            .is_err());
+    });
+    exit_pending(app.handle(), true);
+    assert_eq!(exit_window_title("en", true), "dant · Exiting…");
+    assert_eq!(exit_window_title("zh", true), "dant · 正在退出…");
+    assert!(main.is_visible().unwrap());
+    exit_pending(app.handle(), false);
+    assert_eq!(exit_window_title("zh", false), "dant");
 }
 
 #[test]

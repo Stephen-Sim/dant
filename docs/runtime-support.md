@@ -54,3 +54,5 @@ The portable ZIP keeps `dant.exe` beside its complete `backend/` directory, cont
 The Controller verifies the Linux bundle, fences new admission and confirms the current executor stopped before updating. Offline data preparation requires a complete validated private backup. The new service proves its version and source before becoming current. Unknown stops, incompatible data, missing backups or mismatched source block activation.
 
 Closing the window can leave work running in the tray. Explicit Exit pauses work and suspends an owned managed VM after confirmation; service updates keep the VM powered while replacing its service. See [Go Core](go-core.md), [VM setup](VM.md), [updates](updates.md) and [backups](backups.md).
+
+An Exit request immediately restores the window and shows an exiting label in its title and tray. The tray explains that work pause and VM suspension are pending and may require Windows confirmation. Further clicks keep that progress visible without submitting another request. A rejected or unconfirmed request restores the usual labels and reports the reason while dant remains open.

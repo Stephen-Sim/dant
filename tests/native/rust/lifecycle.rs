@@ -74,6 +74,16 @@ struct DesktopFixture<'a> {
     events: RefCell<Vec<String>>,
 }
 impl DesktopEffects for DesktopFixture<'_> {
+    fn progress(&self, pending: bool) {
+        assert!(self.state.pending.load(Ordering::SeqCst));
+        assert!(!self.state.approved.load(Ordering::SeqCst));
+        if pending {
+            assert!(self.events.borrow().is_empty());
+        } else {
+            assert_eq!(self.events.borrow()[0], "request");
+        }
+    }
+
     async fn exit_request(&self) -> ExitOutcome {
         assert!(self.state.pending.load(Ordering::SeqCst));
         assert!(!self.state.approved.load(Ordering::SeqCst));
@@ -580,11 +590,17 @@ struct DesktopPlatformFixture {
     endpoint: std::net::SocketAddr,
     session: Option<serde_json::Value>,
     events: std::sync::Mutex<Vec<String>>,
+    progress: std::sync::Mutex<Vec<bool>>,
     completed: std::sync::mpsc::Sender<&'static str>,
     gate: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     entered: Option<std::sync::mpsc::Sender<()>>,
 }
 impl DesktopPlatform<tauri::test::MockRuntime> for DesktopPlatformFixture {
+    fn progress(&self, app: &AppHandle<tauri::test::MockRuntime>, pending: bool) {
+        self.progress.lock().unwrap().push(pending);
+        crate::tray::exit_pending(app, pending);
+    }
+
     fn session(&self) -> Option<serde_json::Value> {
         self.events.lock().unwrap().push("session".into());
         if let Some(entered) = &self.entered {
@@ -645,6 +661,7 @@ fn native_desktop_fixture(
         endpoint,
         session,
         events: Default::default(),
+        progress: Default::default(),
         completed,
         gate: Default::default(),
         entered: None,
@@ -739,6 +756,95 @@ fn native_exit_command_reconciles_one_isolated_controller_response_before_exit_o
                 1
             );
         }
+    }
+}
+
+#[test]
+fn exit_wait_is_visible_before_session_lookup_and_duplicate_clicks_send_one_request() {
+    use crate::native_http::Server;
+    let body = br#"{"code":"backup_running"}"#;
+    let server = Server::new(
+        [
+            format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+            body,
+        ]
+        .concat(),
+    );
+    let (app, host, completed) = native_desktop_fixture(
+        server.address,
+        Some(serde_json::json!({"product":"dant","mode":"controller","token":"a".repeat(64)})),
+    );
+    let (release, blocked) = std::sync::mpsc::channel();
+    *host.gate.lock().unwrap() = Some(blocked);
+    request_exit(app.handle());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while host.events.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let pending_progress = host.progress.lock().unwrap().clone();
+    request_exit(app.handle());
+    assert!(app.state::<DesktopExit>().pending.load(Ordering::SeqCst));
+    release.send(()).unwrap();
+    assert_eq!(
+        completed.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "notice"
+    );
+    let wire = String::from_utf8(server.completed_request()).unwrap();
+    assert!(wire.starts_with("POST /api/desktop/exit HTTP/1.1\r\n"));
+    assert_eq!(
+        host.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|value| value.as_str() == "session")
+            .count(),
+        1
+    );
+    assert_eq!(pending_progress, [true]);
+    assert_eq!(*host.progress.lock().unwrap(), [true, false]);
+    assert!(!approved(app.handle()));
+    assert!(!app.state::<DesktopExit>().pending.load(Ordering::SeqCst));
+
+    // A failed attempt is never retried automatically. Another explicit click
+    // can start one new request; the first fixture server has already joined.
+    request_exit(app.handle());
+    assert_eq!(
+        completed.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "notice"
+    );
+    assert_eq!(
+        host.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|value| value.as_str() == "session")
+            .count(),
+        2
+    );
+    assert_eq!(*host.progress.lock().unwrap(), [true, false, true, false]);
+    assert!(!approved(app.handle()));
+    assert!(!app.state::<DesktopExit>().pending.load(Ordering::SeqCst));
+}
+
+#[test]
+fn native_progress_adapter_cannot_approve_or_dispatch_an_exit() {
+    let app = crate::application_builder(tauri::test::mock_builder())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let host = NativeDesktopPlatform::default();
+    for pending in [true, false] {
+        <NativeDesktopPlatform as DesktopPlatform<tauri::test::MockRuntime>>::progress(
+            &host,
+            app.handle(),
+            pending,
+        );
+        assert!(!approved(app.handle()));
+        assert!(!app.state::<DesktopExit>().pending.load(Ordering::SeqCst));
     }
 }
 #[test]
