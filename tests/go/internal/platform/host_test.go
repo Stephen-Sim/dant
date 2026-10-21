@@ -9,7 +9,7 @@ import (
 )
 
 func TestHostCapabilitiesAndCapturedWindowsPaths(t *testing.T) {
-	environment := map[string]string{"SystemRoot": `D:\Windows`, "Tools": `D:\Tools`}
+	environment := map[string]string{"SystemRoot": `D:\Windows`, "ProgramFiles": `E:\Fixture Programs`, "ProgramFiles(x86)": `F:\Fixture Programs`, "Tools": `D:\Tools`}
 	host, err := New("windows", environment, nil)
 	if err != nil || host.ID != contracts.HostPlatformIdWindows || !host.Capabilities.ManagedVM || !host.Capabilities.ExistingSSH {
 		t.Fatalf("Windows capabilities: %+v, %v", host.Capabilities, err)

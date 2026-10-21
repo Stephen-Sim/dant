@@ -13,13 +13,12 @@ import (
 	"time"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
-	"github.com/Stephen-Sim/dant/core/internal/platform"
 )
 
 func TestProvisioningStartsOnlyFixedHelpersAndJoinsWithoutDeletingVMFiles(t *testing.T) {
 	root := t.TempDir()
 	data := filepath.Join(root, "data")
-	host, _ := platform.New("windows", nil, nil)
+	host := windowsComputerHost(t, nil)
 	providers := NewProviders(host, ProviderDetection{FileExists: func(string) bool { return true }, ReadRegistry: func(context.Context, string) (string, error) { return "", ErrProviderUnavailable }})
 	var calls atomic.Int32
 	ready := make(chan struct{}, 1)
@@ -87,7 +86,7 @@ func TestProvisioningPreservesExistingDisksAndRejectsInvalidInput(t *testing.T) 
 	data := filepath.Join(root, "data")
 	os.MkdirAll(filepath.Join(data, "vm"), 0700)
 	os.WriteFile(filepath.Join(data, "vm", "existing.vhdx"), []byte("existing disk"), 0600)
-	host, _ := platform.New("windows", nil, nil)
+	host := windowsComputerHost(t, nil)
 	providers := NewProviders(host, ProviderDetection{FileExists: func(string) bool { return true }, ReadRegistry: func(context.Context, string) (string, error) { return "", ErrProviderUnavailable }})
 	var commands atomic.Int32
 	provisioning, _ := NewProvisioning(ProvisioningOptions{Context: context.Background(), ProjectRoot: root, DataDir: data, Host: host, Providers: providers, Run: func(context.Context, string, []string, io.Reader) ([]byte, error) { commands.Add(1); return nil, nil }})

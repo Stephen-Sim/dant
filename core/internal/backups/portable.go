@@ -346,8 +346,12 @@ func (portable *Portable) Export(ctx context.Context, id, passphrase string, out
 		return Metadata{}, ErrInvalid
 	}
 	defer ciphertext.Close()
-	if _, err := output.Write(aad); err != nil {
+	written, err := output.Write(aad)
+	if err != nil {
 		return Metadata{}, err
+	}
+	if written != len(aad) {
+		return Metadata{}, io.ErrShortWrite
 	}
 	count, err := copyBounded(ctx, output, ciphertext, writer.count+gcmTagBytes)
 	if err != nil || count != writer.count+gcmTagBytes {

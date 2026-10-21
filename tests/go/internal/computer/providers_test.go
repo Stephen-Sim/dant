@@ -12,10 +12,7 @@ import (
 )
 
 func TestProviderDetectionAndSelectionDoNotReplaceConfiguredProvider(t *testing.T) {
-	host, err := platform.New("windows", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	host := windowsComputerHost(t, nil)
 	provider := NewProviders(host, ProviderDetection{FileExists: func(file string) bool {
 		return strings.HasSuffix(file, "vmms.exe") || strings.HasSuffix(file, "Hyper-V.psd1")
 	}, ReadRegistry: func(context.Context, string) (string, error) { return "", errors.New("fixture not installed") }})
@@ -43,7 +40,7 @@ func TestProviderDetectionAndSelectionDoNotReplaceConfiguredProvider(t *testing.
 }
 
 func TestVMwareDetectionRequiresBothToolsAndFixedCommandPlans(t *testing.T) {
-	host, _ := platform.New("windows", map[string]string{"InstallTools": `D:\Owned Tools`}, nil)
+	host := windowsComputerHost(t, map[string]string{"InstallTools": `D:\Owned Tools`})
 	provider := NewProviders(host, ProviderDetection{FileExists: func(file string) bool { return strings.HasPrefix(file, `D:\Owned Tools\`) }, ReadRegistry: func(context.Context, string) (string, error) { return `%InstallTools%`, nil }})
 	found, err := provider.Detect(context.Background())
 	if err != nil || !found[1].Available || found[1].Tools == nil {

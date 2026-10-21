@@ -56,6 +56,8 @@ Protocol limits, accepted identifiers, security allowlists, and stable error cod
 
 Reuse the shared atomic file rename helper when local JSON persistence needs bounded Windows lock retries. Keep its retry policy in named constants. Recheck source, target, and directory identity before another attempt; changed or unconfirmed files must stop the retry. This helper does not retry task execution, network requests, or other external actions.
 
+Capture retained file and directory identities from an opened handle. A path-only Windows `FileInfo` may load its file ID after the path has been replaced. Compare the captured identity before cleanup or commit, and preserve a replacement instead of adopting it. Resolve user and system directories from validated configuration or the operating system; never assume a user's home, drive letter, or Windows installation directory.
+
 ## Language and user content
 
 Use the shared language registry and localization layer. Supported codes, native language names, direction, and locale metadata must have one source of truth. Translate fixed interface text with its placeholders intact; format dates and numbers with the selected locale. Keep controls labeled and usable with a keyboard, including right-to-left layouts.

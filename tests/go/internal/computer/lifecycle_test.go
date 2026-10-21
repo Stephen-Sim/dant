@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
-	"github.com/Stephen-Sim/dant/core/internal/platform"
 )
 
 func ownedLifecycleFixture(t *testing.T, run CommandRunner) (*VMLifecycle, string) {
@@ -35,7 +34,7 @@ func ownedLifecycleFixture(t *testing.T, run CommandRunner) (*VMLifecycle, strin
 		}
 	}
 	writeBinding("192.0.2.1")
-	host, _ := platform.New("windows", nil, nil)
+	host := windowsComputerHost(t, nil)
 	id := 0
 	lifecycle, err := NewLifecycle(LifecycleOptions{DataDir: directory, ProjectRoot: directory, Host: host, Run: run, ID: func() string { id++; return fmt.Sprintf("12345678-1234-1234-1234-%012d", id) }})
 	if err != nil {

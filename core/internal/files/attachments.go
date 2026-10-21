@@ -37,7 +37,11 @@ var (
 
 type Attachment = contracts.Attachment
 
-type AttachmentStore struct{ directory string }
+type AttachmentStore struct {
+	directory string
+	newID     func() (uuid.UUID, error)
+	write     func(string, []byte) (fs.FileInfo, error)
+}
 
 func OpenAttachmentStore(directory string) (*AttachmentStore, error) {
 	absolute, err := filepath.Abs(directory)
@@ -48,7 +52,7 @@ func OpenAttachmentStore(directory string) (*AttachmentStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AttachmentStore{directory: absolute}, nil
+	return &AttachmentStore{directory: absolute, newID: uuid.NewRandom, write: writeExclusive}, nil
 }
 
 func (store *AttachmentStore) Directory() string { return store.directory }
@@ -196,7 +200,7 @@ func (store *AttachmentStore) Put(ctx context.Context, name, declaredType string
 			return Attachment{}, ErrAttachment
 		}
 	}
-	id, err := uuid.NewRandom()
+	id, err := store.newID()
 	if err != nil {
 		return Attachment{}, ErrAttachment
 	}
@@ -210,7 +214,7 @@ func (store *AttachmentStore) Put(ctx context.Context, name, declaredType string
 		Hash:      hex.EncodeToString(digest[:]),
 		GuestPath: nameOnDisk,
 	}
-	identity, err := writeExclusive(nameOnDisk, data)
+	identity, err := store.write(nameOnDisk, data)
 	if err != nil {
 		removeOwned(nameOnDisk, identity)
 		return Attachment{}, err
@@ -221,7 +225,7 @@ func (store *AttachmentStore) Put(ctx context.Context, name, declaredType string
 		return Attachment{}, ErrAttachment
 	}
 	metaPath := filepath.Join(store.directory, id.String()+".json")
-	metaIdentity, err := writeExclusive(metaPath, encoded)
+	metaIdentity, err := store.write(metaPath, encoded)
 	if err != nil {
 		removeOwned(nameOnDisk, identity)
 		removeOwned(metaPath, metaIdentity)

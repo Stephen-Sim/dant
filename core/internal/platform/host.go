@@ -78,6 +78,19 @@ func (configuration WindowsConfiguration) ExpandDirectory(value string) (string,
 	return WindowsPath(value)
 }
 
+func selectedWindowsDirectory(environment map[string]string, key string, discover func(string) (string, error)) (string, error) {
+	value := environment[key]
+	if value == "" {
+		var err error
+		value, err = discover(key)
+		if err != nil {
+			return "", ErrHostConfiguration
+		}
+	}
+
+	return WindowsPath(value)
+}
+
 // New captures already-selected environment values once at the configuration boundary.
 // The caller wires secret protection; constructing a host never performs a command.
 func New(goos string, environment map[string]string, protection SecretProtection) (Host, error) {
@@ -92,22 +105,15 @@ func New(goos string, environment map[string]string, protection SecretProtection
 	}
 	host.Commands.Archive = "tar"
 	if host.ID == contracts.HostPlatformIdWindows {
-		selectDirectory := func(key, fallback string) (string, error) {
-			value := environment[key]
-			if value == "" {
-				value = fallback
-			}
-			return WindowsPath(value)
-		}
-		systemRoot, err := selectDirectory("SystemRoot", `C:\Windows`)
+		systemRoot, err := selectedWindowsDirectory(environment, "SystemRoot", systemWindowsDirectory)
 		if err != nil {
 			return Host{}, err
 		}
-		programFiles, err := selectDirectory("ProgramFiles", `C:\Program Files`)
+		programFiles, err := selectedWindowsDirectory(environment, "ProgramFiles", systemWindowsDirectory)
 		if err != nil {
 			return Host{}, err
 		}
-		programFilesX86, err := selectDirectory("ProgramFiles(x86)", `C:\Program Files (x86)`)
+		programFilesX86, err := selectedWindowsDirectory(environment, "ProgramFiles(x86)", systemWindowsDirectory)
 		if err != nil {
 			return Host{}, err
 		}
@@ -115,6 +121,9 @@ func New(goos string, environment map[string]string, protection SecretProtection
 		for key, value := range environment {
 			captured[key] = value
 		}
+		captured["SystemRoot"] = systemRoot
+		captured["ProgramFiles"] = programFiles
+		captured["ProgramFiles(x86)"] = programFilesX86
 		system := strings.TrimRight(systemRoot, `\`) + `\System32`
 		host.Windows = &WindowsConfiguration{
 			SystemDirectory:   system,

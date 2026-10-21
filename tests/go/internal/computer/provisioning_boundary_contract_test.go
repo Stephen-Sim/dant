@@ -19,10 +19,7 @@ import (
 func provisioningContractOptions(t *testing.T) ProvisioningOptions {
 	t.Helper()
 	root := t.TempDir()
-	host, err := platform.New("windows", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	host := windowsComputerHost(t, nil)
 	return ProvisioningOptions{
 		Context: t.Context(), ProjectRoot: root, DataDir: filepath.Join(root, "data"), Host: host,
 		Providers: NewProviders(host, ProviderDetection{

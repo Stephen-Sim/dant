@@ -24,9 +24,10 @@ func (protection *hostProtectionFixture) Unprotect(context.Context, []byte) ([]b
 	return nil, errors.New("fixture_must_not_be_called")
 }
 
-func TestWindowsHostDefaultsAndInjectedProtectionDoNotExecuteAnything(t *testing.T) {
+func TestWindowsHostSelectedDirectoriesAndInjectedProtectionDoNotExecuteAnything(t *testing.T) {
 	protection := &hostProtectionFixture{}
-	host, err := New("windows", nil, protection)
+	environment := map[string]string{"SystemRoot": `D:\FixtureWindows`, "ProgramFiles": `E:\FixturePrograms`, "ProgramFiles(x86)": `F:\FixturePrograms`}
+	host, err := New("windows", environment, protection)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,20 +39,20 @@ func TestWindowsHostDefaultsAndInjectedProtectionDoNotExecuteAnything(t *testing
 	}
 
 	configuration := host.Windows
-	if configuration == nil || configuration.SystemDirectory != `C:\Windows\System32` || configuration.Archive != `C:\Windows\System32\tar.exe` {
-		t.Fatal("Windows defaults do not use the selected system directory")
+	if configuration == nil || configuration.SystemDirectory != `D:\FixtureWindows\System32` || configuration.Archive != `D:\FixtureWindows\System32\tar.exe` {
+		t.Fatal("Windows commands do not use the selected system directory")
 	}
-	if configuration.HyperVService != `C:\Windows\System32\vmms.exe` || configuration.HyperVModule != `C:\Windows\System32\WindowsPowerShell\v1.0\Modules\Hyper-V\Hyper-V.psd1` {
+	if configuration.HyperVService != `D:\FixtureWindows\System32\vmms.exe` || configuration.HyperVModule != `D:\FixtureWindows\System32\WindowsPowerShell\v1.0\Modules\Hyper-V\Hyper-V.psd1` {
 		t.Fatal("Hyper-V probes escaped their fixed system locations")
 	}
-	if !reflect.DeepEqual(configuration.VMwareDirectories, []string{`C:\Program Files (x86)\VMware\VMware Workstation`, `C:\Program Files\VMware\VMware Workstation`}) {
+	if !reflect.DeepEqual(configuration.VMwareDirectories, []string{`F:\FixturePrograms\VMware\VMware Workstation`, `E:\FixturePrograms\VMware\VMware Workstation`}) {
 		t.Fatal("VMware discovery lost its fixed platform directories")
 	}
 	if host.Commands.PowerShell != "powershell.exe" || host.Commands.Registry != "reg.exe" || host.Commands.Archive != configuration.Archive {
 		t.Fatal("platform commands are inconsistent with the selected host")
 	}
 
-	alias, err := New(string(contracts.HostPlatformIdWindows), nil, nil)
+	alias, err := New(string(contracts.HostPlatformIdWindows), environment, nil)
 	if err != nil || alias.ID != host.ID || alias.Capabilities.SecretProtection {
 		t.Fatal("the supported Windows platform identity lost its capabilities")
 	}
@@ -60,7 +61,9 @@ func TestWindowsHostDefaultsAndInjectedProtectionDoNotExecuteAnything(t *testing
 func TestWindowsDirectoriesValidateEveryConfiguredRootAndRetainUNCPaths(t *testing.T) {
 	for _, field := range []string{"ProgramFiles", "ProgramFiles(x86)"} {
 		t.Run(field, func(t *testing.T) {
-			if _, err := New("windows", map[string]string{field: "relative\\directory"}, nil); !errors.Is(err, ErrHostConfiguration) {
+			environment := map[string]string{"SystemRoot": `D:\FixtureWindows`, "ProgramFiles": `E:\FixturePrograms`, "ProgramFiles(x86)": `F:\FixturePrograms`}
+			environment[field] = "relative\\directory"
+			if _, err := New("windows", environment, nil); !errors.Is(err, ErrHostConfiguration) {
 				t.Fatal("an invalid configured platform root was accepted")
 			}
 		})
@@ -86,6 +89,7 @@ func TestWindowsDirectoriesValidateEveryConfiguredRootAndRetainUNCPaths(t *testi
 	}
 
 	host, err := New("windows", map[string]string{
+		"SystemRoot":        `D:\FixtureWindows`,
 		"ProgramFiles":      `D:/Applications`,
 		"ProgramFiles(x86)": `E:\Applications`,
 		"FixtureRoot":       `\\fixture-server\share`,
