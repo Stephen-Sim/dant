@@ -1,0 +1,262 @@
+package security
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/Stephen-Sim/dant/core/internal/config"
+)
+
+func stringPointer(value string) *string { return &value }
+
+func TestCredentialSearchUsesContextualUnicodeCaseMapping(t *testing.T) {
+	vault, err := NewVault(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, secret := "ΟΣ", "synthetic-fixture-secret"
+	if _, err := vault.Upsert(context.Background(), CredentialInput{Name: &name, Secret: &secret}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := vault.Find(context.Background(), "ος")
+	if err != nil || len(items) != 1 || items[0].Name != name {
+		t.Fatal("contextual Unicode search changed", err)
+	}
+}
+
+func TestSessionBuildMarkerPreservesTheControllerRuntimeBoundary(t *testing.T) {
+	build := SessionBuild{Version: "0.0.0-test.1", Source: strings.Repeat("a", 40)}
+	protocol := config.DefaultProtocol()
+	auth, err := NewSessionAuth("controller", protocol.APIPort, protocol.DevPort, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := auth.Info()
+	if info.Runtime != CoreRuntime || info.Protocol != CoreProtocolVersion || info.Source != build.Source || info.Version != build.Version || info.Mode != "controller" {
+		t.Fatal("build marker missing")
+	}
+	build.Source = "unknown"
+	if _, err := NewSessionAuth("controller", protocol.APIPort, protocol.DevPort, build); err == nil {
+		t.Fatal("unverified source marker accepted")
+	}
+}
+
+func TestVaultReadsVersionOneEnvelopeAndPreservesZeroTimestamp(t *testing.T) {
+	directory := t.TempDir()
+	private := filepath.Join(directory, "credentials")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := make([]byte, 32)
+	for index := range key {
+		key[index] = byte(index)
+	}
+	if err := os.WriteFile(filepath.Join(private, "master.key"), key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// AES-GCM envelope fixture: key bytes 0..31, nonce bytes 0..11 and
+	// dant.credentials.v1 as authenticated data.
+	envelope := []byte(`{"version":1,"iv":"AAECAwQFBgcICQoL","tag":"dRDMfQix8cD6OEa7snuOlQ==","data":"HHn0cqHH+Dm9cae7gdlIXa7mtwTAVmtMCFfIvS1ZMJ8xIJ7Mn/EiqESUT9yqqwpWjzQFr2D05bNH419rfcOZgZdVqFj/81UEbiLDDYqtNMpe47EWAxE2StHf678dgtfspp173IY1rWnqeUyQZFdSGtkVB9/B/wf8JIcjuPCDQ37aIXOx26WvfmePJNgf9m6hRJGCQVB10j6uZdhb2KeZivLj+3Goi+5EllTtyu+wtout/voSu9Yu"}`)
+	if err := os.WriteFile(filepath.Join(private, "vault.enc"), envelope, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	vault, err := NewVault(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := vault.List(context.Background())
+	if err != nil || len(items) != 1 || items[0].CreatedAt != 0 {
+		t.Fatal("original envelope or timestamp changed")
+	}
+	credential, err := vault.Get(context.Background(), items[0].ID)
+	if err != nil || credential.Secret != "fixture-password-only" {
+		t.Fatal("original credential did not decrypt")
+	}
+	updated, err := vault.Upsert(context.Background(), CredentialInput{ID: &items[0].ID, Name: stringPointer("Updated fixture")})
+	if err != nil || updated.CreatedAt != 0 {
+		t.Fatal("credential update invented its creation timestamp")
+	}
+	reopened, err := NewVault(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err = reopened.Get(context.Background(), items[0].ID)
+	if err != nil || credential.Name != "Updated fixture" || credential.Secret != "fixture-password-only" {
+		t.Fatal("credential did not survive restart")
+	}
+}
+
+func TestVaultSerializesWritesAndRejectsTamperedCiphertextWithoutReplacement(t *testing.T) {
+	directory := t.TempDir()
+	vault, err := NewVault(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wait sync.WaitGroup
+	errorsOut := make(chan error, 12)
+	for index := 0; index < 12; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := vault.Upsert(context.Background(), CredentialInput{Name: stringPointer("Fixture"), Secret: stringPointer("fixture-secret-value")})
+			errorsOut <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsOut)
+	for err := range errorsOut {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := vault.List(context.Background())
+	if err != nil || len(items) != 12 {
+		t.Fatal("a concurrent vault write was lost")
+	}
+	file := filepath.Join(directory, "credentials", "vault.enc")
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("fixture-secret-value")) {
+		t.Fatal("credential plaintext persisted")
+	}
+	var envelope vaultEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope.Tag = "AAAAAAAAAAAAAAAAAAAAAA=="
+	tampered, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vault.List(context.Background()); !errors.Is(err, ErrVault) {
+		t.Fatal("tampered vault accepted")
+	}
+	after, err := os.ReadFile(file)
+	if err != nil || !bytes.Equal(after, tampered) {
+		t.Fatal("unconfirmed vault was replaced")
+	}
+}
+
+func TestCredentialRedactionPreservesUTF16StreamingBoundaries(t *testing.T) {
+	secrets := []string{"fixture-long-secret", "口令🐱abcd"}
+	if actual := RedactCredentialText("prefix fixture-long-secret", secrets, false); actual != "prefix "+RedactedCredential {
+		t.Fatal("full secret escaped redaction")
+	}
+	if actual := RedactCredentialText("prefix fixture-lo", secrets, true); actual != "prefix "+RedactedCredential {
+		t.Fatal("partial streaming secret escaped redaction")
+	}
+	if actual := RedactCredentialText("prefix 口令🐱", secrets, true); actual != "prefix "+RedactedCredential {
+		t.Fatal("UTF-16 prefix budget differed")
+	}
+	if actual := RedactCredentialText("prefix 口令", secrets, true); actual != "prefix 口令" {
+		t.Fatal("short unrelated suffix was redacted")
+	}
+}
+
+type fixtureProtector struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (protector fixtureProtector) Protect(ctx context.Context, data []byte) ([]byte, error) {
+	if protector.entered != nil {
+		close(protector.entered)
+		select {
+		case <-protector.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	result := append([]byte(nil), data...)
+	for index := range result {
+		result[index] ^= 0xa5
+	}
+	return result, nil
+}
+
+func (fixtureProtector) Unprotect(_ context.Context, data []byte) ([]byte, error) {
+	result := append([]byte(nil), data...)
+	for index := range result {
+		result[index] ^= 0xa5
+	}
+	return result, nil
+}
+
+func TestVoiceKeyQueueHonorsCancellationAndStoredKeyPrecedence(t *testing.T) {
+	directory := t.TempDir()
+	entered, release := make(chan struct{}), make(chan struct{})
+	store, err := NewVoiceKeyStore(directory, "windows", "environment-fixture-key", fixtureProtector{entered: entered, release: release})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { _, err := store.Set(context.Background(), "stored-fixture-key-value"); finished <- err }()
+	<-entered
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.Get(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal("cancelled key read remained queued")
+	}
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	key, err := store.Get(context.Background())
+	if err != nil || key != "stored-fixture-key-value" {
+		t.Fatal("stored key did not override environment")
+	}
+	status, err := store.Clear(context.Background())
+	if err != nil || status.Source == nil || *status.Source != "environment" {
+		t.Fatal("environment fallback not restored")
+	}
+}
+
+func TestSessionAuthRejectsRemoteHostsOriginsAndAmbiguousTokens(t *testing.T) {
+	auth, err := NewSessionAuth("controller", 4317, 4318)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }), nil)
+	for _, fixture := range []struct {
+		url, host, origin, token string
+		status                   int
+	}{
+		{"http://localhost/api/session", "localhost", "http://localhost:4318", "", 200},
+		{"http://localhost/api/state", "localhost", "http://localhost:4318", "", 401},
+		{"http://localhost/api/state", "attacker.invalid", "", auth.Info().Token, 403},
+		{"http://localhost/api/state", "localhost", "https://attacker.invalid", auth.Info().Token, 403},
+		{"http://localhost/api/state", "localhost", "http://localhost:4318", auth.Info().Token, 200},
+		{"http://localhost/api/state?token=" + auth.Info().Token + "&token=other", "localhost", "", "", 401},
+	} {
+		r := httptest.NewRequest("GET", fixture.url, nil)
+		r.Host = fixture.host
+		r.Header.Set("Origin", fixture.origin)
+		if fixture.token != "" {
+			r.Header.Set("X-Dant-Token", fixture.token)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != fixture.status {
+			t.Errorf("wrong local authorization status: got %d, expected %d", w.Code, fixture.status)
+		}
+	}
+	for _, origin := range []string{"http://localhost:4318/", "http://localhost:80", "http://localhost:4318?x=1", "http://localhost.attacker.invalid:4318", "http://user@localhost:4318"} {
+		if auth.AllowedOrigin(origin) {
+			t.Fatal("noncanonical origin accepted")
+		}
+	}
+}

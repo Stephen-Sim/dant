@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.cache/
+.tools/
+data/
+src-tauri/target/
+src-tauri/resources/
+src-tauri/gen/
+src-tauri/icons/android/
+src-tauri/icons/ios/
+**/__pycache__/
+**/*.pyc
+**/*.log
+**/*.local
+**/*.lock
+.env
+.env.*

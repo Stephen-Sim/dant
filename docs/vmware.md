@@ -25,7 +25,7 @@ From the checkout, run ordinary PowerShell:
 ```powershell
 $dantData = Join-Path $env:APPDATA 'com.dant.desktop\data'
 .\scripts\prepare-vmware.ps1 -DataDirectory $dantData
-.\scripts\create-vmware.ps1 -DataDirectory $dantData -Cpu 4 -MemoryGB 6 -DiskGB 40
+.\scripts\create-vmware.ps1 -DataDirectory $dantData -Cpu 4 -MemoryGB 8 -DiskGB 64
 .\scripts\check-vm.ps1 -DataDirectory $dantData
 ```
 
@@ -33,7 +33,7 @@ Use the same absolute data directory throughout. Optional `-VmrunPath` and `-Vdi
 
 Preparation downloads the official Ubuntu 24.04 AMD64 VMDK, verifies it against the official SHA-256 manifest, prepares an SSH key and NoCloud seed, and installs the ISO helper in a private tools directory. Creation builds a managed VMX and disk, starts the guest using Workstation, waits for its address through VMware Tools, and writes the top-level SSH binding. The guest image includes open-vm-tools. A usable SSH address is not a successful installation check: wait for the graphical desktop, screenshot bridge and executor readiness check.
 
-The default resources are four CPUs, 6 GB RAM and a 40 GB disk. `create-vmware.ps1` accepts `-IPTimeoutSeconds` for address discovery. The Worker and desktop services use the same VM-owned data boundary as Hyper-V; see [VM operation](VM.md).
+New VMs default to four CPUs, 8 GiB RAM and a 64 GiB disk. `-Resume` preserves an existing VM's resources, including larger custom sizes; it never converts or resizes its disk. `create-vmware.ps1` accepts `-IPTimeoutSeconds` for address discovery. The Worker and desktop services use the same VM-owned data boundary as Hyper-V; see [VM operation](VM.md).
 
 ## Files, progress and recovery
 

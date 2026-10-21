@@ -1,0 +1,382 @@
+[
+  {
+    "name": "task_plan",
+    "description": "Register every accepted real task in Work progress before action or clarification, including a simple request to send a link or file. Supply a concrete short title and actual steps; wait for saved:true before claiming registration. A saved:false work_conflict response identifies activeWorkId; keep that exact automatic-continuation binding and update only its actual task, never unrelated work. Before asking for missing task information, set status to waiting_user with at least one pending step and no inProgress step. Reuse the actual returned workId for semantically related follow-ups across turns, including human-requested revisions to an unaccepted result awaiting review; never guess the latest task. Ordinary conversation and requests only asking for progress create no new task. This records progress only: it never starts another executor, grants permission, or marks execution finished.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "status": {
+          "type": "string",
+          "enum": ["running", "waiting_user"],
+          "description": "Use waiting_user only when the accepted task needs information from the user. Its steps must contain at least one pending step and no inProgress step; an all-completed plan cannot wait for user input."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "properties": {
+              "step": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 5000
+              },
+              "status": {
+                "type": "string",
+                "enum": ["pending", "inProgress", "completed"]
+              }
+            },
+            "required": ["step", "status"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["title", "steps"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "task_list",
+    "description": "List saved tasks in this conversation with their actual workId, title, status and completed/total step counts. Use this read-only list to identify the matching task before cancellation; never guess IDs. Listing never executes, restarts, cancels or completes work.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "task_cancel",
+    "description": "Cancel an existing task in this conversation by its exact workId when the human requests cancellation or the task is explicitly abandoned or superseded. Supports current acknowledged running/waiting work and saved continuing/waiting_user tasks; the application verifies execution ownership. Paused, failed, review, completed and unconfirmed records require Work progress review. Preserves cancelled history without completing, deleting or starting work. cancelRequested means stopping awaits confirmation; only cancelled:true confirms cancellation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["workId"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "memory_write",
+    "description": "Update durable reference notes in the VM memory files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string",
+          "enum": ["identity.md", "working-memory.md"]
+        }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "send_file",
+    "description": "Archive a completed file from this conversation output directory.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": ["path"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "send_message",
+    "description": "Send text or links to the same chat.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "react_message",
+    "description": "Optionally set dant's own single emoji on a real user message when it feels natural. Use sparingly; null removes it. This is independent of user reactions and never task acceptance.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "emoji": {
+          "type": ["string", "null"],
+          "maxLength": 64
+        }
+      },
+      "required": ["messageId", "emoji"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "credential_find",
+    "description": "Find saved login/API credentials by name, service, or username. Returns metadata only; use the vault before asking the user.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "maxLength": 300
+        }
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "credential_get",
+    "description": "Read a saved credential for authorized work. The secret is for tool context only: never echo it in chat, memory, or files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "credential_request",
+    "description": "Ask for a missing credential through the separate secure form, never through chat. Waits for the user to save it and returns metadata only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "service": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 500
+        }
+      },
+      "required": ["name", "service", "reason"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "credential_store",
+    "description": "Save or update a credential in the encrypted VM vault. Never copy credential values to chat, memory, or ordinary files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "service": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "secret": {
+          "type": "string",
+          "maxLength": 16384
+        }
+      },
+      "required": ["name", "service", "username", "secret"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "skill_list",
+    "description": "List reusable dant-managed skills in this VM workspace.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "skill_get",
+    "description": "Read a managed skill and its supporting files before applying or improving it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "skill_save",
+    "description": "Save a generalizable reusable skill with self-contained SKILL.md and scripts/references/assets. Include actual helper source, tests, licenses, package manifests and lockfiles under the skill directory; use relative paths, never external workspace helpers. Omit files to preserve existing files; supplying files replaces the entire supporting file map. Keep secrets in the credential vault. Validate helpers before claiming readiness.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 49152
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "maxProperties": 128
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": ["name", "description", "instructions"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_voice_message",
+    "description": "Create and deliver an actual spoken audio file in the same chat.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "voice": {
+          "type": "string"
+        }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "schedule_list",
+    "description": "List saved one-time or recurring tasks, their IDs, priorities, next execution times and state. Listing does not execute them.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "schedule_save",
+    "description": "Create or update a scheduled task only when requested. One-time tasks require an explicit ISO time with offset; recurring tasks require a requested five-field cron expression. Supply an IANA timeZone and optional high, normal or low priority. Use an existing id for changes and enabled:false to pause. Saving never executes work immediately.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "For a one-time task: an explicit ISO 8601 instant with Z or a numeric UTC offset. Omit at for recurring tasks."
+        },
+        "cron": {
+          "type": ["string", "null"],
+          "maxLength": 256,
+          "description": "A recurring five-field cron expression: minute hour day-of-month month day-of-week, such as 0 9 * * * for daily at 09:00. Null selects a one-time task."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["high", "normal", "low"],
+          "description": "Priority for scheduled runs waiting to start; never interrupts work already running."
+        },
+        "timeZone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "The intended IANA timezone, such as Asia/Kuala_Lumpur. Recurring tasks default to the current settings timezone."
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "schedule_delete",
+    "description": "Remove a scheduled task only when requested. This does not stop work already dispatched.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "end_call",
+    "description": "End the active voice call.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+]

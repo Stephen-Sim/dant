@@ -1,0 +1,98 @@
+{
+  "en": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "zh": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "zh-TW": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "ja": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "ko": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "es": {
+    "separator": ".",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 5
+  },
+  "fr": {
+    "separator": " ",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "de": {
+    "separator": ".",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "pt": {
+    "separator": ".",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "ru": {
+    "separator": " ",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "ar": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "hi": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 2,
+    "minimum": 4
+  },
+  "id": {
+    "separator": ".",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "ms": {
+    "separator": ",",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  },
+  "it": {
+    "separator": ".",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 5
+  },
+  "tr": {
+    "separator": ".",
+    "primary": 3,
+    "secondary": 3,
+    "minimum": 4
+  }
+}

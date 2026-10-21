@@ -1,0 +1,15 @@
+{
+  "unicode": "17.0",
+  "validator": "core/internal/history/reactions.go",
+  "count": 3944,
+  "sources": [
+    {
+      "url": "https://www.unicode.org/Public/17.0.0/emoji/emoji-sequences.txt",
+      "sha256": "12cc8267dc33cbd11ed32bcf6fc5dc2ad9c7a77bae1bdfba2f41b1b9b3ead8dd"
+    },
+    {
+      "url": "https://www.unicode.org/Public/17.0.0/emoji/emoji-zwj-sequences.txt",
+      "sha256": "5b25441daed2322b068c5e70cda522946a4f0274df864445a1965a92e5fc5cad"
+    }
+  ]
+}

@@ -1,0 +1,347 @@
+{
+  "America/Adak": {
+    "-36000": "HAST",
+    "-32400": "HADT"
+  },
+  "America/Anchorage": {
+    "-32400": "AKST",
+    "-28800": "AKDT"
+  },
+  "America/Anguilla": {
+    "-14400": "AST"
+  },
+  "America/Antigua": {
+    "-14400": "AST"
+  },
+  "America/Aruba": {
+    "-14400": "AST"
+  },
+  "America/Coral_Harbour": {
+    "-18000": "EST"
+  },
+  "America/Bahia_Banderas": {
+    "-21600": "CST"
+  },
+  "America/Barbados": {
+    "-14400": "AST"
+  },
+  "America/Belize": {
+    "-21600": "CST"
+  },
+  "America/Blanc-Sablon": {
+    "-14400": "AST"
+  },
+  "America/Boise": {
+    "-25200": "MST",
+    "-21600": "MDT"
+  },
+  "America/Cambridge_Bay": {
+    "-25200": "MST",
+    "-21600": "MDT"
+  },
+  "America/Cancun": {
+    "-18000": "EST"
+  },
+  "America/Cayman": {
+    "-18000": "EST"
+  },
+  "America/Chicago": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Chihuahua": {
+    "-21600": "CST"
+  },
+  "America/Ciudad_Juarez": {
+    "-25200": "MST",
+    "-21600": "MDT"
+  },
+  "America/Costa_Rica": {
+    "-21600": "CST"
+  },
+  "America/Creston": {
+    "-25200": "MST"
+  },
+  "America/Curacao": {
+    "-14400": "AST"
+  },
+  "America/Dawson_Creek": {
+    "-25200": "MST"
+  },
+  "America/Denver": {
+    "-25200": "MST",
+    "-21600": "MDT"
+  },
+  "America/Detroit": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Dominica": {
+    "-14400": "AST"
+  },
+  "America/Edmonton": {
+    "-25200": "MST",
+    "-21600": "MDT"
+  },
+  "America/El_Salvador": {
+    "-21600": "CST"
+  },
+  "America/Tijuana": {
+    "-28800": "PST",
+    "-25200": "PDT"
+  },
+  "America/Fort_Nelson": {
+    "-25200": "MST"
+  },
+  "America/Indianapolis": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Glace_Bay": {
+    "-14400": "AST",
+    "-10800": "ADT"
+  },
+  "America/Goose_Bay": {
+    "-14400": "AST",
+    "-10800": "ADT"
+  },
+  "America/Grand_Turk": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Grenada": {
+    "-14400": "AST"
+  },
+  "America/Guadeloupe": {
+    "-14400": "AST"
+  },
+  "America/Guatemala": {
+    "-21600": "CST"
+  },
+  "America/Halifax": {
+    "-14400": "AST",
+    "-10800": "ADT"
+  },
+  "America/Indiana/Knox": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Indiana/Marengo": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Indiana/Petersburg": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Indiana/Tell_City": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Indiana/Vevay": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Indiana/Vincennes": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Indiana/Winamac": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Inuvik": {
+    "-25200": "MST",
+    "-21600": "MDT"
+  },
+  "America/Iqaluit": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Jamaica": {
+    "-18000": "EST"
+  },
+  "America/Juneau": {
+    "-32400": "AKST",
+    "-28800": "AKDT"
+  },
+  "America/Louisville": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Kentucky/Monticello": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Kralendijk": {
+    "-14400": "AST"
+  },
+  "America/Los_Angeles": {
+    "-28800": "PST",
+    "-25200": "PDT"
+  },
+  "America/Lower_Princes": {
+    "-14400": "AST"
+  },
+  "America/Managua": {
+    "-21600": "CST"
+  },
+  "America/Marigot": {
+    "-14400": "AST"
+  },
+  "America/Martinique": {
+    "-14400": "AST"
+  },
+  "America/Matamoros": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Menominee": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Merida": {
+    "-21600": "CST"
+  },
+  "America/Metlakatla": {
+    "-32400": "AKST",
+    "-28800": "AKDT"
+  },
+  "America/Mexico_City": {
+    "-21600": "CST"
+  },
+  "America/Miquelon": {
+    "-10800": "PMST",
+    "-7200": "PMDT"
+  },
+  "America/Moncton": {
+    "-14400": "AST",
+    "-10800": "ADT"
+  },
+  "America/Monterrey": {
+    "-21600": "CST"
+  },
+  "America/Toronto": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Montserrat": {
+    "-14400": "AST"
+  },
+  "America/Nassau": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/New_York": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Nome": {
+    "-32400": "AKST",
+    "-28800": "AKDT"
+  },
+  "America/North_Dakota/Beulah": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/North_Dakota/Center": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/North_Dakota/New_Salem": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Ojinaga": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Panama": {
+    "-18000": "EST"
+  },
+  "America/Phoenix": {
+    "-25200": "MST"
+  },
+  "America/Port-au-Prince": {
+    "-18000": "EST",
+    "-14400": "EDT"
+  },
+  "America/Port_of_Spain": {
+    "-14400": "AST"
+  },
+  "America/Puerto_Rico": {
+    "-14400": "AST"
+  },
+  "America/Winnipeg": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Rankin_Inlet": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Regina": {
+    "-21600": "CST"
+  },
+  "America/Resolute": {
+    "-21600": "CST",
+    "-18000": "CDT"
+  },
+  "America/Santo_Domingo": {
+    "-14400": "AST"
+  },
+  "America/Sitka": {
+    "-32400": "AKST",
+    "-28800": "AKDT"
+  },
+  "America/St_Barthelemy": {
+    "-14400": "AST"
+  },
+  "America/St_Johns": {
+    "-12600": "NST",
+    "-9000": "NDT"
+  },
+  "America/St_Kitts": {
+    "-14400": "AST"
+  },
+  "America/St_Lucia": {
+    "-14400": "AST"
+  },
+  "America/St_Thomas": {
+    "-14400": "AST"
+  },
+  "America/St_Vincent": {
+    "-14400": "AST"
+  },
+  "America/Swift_Current": {
+    "-21600": "CST"
+  },
+  "America/Tegucigalpa": {
+    "-21600": "CST"
+  },
+  "America/Thule": {
+    "-14400": "AST",
+    "-10800": "ADT"
+  },
+  "America/Tortola": {
+    "-14400": "AST"
+  },
+  "America/Vancouver": {
+    "-28800": "PST",
+    "-25200": "PDT"
+  },
+  "America/Yakutat": {
+    "-32400": "AKST",
+    "-28800": "AKDT"
+  },
+  "Atlantic/Bermuda": {
+    "-14400": "AST",
+    "-10800": "ADT"
+  },
+  "UTC": {
+    "0": "UTC"
+  },
+  "Pacific/Honolulu": {
+    "-36000": "HST"
+  }
+}

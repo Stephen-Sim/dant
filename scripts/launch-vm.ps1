@@ -1,10 +1,15 @@
 param(
   [Parameter(Mandatory=$true)][string]$DataDirectory,
-  [ValidateRange(2,128)][int]$MemoryGB = 6,
-  [ValidateRange(1,64)][int]$Cpu = 4,
-  [ValidateRange(32,2048)][int]$DiskGB = 40
+  [Nullable[int]]$MemoryGB,
+  [Nullable[int]]$Cpu,
+  [Nullable[int]]$DiskGB
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'computer/resource-config.ps1')
+$resources = Get-DantComputerResources
+$MemoryGB = Resolve-DantComputerResource $resources.memoryGB $MemoryGB ($PSBoundParameters.ContainsKey('MemoryGB'))
+$Cpu = Resolve-DantComputerResource $resources.cpu $Cpu ($PSBoundParameters.ContainsKey('Cpu'))
+$DiskGB = Resolve-DantComputerResource $resources.diskGB $DiskGB ($PSBoundParameters.ContainsKey('DiskGB'))
 $dataRoot = [System.IO.Path]::GetFullPath($DataDirectory)
 $createScript = Join-Path $PSScriptRoot 'create-vm.ps1'
 

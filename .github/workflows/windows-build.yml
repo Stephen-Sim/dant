@@ -16,7 +16,7 @@ jobs:
   build:
     name: Test and package Windows x64
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       RUSTUP_TOOLCHAIN: 1.99.1
     outputs:
@@ -37,35 +37,48 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: Set up the pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: core/go.sum
       - name: Install locked Node dependencies
         run: npm ci
-      - name: Install VM test dependency
-        run: python -m pip install --disable-pip-version-check pycdlib==1.14.0
+      - name: Check maintained source and documentation formatting
+        run: npm run format:prettier:check
+      - name: Check strict TypeScript contracts and migrated modules
+        run: npm run typecheck
+      - name: Check adopted state domains
+        run: npm run check:states
+      - name: Check generated Go and TypeScript contracts
+        run: npm run check:contracts
+      - name: Check Go formatting, vet, package behavior and critical coverage
+        run: npm run check:core
+      - name: Install pinned Python test and coverage dependencies
+        run: python -m pip install --disable-pip-version-check -r scripts/ci/python-coverage-requirements.txt
       - name: Require VM test tools and check Bash syntax
-        run: node scripts/ci/preflight.mjs
+        run: node scripts/ci/preflight.mts
       - name: Check PowerShell syntax without running VM scripts
         shell: pwsh
         run: ./scripts/ci/check-powershell.ps1
       - name: Check application and tag versions
         id: version
-        run: node scripts/ci/version.mjs
+        run: node scripts/ci/version.mts
       - name: Test release version gate
-        run: node --test scripts/ci/version.test.mjs scripts/ci/coverage.test.mjs
+        run: node --test tests/tooling/build/version.test.mts tests/tooling/build/coverage.test.mts tests/tooling/build/draft-release.test.mts tests/tooling/build/test-files.test.mts
       - name: Test application and enforce coverage, including Windows DPAPI
         run: npm run test:coverage
-      - name: Upload coverage reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: coverage-windows-packaging
-          path: .cache/coverage/
-          include-hidden-files: true
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Test VM image, seed, desktop and SSH key helpers
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: Test and measure all Python VM helpers
+        run: npm run test:python:coverage
+      - name: Install the pinned PowerShell coverage tool
+        shell: pwsh
+        run: ./scripts/ci/install-pester.ps1
+      - name: Instrument and test maintained PowerShell commands
+        run: npm run test:powershell:coverage
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --no-self-update
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component llvm-tools-preview --no-self-update
+      - name: Check native Rust formatting
+        run: npm run format:rust:check
       - name: Restore Rust compilation cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -78,14 +91,40 @@ jobs:
             src-tauri/target/release/incremental
           key: windows-x64-rust-1.99.1-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json', 'package-lock.json') }}
           restore-keys: windows-x64-rust-1.99.1-
+      - name: Install pinned native coverage tool
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
       - name: Build frontend
         run: npm run build
       - name: Prepare Windows backend resources
-        run: node scripts/package-resources.mjs
+        run: node scripts/package-resources.mts
+      - name: Instrument and test the Rust native host
+        run: npm run test:native:coverage
+      - name: Inventory coverage across all maintained executable code
+        if: always()
+        run: npm run coverage:inventory
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-windows-packaging
+          path: |
+            .cache/coverage/*.json
+            .cache/coverage/*.md
+            .cache/coverage/*.info
+            .cache/coverage/typescript/
+            .cache/coverage/python/
+            .cache/coverage/rust/
+            .cache/coverage/powershell/
+            .cache/core/coverage.out
+            .cache/core/coverage.json
+            .cache/core/coverage.md
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - name: Build unsigned NSIS installer with locked Cargo dependencies
         run: npx --no-install tauri build --ci --bundles nsis -- --locked
       - name: Create complete portable runtime, checksums and metadata
-        run: node scripts/ci/artifacts.mjs
+        run: node scripts/ci/artifacts.mts
       - name: Name artifact
         id: artifact-name
         shell: pwsh
@@ -142,13 +181,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          prerelease=false
+          if [[ "$VERSION" == *-* ]]; then prerelease=true; fi
           if existing=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
             if [ "$existing" != true ]; then
               echo 'Refusing to replace assets on an already published release.' >&2
               exit 1
             fi
+            gh release edit "$TAG" --prerelease="$prerelease"
             gh release upload "$TAG" artifacts/* --clobber
           else
             printf 'Unsigned Windows x64 build for %s.\n\nIncludes the NSIS installer, portable application with its complete backend, SHA-256 checksums, and build metadata.\n\nBuild: %s/%s/actions/runs/%s\n' "$VERSION" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/release-notes.md"
-            gh release create "$TAG" artifacts/* --draft --verify-tag --title "dant $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release create "$TAG" artifacts/* --draft --prerelease="$prerelease" --verify-tag --title "dant $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi

@@ -1,0 +1,61 @@
+name: Go core
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  core:
+    name: Core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Set up the pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: core/go.sum
+      - name: Install locked Node dependencies
+        run: npm ci
+      - name: Check generated cross-runtime contracts
+        run: npm run check:contracts
+      - name: Check Go formatting, vet, package tests and critical coverage
+        run: npm run check:core
+      - name: Upload Go statement coverage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: core-coverage-${{ matrix.os }}
+          path: |
+            .cache/core/coverage.out
+            .cache/core/coverage.json
+            .cache/core/coverage.md
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Run the Linux race detector
+        if: runner.os == 'Linux'
+        run: npm run test:core:race

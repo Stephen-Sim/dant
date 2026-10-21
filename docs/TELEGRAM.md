@@ -15,6 +15,8 @@ Only one private account is paired. Both its Telegram user ID and chat ID must m
 
 ## Commands and delivery
 
+Telegram system messages follow the language selected in dant Settings. Welcome and help text, progress labels, command responses and delivery notices appear in one language at a time. Changing the language applies to new messages without pairing again; offline changes sync after reconnection. User messages and dant's replies retain their original text.
+
 - `/help`: show available commands.
 - `/status`: report the shared executor, call, current work and queue state.
 - `/progress` (also `/porgress`): show the same current and recent work as desktop Work progress, including registered titles, step states and task IDs.
@@ -30,17 +32,23 @@ Ordinary input follows the same interactive delivery, queue, human-control lease
 
 Attachments use the app's content inspection and 10 MiB per-file limit. Unsupported content or oversized downloads fail explicitly. Outgoing files are read from immutable app attachments; arbitrary VM paths are not uploaded.
 
+PNG and JPEG attachments within Telegram's 10 MB photo limit are uploaded through [sendPhoto](https://core.telegram.org/bots/api#sendphoto), so they appear as photos. Other formats and larger attachments retain file delivery. A confirmed photo-format rejection can fall back once to the original document; timeouts, missing message receipts and server errors never authorize another send. Explicit dant replies linking a validated current `output/` file archive that file onto the same chat message, including files created in an earlier execution round. Telegram receives the attachment bytes, while local Markdown references retain their labels instead of unusable VM paths. In desktop chat those references open the archived image or file. Old messages that contain only a path without an archived attachment require an explicit new delivery; the interface never opens arbitrary VM files.
+
 ## One conversation on both devices
 
-The desktop app and paired Telegram chat use one VM conversation, context, attachments, and serial task queue. A Telegram instruction creates one task and appears on the desktop. It is not echoed back to Telegram as a second user message. Desktop user messages are mirrored by the bot with a **You · desktop** prefix; Telegram bots send these copies under the bot's identity.
+The desktop app and paired Telegram chat use one VM conversation, context, attachments, and serial task queue. A Telegram instruction creates one task and appears on the desktop. It is not echoed back to Telegram as a second user message. Desktop user messages are mirrored by the bot with a localized prefix, **You · desktop** in English; Telegram bots send these copies under the bot's identity.
 
 New completed dant messages and their attachments are mirrored regardless of whether the request started on the desktop, in Telegram, or was explicitly delivered during a call. Streaming fragments and the live call audio are not mirrored. Long text is split into Telegram-sized plain-text messages.
 
 Sync starts from pairing, or from the first upgrade that enables conversation mirroring for an existing pairing. Existing history is not bulk-exported. Restarting the VM does not resend the baseline history. Editing, deleting, clearing history, quoted-reply links, and reactions are not currently synchronized between Telegram and the desktop; clearing the desktop history also does not reset the model conversation.
 
+Read and unread indicators remain independent in Telegram and dant.
+
 Duplicate updates use stable input IDs and do not execute the same task again. Restart recovery does not automatically resume interrupted model work.
 
 An outbound request may reach Telegram even if its response is lost. Such deliveries are marked **unknown** and are not blindly resent. Check Telegram before repeating an operation. Explicit failures remain visible in gateway status.
+
+Connection and pairing state are separate from delivery history. Settings shows historical unconfirmed and failed counts, the latest issue time and a fixed reason when available. A healthy connection can coexist with an old unconfirmed send. Polling errors clear after a confirmed recovery; delivery history remains. New transport failures retain bounded categories such as timeout, DNS, TLS and invalid response without recording raw exceptions, request URLs or tokens.
 
 ## Credentials and disconnecting
 

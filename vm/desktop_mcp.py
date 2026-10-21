@@ -14,6 +14,7 @@ import urllib.request
 from desktop import act, screenshot
 from control import desktop_access
 from voice_message import create as create_voice
+from network_config import api_origin, CREDENTIAL_BRIDGE_PATH
 
 def tool(name, description, properties, required=()):
     return {'name': name, 'description': description, 'inputSchema': {'type': 'object', 'properties': properties, 'required': list(required), 'additionalProperties': False}}
@@ -21,7 +22,9 @@ def tool(name, description, properties, required=()):
 NUMBER = {'type': 'integer', 'minimum': 0, 'maximum': 4096}
 TEXT = {'type': 'string'}
 TOOLS = [
-    tool('task_plan', 'Register entrusted work before execution and wait for its saved acknowledgement. Reuse the returned workId for related follow-ups across turns, updating the actual title and steps, including human-requested revisions of unaccepted review results. Accepted completed tasks stay closed. Decide whether a request belongs to that task; ordinary conversation creates no task. A reply does not finish unfinished work. This never starts execution, grants permission, or completes it.', {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'title': {'type': 'string', 'minLength': 1, 'maxLength': 240}, 'steps': {'type': 'array', 'minItems': 1, 'maxItems': 128, 'items': {'type': 'object', 'properties': {'step': {'type': 'string', 'minLength': 1, 'maxLength': 5000}, 'status': {'type': 'string', 'enum': ['pending', 'inProgress', 'completed']}}, 'required': ['step', 'status'], 'additionalProperties': False}}}, ['title', 'steps']),
+    tool('task_list', 'List saved tasks in this conversation with their actual workId, title, status and completed/total step counts. Use this read-only list to identify the matching task before cancellation; never guess IDs. Listing never executes, restarts, cancels or completes work.', {}),
+    tool('task_plan', 'Register every accepted real task before action or clarification, including a simple request to send a link or file. Wait for the saved acknowledgement before doing the work or claiming registration. Require saved:true before claiming registration. A saved:false result means the plan was not saved. When it returns code work_conflict and activeWorkId, this automatic continuation must keep that exact workId and only its own actual task steps; do not switch to, overwrite or start unrelated work. Retry the corrected task_plan only after this explicit saved:false rejection; an unconfirmed result must never be retried automatically. Before asking for missing information, set status waiting_user with at least one pending step and no inProgress steps; an all-completed plan cannot wait. Reuse the actual returned workId for semantically related follow-ups across turns, including human-requested revisions of unaccepted review results. Identify it from the saved acknowledgement or task_list; never guess the latest task. Accepted completed tasks stay closed. Ordinary conversation and requests only asking for progress create no task. A reply does not finish unfinished work. This never starts another executor, grants permission, or completes execution.', {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'status': {'type': 'string', 'enum': ['running', 'waiting_user'], 'description': 'Use waiting_user only when the accepted task needs information from the user. Its steps must contain at least one pending step and no inProgress step; an all-completed plan cannot wait for user input.'}, 'title': {'type': 'string', 'minLength': 1, 'maxLength': 240}, 'steps': {'type': 'array', 'minItems': 1, 'maxItems': 128, 'items': {'type': 'object', 'properties': {'step': {'type': 'string', 'minLength': 1, 'maxLength': 5000}, 'status': {'type': 'string', 'enum': ['pending', 'inProgress', 'completed']}}, 'required': ['step', 'status'], 'additionalProperties': False}}}, ['title', 'steps']),
+    tool('task_cancel', 'Cancel an existing task in this conversation by its exact workId from task_list when the human requests cancellation or the task is explicitly abandoned or superseded. Supports current acknowledged running/waiting work and saved continuing/waiting_user tasks; the application verifies execution ownership. Paused, failed, review, completed and unconfirmed records require Work progress review; pause alone is not proof of stopping. Preserves cancelled history; never completes, deletes or starts work. cancelRequested means stopping awaits confirmation; only cancelled:true confirms cancellation. Never infer cancellation from silence, waiting, a reply ending, hangup or closing a window.', {'workId': {'type': 'string', 'minLength': 1, 'maxLength': 128}}, ['workId']),
     tool('screenshot', 'Observe the current VM desktop.', {}),
     tool('click', 'Click the VM desktop at screenshot coordinates.', {'x': NUMBER, 'y': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['x', 'y']),
     tool('drag', 'Drag on the VM desktop.', {'startX': NUMBER, 'startY': NUMBER, 'endX': NUMBER, 'endY': NUMBER, 'button': {'type': 'integer', 'enum': [0, 1, 2]}}, ['startX', 'startY', 'endX', 'endY']),
@@ -36,8 +39,8 @@ TOOLS = [
     tool('credential_request', 'Request a missing credential through the separate secure form. Never ask for passwords or API keys in chat. Waits for the user and returns metadata only.', {'name': {'type': 'string', 'maxLength': 100}, 'service': {'type': 'string', 'maxLength': 200}, 'reason': {'type': 'string', 'maxLength': 500}}, ['name', 'service', 'reason']),
     tool('credential_store', 'Store or update a credential in the encrypted VM vault. Do not copy its value to chat, memory, or ordinary files.', {'id': {'type': 'string', 'maxLength': 128}, 'name': {'type': 'string', 'maxLength': 100}, 'service': {'type': 'string', 'maxLength': 200}, 'username': {'type': 'string', 'maxLength': 300}, 'secret': {'type': 'string', 'maxLength': 16384}}, ['name', 'service', 'username', 'secret']),
     tool('skill_list', 'List real reusable dant-managed skills for this workspace.', {}),
-    tool('schedule_list', 'List saved one-time tasks, their ids, execution times, timezones and states. Listing never executes a task.', {}),
-    tool('schedule_save', 'Create or update a one-time scheduled task only when requested. New tasks require text, an ISO time with explicit UTC offset and IANA timeZone. Reuse id for changes, enabled false pauses. Saving does not execute work now or create recurrence.', {'id': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'text': {'type': 'string', 'minLength': 1}, 'at': {'type': 'string', 'minLength': 1, 'maxLength': 40}, 'timeZone': {'type': 'string', 'minLength': 1, 'maxLength': 100}, 'enabled': {'type': 'boolean'}}, []),
+    tool('schedule_list', 'List saved one-time and recurring tasks, their ids, next execution times, timezones, cron expressions, priorities and states. Listing never executes a task.', {}),
+    tool('schedule_save', 'Create or update a scheduled task only when requested. One-time tasks need text, an ISO time with explicit UTC offset and IANA timeZone. Recurring tasks use a five-field cron expression and omit at; the saved timezone defaults to the current settings timezone. Priority high/normal/low orders runs waiting to start, never interrupts running work. Reuse id for changes, enabled false pauses. Saving does not execute work now. Missed recurring times produce one catch-up run and never overlap unfinished work of the same schedule.', {'id': {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'text': {'type': 'string', 'minLength': 1}, 'at': {'type': 'string', 'minLength': 1, 'maxLength': 40}, 'cron': {'type': ['string', 'null'], 'maxLength': 256}, 'priority': {'type': 'string', 'enum': ['high', 'normal', 'low']}, 'timeZone': {'type': 'string', 'minLength': 1, 'maxLength': 100}, 'enabled': {'type': 'boolean'}}, []),
     tool('schedule_delete', 'Remove a requested scheduled task by id. This does not stop work already dispatched.', {'id': {'type': 'string', 'minLength': 1, 'maxLength': 128}}, ['id']),
     tool('skill_get', 'Read a managed skill and supporting text files before applying or improving it.', {'name': {'type': 'string', 'maxLength': 64}}, ['name']),
     tool('skill_save', 'Create or improve a self-contained skill with actual SKILL.md and helper source, tests, licenses, package manifests and lockfiles under scripts/references/assets. Use relative paths inside the skill; never depend on external workspace helpers. Omit files to preserve existing supporting files; supplying files replaces the entire supporting file map. Keep secrets in the credential vault; test helper scripts before claiming readiness.', {'name': {'type': 'string', 'maxLength': 64}, 'description': {'type': 'string', 'maxLength': 1000}, 'instructions': {'type': 'string', 'maxLength': 49152}, 'files': {'type': 'object', 'additionalProperties': {'type': 'string', 'maxLength': 65536}, 'maxProperties': 128}, 'enabled': {'type': 'boolean'}}, ['name', 'description', 'instructions']),
@@ -102,7 +105,7 @@ def credential_bridge(name, args):
     payload = json.dumps({'tool': name, 'arguments': args}, ensure_ascii=False).encode('utf-8')
     if len(payload) > 512 * 1024:
         raise ValueError('Private tool input exceeds its size limit')
-    request = urllib.request.Request('http://127.0.0.1:4317/api/internal/credentials', data=payload,
+    request = urllib.request.Request(api_origin() + CREDENTIAL_BRIDGE_PATH, data=payload,
                                      headers={'Content-Type': 'application/json', 'X-Dant-Credential-Token': token}, method='POST')
     # Ignore host proxies and refuse redirects: secrets never leave this fixed
     # loopback route. The HTTP endpoint authenticates a separate ephemeral token
@@ -115,6 +118,10 @@ def credential_bridge(name, args):
                 raise ValueError('Credential result exceeds its size limit')
             return json.loads(raw)
     except urllib.error.HTTPError as error:
+        if name == 'task_list':
+            raise ValueError(f'Task list request was rejected (HTTP {error.code})') from None
+        if name == 'task_cancel':
+            raise ValueError(f'Task cancellation request was rejected (HTTP {error.code})') from None
         if name == 'task_plan':
             message = f'Task progress request was rejected (HTTP {error.code})'
             if error.code == 400:
@@ -131,6 +138,10 @@ def credential_bridge(name, args):
     except (OSError, ValueError):
         # Do not include request bodies, response bodies, tokens, or credentials
         # in diagnostics. Writes with a lost response must not be blindly retried.
+        if name == 'task_list':
+            raise ValueError('The task list result is unconfirmed. Check Work progress for saved tasks.') from None
+        if name == 'task_cancel':
+            raise ValueError('The task cancellation result is unconfirmed. Check Work progress; do not retry cancellation automatically.') from None
         if name == 'task_plan':
             raise ValueError('The task progress result is unconfirmed. Do not retry a task progress write automatically.') from None
         raise ValueError('The private credential result is unconfirmed. Do not retry a credential write automatically.') from None
@@ -138,8 +149,18 @@ def credential_bridge(name, args):
 def invoke(name, args, output_dir):
     if not isinstance(args, dict):
         raise ValueError('Tool arguments must be an object')
+    if name == 'task_list':
+        if args:
+            raise ValueError('A task list requires empty arguments.')
+        return result({'taskListResult': credential_bridge(name, args)})
     if name == 'task_plan':
         return result({'taskPlanResult': credential_bridge(name, args)})
+    if name == 'task_cancel':
+        work_id = args.get('workId')
+        if (set(args) != {'workId'} or not isinstance(work_id, str) or not work_id or
+                len(work_id) > 128 or any(ord(char) <= 32 or ord(char) == 127 for char in work_id)):
+            raise ValueError('A task cancellation requires one existing workId.')
+        return result({'taskCancelResult': credential_bridge(name, args)})
     if name in ('credential_find', 'credential_get', 'credential_request', 'credential_store'):
         return result({'credentialResult': credential_bridge(name, args)})
     if name in ('skill_list', 'skill_get', 'skill_save'):
@@ -163,7 +184,15 @@ def invoke(name, args, output_dir):
         text = args.get('text')
         if not isinstance(text, str) or not text.strip() or len(text) > 100000:
             raise ValueError('Chat delivery requires 1–100000 text characters')
-        return result({'dantMessage': {'text': text}})
+        # The owned application observer publishes this result. This lookup
+        # cannot send a message or start work, and uncertainty never proves send.
+        policy = credential_bridge('chat_delivery_policy', {})
+        if not isinstance(policy, dict) or not isinstance(policy.get('quiet'), bool):
+            raise ValueError('Chat delivery policy is unconfirmed. Nothing was sent by this tool.')
+        receipt = {'sent': False, 'pendingPublication': True}
+        if policy['quiet']:
+            receipt.update({'quiet': True, 'buffered': True})
+        return result({'dantMessage': {'text': text}, **receipt})
     if name == 'react_message':
         message_id, emoji = args.get('messageId'), args.get('emoji')
         if (not isinstance(message_id, str) or not message_id or len(message_id) > 128 or

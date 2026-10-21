@@ -1,0 +1,130 @@
+[
+  {
+    "code": "en",
+    "label": "English",
+    "name": "English",
+    "locale": "en",
+    "speech": "en-US",
+    "direction": "ltr"
+  },
+  {
+    "code": "zh",
+    "label": "简体中文",
+    "name": "Simplified Chinese",
+    "locale": "zh-CN",
+    "speech": "zh-CN",
+    "direction": "ltr"
+  },
+  {
+    "code": "zh-TW",
+    "label": "繁體中文",
+    "name": "Traditional Chinese",
+    "locale": "zh-TW",
+    "speech": "zh-TW",
+    "direction": "ltr"
+  },
+  {
+    "code": "ja",
+    "label": "日本語",
+    "name": "Japanese",
+    "locale": "ja-JP",
+    "speech": "ja-JP",
+    "direction": "ltr"
+  },
+  {
+    "code": "ko",
+    "label": "한국어",
+    "name": "Korean",
+    "locale": "ko-KR",
+    "speech": "ko-KR",
+    "direction": "ltr"
+  },
+  {
+    "code": "es",
+    "label": "Español",
+    "name": "Spanish",
+    "locale": "es-ES",
+    "speech": "es-ES",
+    "direction": "ltr"
+  },
+  {
+    "code": "fr",
+    "label": "Français",
+    "name": "French",
+    "locale": "fr-FR",
+    "speech": "fr-FR",
+    "direction": "ltr"
+  },
+  {
+    "code": "de",
+    "label": "Deutsch",
+    "name": "German",
+    "locale": "de-DE",
+    "speech": "de-DE",
+    "direction": "ltr"
+  },
+  {
+    "code": "pt",
+    "label": "Português",
+    "name": "Portuguese",
+    "locale": "pt-BR",
+    "speech": "pt-BR",
+    "direction": "ltr"
+  },
+  {
+    "code": "ru",
+    "label": "Русский",
+    "name": "Russian",
+    "locale": "ru-RU",
+    "speech": "ru-RU",
+    "direction": "ltr"
+  },
+  {
+    "code": "ar",
+    "label": "العربية",
+    "name": "Arabic",
+    "locale": "ar",
+    "speech": "ar-SA",
+    "direction": "rtl"
+  },
+  {
+    "code": "hi",
+    "label": "हिन्दी",
+    "name": "Hindi",
+    "locale": "hi-IN",
+    "speech": "hi-IN",
+    "direction": "ltr"
+  },
+  {
+    "code": "id",
+    "label": "Bahasa Indonesia",
+    "name": "Indonesian",
+    "locale": "id-ID",
+    "speech": "id-ID",
+    "direction": "ltr"
+  },
+  {
+    "code": "ms",
+    "label": "Bahasa Melayu",
+    "name": "Malay",
+    "locale": "ms-MY",
+    "speech": "ms-MY",
+    "direction": "ltr"
+  },
+  {
+    "code": "it",
+    "label": "Italiano",
+    "name": "Italian",
+    "locale": "it-IT",
+    "speech": "it-IT",
+    "direction": "ltr"
+  },
+  {
+    "code": "tr",
+    "label": "Türkçe",
+    "name": "Turkish",
+    "locale": "tr-TR",
+    "speech": "tr-TR",
+    "direction": "ltr"
+  }
+]

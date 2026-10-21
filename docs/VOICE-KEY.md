@@ -18,28 +18,20 @@ DPAPI depends on the Windows user and profile. After changing accounts, migratin
 
 ## Server integration
 
-```js
-import {VoiceKeyStore} from './secrets.mjs';
+Go composition constructs `security.NewVoiceKeyStore` with the validated data directory, host OS, selected environment key and narrow `security.Protector`. `Status()` returns metadata; `Set(ctx, inputKey)` and `Clear(ctx)` return status and an error. Every caller must handle that error. Only internal voice setup may call `Get(ctx)`; its returned key must never enter an HTTP response, event, log or persisted state.
 
-const voiceKeys = new VoiceKeyStore(dataDir);
-voiceKeys.status();               // {configured, source, storage}
-await voiceKeys.set(inputKey);    // Returns status, never the key.
-await voiceKeys.clear();          // Deletes saved ciphertext.
-const key = await voiceKeys.get(); // Internal voice requests only.
-```
-
-`source` is `stored`, `environment`, or `null`; `storage` is `windows-dpapi` or `environment`. Never use `get()` in an HTTP response, WebSocket event, log, or persisted state. Request logging must not include the input key.
+`source` is `stored`, `environment`, or `null`; `storage` is `windows-dpapi` or `environment`. Request logging must not include the input key. The owning implementation is [`voice_key.go`](../core/internal/security/voice_key.go).
 
 Saving protects the new value before writing a unique temporary ciphertext file, flushing it, and replacing the target atomically. Protection or write failures retain the previous configuration. Saves and deletes are serialized within one instance.
 
-The PowerShell protection script is fixed. Keys arrive over child-process stdin, not command-line arguments. Protection returns ciphertext; decryption wraps its result with a fresh one-time mask, so stdout does not contain the plaintext key. Child errors become fixed messages without input contents. Plaintext exists only briefly in request-process memory.
+The Go Windows protector calls `CryptProtectData` and `CryptUnprotectData` through the pinned Windows bindings, using the existing entropy and current-user scope. It forbids interactive protection UI, validates output bounds, clears returned native allocations and frees them. Keys do not cross a PowerShell child process or command line. Plaintext exists briefly in the owning request process; errors expose fixed codes without key contents.
 
 ## Tests
 
-Constructor overrides inject `platform`, `env`, `protect`, `unprotect`, or `spawnProcess`. Tests use temporary invented values to exercise atomic saves, failure preservation, deletion, non-Windows behavior, subprocess arguments/output, Windows DPAPI round trips, and tamper rejection. They do not read existing credentials.
+Tests inject the OS, environment value and narrow protector. `tests/go/internal/security/` uses temporary invented values for atomic saves, failure preservation, deletion, non-Windows behavior, cancellation, native Windows DPAPI round trips and tamper rejection. It does not read existing credentials. Run through the shared overlay entrypoint:
 
 ```powershell
-node --test tests/secrets.test.mjs
+npm run test:core
 ```
 
 References: Microsoft [ProtectedData](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata) and [CurrentUser scope](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.dataprotectionscope).

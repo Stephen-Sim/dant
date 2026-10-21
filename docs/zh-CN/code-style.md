@@ -1,0 +1,113 @@
+# 代码组织与格式
+
+[English](../code-style.md) · Chinese
+
+本规范适用于仓库中的新代码和被修改的代码。[AGENTS.md](../../AGENTS.md) 将其作为仓库工作要求。
+
+## 按功能组织模块
+
+生产后端按功能放在 `core/internal/<feature>/`，浏览器模块放在 `ui/<feature>/`。小型 `core/cmd/` 入口把角色组装交给 `application`；Controller 组装属于 `controller`，Worker 组装属于 `app`。领域逻辑、持久化、渲染和传输保留在所属功能内。
+
+| 目录                                                                                      | 职责                                                        |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `core/internal/controller`、`computer`、`platform`                                        | 宿主配置、SSH、VM 提供商、生命周期和部署。                  |
+| `core/internal/app`、`work`、`runtime`                                                    | Worker API、准入、任务连续性及 Codex 进程/RPC 边界。        |
+| `core/internal/store`、`history`、`memory`、`schedules`                                   | 对话权威、SQLite 记忆/召回与调度派发。                      |
+| `core/internal/voice`、`telegram`、`files`、`skills`、`security`、`backups`、`updates`    | 各自功能及其存储/传输边界。                                 |
+| `core/internal/config`、`contracts`、`i18n`、`settings`、`diagnostics`                    | 配置、生成状态、嵌入语言数据、偏好及有界诊断。              |
+| `ui/chat`、`call`、`work`、`schedules`、`files`、`settings`、`platform`、`shared`、`i18n` | 浏览器功能、原生适配及共享浏览器基础模块。                  |
+| `resources/contracts`、`resources/config`、`resources/i18n`                               | 权威 schema、协议默认值与语言数据；生成消费者检查漂移。     |
+| `scripts`、`tests`                                                                        | 构建/开发工具、浏览器测试、合成夹具和镜像包路径的 Go 测试。 |
+
+共享契约不能导入浏览器、Controller 或 Worker 入口。生产资源包含编译后的 Go 运行时、前端、固定辅助文件和经验证的清单。
+
+浏览器渲染状态并提交经过校验的用户操作；Windows Controller 管理宿主机配置、VM 连接和请求转发；Ubuntu Worker 拥有任务 Engine 和持久工作状态；Tauri 负责 Windows 原生集成。提取或移动模块时必须保留这些边界，详见[架构文档](architecture.md)。
+
+移动文件时一并修改导入、打包白名单、测试夹具、覆盖率路径、命令和文档链接。保留已有数据位置与公开接口；需要改变时必须同时提供明确迁移。避免循环依赖，不要用无边界的工具目录混放各功能逻辑。
+
+界面测试放在 `tests/ui/chat/`、`tests/ui/settings/` 等对应目录。Node 构建／开发测试按工具归属放在 `tests/tooling/build/`、`tests/tooling/config/`、`tests/tooling/contracts/`、`tests/tooling/core/` 和 `tests/tooling/computer/`，CI 脚本测试也放入对应目录。原生宿主边界校验保留在 `tests/native/`。测试归属与必需门禁见[测试](testing.md)。公共夹具放在 `tests/support/`，编译期契约放在 `tests/types/`，Python VM 测试放在 `tests/vm/`。`npm test` 和覆盖率检查使用同一个递归发现模块，移动目录不能漏跑测试。单独执行时使用完整路径，例如 `node --test tests/tooling/build/test-files.test.mts`。
+
+生产 Go 核心包放在 `core/internal/<feature>/`，全部 Go 测试集中在镜像完整包路径的 `tests/go/<package>/`，例如 `tests/go/internal/memory/`。统一入口通过 Go 官方的显式 `-overlay` 选项，将这些测试编译到所属包中，不为测试导出私有实现，也不复制生产代码。相关 TypeScript 工具放在 `scripts/core/`，工具的 Node 测试放在 `tests/tooling/core/`。明确保留 Controller、Worker、浏览器与认证传输边界；Controller 离线时不能导入执行组装作为回退。
+
+## 格式化命令
+
+使用 `npm ci` 安装锁定的 JavaScript 依赖。格式化采用 `package-lock.json` 锁定的 **Prettier 3.9.10**，以及 Rust 的 `rustfmt` 组件。Windows 构建工作流指定打包工具链；运行 Rust 格式检查前，为该工具链安装 `rustfmt`。
+
+```powershell
+npm run format
+npm run format:check
+```
+
+`format` 格式化 Prettier 支持的源码和文档，然后执行 `cargo fmt` 和固定版本的 Go 格式化工具。`format:check` 只检查这三者，不修改文件。局部操作可使用 `format:prettier`、`format:prettier:check`、`format:rust`、`format:rust:check`、`format:go`、`format:go:check`。使用这些本地命令，不依赖默认配置不同的全局格式化工具。
+
+Prettier 处理 JavaScript、TypeScript、JSON、CSS、HTML、Markdown 和 YAML。`.prettierrc.json` 规定两个空格、分号、JavaScript 单引号、尾逗号、100 列目标宽度与 LF，同时保留正文现有换行。`.editorconfig` 规定 UTF-8、末尾换行；Python、Rust、PowerShell 使用四个空格。Python、PowerShell 和 Bash 继续执行现有语法检查和行为测试，不引入未声明的格式化依赖。
+
+Go 源码严格使用 **Go 1.27.2** 及其附带的 `gofmt`，采用 Go 的制表符缩进。`scripts/core/go.mts` 优先使用 `.tools/go1.27.2/go/bin` 中的固定工具，否则校验 PATH 中的 Go；格式化或测试前会拒绝其他版本。它固定设置 `GOTOOLCHAIN=local`，检查不能暗中选择或下载另一套编译器。工具缺失时须明确安装这个版本的官方工具链。独立核心 CI 在 Windows 与 Linux 使用相同版本。
+
+`.gitattributes` 让自动识别的文本在所有平台（包括 Windows CI）保留 LF；Git 的二进制识别会保持图片等二进制文件不变。
+
+`.prettierignore` 排除生成产物、缓存、安装依赖、私有运行数据、环境文件和生成的锁文件格式。`package-lock.json` 仍由 Prettier 检查。不得通过排除维护中的源码或添加 formatter-ignore 注释消除失败。
+
+## 配置与常量
+
+环境选项统一通过共享配置模块读取，在该边界解析、校验并给出有文档的默认值，然后传给对应模块。Go 通过 `core/internal/config` 读取选定环境值，浏览器/工具使用共享配置适配；不要在各功能中散布 `os.Getenv` 或 `process.env`。`.env.example` 只记录非秘密示例和空的秘密占位，真实值放在忽略的本地配置或已有安全凭据设施中。
+
+协议限制、合法标识、权限白名单和固定错误码属于代码常量。放在功能旁；多个运行时确实需要相同值时，放入共享契约。不能为了减少常量而将安全约束变成可随意配置的环境项。日志和错误不得包含秘密或未限制长度的进程输出。
+
+本地 JSON 持久化需要处理 Windows 文件锁时，复用共享的原子文件替换模块，重试策略使用命名常量并保持次数上限。下一次尝试前必须重新确认源文件、目标文件和目录身份；文件变化或无法确认时停止重试。这个模块不重试任务执行、网络请求或其他外部操作。
+
+需要保留的文件和目录身份必须从已打开的句柄捕获。Windows 中仅基于路径的 `FileInfo` 可能在路径被替换后才加载文件 ID。清理或提交前应比较捕获的身份，保留替换后的文件或目录，不能将其认作原对象。用户与系统目录从已验证的配置或操作系统动态解析，不得假设用户主目录、盘符或 Windows 安装位置。
+
+## 语言与用户内容
+
+统一使用共享语言注册表和本地化层。语言代码、自称、方向与 locale 元数据只有一个来源。界面固定文案翻译保留占位符，日期和数字使用所选 locale。控件必须有可访问名称并支持键盘，包含从右到左的布局。
+
+用户消息、任务名称、项目记忆、文件等内容保留原文。切换界面语言不翻译历史，也不授予新的工作权限。
+
+## 命名状态与跨运行时契约
+
+TypeScript 状态统一引用 `ui/shared/states.mts` 中冻结的运行时枚举；Go 使用相同 schema 生成的 `core/internal/contracts` 常量，例如 `contracts.TaskStatusRunning`。键名采用 UpperCamelCase，例如 `TaskStatus.Running`、`TaskPriority.Normal`、`PlanStepStatus.InProgress`，序列化值保持已有字符串。不要把持久状态换成数字序号或翻译后的显示文案。任务、提交、续作、连接、升级分别属于不同状态域；任务标记为暂停不等于执行器已经停止，结果未知的提交也不能视为可安全重试的失败。
+
+`ChatTaskStatus` 与 `WorkStatus` 有意区分：聊天任务沿用原来的允许状态；持久任务可在两个执行回合间保持 `continuing`，或在核对结果时保持 `unknown`。旧显示值仍由原兼容边界处理。接受未知输入时使用 `isEnumValue(domain, value)` 校验，明确拒绝或保留未确认结果，不要凭空补出安全状态。
+
+`ui/shared/api-types.ts` 定义共享边界结构；各功能专用的类型放在所属模块旁。生产后端使用 Go 静态类型；浏览器与工具使用严格 TypeScript。Node 工具模块使用 `.mts`；纯类型文件使用 `.ts`，并通过 type-only import 引入。生成的浏览器 bundle、第三方文件和用户文件测试夹具中的 JavaScript 保留原格式。
+
+`resources/contracts/state-domains.json` 统一拥有跨运行时的状态词表。`npm run generate:contracts` 生成 TypeScript 与 Go 契约；`npm run check:contracts` 使用固定格式化工具核对生成内容。不能单独维护另一套 Go 线值，也不能分别手改生成文件。Go 边界同样必须拒绝未知状态，保留任务身份、旧数据兼容和明确的未确认语义。功能专属 Go 类型留在对应包内。依赖由 `core/go.mod` 与 `core/go.sum` 固定，变更须有意进行并经过审查。
+
+持久化放在所属功能的 Repository 内。固定的参数化查询、事务归属和经校验的行映射，与应用策略分开；不要把 SQL 或数据库行传给入口或渲染器。重复使用的可选作用域值使用命名绑定。授权条件、持久化文档名、确认规则和 schema/revision 校验是代码不变量，不属于用户可修改的配置。优先提供具体功能操作，避免通用 CRUD 抽象。只有在证明收益及 SQLite、FTS、schema 兼容性后才引入 ORM 或 SQL 生成器；数据库变更必须有明确 schema 版本和恢复检查。
+
+固定版本编译器开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 和 `noEmit`。`npm run typecheck` 依次检查三个工程：Node 入口与工具、Vite 浏览器应用、全部 Node 测试。Node 使用 `NodeNext` 解析；浏览器和混合浏览器测试使用 `Bundler`，对应实际依赖包入口。声明文件检查保持开启。编译夹具包含必须始终被拒绝的非法状态。`npm run check:states` 检查 UI AST，并使用固定 Go 工具链递归解析已接入的功能范围，禁止其状态域的原始字面量，包括别名与包装调用。运行时 OS、宿主平台、终止 turn、任务、提交、语音引用状态分别校验。缺失范围或非法检查报告会失败；新增状态所有者时同步扩展范围。
+
+Node 工具模块使用可擦除类型的 `.mts`，要求 Node 22.18+ LTS 或 24+。开发预检验证原生 TypeScript 和声明的构建／辅助工具前提；VM 运行经验证的 Go 程序和独立安装的 Codex/Python 辅助工具。不得用 `any`、跳过检查或仅改后缀来隐藏类型错误。Vite 负责转换，独立类型检查门禁必须保留。
+
+磁盘 JSON 和传输返回值先按 `unknown` 处理，由所属边界验证实际消费的字段。兼容旧记录缺失的字段，不生成虚假的任务标识、执行确认或时间。注入服务按消费者实际使用的能力定义接口，不要求具体实现的私有字段，也不让事件监听方法的返回值绑定到完整具体类。
+
+需要提取源码的测试通过 `tests/support/source-fixtures.mts` 擦除 TypeScript 注解，再使用 JavaScript AST 定位声明和事件绑定。VM 执行选定的源码夹具前同样擦除类型。CSS 断言视图通过 PostCSS 规范空白，保留带引号选择器、颜色写法和属性值；不要依赖固定空格或单个物理行来提取函数。
+
+DOM 测试仅使用 LinkeDOM 的公开 `parseHTML` 入口。`tests/types/linkedom.d.ts` 保留该入口原有的公开返回类型，并将输入限定为 HTML 字符串。这个明确边界隔离了上游内部 DOM 类声明的兼容问题，仓库和其他依赖的声明文件检查保持开启。
+
+## Go 包与接口
+
+用空行分开校验、身份捕获、I/O、提交与通知阶段。大型结构体逐字段声明并按职责分组。避免一行多语句回调和过长连续函数；`gofmt` 负责语法对齐，不能代替这些可读性边界。
+
+每个 `core/internal/<feature>` 包负责自己的策略与数据访问。小型 `cmd` 入口只解析经校验的启动选项、组装依赖和管理进程退出，不承载查询、映射或协议实现。默认使用具体类型；只有消费者需要可替换边界时，才在消费方定义只包含实际所需操作的窄接口。避免提供方拥有的万能接口、通用 `BaseRepository` 层，以及混放无关功能的 `common` 或 `utils` 包。
+
+静态嵌入资源放在所属功能的 `assets/` 目录，需要时一并保留来源和许可证。每个 `//go:embed` 输入都必须由 Git 跟踪，并纳入源码溯源与干净检出检查。运行时 `data/` 的忽略规则不能隐藏构建必需文件；移动静态资源不改变用户持久数据的位置。
+
+阻塞或可取消操作以 `context.Context` 为第一个参数，将请求截止时间传递到 SQL 与子工作，不能在调用链内部替换成后台 context。长期 context 由最外层组装代码拥有。使用 `errors.Is` 和 `errors.As` 分类已包装的错误；只有所属边界能安全保留内部原因时才包装它。传输错误仅暴露固定且经校验的错误码，不包含 SQL、路径、查询正文或原始原因。取消一个请求时，仍须保留“执行停止”和“持久任务尚未完成”的区别。
+
+每个 goroutine 都必须有归属与退出路径。限制 worker、队列、输入输出帧、截止时间和会话生命周期，退出时取消并等待 worker 完成。所有路径都释放 rows、statement、事务和文件。明确保护共享状态，并在异步工作中保持精确的请求、快照和 revision 身份。超时或缺失回复不能成为重放结果未知操作的理由。
+
+所属 Repository 使用固定的参数化 SQL，将数据库行映射到经校验的功能类型。JSON 边界可以临时使用 `map[string]json.RawMessage` 检查合法字段，再解码到类型明确的 DTO；不能把无类型 map 当作应用内部的数据模型。契约区分缺失、显式 null 和零时，使用指针或功能专属的可空类型明确表示。迁移须保留已有 Unicode、数值精度、顺序、作用域及旧线协议语义，不能暗中归一化。
+
+行为与失败路径测试采用 table-driven 方式，统一放在 `tests/go/` 下并镜像完整包路径。进程或存储边界使用隔离 SQLite 夹具与注入的窄接口，保留取消、并发和清理检查。已采用的门禁仍是固定版本的 `gofmt`、`go vet`、包测试与 Linux 竞态检测。只有证明有必要、固定可复现版本，并补齐本机和 CI 命令时，才引入其他 linter 或生成器。
+
+## 验证与副作用
+
+格式和行为分别检查。实施中运行相关测试；交付集成变更前完成 [AGENTS.md](../../AGENTS.md) 列出的检查。[CI](ci.md) 在测试 runner 检查 Prettier，在 Windows 打包 runner 构建前检查 Rust 格式。
+
+`npm run check:core` 检查 Go 格式，并通过完整测试 overlay 运行 vet、全部包测试与语句覆盖率。Controller、Computer（发现及 VM 传输）、Telegram 各自必须至少 90%，全部功能包都必须出现。UI 单独保留 90% 行、80% 分支、80% 函数门槛，appearance 单模块至少 90% 行。Go 语句与 Node 行是不同指标，必须分别报告。`npm run test:core` 运行包测试；`npm run test:core:race` 还会在 Linux 使用可用的 C 编译器运行竞态检测。这些统一命令才是受支持的完整测试入口；在 `core/` 直接执行裸 `go test ./...` 不会发现模块外的测试源码。入口递归校验全部测试映射，拒绝放错目录或未映射的测试，保留平台后缀和所属包工作目录，并在命令结束后清理私有临时 overlay。格式化同时覆盖 `core/` 与 `tests/go/`。核心 CI 在 Windows 与 Linux 执行检查，并在 Linux 增加竞态检测；缺少前提条件是失败，不能忽略测试。核心测试必须使用隔离数据与注入依赖，不得连接真实模型、操作 VM 或读取用户账号数据。
+
+测试使用夹具、注入时钟与传输、临时数据。不得连接真实模型账号或 Telegram bot、操作用户 VM 或使用真实音频设备。保留精确的任务和连接身份、持久状态，以及结果未知时先核对而不重发的规则。不得为通过重构而关闭检查或降低覆盖率要求。
+
+TypeScript、Go、Rust、Python、PowerShell 和 Bash 覆盖率分别报告，注明测量范围和已覆盖／总数。Rust 原生覆盖率需要 LLVM 插桩，行为模块放在 `tests/native/rust/`，通过私有测试专用路径访问；Python 测行和分支，包含 Go 嵌入的 Python 资源，最低分别为 95% 和 90%；PowerShell 测 Pester 命令，最低 95%，夹具位于 `tests/powershell/`。Linux Bash 覆盖率使用固定版本 kcov 和 `tests/bash/` 中的隔离夹具；语法解析或夹具通过不能替代执行测量。必须明示当前平台不可用的插桩。通过有意义的行为和失败测试接近 100%，持续明示未测维护文件。保留门槛，不得编造结果或修改策略来抬高比例。CI 摘要和可下载原始报告必须说明各自指标及准确源码。

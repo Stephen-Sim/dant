@@ -1,7 +1,7 @@
 param(
-  [ValidateRange(2,128)][int]$MemoryGB = 6,
-  [ValidateRange(1,64)][int]$Cpu = 4,
-  [ValidateRange(32,2048)][int]$DiskGB = 40,
+  [Nullable[int]]$MemoryGB,
+  [Nullable[int]]$Cpu,
+  [Nullable[int]]$DiskGB,
   [switch]$Resume,
   [switch]$AdminSudo,
   [ValidateRange(1,3600)][int]$IPTimeoutSeconds = 600,
@@ -10,6 +10,11 @@ param(
   [string]$VdiskmanagerPath
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'computer/resource-config.ps1')
+$resources = Get-DantComputerResources
+$MemoryGB = Resolve-DantComputerResource $resources.memoryGB $MemoryGB ($PSBoundParameters.ContainsKey('MemoryGB'))
+$Cpu = Resolve-DantComputerResource $resources.cpu $Cpu ($PSBoundParameters.ContainsKey('Cpu'))
+$DiskGB = Resolve-DantComputerResource $resources.diskGB $DiskGB ($PSBoundParameters.ContainsKey('DiskGB'))
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $dataRoot = if ($DataDirectory) { [System.IO.Path]::GetFullPath($DataDirectory) } else { Join-Path $projectRoot 'data' }
 $arguments = @((Join-Path $PSScriptRoot 'vmware.py'), 'create', '--root', $projectRoot, '--data-directory', $dataRoot,

@@ -8,6 +8,7 @@ English · [Chinese](zh-CN/README.md)
 - [Set up or connect a work computer](VM.md) · [VMware setup](vmware.md)
 - [Settings and chat controls](settings.md)
 - [Versions and updates](updates.md)
+- [Local work computer backups and recovery](backups.md)
 
 ## Use dant
 
@@ -19,7 +20,11 @@ English · [Chinese](zh-CN/README.md)
 
 ## Develop and troubleshoot
 
+- [Code conventions and module layout](code-style.md)
+- [Local configuration](configuration.md)
 - [Architecture and data ownership](architecture.md)
+- [Go Core roles, contracts and recovery](go-core.md) · [Chinese](zh-CN/go-core.md)
+- [Test ownership, commands and coverage gates](testing.md)
 - [CI and Windows builds](ci.md)
 - [Diagnostics and log retention](diagnostics.md)
-- [Verification records and device checks](verification.md)
+- [Artifact verification and device acceptance](verification.md)

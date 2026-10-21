@@ -9,6 +9,7 @@ import argparse
 import contextlib
 import datetime
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -28,6 +29,14 @@ BASE_URL = 'https://cloud-images.ubuntu.com/releases/noble/release/'
 IMAGE = 'ubuntu-24.04-server-cloudimg-amd64.vmdk'
 MAX_IMAGE_BYTES = 4 * 1024**3
 OWNER = 'dant-vmware-v1'
+resource_spec = importlib.util.spec_from_file_location(
+    'dant_vmware_resources', pathlib.Path(__file__).resolve().parent / 'computer/resource-config.py')
+resource_config = importlib.util.module_from_spec(resource_spec)
+resource_spec.loader.exec_module(resource_config)
+COMPUTER_RESOURCES = resource_config.read_resources()
+DEFAULT_CPU = COMPUTER_RESOURCES['cpu']['default']
+DEFAULT_MEMORY_GB = COMPUTER_RESOURCES['memoryGB']['default']
+DEFAULT_DISK_GB = COMPUTER_RESOURCES['diskGB']['default']
 NAT_SERVICES = ('VMnetDHCP', 'VMware NAT Service')
 # Fixed read-only service lookup. Never start/reconfigure services or networks.
 NETWORK_PREFLIGHT_SCRIPT = r'''[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
@@ -538,9 +547,16 @@ class Provisioner:
             self.log('Repaired only the owned VMX Ethernet0 adapter. Disk preserved; use create-vmware.ps1 -Resume to start.')
             return manifest
 
-    def create(self, cpu=4, memory_gb=6, disk_gb=40, resume=False, ip_timeout_seconds=600,
+    def create(self, cpu=DEFAULT_CPU, memory_gb=DEFAULT_MEMORY_GB, disk_gb=DEFAULT_DISK_GB,
+               resume=False, ip_timeout_seconds=600,
                admin_sudo=False, vmrun_path=None, vdiskmanager_path=None):
-        if not (1 <= cpu <= 64 and 2 <= memory_gb <= 128 and 32 <= disk_gb <= 2048 and 1 <= ip_timeout_seconds <= 3600):
+        try:
+            cpu = resource_config.resource_value(COMPUTER_RESOURCES, 'cpu', cpu)
+            memory_gb = resource_config.resource_value(COMPUTER_RESOURCES, 'memoryGB', memory_gb)
+            disk_gb = resource_config.resource_value(COMPUTER_RESOURCES, 'diskGB', disk_gb)
+        except ValueError:
+            raise VmwareError('Invalid VM resource settings or IP timeout') from None
+        if type(ip_timeout_seconds) is not int or not 1 <= ip_timeout_seconds <= 3600:
             raise VmwareError('Invalid VM resource settings or IP timeout')
         self.guard_binding(resume=resume)
         had_binding = self.binding.exists()
@@ -644,9 +660,9 @@ def main():
     parser.add_argument('--vdiskmanager-path')
     parser.add_argument('--admin-sudo', action='store_true')
     parser.add_argument('--resume', action='store_true')
-    parser.add_argument('--cpu', type=int, default=4)
-    parser.add_argument('--memory-gb', type=int, default=6)
-    parser.add_argument('--disk-gb', type=int, default=40)
+    parser.add_argument('--cpu', type=int, default=DEFAULT_CPU)
+    parser.add_argument('--memory-gb', type=int, default=DEFAULT_MEMORY_GB)
+    parser.add_argument('--disk-gb', type=int, default=DEFAULT_DISK_GB)
     parser.add_argument('--ip-timeout-seconds', type=int, default=600)
     parser.add_argument('--expected-vm-id')
     args = parser.parse_args()

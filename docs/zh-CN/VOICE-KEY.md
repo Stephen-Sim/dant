@@ -16,26 +16,18 @@ DPAPI 依赖当前 Windows 用户身份和用户配置文件。换账号、迁�
 
 ## 服务端接入
 
-```js
-import {VoiceKeyStore} from './secrets.mjs';
+Go 组装通过 `security.NewVoiceKeyStore` 传入经过校验的数据目录、宿主 OS、选定的环境 Key 与窄接口 `security.Protector`。`Status()` 返回元数据；`Set(ctx, inputKey)`、`Clear(ctx)` 返回状态与错误，调用者必须处理错误。只有内部语音启动可以调用 `Get(ctx)`，返回的 Key 不得进入 HTTP 响应、事件、日志或持久化状态。
 
-const voiceKeys = new VoiceKeyStore(dataDir);
-voiceKeys.status();             // {configured, source, storage}
-await voiceKeys.set(inputKey);  // 返回状态，不返回 Key
-await voiceKeys.clear();        // 删除本地密文，返回状态
-const key = await voiceKeys.get(); // 仅服务端内部语音请求使用
-```
+`source` 是 `stored`、`environment` 或 `null`；`storage` 是 `windows-dpapi` 或 `environment`。请求日志不得包含输入 Key。所属实现为 [`voice_key.go`](../../core/internal/security/voice_key.go)。
 
-`source` 是 `stored`、`environment` 或 `null`；`storage` 是 `windows-dpapi` 或 `environment`。`get()` 不能直接用于 HTTP 响应、WebSocket 事件、日志或持久化状态。API 请求中的输入 Key 也不能写入请求日志。
+`Set()` 先保护输入，再以唯一临时文件写入密文、刷盘、原子替换目标文件；保护或写入失败保留旧配置。设置和删除操作在同一存储实例内串行处理。
 
-`set()` 先保护输入，再以唯一临时文件写入密文、刷盘、原子替换目标文件；保护或写入失败保留旧配置。设置和删除操作在同一存储实例内串行处理。
+Go Windows protector 通过固定版本的 Windows 绑定直接调用 `CryptProtectData`、`CryptUnprotectData`，保留原 entropy 与当前用户保护范围，禁止交互保护 UI，校验结果大小，清零并释放返回的原生内存。Key 不再经过 PowerShell 子进程或命令行。明文只在请求所属进程短暂存在，错误只暴露不含 Key 的固定代码。
 
-Windows PowerShell 的保护脚本为固定内容。Key 仅通过子进程 stdin 输入，不进入命令行参数。保护结果是 DPAPI 密文；解保护结果通过新的随机一次性 mask 包裹后返回，stdout 也不包含明文 Key。子进程错误会转成不含输入内容的固定错误。明文只在用于语音请求的进程内存中短暂存在。
-
-测试可通过构造参数注入 `platform`、`env`、`protect`、`unprotect` 或 `spawnProcess`。测试用临时虚构 token 检查原子保存、失败保留、清除、非 Windows 行为、子进程参数/stdout、Windows DPAPI 往返和篡改拒绝，不读取已有用户凭据。
+测试注入 OS、环境值与窄 protector。`tests/go/internal/security/` 使用临时虚构 token 检查原子保存、失败保留、清除、非 Windows 行为、取消、Windows 原生 DPAPI 往返与篡改拒绝，不读取已有用户凭据；通过统一 overlay 入口运行。
 
 ```powershell
-node --test tests/secrets.test.mjs
+npm run test:core
 ```
 
 参考：[Microsoft ProtectedData](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata)、[CurrentUser 保护范围](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.dataprotectionscope)。

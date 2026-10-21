@@ -18,7 +18,7 @@ echo "Starting dant guest setup at $(date -Is)"
 retry apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=180 update
 retry apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=180 install -y \
   xfce4 xfce4-terminal xvfb x11-utils x11-xserver-utils xdotool scrot xclip \
-  dbus-x11 python3 python3-pip nodejs npm fonts-noto-cjk firefox espeak-ng
+  dbus-x11 python3 python3-pip nodejs npm fonts-noto-cjk firefox espeak-ng util-linux
 retry npm install -g @openai/codex@0.163.0
 install -d -o dant -g dant /home/dant/work /home/dant/.dant-codex
 chmod +x /opt/dant/start-codex.sh /opt/dant/desktop.py
@@ -32,7 +32,7 @@ ready=false
 for attempt in $(seq 1 60); do
   if systemctl is-active --quiet dant-display.service dant-desktop.service dant-guest.service && \
      runuser -u dant -- env DISPLAY=:0 xdpyinfo >/dev/null 2>&1 && \
-     python3 -c 'import urllib.request; r=urllib.request.urlopen("http://127.0.0.1:4319/screen", timeout=10); assert r.read(8)==b"\x89PNG\r\n\x1a\n"' && \
+     python3 /opt/dant/network_config.py bootstrap-screen-check && \
      /usr/local/bin/codex --version; then
     ready=true
     break

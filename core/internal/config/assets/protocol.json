@@ -1,0 +1,21 @@
+{
+  "loopbackHost": "127.0.0.1",
+  "loopbackHosts": ["127.0.0.1", "localhost"],
+  "apiPort": 4317,
+  "devPort": 4318,
+  "bootstrapGuestPort": 4319,
+  "guestPort": 4321,
+  "paths": {
+    "api": "/api",
+    "events": "/events",
+    "session": "/api/session",
+    "version": "/api/version",
+    "state": "/api/state",
+    "health": "/health",
+    "screen": "/screen",
+    "input": "/input",
+    "control": "/control",
+    "file": "/file",
+    "readFile": "/read-file"
+  }
+}
