@@ -59,7 +59,7 @@ func mapStage(file *os.File, length int) (mappedStage, error) {
 	return &windowsStageMap{data: data, address: address, mapping: mapping}, nil
 }
 
-func stageSingleLink(file *os.File) bool {
+func stageSingleLink(file interface{ Fd() uintptr }) bool {
 	var info windows.ByHandleFileInformation
 	return windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info) == nil && info.NumberOfLinks == 1
 }

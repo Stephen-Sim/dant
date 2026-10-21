@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Stephen-Sim/dant/core/internal/files"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -74,7 +76,7 @@ func OpenStore(ctx context.Context, dataDir string, options StoreOptions) (*Stor
 		if err := os.MkdirAll(directory, 0700); err != nil {
 			return nil, ErrUnavailable
 		}
-		info, err := os.Lstat(directory)
+		info, err := files.CaptureIdentity(directory)
 		if err != nil || !info.IsDir() || isLinked(info) {
 			return nil, ErrInvalidMemory
 		}

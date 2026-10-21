@@ -7,7 +7,47 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
+
+// SQLite's mode=ro integrity checks can omit CHECK-constraint evaluation.
+// Validate the same stored types and constraints explicitly without opening a
+// writable connection or modifying a backup's schema, rows, or search index.
+const backupConstraintViolationQuery = `SELECT
+ (SELECT count(*) FROM memory_meta) <> 1 OR
+ EXISTS (SELECT 1 FROM memory_meta WHERE
+  typeof(id) <> 'integer' OR id <> 1 OR
+  typeof(revision) <> 'integer' OR revision < 0 OR
+  typeof(markdown_imported) <> 'integer' OR markdown_imported NOT IN (0,1) OR
+  typeof(search_revision) <> 'integer') OR
+ EXISTS (SELECT 1 FROM notes WHERE
+  typeof(name) <> 'text' OR name NOT IN (?,?,?) OR
+  typeof(text) <> 'text' OR length(CAST(text AS BLOB)) > ?) OR
+ EXISTS (SELECT 1 FROM projects WHERE
+  typeof(conversation_id) <> 'text' OR typeof(work_id) <> 'text' OR
+  typeof(context_json) <> 'text' OR length(CAST(context_json AS BLOB)) > ?) OR
+ EXISTS (SELECT 1 FROM memory_entries WHERE
+  typeof(id) <> 'text' OR typeof(kind) <> 'text' OR kind NOT IN ('semantic','episodic') OR
+  typeof(text) <> 'text' OR length(CAST(text AS BLOB)) > ? OR
+  typeof(memory_key) <> 'text' OR typeof(dedupe) <> 'text' OR
+  typeof(status) <> 'text' OR status NOT IN (?,?,?,?) OR
+  typeof(source_json) <> 'text' OR typeof(conflicts_json) <> 'text' OR
+  typeof(created_at) <> 'integer' OR typeof(updated_at) <> 'integer' OR
+  confidence IS NOT NULL AND (typeof(confidence) NOT IN ('integer','real') OR confidence < 0 OR confidence > 1))`
+
+func validateBackupConstraints(ctx context.Context, tx *sql.Tx) error {
+	var violated bool
+	err := tx.QueryRowContext(ctx, backupConstraintViolationQuery,
+		noteNames[0], noteNames[1], noteNames[2], MaxNoteBytes, MaxNoteBytes, MaxEntryBytes,
+		contracts.MemoryEntryStatusCandidate, contracts.MemoryEntryStatusConfirmed,
+		contracts.MemoryEntryStatusConflicted, contracts.MemoryEntryStatusRejected,
+	).Scan(&violated)
+	if err != nil || violated {
+		return ErrInvalidSnapshot
+	}
+	return nil
+}
 
 // ValidateBackupDatabase only reads an owning backup feature's private staged
 // file. It never creates, migrates, imports Markdown, or updates FTS.
@@ -42,6 +82,9 @@ func ValidateBackupDatabase(ctx context.Context, file string) error {
 	}
 	defer tx.Rollback()
 	if err = (&Store{}).validateSchema(ctx, tx); err != nil {
+		return err
+	}
+	if err = validateBackupConstraints(ctx, tx); err != nil {
 		return err
 	}
 	var result string

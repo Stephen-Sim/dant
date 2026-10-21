@@ -72,6 +72,16 @@ type Vault struct {
 	transform  func(context.Context, TransformRequest) error
 	entropy    io.Reader
 	create     func(string, int, fs.FileMode) (vaultWriteFile, error)
+	open       func(string) (vaultReadFile, error)
+}
+
+type vaultReadFile interface {
+	io.Reader
+	io.ReaderAt
+	Name() string
+	Stat() (fs.FileInfo, error)
+	Fd() uintptr
+	Close() error
 }
 
 type vaultWriteFile interface {
@@ -83,7 +93,7 @@ type vaultWriteFile interface {
 }
 
 type inspectedBackup struct {
-	file         *os.File
+	file         vaultReadFile
 	stat         os.FileInfo
 	header       localHeader
 	aad          []byte
@@ -138,6 +148,9 @@ func NewVault(options VaultOptions) (*Vault, error) {
 		entropy:    rand.Reader,
 		create: func(name string, flags int, mode fs.FileMode) (vaultWriteFile, error) {
 			return os.OpenFile(name, flags, mode)
+		},
+		open: func(name string) (vaultReadFile, error) {
+			return os.Open(name)
 		},
 	}, nil
 }
@@ -272,7 +285,7 @@ func (vault *Vault) inspect(id string) (inspectedBackup, error) {
 	if err != nil || !before.Mode().IsRegular() || before.Size() > ArchiveLimit+localHeaderLimit+int64(len(localMagic))+4+gcmTagBytes || before.Size() < int64(len(localMagic))+4+gcmTagBytes {
 		return inspectedBackup{}, ErrInvalid
 	}
-	file, err := os.Open(name)
+	file, err := vault.open(name)
 	if err != nil {
 		return inspectedBackup{}, ErrInvalid
 	}
@@ -560,9 +573,8 @@ func (vault *Vault) Retain(ctx context.Context, count int) error {
 		if err != nil {
 			return err
 		}
-		name := inspection.file.Name()
-		inspection.file.Close()
-		if err := os.Remove(name); err != nil {
+		selected := privateStage{file: inspection.file.Name(), identity: inspection.stat}
+		if inspection.file.Close() != nil || cleanStage(selected) != nil {
 			return ErrInvalid
 		}
 	}

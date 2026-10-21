@@ -38,7 +38,7 @@ func mapStage(file *os.File, length int) (mappedStage, error) {
 	return &unixStageMap{data: data}, nil
 }
 
-func stageSingleLink(file *os.File) bool {
+func stageSingleLink(file interface{ Stat() (os.FileInfo, error) }) bool {
 	info, err := file.Stat()
 	if err != nil {
 		return false
