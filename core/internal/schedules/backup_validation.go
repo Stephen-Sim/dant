@@ -68,29 +68,10 @@ func ValidateBackupDatabase(ctx context.Context, file string) error {
 	if _, err = revision(ctx, tx); err != nil {
 		return ErrInvalid
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT id,client_request_id,record_json FROM schedules ORDER BY rowid")
-	if err != nil {
+	if err = visitRecords(ctx, tx, func(Record, json.RawMessage) error { return nil }); err != nil {
 		return ErrInvalid
 	}
-	for rows.Next() {
-		var id, text string
-		var request sql.NullString
-		if rows.Scan(&id, &request, &text) != nil {
-			rows.Close()
-			return ErrInvalid
-		}
-		record, err := decodeRecord(json.RawMessage(text))
-		if err != nil || record.ID != id || (record.ClientRequestID != nil) != request.Valid || request.Valid && *record.ClientRequestID != request.String {
-			rows.Close()
-			return ErrInvalid
-		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return ErrInvalid
-	}
-	rows, err = tx.QueryContext(ctx, "SELECT request_id FROM schedule_tombstones")
+	rows, err := tx.QueryContext(ctx, "SELECT request_id FROM schedule_tombstones")
 	if err != nil {
 		return ErrInvalid
 	}

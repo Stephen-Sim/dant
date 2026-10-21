@@ -324,30 +324,14 @@ func (db *Database) Snapshot(ctx context.Context) (Snapshot, error) {
 		if err != nil {
 			return err
 		}
-		rows, err := tx.QueryContext(ctx, "SELECT id,client_request_id,record_json FROM schedules ORDER BY rowid")
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var id, raw string
-			var request sql.NullString
-			if err = rows.Scan(&id, &request, &raw); err != nil {
-				rows.Close()
-				return err
-			}
-			record, err := decodeRecord(json.RawMessage(raw))
-			if err != nil || record.ID != id || (record.ClientRequestID != nil) != request.Valid || request.Valid && *record.ClientRequestID != request.String {
-				rows.Close()
-				return ErrInvalid
-			}
+		err = visitRecords(ctx, tx, func(record Record, _ json.RawMessage) error {
 			result.Items = append(result.Items, record)
-		}
-		err = rows.Err()
-		rows.Close()
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		rows, err = tx.QueryContext(ctx, "SELECT request_id FROM schedule_tombstones ORDER BY rowid")
+		rows, err := tx.QueryContext(ctx, "SELECT request_id FROM schedule_tombstones ORDER BY rowid")
 		if err != nil {
 			return err
 		}

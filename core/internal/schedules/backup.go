@@ -52,30 +52,14 @@ func PauseRestoredDatabase(ctx context.Context, file string) error {
 	if err = tx.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&result); err != nil || result != "ok" {
 		return ErrInvalid
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT id,client_request_id,record_json FROM schedules ORDER BY rowid")
-	if err != nil {
-		return ErrInvalid
-	}
 	type staged struct {
 		id  string
 		raw []byte
 	}
 	updates := []staged{}
-	for rows.Next() {
-		var id, raw string
-		var request sql.NullString
-		if rows.Scan(&id, &request, &raw) != nil {
-			rows.Close()
-			return ErrInvalid
-		}
-		record, err := decodeRecord(json.RawMessage(raw))
-		if err != nil || record.ID != id || (record.ClientRequestID != nil) != request.Valid || request.Valid && *record.ClientRequestID != request.String {
-			rows.Close()
-			return ErrInvalid
-		}
-		fields, err := contracts.DecodeObject([]byte(raw), MaxRecordBytes)
+	err = visitRecords(ctx, tx, func(record Record, raw json.RawMessage) error {
+		fields, err := contracts.DecodeObject(raw, MaxRecordBytes)
 		if err != nil {
-			rows.Close()
 			return ErrInvalid
 		}
 		fields["enabled"] = json.RawMessage("false")
@@ -84,13 +68,11 @@ func PauseRestoredDatabase(ctx context.Context, file string) error {
 		}
 		data, err := json.Marshal(fields)
 		if err != nil {
-			rows.Close()
 			return ErrInvalid
 		}
-		updates = append(updates, staged{id, data})
-	}
-	err = rows.Err()
-	rows.Close()
+		updates = append(updates, staged{record.ID, data})
+		return nil
+	})
 	if err != nil {
 		return ErrInvalid
 	}
