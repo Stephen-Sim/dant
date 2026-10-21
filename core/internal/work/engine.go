@@ -694,6 +694,7 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 		value.mu.Lock()
 		active.unknown = true
 		value.paused = true
+		value.changeLocked()
 		value.mu.Unlock()
 		return
 	}
@@ -703,6 +704,7 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 			value.mu.Lock()
 			active.unknown = true
 			value.paused = true
+			value.changeLocked()
 			value.mu.Unlock()
 			return
 		}
