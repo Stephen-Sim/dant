@@ -94,6 +94,13 @@ func writeAtomic(ctx context.Context, name string, data []byte, mode fs.FileMode
 	if err == nil {
 		err = temporary.Sync()
 	}
+	var writtenInfo fs.FileInfo
+	if err == nil {
+		writtenInfo, err = temporary.Stat()
+		if err == nil && (!os.SameFile(createdInfo, writtenInfo) || writtenInfo.Size() != int64(len(data))) {
+			err = ErrFileChanged
+		}
+	}
 	closeErr := temporary.Close()
 	if err != nil {
 		return err
@@ -104,6 +111,9 @@ func writeAtomic(ctx context.Context, name string, data []byte, mode fs.FileMode
 	sourceInfo, err := operations.capture(source)
 	if err != nil {
 		return err
+	}
+	if !sameFile(writtenInfo, sourceInfo) {
+		return ErrFileChanged
 	}
 	for attempt := 0; attempt < RenameAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {

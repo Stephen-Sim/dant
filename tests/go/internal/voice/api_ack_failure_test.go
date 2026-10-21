@@ -109,8 +109,8 @@ func TestAPIPreSubmissionLifecycleChangesCannotActivateLateMedia(t *testing.T) {
 				reference := "Synthetic explicit chat context"
 				input.Context = &reference
 			case "sideband dial":
-				api.options.Dial = func(ctx context.Context, _, _ string) (VoiceSocket, error) {
-					if err := api.Stop(ctx, "user"); err != nil {
+				api.options.Dial = func(_ context.Context, _, _ string) (VoiceSocket, error) {
+					if err := api.Stop(t.Context(), "user"); err != nil {
 						t.Error("concurrent stop failed", err)
 					}
 					return socket, nil
