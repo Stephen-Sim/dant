@@ -272,7 +272,21 @@ func RestoreWorkerBackup(ctx context.Context, options RestoreOptions, input io.R
 	return receipt, err
 }
 
-func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations restorePaths, input io.Reader) (receipt RestoreReceipt, result error) {
+type restoreStorage struct {
+	writeJSON func(context.Context, string, any) error
+	copyTree  func(context.Context, string, string) error
+	flushTree func(context.Context, string) error
+}
+
+func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations restorePaths, input io.Reader) (RestoreReceipt, error) {
+	return restoreWorkerWithStorage(ctx, options, locations, input, restoreStorage{
+		writeJSON: writeRestoreJSON,
+		copyTree:  copyRestoreTree,
+		flushTree: flushRestoreTree,
+	})
+}
+
+func restoreWorkerWithStorage(ctx context.Context, options RestoreOptions, locations restorePaths, input io.Reader, storage restoreStorage) (receipt RestoreReceipt, result error) {
 	receipt = RestoreReceipt{RestoreID: options.RestoreID}
 	if err := discardJournalTemporary(locations.journal); err != nil {
 		return receipt, err
@@ -377,7 +391,7 @@ func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations 
 		}
 	}
 
-	if err := writeRestoreJSON(ctx, filepath.Join(decoding, "data", WorkerRestoreReceiptFile), struct {
+	if err := storage.writeJSON(ctx, filepath.Join(decoding, "data", WorkerRestoreReceiptFile), struct {
 		RestoreReceipt
 		SourceID  string `json:"sourceId"`
 		CreatedAt int64  `json:"createdAt"`
@@ -385,7 +399,7 @@ func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations 
 		return receipt, err
 	}
 
-	if err := writeRestoreJSON(ctx, locations.journal, original); err != nil {
+	if err := storage.writeJSON(ctx, locations.journal, original); err != nil {
 		return receipt, err
 	}
 
@@ -393,15 +407,15 @@ func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations 
 		return receipt, ErrRestoreFailed
 	}
 
-	if err := copyRestoreTree(ctx, filepath.Join(decoding, "workspace"), locations.workspaceNew); err != nil {
+	if err := storage.copyTree(ctx, filepath.Join(decoding, "workspace"), locations.workspaceNew); err != nil {
 		return receipt, ErrRestoreFailed
 	}
 
-	if err := flushRestoreTree(ctx, locations.dataNew); err != nil {
+	if err := storage.flushTree(ctx, locations.dataNew); err != nil {
 		return receipt, err
 	}
 
-	if err := flushRestoreTree(ctx, locations.workspaceNew); err != nil {
+	if err := storage.flushTree(ctx, locations.workspaceNew); err != nil {
 		return receipt, err
 	}
 
@@ -414,7 +428,7 @@ func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations 
 		return receipt, ErrRestoreFailed
 	}
 	original.Phase = contracts.WorkerRestorePhaseInstalling
-	if err := writeRestoreJSON(ctx, locations.journal, original); err != nil {
+	if err := storage.writeJSON(ctx, locations.journal, original); err != nil {
 		return receipt, err
 	}
 	for _, move := range [][2]string{{locations.data, locations.dataPrevious}, {locations.workspace, locations.workspacePrevious}, {locations.dataNew, locations.data}, {locations.workspaceNew, locations.workspace}} {
@@ -423,7 +437,7 @@ func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations 
 		}
 	}
 	original.Phase = contracts.WorkerRestorePhaseCommitted
-	if err := writeRestoreJSON(ctx, locations.journal, original); err != nil {
+	if err := storage.writeJSON(ctx, locations.journal, original); err != nil {
 		return receipt, err
 	}
 

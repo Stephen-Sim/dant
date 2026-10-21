@@ -50,3 +50,21 @@ func TestWorkerBackupValidationDistinguishesFreshDataFromMissingState(t *testing
 		})
 	}
 }
+
+func TestWorkerBackupValidationKeepsValidDisabledIntegrationBytesUnchanged(t *testing.T) {
+	archive, err := ValidateArchive(t.Context(), bytes.NewReader(fixtureArchive([]byte(cliFixtureState))), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(archive.Directory, "data", "telegram.json")
+	original := []byte(`{"enabled":false,"forwardMode":"unread","combineReplies":true,"outbox":[],"receipts":[],"resultKeys":[]}`)
+	if err := os.WriteFile(name, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorkerBackup(t.Context(), archive); err != nil {
+		t.Fatal("read-only backup validation rejected a valid disabled integration", err)
+	}
+	if raw, err := os.ReadFile(name); err != nil || !bytes.Equal(raw, original) {
+		t.Fatal("backup validation rewrote integration state", err)
+	}
+}

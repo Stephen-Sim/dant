@@ -10,17 +10,34 @@ import (
 // FileInfo can defer loading its Windows file ID until a later SameFile call,
 // after that path has already been replaced.
 func CaptureIdentity(name string) (fs.FileInfo, error) {
+	return captureIdentity(name, os.Lstat, openIdentity)
+}
+
+type identityHandle interface {
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+func openIdentity(name string) (identityHandle, error) {
+	return os.Open(name)
+}
+
+func captureIdentity(
+	name string,
+	lstat func(string) (fs.FileInfo, error),
+	open func(string) (identityHandle, error),
+) (fs.FileInfo, error) {
 	if !filepath.IsAbs(name) {
 		return nil, ErrManagedPath
 	}
-	before, err := os.Lstat(name)
+	before, err := lstat(name)
 	if err != nil {
 		return nil, err
 	}
 	if !before.Mode().IsRegular() && !before.IsDir() {
 		return nil, ErrManagedPath
 	}
-	file, err := os.Open(name)
+	file, err := open(name)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +46,7 @@ func CaptureIdentity(name string) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	current, err := os.Lstat(name)
+	current, err := lstat(name)
 	if err != nil || !os.SameFile(before, opened) || !os.SameFile(opened, current) || current.Mode()&fs.ModeSymlink != 0 {
 		return nil, ErrFileChanged
 	}
