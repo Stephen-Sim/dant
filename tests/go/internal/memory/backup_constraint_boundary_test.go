@@ -24,6 +24,13 @@ func backupConstraintFixture(t *testing.T) *Store {
 }
 
 func TestReadOnlyBackupValidationRejectsEveryStoredConstraintFamily(t *testing.T) {
+	s := backupConstraintFixture(t)
+	baseline, err := os.ReadFile(s.DatabaseFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Store opens short-lived connections. Each case starts from the same
+	// closed, isolated database image and retains the fixture file's identity.
 	for _, test := range []struct {
 		name, statement string
 		arguments       []any
@@ -53,7 +60,9 @@ func TestReadOnlyBackupValidationRejectsEveryStoredConstraintFamily(t *testing.T
 		{"entry conflicts storage type", "UPDATE memory_entries SET conflicts_json=?", []any{[]byte(`[]`)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			s := backupConstraintFixture(t)
+			if err := os.WriteFile(s.DatabaseFile(), baseline, 0600); err != nil {
+				t.Fatal(err)
+			}
 			if err := s.connection(t.Context(), func(db *sql.DB) error {
 				if _, err := db.ExecContext(t.Context(), "PRAGMA ignore_check_constraints=ON"); err != nil {
 					return err

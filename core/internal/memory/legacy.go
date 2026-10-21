@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"unicode/utf8"
 
@@ -27,22 +26,10 @@ func (s *Store) backupJSONLocked(label string, raw []byte) error {
 		return err
 	}
 	directory := filepath.Join(s.dir, label+"-backup-"+newUUID())
-	if err := os.Mkdir(directory, 0700); err != nil {
+	if err := s.snapshots.mkdir(directory, 0700); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(filepath.Join(directory, "memory.json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
-	_, err = file.Write(raw)
-	if err == nil {
-		err = file.Sync()
-	}
-	closed := file.Close()
-	if err != nil {
-		return err
-	}
-	return closed
+	return s.writeBackupSnapshot(filepath.Join(directory, "memory.json"), raw)
 }
 
 func (s *Store) MigrateProjects(ctx context.Context, conversation string, records []contracts.WorkRecord) error {

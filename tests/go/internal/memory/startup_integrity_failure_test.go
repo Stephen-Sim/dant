@@ -27,7 +27,7 @@ func TestMemoryStartupWriteFailuresRetainPreviouslyCommittedNotes(t *testing.T) 
 			memoryFixtureSQL(t, s, "UPDATE memory_meta SET markdown_imported=0 WHERE id=1")
 			switch phase {
 			case "backup":
-				s.markdown.mkdir = func(string, fs.FileMode) error {
+				s.snapshots.mkdir = func(string, fs.FileMode) error {
 					return errors.New("private fixture backup failure")
 				}
 			case "note insert":
@@ -40,16 +40,21 @@ func TestMemoryStartupWriteFailuresRetainPreviouslyCommittedNotes(t *testing.T) 
 				if err := os.Remove(filepath.Join(s.Directory(), "working-memory.md")); err != nil {
 					t.Fatal(err)
 				}
-				s.markdown.writeAtomic = func(_ context.Context, _ string, _ []byte, _ fs.FileMode) error {
+				s.snapshots.writeAtomic = func(_ context.Context, _ string, _ []byte, _ fs.FileMode) error {
 					return errors.New("private fixture export failure")
 				}
 			}
 
+			var startupErr error
 			err = s.connection(t.Context(), func(db *sql.DB) error {
-				return s.initialize(t.Context(), db)
+				startupErr = s.initialize(t.Context(), db)
+				return startupErr
 			})
 			if !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), "private fixture") {
 				t.Fatal("incomplete startup became available or exposed storage details", err)
+			}
+			if (phase == "note insert" || phase == "import marker" || phase == "index marker") && (startupErr == nil || !strings.Contains(startupErr.Error(), "private fixture")) {
+				t.Fatal("startup stopped before its intended isolated failure", startupErr)
 			}
 			text, err := s.ReadNote(t.Context(), "identity.md")
 			after, readErr := os.ReadFile(file)

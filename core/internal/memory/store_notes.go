@@ -19,14 +19,14 @@ func (s *Store) readMarkdown(name string) (string, error) {
 		return "", ErrInvalidMemory
 	}
 	file := filepath.Join(s.dir, name)
-	before, err := s.markdown.lstat(file)
+	before, err := s.snapshots.lstat(file)
 	if err != nil {
 		return "", err
 	}
 	if !before.Mode().IsRegular() || isLinked(before) || !oneLink(file, before) || before.Size() > MaxNoteBytes {
 		return "", ErrInvalidMemory
 	}
-	handle, err := s.markdown.open(file)
+	handle, err := s.snapshots.open(file)
 	if err != nil {
 		return "", err
 	}
@@ -57,40 +57,25 @@ func (s *Store) writeMarkdown(ctx context.Context, name, text string) error {
 		return err
 	}
 	file := filepath.Join(s.dir, name)
-	if info, err := s.markdown.lstat(file); err == nil {
+	if info, err := s.snapshots.lstat(file); err == nil {
 		if !info.Mode().IsRegular() || isLinked(info) || !oneLink(file, info) {
 			return ErrInvalidSnapshot
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return s.markdown.writeAtomic(ctx, file, []byte(text), 0600)
+	return s.snapshots.writeAtomic(ctx, file, []byte(text), 0600)
 }
 
 func (s *Store) backupNotes(notes []Note) error {
 	directory := filepath.Join(s.dir, "markdown-backup-"+newUUID())
-	if err := s.markdown.mkdir(directory, 0700); err != nil {
+	if err := s.snapshots.mkdir(directory, 0700); err != nil {
 		return err
 	}
 	for _, note := range notes {
 		file := filepath.Join(directory, note.Name)
-		handle, err := s.markdown.create(file)
-		if err != nil {
+		if err := s.writeBackupSnapshot(file, []byte(note.Text)); err != nil {
 			return err
-		}
-		written, err := io.WriteString(handle, note.Text)
-		if err == nil && written != len(note.Text) {
-			err = io.ErrShortWrite
-		}
-		if err == nil {
-			err = handle.Sync()
-		}
-		closeErr := handle.Close()
-		if err != nil {
-			return err
-		}
-		if closeErr != nil {
-			return closeErr
 		}
 	}
 	return nil

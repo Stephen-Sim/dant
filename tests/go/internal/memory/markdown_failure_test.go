@@ -13,7 +13,7 @@ import (
 )
 
 type markdownReadFailure struct {
-	markdownReader
+	snapshotReader
 	readErr error
 	read    io.Reader
 	statAt  int
@@ -30,7 +30,7 @@ func (file *markdownReadFailure) Read(data []byte) (int, error) {
 	if file.read != nil {
 		return file.read.Read(data)
 	}
-	return file.markdownReader.Read(data)
+	return file.snapshotReader.Read(data)
 }
 func (file *markdownReadFailure) Stat() (fs.FileInfo, error) {
 	file.stats++
@@ -40,11 +40,11 @@ func (file *markdownReadFailure) Stat() (fs.FileInfo, error) {
 		}
 		return nil, file.statErr
 	}
-	return file.markdownReader.Stat()
+	return file.snapshotReader.Stat()
 }
 func (file *markdownReadFailure) Close() error {
 	*file.closed++
-	return file.markdownReader.Close()
+	return file.snapshotReader.Close()
 }
 
 func TestMarkdownImportFailuresRetainSQLiteAuthorityAndOriginalSnapshotBytes(t *testing.T) {
@@ -67,13 +67,13 @@ func TestMarkdownImportFailuresRetainSQLiteAuthorityAndOriginalSnapshotBytes(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			disk := s.markdown
+			disk := s.snapshots
 			closed, opened := 0, 0
 			failure := errors.New("isolated markdown I/O failure")
 			if phase == "lstat" {
-				s.markdown.lstat = func(string) (fs.FileInfo, error) { return nil, failure }
+				s.snapshots.lstat = func(string) (fs.FileInfo, error) { return nil, failure }
 			}
-			s.markdown.open = func(path string) (markdownReader, error) {
+			s.snapshots.open = func(path string) (snapshotReader, error) {
 				opened++
 				if phase == "open" {
 					return nil, failure
@@ -82,7 +82,7 @@ func TestMarkdownImportFailuresRetainSQLiteAuthorityAndOriginalSnapshotBytes(t *
 				if err != nil {
 					return nil, err
 				}
-				wrapped := &markdownReadFailure{markdownReader: handle, closed: &closed}
+				wrapped := &markdownReadFailure{snapshotReader: handle, closed: &closed}
 				switch phase {
 				case "opened stat":
 					wrapped.statAt, wrapped.statErr = 1, failure
@@ -116,30 +116,30 @@ func TestMarkdownImportFailuresRetainSQLiteAuthorityAndOriginalSnapshotBytes(t *
 	}
 }
 
-type markdownBackupFailure struct {
-	markdownBackupWriter
+type snapshotWriteFailure struct {
+	snapshotWriter
 	phase  string
 	closed *int
 }
 
-func (file markdownBackupFailure) Write(data []byte) (int, error) {
+func (file snapshotWriteFailure) Write(data []byte) (int, error) {
 	if file.phase == "write" {
 		return 0, errors.New("isolated backup write failure")
 	}
 	if file.phase == "short write" {
-		return file.markdownBackupWriter.Write(data[:len(data)-1])
+		return file.snapshotWriter.Write(data[:len(data)-1])
 	}
-	return file.markdownBackupWriter.Write(data)
+	return file.snapshotWriter.Write(data)
 }
-func (file markdownBackupFailure) Sync() error {
+func (file snapshotWriteFailure) Sync() error {
 	if file.phase == "sync" {
 		return errors.New("isolated backup sync failure")
 	}
-	return file.markdownBackupWriter.Sync()
+	return file.snapshotWriter.Sync()
 }
-func (file markdownBackupFailure) Close() error {
+func (file snapshotWriteFailure) Close() error {
 	*file.closed++
-	err := file.markdownBackupWriter.Close()
+	err := file.snapshotWriter.Close()
 	if file.phase == "close" {
 		return errors.New("isolated backup close failure")
 	}
@@ -155,12 +155,12 @@ func TestMarkdownBackupFailuresKeepSourcesAndNeverPretendTheCopyCommitted(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			disk := s.markdown
+			disk := s.snapshots
 			created, closed := 0, 0
 			if phase == "mkdir" {
-				s.markdown.mkdir = func(string, fs.FileMode) error { return errors.New("isolated mkdir failure") }
+				s.snapshots.mkdir = func(string, fs.FileMode) error { return errors.New("isolated mkdir failure") }
 			}
-			s.markdown.create = func(path string) (markdownBackupWriter, error) {
+			s.snapshots.create = func(path string) (snapshotWriter, error) {
 				created++
 				if phase == "create" {
 					return nil, errors.New("isolated create failure")
@@ -169,7 +169,7 @@ func TestMarkdownBackupFailuresKeepSourcesAndNeverPretendTheCopyCommitted(t *tes
 				if err != nil {
 					return nil, err
 				}
-				return markdownBackupFailure{handle, phase, &closed}, nil
+				return snapshotWriteFailure{handle, phase, &closed}, nil
 			}
 			if err := s.backupNotes([]Note{{Name: "identity.md", Text: string(before)}}); err == nil {
 				t.Fatal("incomplete backup was reported committed")
@@ -199,19 +199,19 @@ func TestMarkdownExportFailuresDoNotReplaceThePreviousSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			writes := 0
-			s.markdown.writeAtomic = func(context.Context, string, []byte, fs.FileMode) error {
+			s.snapshots.writeAtomic = func(context.Context, string, []byte, fs.FileMode) error {
 				writes++
 				return errors.New("isolated atomic export failure")
 			}
 			switch phase {
 			case "lstat":
-				s.markdown.lstat = func(string) (fs.FileInfo, error) { return nil, fs.ErrPermission }
+				s.snapshots.lstat = func(string) (fs.FileInfo, error) { return nil, fs.ErrPermission }
 			case "not regular":
 				info, err := os.Stat(s.Directory())
 				if err != nil {
 					t.Fatal(err)
 				}
-				s.markdown.lstat = func(string) (fs.FileInfo, error) { return info, nil }
+				s.snapshots.lstat = func(string) (fs.FileInfo, error) { return info, nil }
 			case "closed":
 				s.Close()
 			}

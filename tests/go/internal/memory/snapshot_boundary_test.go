@@ -39,8 +39,8 @@ func TestMarkdownImportRejectsAReplacedFileWithIdenticalSizeAndTimestamp(t *test
 		t.Fatal(err)
 	}
 	retained := filepath.Join(s.Directory(), "retained-original.md")
-	disk := s.markdown
-	s.markdown.open = func(path string) (markdownReader, error) {
+	disk := s.snapshots
+	s.snapshots.open = func(path string) (snapshotReader, error) {
 		if err := os.Rename(path, retained); err != nil {
 			return nil, err
 		}
