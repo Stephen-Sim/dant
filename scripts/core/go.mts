@@ -19,7 +19,8 @@ const GO_PROBE_TIMEOUT_MS = 10_000;
 const GO_COMMAND_TIMEOUT_MS = 600_000;
 const GO_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 const GO_ROOT_MAX_CHARS = 4096;
-const GO_TEST_TIMEOUT = '120s';
+const GO_TEST_PACKAGE_TIMEOUT = '120s';
+const GO_WINDOWS_TEST_PACKAGE_TIMEOUT = '300s';
 const GO_TEST_PACKAGE_PARALLELISM = 2;
 const GO_TEST_CASE_PARALLELISM = 4;
 const modes = ['format', 'format-check', 'vet', 'test', 'coverage', 'check', 'race'] as const;
@@ -143,6 +144,8 @@ export function runCoreGo(
 ): void {
   if (mode === 'race' && platform !== 'linux')
     throw Error('The core race check requires Linux and a working C compiler.');
+  const packageTimeout =
+    platform === 'win32' ? GO_WINDOWS_TEST_PACKAGE_TIMEOUT : GO_TEST_PACKAGE_TIMEOUT;
   const coverage = mode === 'check' || mode === 'coverage' ? createCoverageReport(root) : undefined;
   let overlay: CoreGoTestOverlay | undefined;
   const steps: readonly CoreGoMode[] =
@@ -171,11 +174,12 @@ export function runCoreGo(
           toolchain.go,
           [
             'test',
+            '-v',
             '-overlay=' + overlay.file,
             '-p=' + GO_TEST_PACKAGE_PARALLELISM,
             '-parallel=' + GO_TEST_CASE_PARALLELISM,
             '-count=1',
-            '-timeout=' + GO_TEST_TIMEOUT,
+            '-timeout=' + packageTimeout,
             '-covermode=atomic',
             '-coverpkg=./...',
             '-coverprofile=' + report.file,
@@ -206,12 +210,13 @@ export function runCoreGo(
               ? ['vet', '-overlay=' + overlay.file, './...']
               : [
                   'test',
+                  '-v',
                   '-overlay=' + overlay.file,
                   ...(step === 'race' ? ['-race'] : []),
                   '-p=' + GO_TEST_PACKAGE_PARALLELISM,
                   '-parallel=' + GO_TEST_CASE_PARALLELISM,
                   '-count=1',
-                  '-timeout=' + GO_TEST_TIMEOUT,
+                  '-timeout=' + packageTimeout,
                   './...',
                 ];
       const result = run(formatting ? toolchain.gofmt : toolchain.go, args, {

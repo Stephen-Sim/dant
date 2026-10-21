@@ -213,7 +213,7 @@ test('Go environment disables compiler selection and ambient workspace/settings 
 });
 
 test('integrated core checks format both source roots and enforce Go coverage on overlaid uncached tests', () => {
-  const f = fixture();
+  const f = fixture({ platform: 'linux' });
   runCoreGo('check', f.options);
   const commands = f.calls.slice(2);
   assert.deepEqual(
@@ -224,6 +224,7 @@ test('integrated core checks format both source roots and enforce Go coverage on
       ['list', '-f={{.ImportPath}}', './...'],
       [
         'test',
+        '-v',
         '-overlay=' + f.overlayFile,
         '-p=2',
         '-parallel=4',
@@ -249,6 +250,51 @@ test('integrated core checks format both source roots and enforce Go coverage on
     assert.equal(call.options.maxBuffer, 8 * 1024 * 1024);
   }
   assert.equal(f.overlayClosed, 1);
+});
+
+test('test modes apply a platform package budget and expose each case while retaining command and coverage bounds', async (t) => {
+  for (const platform of ['win32', 'linux', 'darwin'] as const) {
+    for (const mode of ['test', 'coverage', 'check'] as const) {
+      await t.test(`${platform}/${mode}`, () => {
+        const caseOutput = '=== RUN   TestFixture\n--- PASS: TestFixture (0.25s)\n';
+        const f = fixture({
+          platform,
+          command: (_executable, args) => ({
+            status: 0,
+            stdout: args[0] === 'test' ? caseOutput : '',
+          }),
+        });
+        runCoreGo(mode, f.options);
+        const tests = f.calls.filter((call) => call.args[0] === 'test');
+        assert.equal(tests.length, 1);
+        const call = tests[0];
+        assert.ok(call);
+        assert.equal(
+          call.args.find((arg) => arg.startsWith('-timeout=')),
+          platform === 'win32' ? '-timeout=300s' : '-timeout=120s',
+        );
+        assert.equal(call.args.filter((arg) => arg === '-v').length, 1);
+        for (const argument of [
+          '-overlay=' + f.overlayFile,
+          '-p=2',
+          '-parallel=4',
+          '-count=1',
+          './...',
+        ])
+          assert.ok(call.args.includes(argument));
+        assert.equal(call.args.includes('-covermode=atomic'), mode !== 'test');
+        assert.equal(call.args.includes('-coverpkg=./...'), mode !== 'test');
+        assert.equal(call.options.timeout, 600000);
+        assert.equal(call.options.maxBuffer, 8 * 1024 * 1024);
+        assert.equal(call.options.shell, false);
+        assert.equal(call.options.windowsHide, true);
+        assert.equal(call.options.env?.GOTOOLCHAIN, 'local');
+        assert.equal(call.options.env?.GOFLAGS, '-mod=readonly');
+        assert.ok(f.output.includes(caseOutput));
+        assert.equal(f.overlayClosed, 1);
+      });
+    }
+  }
 });
 
 test('format writes only on the explicit format action; format-check fails before vet or tests', () => {
@@ -287,6 +333,7 @@ test('Linux race tests require their compiler prerequisite and never turn into a
   runCoreGo('race', linux.options);
   assert.deepEqual(linux.calls.at(-1)?.args, [
     'test',
+    '-v',
     '-overlay=' + linux.overlayFile,
     '-race',
     '-p=2',
@@ -297,6 +344,9 @@ test('Linux race tests require their compiler prerequisite and never turn into a
   ]);
   assert.equal(linux.calls.at(-1)?.options.env?.CGO_ENABLED, '1');
   assert.equal(linux.calls.at(-1)?.options.env?.GOTOOLCHAIN, 'local');
+  assert.equal(linux.calls.at(-1)?.options.timeout, 600000);
+  assert.equal(linux.calls.at(-1)?.options.maxBuffer, 8 * 1024 * 1024);
+  assert.equal(linux.overlayClosed, 1);
 });
 
 test('the command boundary rejects missing, unknown and additional arguments', () => {
