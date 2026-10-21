@@ -7,6 +7,7 @@ import { resolveBuildPaths, assertStagingPath } from './build-paths.mts';
 import { validatePreparedResources } from '../package-resources.mts';
 import { sourceCommit } from '../core/build.mts';
 import { resolveGoToolchain, GO_VERSION } from '../core/go.mts';
+import { resolveHostTools } from '../config/host-tools.mts';
 import {
   CORE_WINDOWS,
   CORE_LICENSE,
@@ -109,7 +110,7 @@ try {
   fs.copyFileSync(path.join(release, 'dant.exe'), path.join(staging, 'dant.exe'));
   fs.cpSync(resources, path.join(staging, 'backend'), { recursive: true });
   validatePreparedResources(path.join(staging, 'backend'), version, commit);
-  const tar = path.join(process.env.SystemRoot ?? 'C:/Windows', 'System32/tar.exe');
+  const { tar } = resolveHostTools();
   run(tar, ['-a', '-c', '-f', path.join(output, zipName), '-C', staging, 'dant.exe', 'backend']);
   const entries = new Set(
     run(tar, ['-t', '-f', path.join(output, zipName)])

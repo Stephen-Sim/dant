@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveHostTools } from '../../../scripts/config/host-tools.mts';
 import { observedRecord, observedRecords } from '../../support/service-fixtures.mts';
 
 const script = fs.readFileSync('vm/install-worker.sh', 'utf8').replaceAll('\r\n', '\n');
@@ -730,10 +731,7 @@ test('fixed guard reasons identify the failed stage without exposing private res
   }
 });
 
-const bash =
-  process.platform === 'win32'
-    ? path.join(process.env.ProgramFiles || 'C:/Program Files', 'Git/bin/bash.exe')
-    : 'bash';
+const { bash } = resolveHostTools();
 // Real Git Bash file operations need headroom under parallel Windows coverage runs.
 const DEPLOYMENT_FIXTURE_TIMEOUT_MS = 60_000;
 const shellPath = (value: string) =>

@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { resolveHostTools } from '../../../scripts/config/host-tools.mts';
+
+// The complete native shell fixture also runs beside instrumented Windows tests.
+const BASH_FIXTURE_TIMEOUT_MS = 60_000;
 
 for (const mode of ['ordinary', 'DEBUG'] as const)
   test(`${mode} Bash entrypoints preserve readiness, failure and isolated fake commands`, () => {
-    const bash =
-      process.platform === 'win32'
-        ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git/bin/bash.exe')
-        : 'bash';
+    const { bash } = resolveHostTools();
     const result = spawnSync(
       bash,
       [
@@ -24,7 +24,7 @@ for (const mode of ['ordinary', 'DEBUG'] as const)
         encoding: 'utf8',
         shell: false,
         windowsHide: true,
-        timeout: 30_000,
+        timeout: BASH_FIXTURE_TIMEOUT_MS,
         maxBuffer: 64 * 1024,
       },
     );

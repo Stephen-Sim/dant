@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { resolveHostTools } from '../../../scripts/config/host-tools.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const workflow = fs.readFileSync(path.join(root, '.github/workflows/windows-build.yml'), 'utf8');
@@ -18,10 +19,7 @@ const script = step
   .split(/\r?\n/)
   .map((line) => line.replace(/^          /, ''))
   .join('\n');
-const bash =
-  process.platform === 'win32'
-    ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git/bin/bash.exe')
-    : 'bash';
+const { bash } = resolveHostTools();
 
 // Execute the actual workflow Bash against a local function, not the network.
 // Every would-be gh invocation is captured as an argument array.

@@ -47,7 +47,7 @@ Rust 运行时模块仅在 `#[cfg(test)]` 下通过明确 `#[path]` 引入外部
 
 `npm run test:native:coverage` 通过 LLVM 插桩测量 Rust，在 `.cache/coverage/rust/` 保存 JSON、LCOV 和 Markdown。`npm run test:python:coverage` 对全部维护 Python 辅助工具插桩，包含子进程、Go 内嵌的探测资源和零命中文件，无排除行并要求至少 **95% 行、90% 分支**。`npm run test:powershell:coverage` 使用 Pester 5.9.0 测量可执行命令，包含未执行脚本，并要求至少 **95% 命令覆盖率**；命令不是分支，也不对 `Add-Type` 编译的 C# 正文插桩。语音 P/Invoke 和电脑资源文件身份适配器即使经行为夹具执行，仍须单独标为未测嵌入代码。`npm run test:bash:coverage` 在 Linux 通过固定 kcov 43 测量原始 VM shell 脚本；解析不算覆盖率，Windows 不能提供该测量。未测范围必须明示。通过有意义的行为和失败测试接近 100%，不能缩小清单或放宽门禁来抬高比例。参见 [CI 覆盖率报告](ci.md#覆盖率报告)。
 
-使用精确 Go **1.27.2**、声明的 Rust 工具链、锁定的 npm 依赖及受支持的 Node 原生 TypeScript 基线。完整检查：
+使用精确 Go **1.27.2**、声明的 Rust 工具链、锁定的 npm 依赖及受支持的 Node 原生 TypeScript 基线。Windows 构建工具使用当前主机经过校验的 `SystemRoot` 和 `ProgramFiles` 目录，缺失时失败，不猜测盘符。完整检查：
 
 ```powershell
 npm run format:check

@@ -3,9 +3,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { projectRoot } from './version.mts';
 import { assertNodeRuntime } from './node-runtime.mts';
+import { resolveHostTools } from '../config/host-tools.mts';
 
 assertNodeRuntime();
 const CI_TOOL_TIMEOUT_MS = 5_000;
+const hostTools = resolveHostTools();
 
 function run(command: string, args: readonly string[]): void {
   const result = spawnSync(command, args, { cwd: projectRoot, stdio: 'inherit', shell: false });
@@ -15,8 +17,8 @@ function run(command: string, args: readonly string[]): void {
 }
 
 // Tests intentionally skip unavailable tools locally. CI must exercise these tests.
-if (process.platform === 'win32') {
-  const openSsh = path.join(process.env.SystemRoot ?? 'C:/Windows', 'System32/OpenSSH');
+if (hostTools.openSshDirectory !== null) {
+  const openSsh = hostTools.openSshDirectory;
   if (!fs.existsSync(path.join(openSsh, 'ssh-keygen.exe')))
     throw new Error('Windows OpenSSH client is required by the VM key tests.');
   process.env.PATH = `${openSsh}${path.delimiter}${process.env.PATH}`;
@@ -40,14 +42,10 @@ run('python', [
   "import importlib.metadata, pycdlib; assert importlib.metadata.version('pycdlib') == '1.14.0'; print('pycdlib 1.14.0 and OpenSSH available')",
 ]);
 
-const bash =
-  process.platform === 'win32'
-    ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git/bin/bash.exe')
-    : 'bash';
 for (const name of fs
   .readdirSync(path.join(projectRoot, 'vm'))
   .filter((name) => name.endsWith('.sh'))
   .sort()) {
-  run(bash, ['-n', `vm/${name}`]);
+  run(hostTools.bash, ['-n', `vm/${name}`]);
   console.log(`Bash syntax verified: vm/${name}`);
 }

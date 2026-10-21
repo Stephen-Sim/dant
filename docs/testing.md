@@ -47,7 +47,7 @@ Browser coverage requires **90% lines, 80% branches and 80% functions**, with ap
 
 `npm run test:native:coverage` measures Rust through LLVM instrumentation and saves JSON, LCOV and Markdown under `.cache/coverage/rust/`. `npm run test:python:coverage` instruments all maintained Python helpers, including subprocesses, embedded Go probe resources and zero-hit files, and requires at least **95% lines and 90% branches** with no excluded lines. `npm run test:powershell:coverage` measures executable commands with Pester 5.9.0, including unexecuted scripts, and requires at least **95% command coverage**; commands are not branches. It does not instrument C# bodies compiled by `Add-Type`: the speech P/Invoke and computer resource file-identity adapters remain separately identified as unmeasured embedded code, even when exercised by behavior fixtures. `npm run test:bash:coverage` measures original VM shell scripts with pinned kcov 43 on Linux; parsing alone is not coverage, and Windows cannot supply this measurement. Keep unmeasured scopes explicit. Aim close to 100% with meaningful behavior and failure tests; do not shrink the inventory or relax gates to raise a percentage. See [CI coverage reports](ci.md#coverage-reports).
 
-Use exactly Go **1.27.2**, the declared Rust toolchain, locked npm dependencies and the supported Node native-TypeScript baseline. Full checks:
+Use exactly Go **1.27.2**, the declared Rust toolchain, locked npm dependencies and the supported Node native-TypeScript baseline. Windows build tools use the host's validated `SystemRoot` and `ProgramFiles` directories; missing values fail instead of guessing a drive. Full checks:
 
 ```powershell
 npm run format:check
