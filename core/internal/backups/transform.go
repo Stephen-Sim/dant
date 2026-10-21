@@ -78,11 +78,11 @@ func RunTransform(ctx context.Context, input io.Reader, output io.Writer) error 
 	if _, err := files.OrdinaryDirectory(request.Directory, false); err != nil {
 		return ErrInvalid
 	}
-	directory, err := os.Lstat(request.Directory)
+	directory, err := files.CaptureIdentity(request.Directory)
 	if err != nil {
 		return ErrInvalid
 	}
-	before, err := os.Lstat(request.File)
+	before, err := files.CaptureIdentity(request.File)
 	if err != nil || !before.Mode().IsRegular() || before.Size() != request.Bytes+gcmTagBytes {
 		return ErrInvalid
 	}

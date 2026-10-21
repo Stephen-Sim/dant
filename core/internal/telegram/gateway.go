@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"io/fs"
 	"net/http"
 	"path/filepath"
@@ -387,11 +386,4 @@ func (gateway *Gateway) Close(ctx context.Context) error {
 	}
 	<-gateway.operations
 	return nil
-}
-
-func cloneConfig(value Config) Config {
-	data, _ := json.Marshal(value)
-	var copy Config
-	_ = json.Unmarshal(data, &copy)
-	return copy
 }

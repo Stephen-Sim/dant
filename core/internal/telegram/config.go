@@ -200,7 +200,7 @@ func readConfig(directory string) (string, fs.FileInfo, Config, bool, error) {
 	if err != nil {
 		return "", nil, Config{}, false, ErrConfig
 	}
-	identity, err := os.Lstat(absolute)
+	identity, err := files.CaptureIdentity(absolute)
 	if err != nil {
 		return "", nil, Config{}, false, ErrConfig
 	}

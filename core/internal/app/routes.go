@@ -21,6 +21,7 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/httpapi"
 	"github.com/Stephen-Sim/dant/core/internal/i18n"
 	"github.com/Stephen-Sim/dant/core/internal/memory"
+	"github.com/Stephen-Sim/dant/core/internal/schedules"
 	"github.com/Stephen-Sim/dant/core/internal/security"
 	"github.com/Stephen-Sim/dant/core/internal/skills"
 	"github.com/Stephen-Sim/dant/core/internal/telegram"
@@ -391,11 +392,26 @@ func (app *WorkerApp) registerSettingsRoutes(mux *http.ServeMux) {
 	})
 }
 
+func scheduleRouteError(err error) error {
+	switch {
+	case errors.Is(err, schedules.ErrInvalid):
+		return httpapi.Failure(400, "invalid_schedule", "Invalid scheduled task.")
+	case errors.Is(err, schedules.ErrNotFound):
+		return httpapi.Failure(404, "schedule_not_found", "Scheduled task not found.")
+	case errors.Is(err, schedules.ErrConflict):
+		return httpapi.Failure(409, "schedule_changed", "The scheduled task changed. Refresh its current status.")
+	case errors.Is(err, schedules.ErrUnavailable):
+		return httpapi.Failure(503, "schedule_unavailable", "Scheduled tasks are temporarily unavailable.")
+	default:
+		return err
+	}
+}
+
 func (app *WorkerApp) registerScheduleRoutes(mux *http.ServeMux) {
 	httpapi.Register(mux, "GET /api/schedules", func(writer http.ResponseWriter, request *http.Request) error {
 		result, err := app.scheduler.List(request.Context())
 		if err != nil {
-			return err
+			return scheduleRouteError(err)
 		}
 		return httpapi.JSON(writer, result)
 	})
@@ -413,7 +429,7 @@ func (app *WorkerApp) registerScheduleRoutes(mux *http.ServeMux) {
 			}
 			result, err := app.scheduler.Save(request.Context(), encode(body), true)
 			if err != nil {
-				return err
+				return scheduleRouteError(err)
 			}
 			return httpapi.JSON(writer, result)
 		})
@@ -421,7 +437,7 @@ func (app *WorkerApp) registerScheduleRoutes(mux *http.ServeMux) {
 	httpapi.Register(mux, "DELETE /api/schedules/{id}", func(writer http.ResponseWriter, request *http.Request) error {
 		result, err := app.scheduler.Remove(request.Context(), request.PathValue("id"))
 		if err != nil {
-			return err
+			return scheduleRouteError(err)
 		}
 		return httpapi.JSON(writer, result)
 	})

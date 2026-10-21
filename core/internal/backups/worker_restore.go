@@ -350,7 +350,7 @@ func restoreWorkerLocked(ctx context.Context, options RestoreOptions, locations 
 		return receipt, ErrRestoreFailed
 	}
 	_ = os.Chmod(decoding, 0700)
-	identity, err := os.Lstat(decoding)
+	identity, err := files.CaptureIdentity(decoding)
 	if err != nil {
 		return receipt, ErrRestoreFailed
 	}

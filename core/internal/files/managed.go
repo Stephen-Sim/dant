@@ -140,7 +140,7 @@ func WriteAtomic(ctx context.Context, name string, data []byte, mode fs.FileMode
 	if err != nil {
 		return err
 	}
-	parent, err := os.Lstat(directory)
+	parent, err := CaptureIdentity(directory)
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func WriteAtomic(ctx context.Context, name string, data []byte, mode fs.FileMode
 	if closeErr != nil {
 		return closeErr
 	}
-	sourceInfo, err := os.Lstat(source)
+	sourceInfo, err := CaptureIdentity(source)
 	if err != nil {
 		return err
 	}
@@ -225,13 +225,13 @@ func RenameManaged(ctx context.Context, source, destination string) error {
 		if _, err := OrdinaryDirectory(parent, false); err != nil {
 			return err
 		}
-		info, err := os.Lstat(parent)
+		info, err := CaptureIdentity(parent)
 		if err != nil {
 			return err
 		}
 		parents[parent] = info
 	}
-	before, err := os.Lstat(source)
+	before, err := CaptureIdentity(source)
 	if err != nil {
 		return err
 	}

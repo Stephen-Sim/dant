@@ -183,7 +183,7 @@ func withRestoreLock(ctx context.Context, options RestoreOptions, operation func
 	if err != nil {
 		return err
 	}
-	parent, err := os.Lstat(locations.dataParent)
+	parent, err := files.CaptureIdentity(locations.dataParent)
 	if err != nil {
 		return ErrRestoreFailed
 	}

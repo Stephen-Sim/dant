@@ -194,20 +194,20 @@ func matchesMetadata(manifest Manifest, metadata Metadata) bool {
 	return manifest.CreatedAt == metadata.CreatedAt && manifest.AppVersion == metadata.AppVersion && manifest.Files == metadata.Files && manifest.Bytes == metadata.Bytes
 }
 
-func extractionDirectory(parent string) (string, os.FileInfo, error) {
+func extractionDirectory(parent string) (string, directoryID, error) {
 	directory, err := os.MkdirTemp(parent, ".portable-extract-")
 	if err != nil {
-		return "", nil, ErrInvalid
+		return "", directoryID{}, ErrInvalid
 	}
-	identity, err := os.Lstat(directory)
+	identity, err := directoryIdentity(directory)
 	if err != nil {
-		return "", nil, ErrInvalid
+		return "", directoryID{}, ErrInvalid
 	}
 
 	return directory, identity, nil
 }
 
-func cleanupExtraction(parent, directory string, identity os.FileInfo) error {
+func cleanupExtraction(parent, directory string, identity directoryID) error {
 	relative, err := filepath.Rel(parent, directory)
 	if err != nil || filepath.IsAbs(relative) || filepath.Base(relative) != relative || !strings.HasPrefix(relative, ".portable-extract-") {
 		return ErrInvalid
@@ -217,7 +217,11 @@ func cleanupExtraction(parent, directory string, identity os.FileInfo) error {
 		return nil
 	}
 
-	if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(identity, current) {
+	if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 {
+		return ErrSourceChanged
+	}
+	currentIdentity, err := directoryIdentity(directory)
+	if err != nil || !identity.valid() || currentIdentity != identity {
 		return ErrSourceChanged
 	}
 

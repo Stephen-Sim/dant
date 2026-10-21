@@ -255,13 +255,20 @@ func (managed *ManagedRoot) read(ctx context.Context, name string, max int64, co
 }
 
 func (managed *ManagedRoot) ReadFile(ctx context.Context, name string, max int64) ([]byte, error) {
+	data, _, err := managed.ReadFileInfo(ctx, name, max)
+	return data, err
+}
+
+// ReadFileInfo returns bytes and their already verified, opened file identity.
+// A consumer retaining that identity must not stat the path again as its baseline.
+func (managed *ManagedRoot) ReadFileInfo(ctx context.Context, name string, max int64) ([]byte, fs.FileInfo, error) {
 	var data []byte
-	_, err := managed.read(ctx, name, max, func(reader io.Reader) error {
+	info, err := managed.read(ctx, name, max, func(reader io.Reader) error {
 		var err error
 		data, err = io.ReadAll(reader)
 		return err
 	})
-	return data, err
+	return data, info, err
 }
 
 func (managed *ManagedRoot) Digest(ctx context.Context, name string, max int64) (string, int64, error) {

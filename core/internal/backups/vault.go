@@ -308,7 +308,7 @@ func (vault *Vault) List() (metadata []Metadata, invalidCount int, err error) {
 	if _, err := files.OrdinaryDirectory(vault.directory, false); err != nil {
 		return nil, 0, ErrInvalid
 	}
-	identity, err := os.Lstat(vault.directory)
+	identity, err := files.CaptureIdentity(vault.directory)
 	if err != nil {
 		return nil, 0, ErrInvalid
 	}

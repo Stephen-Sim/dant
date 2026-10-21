@@ -33,6 +33,8 @@ type appVoiceSocket struct {
 	accepted      chan struct{}
 	acceptedOnce  sync.Once
 	beforeAck     func()
+	written       chan struct{}
+	runtimeWire   *appWireFixture
 }
 
 func (socket *appVoiceSocket) Read(ctx context.Context) ([]byte, error) {
@@ -54,8 +56,12 @@ func (socket *appVoiceSocket) Write(ctx context.Context, raw []byte) error {
 	socket.mu.Lock()
 	socket.writes = append(socket.writes, event)
 	reject := socket.reject
-	rejectContext, hold, accepted, beforeAck := socket.rejectContext, socket.hold, socket.accepted, socket.beforeAck
+	rejectContext, hold, accepted, beforeAck, written := socket.rejectContext, socket.hold, socket.accepted, socket.beforeAck, socket.written
 	socket.mu.Unlock()
+	select {
+	case written <- struct{}{}:
+	default:
+	}
 	var kind string
 	_ = json.Unmarshal(event["type"], &kind)
 	var answer contracts.RawObject
@@ -118,7 +124,7 @@ func activeAPICallFixture(t *testing.T, customize ...func(*WorkerOptions)) (*Wor
 	t.Helper()
 	socket := &appVoiceSocket{input: make(chan []byte, 64), done: make(chan struct{})}
 	hangups := &atomic.Int32{}
-	app, _ := connectedWorkerFixture(t, func(options *WorkerOptions) {
+	app, wire := connectedWorkerFixture(t, func(options *WorkerOptions) {
 		options.VoiceHTTP = appHTTPFunc(func(request *http.Request) (*http.Response, error) {
 			if request.URL.Host != "api.openai.com" || request.URL.Scheme != "https" {
 				t.Error("voice escaped its fixed fake authority")
@@ -139,6 +145,7 @@ func activeAPICallFixture(t *testing.T, customize ...func(*WorkerOptions)) (*Wor
 			configure(options)
 		}
 	})
+	socket.runtimeWire = wire
 	response := callWorker(app, http.MethodPost, "/api/call", `{"provider":"api","sdp":"v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n","apiKey":"synthetic-key-not-a-real-account"}`)
 	requireWorkerStatus(t, response, 200)
 	var result voice.CallStartResult

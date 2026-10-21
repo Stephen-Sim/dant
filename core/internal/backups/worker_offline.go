@@ -37,7 +37,7 @@ func AssertWorkerOffline(ctx context.Context, home, dataDir string) error {
 	}
 	return inspectWorkerOffline(ctx, offlineInspection{
 		home: home, data: dataDir, proc: "/proc", uid: os.Geteuid(), selfPID: os.Getpid(),
-		running: systemdBackupService{}.Running,
+		running: newSystemdBackupService().Running,
 	})
 }
 

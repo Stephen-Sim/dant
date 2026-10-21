@@ -107,11 +107,6 @@ func prepareDataOffline(ctx context.Context, startup config.Startup, offline fun
 	return ticket.finish(ctx, backupHash)
 }
 
-func validatePreparationBackup(ctx context.Context, name string, requireState bool) error {
-	_, err := authenticatePreparationBackup(ctx, name, requireState)
-	return err
-}
-
 func authenticatePreparationBackup(ctx context.Context, name string, requireState bool) (string, error) {
 	root, err := files.OpenManagedRoot(filepath.Dir(name), false)
 	if err != nil {
@@ -123,7 +118,7 @@ func authenticatePreparationBackup(ctx context.Context, name string, requireStat
 	if err != nil {
 		return "", err
 	}
-	before, err := os.Lstat(staging)
+	before, err := files.CaptureIdentity(staging)
 	if err != nil {
 		return "", err
 	}

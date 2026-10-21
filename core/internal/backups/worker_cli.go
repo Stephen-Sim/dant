@@ -4,21 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/ownership"
-	"github.com/Stephen-Sim/dant/core/internal/platform"
 )
 
-const systemdCheckTimeout = 5 * time.Second
-const systemdStartTimeout = 30 * time.Second
-const systemdOutputLimit = 4096
 const backupExportLockID = "00000000-0000-0000-0000-000000000000"
 
 type WorkerServiceControl interface {
@@ -111,7 +104,7 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 	service := configuration.Service
 	production := service == nil
 	if service == nil {
-		service = systemdBackupService{}
+		service = newSystemdBackupService()
 	}
 	options := RestoreOptions{DataDir: arguments.data, WorkspaceRoot: arguments.workspace, RestoreID: arguments.id, AssertOffline: func(ctx context.Context) error {
 		if production {
@@ -217,79 +210,4 @@ func RunCLI(ctx context.Context, args []string, input io.Reader, output io.Write
 		}
 		return ErrInvalid
 	})
-}
-
-type systemdBackupService struct{}
-
-func (systemdBackupService) Running(ctx context.Context) (bool, error) {
-	if contracts.RuntimeOperatingSystem(runtime.GOOS) != contracts.RuntimeOperatingSystemLinux {
-		return false, ErrRestoreFailed
-	}
-	check, stop := context.WithTimeout(ctx, systemdCheckTimeout)
-	defer stop()
-	raw, err := platform.Run(check, "systemctl", []string{"--user", "show", "dant-worker.service", "--property=ActiveState", "--property=MainPID", "--property=ControlGroup", "--no-pager"}, nil)
-	if err != nil || len(raw) > systemdOutputLimit {
-		return false, ErrBusy
-	}
-	fields := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		pair := strings.SplitN(line, "=", 2)
-		if len(pair) != 2 {
-			return false, ErrBusy
-		}
-		switch pair[0] {
-		case "ActiveState", "MainPID", "ControlGroup":
-		default:
-			return false, ErrBusy
-		}
-		if _, exists := fields[pair[0]]; exists {
-			return false, ErrBusy
-		}
-		fields[pair[0]] = pair[1]
-	}
-
-	if len(fields) != 3 {
-		return false, ErrBusy
-	}
-	pid, err := strconv.ParseUint(fields["MainPID"], 10, 32)
-	if err != nil || strconv.FormatUint(pid, 10) != fields["MainPID"] {
-		return false, ErrBusy
-	}
-
-	if fields["ActiveState"] == "active" && pid > 0 {
-		return true, nil
-	}
-
-	if (fields["ActiveState"] != "inactive" && fields["ActiveState"] != "failed") || pid != 0 {
-		return false, ErrBusy
-	}
-	group := fields["ControlGroup"]
-	if group != "" {
-		if !strings.HasPrefix(group, "/") || filepath.Clean(group) != group || !strings.HasSuffix(group, "/dant-worker.service") {
-			return false, ErrBusy
-		}
-		name := filepath.Join("/sys/fs/cgroup", group, "cgroup.procs")
-		raw, err := os.ReadFile(name)
-		if err != nil && !os.IsNotExist(err) {
-			return false, ErrBusy
-		}
-		if len(raw) > systemdOutputLimit || len(strings.TrimSpace(string(raw))) != 0 {
-			return false, ErrBusy
-		}
-	}
-
-	return false, nil
-}
-
-func (systemdBackupService) Start(ctx context.Context) error {
-	if contracts.RuntimeOperatingSystem(runtime.GOOS) != contracts.RuntimeOperatingSystemLinux {
-		return ErrRestoreFailed
-	}
-	start, stop := context.WithTimeout(ctx, systemdStartTimeout)
-	defer stop()
-	if _, err := platform.Run(start, "systemctl", []string{"--user", "start", "dant-worker.service"}, nil); err != nil {
-		return ErrRestoreFailed
-	}
-
-	return nil
 }

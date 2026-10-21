@@ -135,7 +135,9 @@ func NewWorker(ctx context.Context, options WorkerOptions) (app *WorkerApp, resu
 	if result != nil {
 		return app, result
 	}
-	app.diagnostics, result = diagnostics.New(lifetime, diagnostics.Options{
+	// App.Close owns and joins this logger after its final shutdown evidence.
+	// Cancelling execution must not discard a process-stop uncertainty record.
+	app.diagnostics, result = diagnostics.New(context.WithoutCancel(lifetime), diagnostics.Options{
 		DataDir: options.Startup.DataDir, Role: "vm-worker", Version: options.Version,
 	})
 	if result != nil {

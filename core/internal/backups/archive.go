@@ -112,7 +112,7 @@ func ValidateArchive(ctx context.Context, input io.Reader, staging string) (Vali
 	if err != nil {
 		return ValidatedArchive{}, ErrInvalid
 	}
-	before, err := os.Lstat(absolute)
+	before, err := files.CaptureIdentity(absolute)
 	if err != nil {
 		return ValidatedArchive{}, ErrInvalid
 	}

@@ -292,7 +292,7 @@ func (logger *Logger) scan(ctx context.Context, create bool) ([]retainedFile, er
 		if match == nil {
 			continue
 		}
-		data, err := root.ReadFile(ctx, entry.Name(), MaxFileBytes)
+		data, info, err := root.ReadFileInfo(ctx, entry.Name(), MaxFileBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -304,10 +304,6 @@ func (logger *Logger) scan(ctx context.Context, create bool) ([]retainedFile, er
 		created, err := time.Parse(time.RFC3339Nano, value.CreatedAt)
 		if err != nil || iso(created) != value.CreatedAt || !strings.HasPrefix(value.CreatedAt, match[1]) {
 			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, err
 		}
 		result = append(result, retainedFile{name: entry.Name(), created: created, size: int64(len(data)), info: info})
 	}
@@ -477,7 +473,7 @@ func (logger *Logger) append(line []byte) error {
 		if err := files.WriteAtomic(logger.ctx, name, contents, 0o600); err != nil {
 			return err
 		}
-		info, err := os.Lstat(name)
+		info, err := files.CaptureIdentity(name)
 		if err != nil {
 			return err
 		}
