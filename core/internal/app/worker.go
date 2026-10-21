@@ -35,7 +35,15 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/work"
 )
 
-const workerCloseTimeout = 15 * time.Second
+const (
+	workerCloseTimeout = 15 * time.Second
+
+	workerConnectedCode              = "WORKER_CONNECTED"
+	workerConnectionFailedCode       = "WORKER_CONNECTION_FAILED"
+	workerConnectionCancelledCode    = "WORKER_CONNECTION_CANCELLED"
+	workerConnectionTimeoutCode      = "WORKER_CONNECTION_TIMEOUT"
+	workerStartupStopUnconfirmedCode = "WORKER_STARTUP_STOP_UNCONFIRMED"
+)
 
 type WorkerOptions struct {
 	Startup config.Startup
@@ -386,6 +394,9 @@ func (app *WorkerApp) assembleIntegrations() error {
 	app.telegram, err = telegram.Open(app.ctx, app.options.Startup.DataDir, telegram.Options{
 		Store: app.store, Attachments: app.attachments,
 		Admit: app.admitTelegram, WorkSnapshot: app.telegramWork,
+		ReportIncomingFailure: func(code telegram.IntakeFailureCode) {
+			app.diagnostics.Log("telegram.intake.failed", diagnostics.Fields{Code: string(code)})
+		},
 		Pause: app.engine.Pause,
 		Resume: func(ctx context.Context, ids []string) error {
 			_, err := app.engine.ResumePaused(ctx, ids, work.ResumeOptions{})
@@ -478,22 +489,40 @@ func (app *WorkerApp) Start() {
 		return
 	}
 	app.startOnce.Do(func() {
+		app.diagnostics.Log("service.started", diagnostics.Fields{Role: "vm-worker", Version: app.options.Version, Source: app.options.Source})
 		app.wg.Add(1)
 		go app.broadcast()
 		app.scheduler.Start(app.ctx)
 		app.supervisor.Start()
-		app.telegram.Start()
 		app.wg.Add(1)
 		go func() {
 			defer app.wg.Done()
+			defer func() {
+				if app.ctx.Err() == nil {
+					app.telegram.Start()
+				}
+			}()
 			if app.engine.UnconfirmedStop() {
+				app.diagnostics.Log("worker.connection", diagnostics.Fields{Code: workerStartupStopUnconfirmedCode, Status: "blocked"})
 				app.notice("The previous executor stop could not be confirmed. Verify that it stopped before reconnecting.")
 				return
 			}
-			err := app.connectionOperation(app.ctx, false, func(ctx context.Context) error {
+			connecting, stop := context.WithTimeout(app.ctx, workerRuntime.RequestTimeout)
+			defer stop()
+			err := app.connectionOperation(connecting, false, func(ctx context.Context) error {
 				_, err := app.worker.Connect(ctx)
 				return err
 			})
+			code, status := workerConnectedCode, "online"
+			if err != nil {
+				code, status = workerConnectionFailedCode, "failed"
+				if errors.Is(connecting.Err(), context.DeadlineExceeded) {
+					code, status = workerConnectionTimeoutCode, "timeout"
+				} else if connecting.Err() != nil {
+					code, status = workerConnectionCancelledCode, "cancelled"
+				}
+			}
+			app.diagnostics.Log("worker.connection", diagnostics.Fields{Code: code, Status: status})
 			if err != nil && app.ctx.Err() == nil {
 				app.notice("The work computer service could not connect.")
 			}

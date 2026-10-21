@@ -22,6 +22,7 @@ const (
 
 	maxIncomingTextUnits      = 100000
 	maxIncomingImageDimension = 100000
+	maxIncomingQueue          = 32
 	maxPhotoUploadBytes       = 10000000
 	receiptWriteTimeout       = 5 * time.Second
 )
@@ -158,22 +159,23 @@ type WorkState struct {
 }
 
 type Options struct {
-	Store        Persistence
-	Attachments  Attachments
-	Admit        func(context.Context, string, *contracts.ChatMessage) error
-	WorkSnapshot func() WorkState
-	Pause        func(context.Context) error
-	Resume       func(context.Context, []string) error
-	StopOwned    func(context.Context, Owner, Bot) (bool, error)
-	Redact       func(string) string
-	Changed      func()
-	HTTP         HTTPDoer
-	Now          func() time.Time
-	Random       func([]byte) (int, error)
-	AutoPoll     bool
-	PollTimeout  time.Duration
-	RetryBase    time.Duration
-	MirrorGrace  time.Duration
+	Store                 Persistence
+	Attachments           Attachments
+	Admit                 func(context.Context, string, *contracts.ChatMessage) error
+	ReportIncomingFailure func(IntakeFailureCode)
+	WorkSnapshot          func() WorkState
+	Pause                 func(context.Context) error
+	Resume                func(context.Context, []string) error
+	StopOwned             func(context.Context, Owner, Bot) (bool, error)
+	Redact                func(string) string
+	Changed               func()
+	HTTP                  HTTPDoer
+	Now                   func() time.Time
+	Random                func([]byte) (int, error)
+	AutoPoll              bool
+	PollTimeout           time.Duration
+	RetryBase             time.Duration
+	MirrorGrace           time.Duration
 }
 
 type ConfigureInput struct {

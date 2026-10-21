@@ -64,7 +64,13 @@
     "workFinished": "任务已结束，等待你在 dant 验收。",
     "submissionUnknown": "任务提交结果未确认，不会自动重试。请先在 dant 检查。",
     "taskPaused": "任务已暂停，请在 dant 查看。",
-    "taskFailed": "任务未能完成，请在 dant 查看。"
+    "taskFailed": "任务未能完成，请在 dant 查看。",
+    "intakeQueueFull": "Telegram 接收队列已达上限，消息未自动重试。",
+    "intakeAttachmentFailed": "Telegram 附件接收失败，消息未自动重试。",
+    "intakePersistenceFailed": "Telegram 消息未能保存以供执行，未自动重试。",
+    "intakeAdmissionRejected": "Telegram 消息未能进入任务队列，未自动重试。",
+    "intakeCancelled": "Telegram 消息接收已取消，未自动重试。",
+    "intakeTimeout": "Telegram 消息接收超时，未自动重试。"
   },
   "en": {
     "help": "Connected to dant. Send text, photos, documents or voice files to request work.\n/progress Shared work progress (also /porgress)\n/status Computer, call and queue status\n/pause Pause shared work and queue, keep the call\n/resume [task ID] Resume a paused task\n/stop Stop only this Telegram’s tasks\n/help Help",
@@ -131,6 +137,12 @@
     "workFinished": "Work finished and awaits your review in dant.",
     "submissionUnknown": "Task submission is unconfirmed and will not be retried. Check dant first.",
     "taskPaused": "Task paused; check dant.",
-    "taskFailed": "Task failed; check dant."
+    "taskFailed": "Task failed; check dant.",
+    "intakeQueueFull": "The Telegram intake queue has reached its limit; the message was not retried.",
+    "intakeAttachmentFailed": "The Telegram attachment could not be received; the message was not retried.",
+    "intakePersistenceFailed": "The Telegram message could not be saved for execution; it was not retried.",
+    "intakeAdmissionRejected": "The Telegram message could not enter the task queue; it was not retried.",
+    "intakeCancelled": "Receiving the Telegram message was cancelled; it was not retried.",
+    "intakeTimeout": "Receiving the Telegram message timed out; it was not retried."
   }
 }

@@ -15,6 +15,10 @@ Locations:
 
 Use the authenticated `GET /api/diagnostics` endpoint for bounded recent metadata and retention status. The Controller includes the Worker report when it is reachable; its own diagnostics remain available while the VM is disconnected. Do not upload an entire application data directory: it also contains personal conversation and connection data.
 
+The retention status identifies the current logger version; individual records retain the version that wrote them. A healthy current logger can still return older records when no newer event has been recorded. Worker startup and the outcome of its first executor connection are recorded separately. Telegram polling begins after that initial connection attempt finishes, so messages waiting at startup cannot race its admission maintenance window.
+
+Telegram input failures distinguish queue capacity, attachment transfer, persistence, admission, cancellation and timeout using fixed diagnostic codes and localized messages. Admission diagnostics also distinguish an unavailable executor, changed ownership, unconfirmed execution and backpressure. Logs do not include the message body, bot token or raw underlying error. Older records containing the combined attachment-or-queue error cannot establish which operation originally failed. Existing failed messages remain unchanged, and a code update does not retry them automatically; uncertain submissions retain their existing confirmation requirements.
+
 In **0.4.7-beta.7**, service update diagnostics use fixed status, phase, stage and reason codes, plus validated target and running versions. A failed pause or idle check is distinguishable from a connection failure or unconfirmed activation, including `pause-unconfirmed` and `idle-unconfirmed`. Raw SSH output, installation paths and task content are not retained in these records. User-facing failures show a short localized message instead of the complete installation output.
 
 ## A missing desktop does not always mean the VM crashed

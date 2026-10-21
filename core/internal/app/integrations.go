@@ -20,7 +20,9 @@ func (app *WorkerApp) telegramWork() telegram.WorkState {
 }
 
 func (app *WorkerApp) admitTelegram(ctx context.Context, conversationID string, message *contracts.ChatMessage) error {
-	return app.engine.AdmitExternalMessage(ctx, conversationID, message)
+	err := app.engine.AdmitExternalMessage(ctx, conversationID, message)
+	app.reportTelegramAdmission(err)
+	return err
 }
 
 func sameTelegramOwner(source contracts.RawObject, owner telegram.Owner, bot telegram.Bot) bool {

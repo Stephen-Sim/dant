@@ -11,7 +11,7 @@ import (
 
 func (gateway *Gateway) Start() {
 	gateway.mu.Lock()
-	if gateway.closed || !gateway.options.AutoPoll || !gateway.config.Enabled || gateway.config.Token == nil || gateway.loopDone != nil {
+	if gateway.closed || gateway.ctx.Err() != nil || !gateway.options.AutoPoll || !gateway.config.Enabled || gateway.config.Token == nil || gateway.loopDone != nil {
 		gateway.mu.Unlock()
 		return
 	}

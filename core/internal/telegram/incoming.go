@@ -233,11 +233,13 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 		latest.Messages = append(latest.Messages, task)
 		return nil
 	}); err != nil {
+		gateway.intakeFailure(ctx, err, IntakePersistenceFailed)
 		return err
 	}
 	attachments := []contracts.Attachment{}
 	var err error
-	if len(gateway.options.WorkSnapshot().Queue) >= 32 {
+	failure := IntakeQueueFull
+	if len(gateway.options.WorkSnapshot().Queue) >= maxIncomingQueue {
 		err = ErrIncoming
 	}
 	for _, candidate := range candidates {
@@ -245,10 +247,12 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 			break
 		}
 		var attachment contracts.Attachment
+		failure = IntakeAttachmentFailed
 		attachment, err = gateway.download(ctx, candidate)
 		attachments = append(attachments, attachment)
 	}
 	if err == nil {
+		failure = IntakePersistenceFailed
 		err = gateway.options.Store.Mutate(ctx, func(latest *contracts.State) error {
 			if latest.ConversationID != conversation {
 				return ErrIncoming
@@ -265,6 +269,7 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 		})
 	}
 	if err == nil {
+		failure = IntakeAdmissionRejected
 		if gateway.ctx.Err() != nil {
 			err = ErrClosed
 		} else {
@@ -272,6 +277,8 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 		}
 	}
 	if err != nil {
+		failure = gateway.intakeFailure(ctx, err, failure)
+		message := gateway.intakeFailureText(failure)
 		bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), receiptWriteTimeout)
 		defer cancel()
 		_ = gateway.options.Store.Mutate(bounded, func(latest *contracts.State) error {
@@ -287,7 +294,7 @@ func (gateway *Gateway) incoming(ctx context.Context, message *IncomingMessage, 
 					return nil
 				}
 				saved.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusFailed))
-				saved.Error = contracts.Some("Telegram attachment could not be received or the task queue is full")
+				saved.Error = contracts.Some(message)
 			}
 			return nil
 		})
