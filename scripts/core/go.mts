@@ -16,7 +16,7 @@ import type { GoCoverageReport } from './coverage.mts';
 export const GO_VERSION = '1.27.2';
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const GO_PROBE_TIMEOUT_MS = 10_000;
-const GO_COMMAND_TIMEOUT_MS = 300_000;
+const GO_COMMAND_TIMEOUT_MS = 600_000;
 const GO_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 const GO_ROOT_MAX_CHARS = 4096;
 const GO_TEST_TIMEOUT = '120s';

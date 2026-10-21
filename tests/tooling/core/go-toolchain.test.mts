@@ -245,7 +245,7 @@ test('integrated core checks format both source roots and enforce Go coverage on
     assert.equal(call.options.env?.GOTOOLCHAIN, 'local');
     assert.equal(call.options.env?.GOFLAGS, '-mod=readonly');
     assert.equal(call.options.shell, false);
-    assert.equal(call.options.timeout, 300000);
+    assert.equal(call.options.timeout, 600000);
     assert.equal(call.options.maxBuffer, 8 * 1024 * 1024);
   }
   assert.equal(f.overlayClosed, 1);

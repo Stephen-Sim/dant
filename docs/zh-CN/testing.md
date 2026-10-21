@@ -41,6 +41,8 @@ Rust 运行时模块仅在 `#[cfg(test)]` 下通过明确 `#[path]` 引入外部
 
 `npm run check:core` 执行固定工具链格式、vet 及全部 Go 包测试，生成 atomic 语句覆盖率。每个功能包必须实际执行语句；Controller、Computer 和 Telegram 各自至少 **90%**。包缺失、过期 profile 或进程失败不能复用先前结果。Linux CI 另在具备 C 编译器时执行 `npm run test:core:race`。
 
+完整 Go 命令有十分钟预算，以有限包并行度完成全部包的编译与运行。各包另保留 120 秒测试超时。整体超时会使检查失败，不能把部分覆盖率报告当作成功结果发布。
+
 浏览器总体要求 **90% 行、80% 分支、80% 函数**，appearance 单模块至少 90% 行，全部维护中的 UI helper 必须出现。Go 语句、TypeScript 行／分支／函数、Rust LLVM 行／函数／region、Python 行／分支弧的分母不同，不能合并。测试数量、`cargo test` 或 Python unittest 成功本身都不能证明覆盖率百分比。浏览器入口另有 DOM／渲染／事件夹具；百分比不能代替布局或打包后原生窗口验证。
 
 `npm run test:native:coverage` 通过 LLVM 插桩测量 Rust，在 `.cache/coverage/rust/` 保存 JSON、LCOV 和 Markdown。`npm run test:python:coverage` 对全部维护 Python 辅助工具插桩，包含子进程、Go 内嵌的探测资源和零命中文件，无排除行并要求至少 **95% 行、90% 分支**。`npm run test:powershell:coverage` 使用 Pester 5.9.0 测量可执行命令，包含未执行脚本，并要求至少 **95% 命令覆盖率**；命令不是分支，也不对 `Add-Type` 编译的 C# 正文插桩。语音 P/Invoke 和电脑资源文件身份适配器即使经行为夹具执行，仍须单独标为未测嵌入代码。`npm run test:bash:coverage` 在 Linux 通过固定 kcov 43 测量原始 VM shell 脚本；解析不算覆盖率，Windows 不能提供该测量。未测范围必须明示。通过有意义的行为和失败测试接近 100%，不能缩小清单或放宽门禁来抬高比例。参见 [CI 覆盖率报告](ci.md#覆盖率报告)。
