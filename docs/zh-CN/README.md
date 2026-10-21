@@ -6,7 +6,7 @@
 
 Windows 上的 AI 数字伙伴，既能与你聊天，也能在自己的 Ubuntu 电脑上完成工作。
 
-**[下载 Windows 版](https://github.com/Stephen-Sim/dant/releases/latest)** · [体验 Beta](https://github.com/Stephen-Sim/dant/releases) · [文档目录](../README.md)
+**[下载 Windows 版](https://github.com/Stephen-Sim/dant/releases/latest)** · [所有版本](https://github.com/Stephen-Sim/dant/releases) · [文档目录](../README.md)
 
 ## 可以做什么
 
@@ -32,6 +32,8 @@ Windows 上的 AI 数字伙伴，既能与你聊天，也能在自己的 Ubuntu 
 
 <details>
 <summary>从源码运行</summary>
+
+桌面版使用 Rust/Tauri 原生宿主，Windows Controller 与 Ubuntu Worker 由 Go Core 提供，界面使用 TypeScript。
 
 安装 Go 1.27.2、Node.js 22.18+ LTS / 24+ 及上述依赖。准备带版本信息的运行资源前，先提交已审查的源码：
 

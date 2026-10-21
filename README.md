@@ -6,7 +6,7 @@ English · [Chinese](docs/zh-CN/README.md)
 
 An AI companion for Windows that talks with you and works on its own Ubuntu computer.
 
-**[Download for Windows](https://github.com/Stephen-Sim/dant/releases/latest)** · [Try Beta](https://github.com/Stephen-Sim/dant/releases) · [Documentation](docs/README.md)
+**[Download for Windows](https://github.com/Stephen-Sim/dant/releases/latest)** · [All releases](https://github.com/Stephen-Sim/dant/releases) · [Documentation](docs/README.md)
 
 ## What you can do
 
@@ -32,6 +32,8 @@ Text tasks and default voice use your ChatGPT subscription allowance; voice avai
 
 <details>
 <summary>Run from source</summary>
+
+The desktop uses a Rust/Tauri host, a Go core for the Windows Controller and Ubuntu Worker, and a TypeScript UI.
 
 Install Go 1.27.2, Node.js 22.18+ LTS / 24+ and the prerequisites above. Commit reviewed source before preparing versioned runtime resources:
 
