@@ -217,7 +217,7 @@ func readBundle(root, version, source string) (BundleManifest, []byte, error) {
 
 func (deployer *Deployer) attempts(binding Binding, source, action string) (bool, error) {
 	name := filepath.Join(deployer.options.DataDir, "vm-update-attempts.json")
-	value := updateAttempts{SchemaVersion: 1, Entries: []updateAttempt{}}
+	var value updateAttempts
 	raw, err := files.ReadRegular(name, pauseReceiptByteLimit)
 	if err == nil {
 		if _, err := contracts.DecodeObject(raw, pauseReceiptByteLimit); err != nil {
@@ -233,6 +233,8 @@ func (deployer *Deployer) attempts(binding Binding, source, action string) (bool
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, ErrDeploymentUnconfirmed
+	} else {
+		value = updateAttempts{SchemaVersion: 1, Entries: []updateAttempt{}}
 	}
 	key := BindingDigest(binding)
 	found := false
