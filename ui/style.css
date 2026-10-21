@@ -550,9 +550,6 @@ main {
   grid-column: 2;
   justify-content: flex-end;
 }
-.user .message-meta .delivery-state {
-  order: 1;
-}
 .reactions:empty {
   display: none;
 }
@@ -5992,9 +5989,6 @@ textarea:disabled {
   color: inherit;
   margin: 0;
 }
-.message-meta {
-  position: relative;
-}
 .message-time {
   flex: 0 0 auto;
   max-width: 100%;
@@ -6003,16 +5997,6 @@ textarea:disabled {
   white-space: nowrap;
   color: var(--text-faint);
   font: inherit;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.14s;
-}
-.assistant .message-time {
-  margin-inline-start: 0;
-}
-.message:hover .message-time,
-.message:focus-within .message-time {
-  opacity: 1;
 }
 .message-bubble-row .history-menu [data-message-speak] {
   display: flex;

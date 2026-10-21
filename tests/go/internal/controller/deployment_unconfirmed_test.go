@@ -23,12 +23,17 @@ import (
 )
 
 func TestControllerReconnectPreservesOnlineWorkerAndUnknownDeploymentFence(t *testing.T) {
-	for _, priorTarget := range []bool{false, true} {
-		name := "current target"
-		if priorTarget {
-			name = "prior target"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, fixture := range []struct {
+		name        string
+		priorTarget bool
+		install     bool
+	}{
+		{"reconnect current target", false, false},
+		{"reconnect prior target", true, false},
+		{"install current target", false, true},
+		{"install prior target", true, true},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
 			app, bridge, power, token := controllerOperationsFixture(t)
 			if err := os.WriteFile(filepath.Join(app.options.DataDir, "fixture.key"), []byte("isolated key"), 0600); err != nil {
 				t.Fatal(err)
@@ -73,7 +78,7 @@ func TestControllerReconnectPreservesOnlineWorkerAndUnknownDeploymentFence(t *te
 			}
 			fingerprint := sha256.Sum256(manifestRaw)
 			pendingSource := hex.EncodeToString(fingerprint[:])
-			if priorTarget {
+			if fixture.priorTarget {
 				pendingSource = strings.Repeat("c", 64)
 			}
 			fence := []byte(`{"schemaVersion":1,"entries":[{"binding":"` + computer.BindingDigest(binding) + `","source":"` + pendingSource + `"}]}`)
@@ -107,7 +112,10 @@ func TestControllerReconnectPreservesOnlineWorkerAndUnknownDeploymentFence(t *te
 			app.deployer = deployer
 			bridge.mu.Lock()
 			bridge.status = contracts.ConnectionStatusOnline
-			bridge.state = controllerQuiescentState(contracts.ConnectionStatusOnline)
+			bridge.state = controllerQuiescentState(contracts.ConnectionStatusOffline)
+			bridge.state.Settings.Language = app.configuration.Language
+			bridge.state.Settings.TimeZone = app.options.TimeZone
+			bridge.state.Executor.Paused = true
 			bridge.mu.Unlock()
 			bridge.connectOperation = func(ctx context.Context, deploy bool) error {
 				if !deploy {
@@ -115,19 +123,44 @@ func TestControllerReconnectPreservesOnlineWorkerAndUnknownDeploymentFence(t *te
 				}
 				return deployer.Prepare(ctx, binding)
 			}
+			recoveries := 0
+			bridge.request = func(_ context.Context, method, route string, _ http.Header, body io.Reader) (*http.Response, error) {
+				if method == http.MethodGet && route == "/api/session" {
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(
+						`{"product":"dant","mode":"worker","runtime":"go","protocol":1,"version":"0.4.7-beta.11","source":"` + strings.Repeat("b", 40) + `"}`))}, nil
+				}
+				raw, _ := io.ReadAll(body)
+				if method != http.MethodPost || route != "/api/connect" || string(raw) != `{"idleRecovery":true}` {
+					t.Fatal("pending upgrade recovery crossed its fixed request boundary")
+				}
+				recoveries++
+				bridge.mu.Lock()
+				bridge.state.Worker.Status = contracts.ConnectionStatusOnline
+				bridge.mu.Unlock()
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+			}
+			route, body := computerConnectRoute, `{}`
+			if fixture.install {
+				route, body = computerUpdateRoute, `{"action":"install"}`
+			}
 
 			for attempt := 1; attempt <= 2; attempt++ {
-				response := controllerRecordedRequest(t, app, token, "POST", "/api/connect", `{}`)
-				assertControllerCode(t, response, 409, "vm_update_unconfirmed")
-				if !strings.Contains(response.Body.String(), "Automatic retry is blocked") {
-					t.Fatal("an unknown upgrade returned only a generic connection failure")
+				response := controllerRecordedRequest(t, app, token, "POST", route, body)
+				if fixture.install {
+					assertControllerCode(t, response, 409, "vm_update_unconfirmed")
+					if !strings.Contains(response.Body.String(), "Automatic retry is blocked") {
+						t.Fatal("an unknown upgrade returned only a generic connection failure")
+					}
+				} else if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ok":true`) {
+					t.Fatal("a pending upgrade prevented verified idle connection recovery", response.Code)
 				}
 				retained, err := os.ReadFile(fencePath)
 				if err != nil || !bytes.Equal(retained, fence) {
 					t.Fatal("reconnect changed the unknown deployment fence", err)
 				}
 				if bridge.Status() != contracts.ConnectionStatusOnline || bridge.Generation() != 0 ||
-					installs != 0 || observations != attempt || power.resumed != 0 || power.suspended != 0 {
+					installs != 0 || observations != attempt || power.resumed != 0 || power.suspended != 0 ||
+					!bridge.Snapshot().Executor.Paused {
 					t.Fatal("an unknown upgrade disconnected the worker or redispatched installation")
 				}
 				status := deployer.Status()
@@ -135,6 +168,10 @@ func TestControllerReconnectPreservesOnlineWorkerAndUnknownDeploymentFence(t *te
 					status.Reason == nil || *status.Reason != "update-unconfirmed" || app.connectionPending || app.manual {
 					t.Fatal("reconnect lost update uncertainty or retained request admission")
 				}
+			}
+			if fixture.install && recoveries != 0 || !fixture.install &&
+				(recoveries != 1 || bridge.Snapshot().Worker.Status != contracts.ConnectionStatusOnline) {
+				t.Fatal("install recovered an executor or reconnect replayed idle recovery")
 			}
 
 			if err := app.diagnostics.Close(); err != nil {
@@ -150,7 +187,7 @@ func TestControllerReconnectPreservesOnlineWorkerAndUnknownDeploymentFence(t *te
 					continue
 				}
 				failures++
-				if record.Code != codeVMUpdateUnconfirmed || record.Route != computerConnectRoute || record.Method != http.MethodPost {
+				if record.Code != codeVMUpdateUnconfirmed || record.Route != route || record.Method != http.MethodPost {
 					t.Fatal("the pending update lost its fixed operational diagnostic")
 				}
 			}

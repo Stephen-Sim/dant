@@ -409,7 +409,7 @@ func (deployer *Deployer) Prepare(ctx context.Context, binding Binding) error {
 
 	if pending {
 		deployer.set(contracts.ServiceUpdateStatusPending, "update-unconfirmed", false)
-		return ErrDeploymentUnconfirmed
+		return pendingDeployment(binding, remote)
 	}
 
 	if deployer.options.Quiescent != nil {

@@ -182,7 +182,10 @@ test('nearby text and attachment messages share one localized divider while reta
           new Date(typeof message.time === 'number' ? message.time : NaN).toISOString(),
         );
         assert.equal(stamp.getAttribute('aria-label'), full);
-        assert.equal(defined(stamp.parentElement).lastElementChild, stamp);
+        assert.equal(
+          defined(stamp.parentElement).lastElementChild,
+          defined(stamp.nextElementSibling),
+        );
         assert.equal(stamp.hasAttribute('title'), false);
         assert.equal(
           defined(defined(article).querySelector<HTMLElement>('.bubble')).hasAttribute('title'),
@@ -390,7 +393,7 @@ test('the actual message renderer builds recent history first while keeping repl
   assert.ok(f.document.querySelector('[data-id="message-10"]'));
 });
 
-test('paused status, delivery ticks and hover time occupy separate wrapping footer slots', () => {
+test('paused status, visible original time and delivery ticks share a compact wrapping footer', () => {
   for (const language of ['en', 'zh']) {
     const f = fixture(language);
     f.state.messages = [
@@ -409,8 +412,8 @@ test('paused status, delivery ticks and hover time occupy separate wrapping foot
       delivery = defined(footer.querySelector('.delivery-state')),
       time = defined(footer.querySelector('.message-time'));
     assert.equal(status.parentNode, footer);
-    assert.equal(status.nextElementSibling, delivery);
-    assert.equal(delivery.nextElementSibling, time);
+    assert.equal(status.nextElementSibling, time);
+    assert.equal(time.nextElementSibling, delivery);
     assert.equal(status.textContent, language === 'en' ? 'Paused' : '已暂停');
     assert.ok(delivery.querySelector('[data-icon="check-check"]'));
     assert.equal(time.textContent, f.c.formatTime(at));
@@ -430,6 +433,52 @@ test('paused status, delivery ticks and hover time occupy separate wrapping foot
   assert.equal(rules.get('.message-meta')?.get('gap'), '3px 8px');
   assert.notEqual(rules.get('.message-time')?.get('position'), 'absolute');
   assert.equal(rules.get('.message-time')?.get('flex'), '0 0 auto');
+  assert.notEqual(rules.get('.message-time')?.get('opacity'), '0');
+  assert.equal(
+    rules.has('.message:hover .message-time,\n.message:focus-within .message-time'),
+    false,
+  );
+  assert.equal(rules.get('.user .message-meta .delivery-state')?.has('order') ?? false, false);
   assert.equal(rules.get('.task-status')?.get('overflow-wrap'), 'anywhere');
   assert.equal(rules.get('.task-status')?.get('max-width'), '100%');
+});
+
+test('the last assistant footer keeps its original time and receipt through streaming, pause and completion', () => {
+  for (const language of ['en', 'zh']) {
+    const f = fixture(language);
+    f.state.messages = [
+      { id: 'older', role: 'assistant', text: 'Earlier reply', status: 'completed', time: at },
+      {
+        id: 'last',
+        role: 'assistant',
+        text: 'Retained reply',
+        status: 'streaming',
+        time: at + 1000,
+      },
+    ];
+    f.render();
+    const article = defined(f.document.querySelector('[data-id="last"]')),
+      stamp = defined(article.querySelector('.message-time')),
+      last = defined(f.state.messages.at(-1));
+    assert.equal(article.querySelector('.message-read-state'), null);
+    for (const status of ['paused', 'failed', 'interrupted', 'completed', undefined] as const) {
+      if (status === undefined) delete last.status;
+      else last.status = status;
+      f.render();
+      const current = defined(f.document.querySelector('[data-id="last"]')),
+        receipt = defined(current.querySelector<HTMLElement>('.message-read-state'));
+      assert.equal(current, article);
+      assert.equal(current.querySelector('.message-time'), stamp);
+      assert.equal(stamp.getAttribute('datetime'), new Date(at + 1000).toISOString());
+      assert.equal(stamp.nextElementSibling, receipt);
+      assert.equal(receipt.dataset.readState, 'unread');
+      assert.equal(receipt.textContent, language === 'en' ? 'Unread' : '未读');
+      assert.equal(last.status, status);
+    }
+    last.read = true;
+    f.render();
+    const receipt = defined(article.querySelector<HTMLElement>('.message-read-state'));
+    assert.equal(receipt.dataset.readState, 'read');
+    assert.equal(receipt.textContent, language === 'en' ? 'Read' : '已读');
+  }
 });

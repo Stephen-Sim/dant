@@ -506,6 +506,44 @@ test('only foreground visible bubbles receive a receipt after a continuous viewp
   assert.equal(f.timers.size, 0);
 });
 
+test('a retained last reply shows unread independently of task status and still requires viewport dwell', () => {
+  const f = fixture(),
+    last = defined(f.c.state.messages.at(-1));
+  last.status = 'streaming';
+  assert.equal(f.c.renderAssistantReadState(last), '');
+  f.c.updateRead();
+  f.advance(1000);
+  assert.equal(f.requests.length, 0);
+  last.status = 'paused';
+  assert.match(f.c.renderAssistantReadState(last), /data-read-state="unread"/);
+  f.rectangle = { left: 20, right: 220, top: 250, bottom: 850, width: 200, height: 600 };
+  f.c.updateRead();
+  f.advance(1000);
+  assert.equal(
+    f.requests.length,
+    0,
+    'a small visible fragment does not acknowledge the last reply',
+  );
+  assert.equal(last.status, 'paused');
+  delete last.status;
+  assert.match(f.c.renderAssistantReadState(last), /data-read-state="unread"/);
+  f.rectangle = { left: 20, right: 220, top: 0, bottom: 600, width: 200, height: 600 };
+  f.c.updateRead();
+  f.advance(449);
+  assert.equal(f.requests.length, 0);
+  f.advance(1);
+  assert.equal(f.requests.length, 1);
+  assert.equal(last.read, false, 'posting a receipt does not fabricate a durable read flag');
+  assert.match(f.c.renderAssistantReadState(last), /data-read-state="unread"/);
+  last.visibleAt = 10;
+  assert.match(f.c.renderAssistantReadState(last), /data-read-state="read"/);
+  assert.equal(last.status, undefined);
+  assert.equal(
+    f.c.renderAssistantReadState({ id: 'system', role: 'system', status: 'completed' }),
+    '',
+  );
+});
+
 test('minimize, blur, hidden page, modal, settings, offline and full voice view cancel pending reads', () => {
   const changes = [
     (f: ReturnType<typeof fixture>) => {

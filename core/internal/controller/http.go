@@ -314,7 +314,7 @@ func (app *App) route(writer http.ResponseWriter, request *http.Request) error {
 		writeJSON(writer, 200, state)
 		return nil
 	case path == "/api/connect" && method == http.MethodPost:
-		return app.manualConnect(writer, request, true)
+		return app.manualConnect(writer, request, false)
 	case path == "/api/prepare" && method == http.MethodPost:
 		if err := app.prepareConnection(ctx); err != nil {
 			return err
@@ -396,7 +396,7 @@ func (app *App) route(writer http.ResponseWriter, request *http.Request) error {
 	}
 }
 
-func (app *App) manualConnect(writer http.ResponseWriter, request *http.Request, deploy bool) error {
+func (app *App) manualConnect(writer http.ResponseWriter, request *http.Request, install bool) error {
 	if app.backups.Busy() {
 		return backups.ErrBusy
 	}
@@ -419,7 +419,11 @@ func (app *App) manualConnect(writer http.ResponseWriter, request *http.Request,
 		app.releasePrepared()
 		app.broadcastState()
 	}()
-	if err := app.connect(request.Context(), true, deploy); err != nil {
+	if err := app.connectWithOptions(request.Context(), connectionOptions{
+		RecoverExecutor: true,
+		Deploy:          true,
+		RecoverPending:  !install,
+	}); err != nil {
 		return err
 	}
 	writeJSON(writer, 200, struct {

@@ -36,7 +36,7 @@ Charts use dated receipts from the past 365 days; the work computer retains up t
 
 ## Chat and call controls
 
-Chat shows a time divider at the start of the conversation, on a new day, and after gaps longer than 30 minutes. Hovering over a message or focusing its controls shows its sent time inline below the bubble on the right. The original sent time does not change when edited; messages without a valid saved time leave it blank. Completed dant replies show **Read** or **Unread**. The sidebar badge counts unread replies, and the **unread messages** button scrolls to the first one.
+Chat shows a time divider at the start of the conversation, on a new day, and after gaps longer than 30 minutes. Each message's saved sent time stays visible below its bubble, beside its status and receipt. Editing does not change the original time; messages without a valid saved time show no timestamp. Saved dant replies show **Read** or **Unread** once streaming stops, including partial replies retained after a pause or failure. Read status describes whether you saw the message; it does not complete or resume a paused task. The sidebar badge counts unread replies, and the **unread messages** button scrolls to the first one.
 
 Each message's **…** menu has **Pin / Unpin** and **Star / Unstar**. Pinned messages appear in a compact summary above chat; select it to jump to the original, or cycle between multiple pins. The top chat **…** menu contains **Starred messages**, **Search** and **Media, docs & links**. These lists can reveal an older message through lazy loading. Pinning and starring save message metadata on the work computer without sending instructions, changing read receipts or reopening tasks; they also work during a confirmed call or active task.
 

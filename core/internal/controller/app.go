@@ -636,6 +636,14 @@ func (app *App) automatic() {
 }
 
 func (app *App) connect(ctx context.Context, recoverExecutor, deploy bool) error {
+	return app.connectWithOptions(ctx, connectionOptions{
+		RecoverExecutor: recoverExecutor,
+		Deploy:          deploy,
+	})
+}
+
+func (app *App) connectWithOptions(ctx context.Context, options connectionOptions) error {
+	recoverExecutor, deploy := options.RecoverExecutor, options.Deploy
 	if app.backups != nil && app.backups.Busy() {
 		return backups.ErrBusy
 	}
@@ -670,8 +678,16 @@ func (app *App) connect(ctx context.Context, recoverExecutor, deploy bool) error
 		}
 	}
 
+	var recoveryCurrent func() error
 	if err := app.bridge.Connect(ctx, deploy); err != nil {
-		return err
+		if !options.RecoverPending {
+			return err
+		}
+		var recovered error
+		recoveryCurrent, recovered = app.recoverPendingConnection(ctx, err)
+		if recovered != nil {
+			return recovered
+		}
 	}
 
 	if err := app.syncPreferences(ctx); err != nil {
@@ -681,13 +697,31 @@ func (app *App) connect(ctx context.Context, recoverExecutor, deploy bool) error
 	if !recoverExecutor {
 		return nil
 	}
+	if recoveryCurrent != nil {
+		if err := recoveryCurrent(); err != nil {
+			return err
+		}
+	}
 	state, err := app.bridge.Refresh(ctx)
 	if err != nil || state.Worker.Status != contracts.ConnectionStatusOffline {
 		return err
 	}
 
-	if !computer.ServiceUpdateQuiescent(state, true) {
+	if recoveryCurrent != nil {
+		if !computer.IdleConnectionQuiescent(state) {
+			return computer.ErrPauseUnconfirmed
+		}
+	} else if !computer.ServiceUpdateQuiescent(state, true) {
 		return computer.ErrPauseUnconfirmed
+	}
+	paused := state.Executor.Paused
+	if recoveryCurrent != nil {
+		if _, unknown := state.Extra["executorStopUnconfirmed"]; unknown {
+			return computer.ErrPauseUnconfirmed
+		}
+		if err := recoveryCurrent(); err != nil {
+			return err
+		}
 	}
 	response, err := app.bridge.Request(ctx, http.MethodPost, "/api/connect", http.Header{"Content-Type": []string{"application/json"}}, strings.NewReader(`{"idleRecovery":true}`))
 	if err != nil {
@@ -700,6 +734,14 @@ func (app *App) connect(ctx context.Context, recoverExecutor, deploy bool) error
 	state, err = app.bridge.Refresh(ctx)
 	if err != nil || state.Worker.Status != contracts.ConnectionStatusOnline {
 		return computer.ErrSessionUnavailable
+	}
+	if recoveryCurrent != nil {
+		if err := recoveryCurrent(); err != nil {
+			return err
+		}
+		if state.Executor.Paused != paused {
+			return computer.ErrPauseUnconfirmed
+		}
 	}
 
 	return nil
