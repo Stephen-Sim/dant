@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 )
 
@@ -35,11 +36,15 @@ func (read fileRead) consume(ctx context.Context, consume func(io.Reader) error)
 		return nil, ErrFileChanged
 	}
 
-	limited := &io.LimitedReader{R: guardedRead{context: ctx, reader: read.file}, N: read.maximum + 1}
+	limit := read.maximum
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	limited := &io.LimitedReader{R: guardedRead{context: ctx, reader: read.file}, N: limit}
 	if err := consume(limited); err != nil {
 		return nil, err
 	}
-	if read.maximum+1-limited.N > read.maximum {
+	if limit-limited.N > read.maximum {
 		return nil, ErrFileLimit
 	}
 
@@ -50,7 +55,7 @@ func (read fileRead) consume(ctx context.Context, consume func(io.Reader) error)
 		read.unchanged != nil && !read.unchanged() {
 		return nil, ErrFileChanged
 	}
-	if read.maximum+1-limited.N != opened.Size() {
+	if limit-limited.N != opened.Size() {
 		return nil, ErrFileChanged
 	}
 	return opened, nil
