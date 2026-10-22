@@ -253,16 +253,28 @@ class BrowserLaunchTests(unittest.TestCase):
     def test_long_lived_launcher_releases_lease_before_wait_and_is_reaped_without_killing(self):
         import control
         waiting = threading.Event()
-        result_values, errors = [], []
-        source = "import pathlib,sys,time;p=pathlib.Path(sys.argv[1]);time.sleep(2);(p/'launcher-done').write_text('done')"
-        with self.launcher_fixture(source) as launch, patch.object(desktop_mcp, 'OPEN_URL_STARTUP_SECONDS', 0.6):
+        allow_wait = threading.Event()
+        acquired = threading.Event()
+        result_values, errors, acquisition_errors = [], [], []
+        source = """import pathlib,sys,time
+p=pathlib.Path(sys.argv[1])
+deadline=time.monotonic()+30
+while not (p/'finish-launcher').exists() and time.monotonic()<deadline:
+    time.sleep(0.01)
+(p/'launcher-done').write_text('done')
+"""
+        with self.launcher_fixture(source) as launch:
             original_launch = launch.side_effect
             def instrument_launch(arguments, **options):
                 process = original_launch(arguments, **options)
                 original_wait = process.wait
                 def wait(timeout=None):
                     if timeout is not None:
+                        process.wait = original_wait
                         waiting.set()
+                        if not allow_wait.wait(20):
+                            raise RuntimeError('The fixture launcher wait was not released')
+                        raise subprocess.TimeoutExpired(process.args, timeout)
                     return original_wait(timeout=timeout)
                 process.wait = wait
                 return process
@@ -272,18 +284,40 @@ class BrowserLaunchTests(unittest.TestCase):
                     result_values.append(self.invoke())
                 except Exception as error:
                     errors.append(error)
+
+            def acquire():
+                try:
+                    session = control.command({'action': 'acquire'})
+                    control.command({'action': 'release', 'sessionId': session['sessionId']})
+                    acquired.set()
+                except Exception as error:
+                    acquisition_errors.append(error)
+
             caller = threading.Thread(target=invoke)
-            caller.start()
-            self.assertTrue(waiting.wait(3))
-            acquired = time.monotonic()
-            session = control.command({'action': 'acquire'})
-            self.assertLess(time.monotonic() - acquired, 0.3)
-            control.command({'action': 'release', 'sessionId': session['sessionId']})
-            caller.join(3)
-            self.assertFalse(caller.is_alive())
-        self.assertEqual(errors, [])
-        self.assertEqual(result_values, [{'launchRequested': True, 'launcherStatus': 'running', 'pageVerified': False}])
-        self.assertIsNone(self.processes[0].returncode)
+            acquirer = threading.Thread(target=acquire)
+            try:
+                caller.start()
+                self.assertTrue(waiting.wait(8))
+                acquirer.start()
+                # Prove acquisition finishes while the launcher wait remains
+                # blocked. Disk flushes and CI scheduling have no speed target.
+                self.assertTrue(acquired.wait(8), acquisition_errors)
+                self.assertTrue(caller.is_alive())
+                self.assertFalse(allow_wait.is_set())
+                allow_wait.set()
+                caller.join(8)
+                self.assertFalse(caller.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(acquisition_errors, [])
+                self.assertEqual(result_values, [{'launchRequested': True, 'launcherStatus': 'running', 'pageVerified': False}])
+                self.assertIsNone(self.processes[0].returncode)
+            finally:
+                allow_wait.set()
+                (self.output / 'finish-launcher').write_text('finish')
+                if caller.ident is not None:
+                    caller.join(8)
+                if acquirer.ident is not None:
+                    acquirer.join(8)
         self.wait_for_file('launcher-done')
         deadline = time.monotonic() + 3
         while self.processes[0].returncode is None and time.monotonic() < deadline:
