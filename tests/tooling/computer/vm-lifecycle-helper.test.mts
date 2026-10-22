@@ -84,7 +84,7 @@ function Get-VM {
  ${changeIntent ? `if($Id) { $intent=Get-Content -LiteralPath ${literal(intentFile)} -Raw|ConvertFrom-Json; $intent.operationId=[guid]::NewGuid().ToString(); [IO.File]::WriteAllText(${literal(intentFile)},($intent|ConvertTo-Json -Compress)) }` : ''}
  ${changeBinding ? `if($Id) { [IO.File]::WriteAllText(${literal(path.join(dir, 'vm.json'))},'{}') }` : ''}
  if($Id -and [string]$Id -ne '312961c7-77b3-4b59-8c39-437c9ca99bd1') { throw 'Unexpected VMID' }
- $vm=[pscustomobject]@{Id=[guid]'312961c7-77b3-4b59-8c39-437c9ca99bd1';State=$global:dantFixtureState}
+ $vm=[pscustomobject]@{Id=[guid]'312961c7-77b3-4b59-8c39-437c9ca99bd1';State=$global:dantFixtureState;AutomaticCheckpointsEnabled=$false}
  if(!$Id -and ${ambiguous ? '$true' : '$false'}) { return @($vm,[pscustomobject]@{Id=[guid]'21111111-1111-4111-8111-111111111111';State=$global:dantFixtureState}) }
  return $vm
 }

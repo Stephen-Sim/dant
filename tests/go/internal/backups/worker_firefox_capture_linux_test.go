@@ -2,9 +2,9 @@ package backups
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,7 +28,7 @@ func firefoxWorkerProfileFixture(t *testing.T, workspace string) string {
 	return profile
 }
 
-func TestLinuxWorkerCaptureSkipsOnlyAnAuthenticatedFirefoxRuntimeLock(t *testing.T) {
+func TestLinuxWorkerCaptureExcludesBrowserProfilesWithoutOpeningTheirContents(t *testing.T) {
 	for _, scenario := range []string{"valid profile", "missing marker", "fake database", "invalid target", "changed lock"} {
 		t.Run(scenario, func(t *testing.T) {
 			options := workerSnapshotFixture(t)
@@ -64,21 +64,14 @@ func TestLinuxWorkerCaptureSkipsOnlyAnAuthenticatedFirefoxRuntimeLock(t *testing
 				}
 			}
 			backup, err := CreateWorkerBackup(t.Context(), options)
-			if scenario == "valid profile" {
-				if err != nil || backup == nil {
-					t.Fatal("authenticated Firefox runtime lock was captured as user content", err)
+			if err != nil || backup == nil {
+				t.Fatal("unrelated browser lock affected agent backup", err)
+			}
+			defer backup.Close()
+			for _, entry := range backup.Archive.Entries {
+				if strings.Contains(entry.Path, "isolated-firefox-profile/") {
+					t.Fatal("browser contents were serialized into an agent backup")
 				}
-				defer backup.Close()
-				for _, entry := range backup.Archive.Entries {
-					if filepath.Base(entry.Path) == "lock" {
-						t.Fatal("runtime lock was serialized into a portable backup")
-					}
-				}
-			} else {
-				if err == nil || backup != nil {
-					t.Fatal("unproven or changed runtime link produced a backup")
-				}
-				assertSnapshotStagesEmpty(t, options.TemporaryRoot)
 			}
 			if _, err := os.Lstat(lock); err != nil {
 				t.Fatal("read-only capture removed the browser's lock", err)
@@ -87,22 +80,27 @@ func TestLinuxWorkerCaptureSkipsOnlyAnAuthenticatedFirefoxRuntimeLock(t *testing
 	}
 }
 
-func TestLinuxFirefoxLockProofStopsWhenItsObservationBudgetCannotRetainIdentity(t *testing.T) {
-	capture, workspace := captureBoundaryFixture(t)
-	profile := firefoxWorkerProfileFixture(t, workspace)
-	capture.observed = make([]observedSource, MaxFiles*5+1)
-	if err := capture.directory(workspace, "workspace", ""); !errors.Is(err, ErrSizeLimit) {
-		t.Fatal("capture exceeded retained source evidence capacity", err)
+func TestLinuxAgentBackupDoesNotProbeUnreadableExcludedWorkspaceDirectories(t *testing.T) {
+	options := workerSnapshotFixture(t)
+	for _, name := range []string{"browser-profile", ".venv", "repository"} {
+		directory := filepath.Join(options.WorkspaceRoot, name)
+		if err := os.Mkdir(directory, 0000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(directory, 0700) })
 	}
-	info, err := os.Lstat(filepath.Join(profile, "lock"))
+	footprint, err := PreflightWorkerBackup(t.Context(), WorkerPreflightOptions{DataDir: options.DataDir, WorkspaceRoot: options.WorkspaceRoot, SourceID: options.SourceID})
+	if err != nil || footprint.Files != 1 {
+		t.Fatal("excluded directory permissions affected capacity estimation", err)
+	}
+	backup, err := CreateWorkerBackup(t.Context(), options)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("excluded directory permissions affected agent capture", err)
 	}
-	if known, err := capture.firefoxLock(profile, filepath.Join(profile, "lock"), info); !errors.Is(err, ErrSizeLimit) || known {
-		t.Fatal("Firefox link was skipped without space for its captured identity", err)
-	}
-	scanner := footprintScanner{ctx: t.Context(), workspace: workspace, observed: capture}
-	if err := scanner.child(profile, "workspace", "isolated-firefox-profile", "lock"); !errors.Is(err, ErrSizeLimit) {
-		t.Fatal("preflight omitted a browser lock after its identity could not be retained", err)
+	defer backup.Close()
+	for _, entry := range backup.Archive.Entries {
+		if entry.Domain == "workspace" {
+			t.Fatal("unrelated workspace directory was packaged")
+		}
 	}
 }

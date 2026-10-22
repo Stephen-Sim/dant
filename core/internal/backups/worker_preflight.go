@@ -48,9 +48,9 @@ type footprintScanner struct {
 	footprint    WorkerFootprint
 }
 
-// PreflightWorkerBackup reads metadata and bounded Firefox lock-format probes.
+// PreflightWorkerBackup reads metadata only inside the selected agent roots.
 // It creates no directories, locks, snapshots or SQLite connections. A changed
-// source or unknown file type cannot become a successful capacity estimate.
+// owned source or unknown file type cannot become a successful capacity estimate.
 func PreflightWorkerBackup(ctx context.Context, options WorkerPreflightOptions) (WorkerFootprint, error) {
 	if err := ctx.Err(); err != nil {
 		return WorkerFootprint{}, err
@@ -107,6 +107,21 @@ func (scanner *footprintScanner) directory(directory, domain, prefix string) err
 	if err != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
 		return ErrInvalid
 	}
+	if _, bounded := agentAncestorChildren(domain, prefix); bounded {
+		if err := scanner.observed.observe(directory, before); err != nil {
+			return err
+		}
+		children, err := scanner.observed.children(directory, domain, prefix)
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			if err := scanner.child(directory, domain, prefix, child.Name()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	input, err := os.Open(directory)
 	if err != nil {
 		return ErrInvalid
@@ -116,7 +131,7 @@ func (scanner *footprintScanner) directory(directory, domain, prefix string) err
 	if err != nil || !os.SameFile(before, opened) {
 		return ErrSourceChanged
 	}
-	if err := scanner.observed.observe(directory, before, ""); err != nil {
+	if err := scanner.observed.observe(directory, before); err != nil {
 		return err
 	}
 
@@ -145,12 +160,15 @@ func (scanner *footprintScanner) child(directory, domain, prefix, name string) e
 		return err
 	}
 	source := filepath.Join(directory, name)
-	if excludedBackupName(domain, prefix, name) || domain == "data" && containsRoot(scanner.workspace, source) {
-		return nil
-	}
 	relative := name
 	if prefix != "" {
 		relative = prefix + "/" + name
+	}
+	if !agentScopeCandidate(domain, relative) {
+		return nil
+	}
+	if domain == "data" && containsRoot(scanner.workspace, source) {
+		return nil
 	}
 	if !ValidArchivePath(relative) {
 		return ErrInvalid
@@ -159,12 +177,18 @@ func (scanner *footprintScanner) child(directory, domain, prefix, name string) e
 	if err != nil {
 		return ErrInvalid
 	}
-	if domain == "workspace" && name == "lock" && info.Mode()&os.ModeSymlink != 0 {
-		known, err := scanner.observed.firefoxLock(directory, source, info)
+	if !agentArchiveEntryAllowed(domain, relative, info.IsDir()) {
+		if domain == "workspace" && info.IsDir() && skillRuntimeDirectory(name) {
+			return nil
+		}
+		return ErrInvalid
+	}
+	if domain == "workspace" && info.IsDir() {
+		present, err := agentWorkspaceAncestorPresent(source, relative)
 		if err != nil {
 			return err
 		}
-		if known {
+		if !present {
 			return nil
 		}
 	}
@@ -183,7 +207,7 @@ func (scanner *footprintScanner) child(directory, domain, prefix, name string) e
 	if _, err := ordinaryBackupFile(source); err != nil {
 		return err
 	}
-	if err := scanner.observed.observe(source, info, ""); err != nil {
+	if err := scanner.observed.observe(source, info); err != nil {
 		return err
 	}
 	if err := scanner.entryFrame(domain, relative, false); err != nil {

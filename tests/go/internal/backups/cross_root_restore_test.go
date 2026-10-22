@@ -69,7 +69,7 @@ func TestWorkerBackupRestoresIntoDifferentHomeWithCurrentAttachmentsSkillsMemory
 		t.Fatal(err)
 	}
 
-	library, err := skills.New(oldWorkspace, skills.Options{})
+	library, err := skills.New(filepath.Join(oldWorkspace, testRestoreID), skills.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestWorkerBackupRestoresIntoDifferentHomeWithCurrentAttachmentsSkillsMemory
 		t.Fatal("cross-home restore changed saved identities or relaxed paused/unknown execution fences")
 	}
 
-	currentLibrary, err := skills.New(newWorkspace, skills.Options{})
+	currentLibrary, err := skills.New(filepath.Join(newWorkspace, conversation), skills.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

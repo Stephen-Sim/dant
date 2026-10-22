@@ -137,12 +137,24 @@ function Invoke-Lifecycle {
     Assert-Intent $provider
     $observedState = [string]$vm.State
     $changed = $false
+    if ($vm.State -notin @('Running','Saved','Off')) { throw 'VM power state unconfirmed' }
+    if ($Action -eq 'resume') {
+        if ($vm.AutomaticCheckpointsEnabled -isnot [bool]) { throw 'VM checkpoint policy unconfirmed' }
+        if ($vm.AutomaticCheckpointsEnabled) {
+            Set-VM -VM $vm -AutomaticCheckpointsEnabled $false -ErrorAction Stop
+            $vm = Get-VM -Id $vm.Id
+            if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk) -or
+                [string]$vm.State -ne $observedState -or $vm.AutomaticCheckpointsEnabled -isnot [bool] -or
+                $vm.AutomaticCheckpointsEnabled -ne $false) { throw 'VM identity, checkpoint policy or power state changed' }
+            Assert-Intent $provider
+        }
+    }
     if ($Action -eq 'suspend' -and $vm.State -eq 'Running') { Save-VM -VM $vm; $changed = $true }
     elseif ($Action -eq 'resume' -and $vm.State -eq 'Saved') { Start-VM -VM $vm | Out-Null; $changed = $true }
-    elseif ($vm.State -notin @('Running','Saved','Off')) { throw 'VM power state unconfirmed' }
     $vm = Get-VM -Id $vm.Id
     if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk)) { throw 'VM identity changed' }
     Assert-Intent $provider
+    if ($Action -eq 'resume' -and ($vm.AutomaticCheckpointsEnabled -isnot [bool] -or $vm.AutomaticCheckpointsEnabled -ne $false)) { throw 'VM checkpoint policy unconfirmed' }
     if ($Action -eq 'inspect' -and [string]$vm.State -ne $observedState) { throw 'VM power state changed during inspection' }
     $state = switch ([string]$vm.State) { 'Saved' { 'suspended' }; 'Running' { 'running' }; 'Off' { 'off' }; default { throw 'VM power state unconfirmed' } }
     $result = @{ok=$true;provider=$provider;vmId=$vmId;state=$state;changed=$changed}
@@ -161,7 +173,9 @@ function Invoke-Lifecycle {
       }
       # Network discovery never replaces VM or operation ownership confirmation.
       $vm = Get-VM -Id $vm.Id
-      if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk) -or [string]$vm.State -ne 'Running') { throw 'VM identity or power state changed' }
+      if ($vm.Id.ToString().ToLowerInvariant() -ne $vmId -or !(Test-OwnedDisk $vm $disk) -or
+          [string]$vm.State -ne 'Running' -or $vm.AutomaticCheckpointsEnabled -isnot [bool] -or
+          $vm.AutomaticCheckpointsEnabled -ne $false) { throw 'VM identity, checkpoint policy or power state changed' }
       Assert-Intent $provider
       $result.addresses = @($addresses)
     }

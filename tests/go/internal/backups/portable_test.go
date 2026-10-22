@@ -10,9 +10,65 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestPortableAgentDataScopeAndBinarySkillsSurviveAuthenticationFiltering(t *testing.T) {
+	options := workerSnapshotFixture(t)
+	skill := filepath.Join(skillFixtureRoot(t, options.WorkspaceRoot), "asset.png")
+	content := []byte{0x89, 'P', 'N', 'G', 0, 255, '\n'}
+	if err := os.WriteFile(skill, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(options.DataDir, "voice-key.dpapi"), []byte("isolated protected credential"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := CreateWorkerBackup(t.Context(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	var archive bytes.Buffer
+	if err := backup.WriteTo(t.Context(), &archive); err != nil {
+		t.Fatal(err)
+	}
+	source, metadata := vaultFixture(t)
+	metadata.CreatedAt = backup.Archive.Manifest.CreatedAt
+	metadata.AppVersion = backup.Archive.Manifest.AppVersion
+	metadata.Files = backup.Archive.Manifest.Files
+	metadata.Bytes = backup.Archive.Manifest.Bytes
+	if err := source.Save(t.Context(), bytes.NewReader(archive.Bytes()), metadata); err != nil {
+		t.Fatal(err)
+	}
+	var encrypted bytes.Buffer
+	exported, err := NewPortable(source).Export(t.Context(), metadata.ID, "isolated agent backup passphrase", &encrypted)
+	if err != nil || exported.Files != 2 || exported.Bytes != int64(len(cliFixtureState)+len(content)) {
+		t.Fatal("portable recount lost agent data or retained credentials", err)
+	}
+	destination, _ := vaultFixture(t)
+	imported, err := NewPortable(destination).Import(t.Context(), bytes.NewReader(encrypted.Bytes()), "isolated agent backup passphrase")
+	if err != nil || imported != exported {
+		t.Fatal("scoped portable backup failed import", err)
+	}
+	opened, err := destination.Open(t.Context(), imported.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Reader.Close()
+	validated, err := ValidateArchive(t.Context(), opened.Reader, t.TempDir())
+	if err != nil || validated.Manifest.Scope != AgentDataScope || validated.Manifest.SchemaVersion != AgentDataSchemaVersion {
+		t.Fatal("portable transform lost the authoritative scope marker", err)
+	}
+	actual, err := os.ReadFile(filepath.Join(validated.Directory, "workspace", testRestoreID, ".agents", "skills", "asset.png"))
+	if err != nil || !bytes.Equal(actual, content) {
+		t.Fatal("portable backup changed skill image bytes", err)
+	}
+	if _, err := os.Lstat(filepath.Join(validated.Directory, "data", "voice-key.dpapi")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("portable backup retained credentials", err)
+	}
+}
 
 func TestPortableRoundTripRetainsFormatAndFiltersAuthentication(t *testing.T) {
 	source, metadata := vaultFixture(t)

@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const captureBoundaryPrefix = testRestoreID + "/.agents/skills/fixture"
+
 func captureBoundaryFixture(t *testing.T) (workerCapture, string) {
 	t.Helper()
 	source := t.TempDir()
@@ -20,6 +22,9 @@ func captureBoundaryFixture(t *testing.T) (workerCapture, string) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.MkdirAll(filepath.Join(staging, "workspace", filepath.FromSlash(captureBoundaryPrefix)), 0700); err != nil {
+		t.Fatal(err)
+	}
 	return workerCapture{ctx: t.Context(), staging: staging, workspace: source}, source
 }
 
@@ -28,7 +33,7 @@ func TestWorkerCaptureHonorsSourceAndStagingBudgetsWithoutPublishing(t *testing.
 		t.Run(mode, func(t *testing.T) {
 			capture, source := captureBoundaryFixture(t)
 			name := "retained"
-			prefix := ""
+			prefix := captureBoundaryPrefix
 			if err := os.WriteFile(filepath.Join(source, name), []byte("original"), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -36,7 +41,7 @@ func TestWorkerCaptureHonorsSourceAndStagingBudgetsWithoutPublishing(t *testing.
 			case "missing-source":
 				source += "-missing"
 			case "invalid-path":
-				prefix = ".."
+				prefix += "/.."
 			case "entries":
 				capture.entries = make([]ArchiveEntry, MaxFiles)
 			case "observations":
@@ -46,14 +51,14 @@ func TestWorkerCaptureHonorsSourceAndStagingBudgetsWithoutPublishing(t *testing.
 			case "bytes":
 				capture.bytes = MaxBackupBytes
 			case "target-file":
-				if err := os.WriteFile(filepath.Join(capture.staging, "workspace", name), []byte("unrelated candidate"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(capture.staging, "workspace", filepath.FromSlash(prefix), name), []byte("unrelated candidate"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			case "target-directory":
 				if err := os.Mkdir(filepath.Join(source, "directory"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Mkdir(filepath.Join(capture.staging, "workspace", "directory"), 0700); err != nil {
+				if err := os.Mkdir(filepath.Join(capture.staging, "workspace", filepath.FromSlash(prefix), "directory"), 0700); err != nil {
 					t.Fatal(err)
 				}
 			case "cancelled":
@@ -74,7 +79,7 @@ func TestWorkerCaptureHonorsSourceAndStagingBudgetsWithoutPublishing(t *testing.
 }
 
 func TestWorkerCaptureValidatesRetainedMetadataAndDatabaseGeneration(t *testing.T) {
-	for _, mode := range []string{"missing-observed", "changed-version", "link-proof", "database-closed", "database-changed"} {
+	for _, mode := range []string{"missing-observed", "changed-version", "database-closed", "database-changed"} {
 		t.Run(mode, func(t *testing.T) {
 			capture, source := captureBoundaryFixture(t)
 			name := filepath.Join(source, "original")
@@ -85,7 +90,7 @@ func TestWorkerCaptureValidatesRetainedMetadataAndDatabaseGeneration(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := capture.observe(name, info, ""); err != nil {
+			if err := capture.observe(name, info); err != nil {
 				t.Fatal(err)
 			}
 			switch mode {
@@ -95,8 +100,6 @@ func TestWorkerCaptureValidatesRetainedMetadataAndDatabaseGeneration(t *testing.
 				}
 			case "changed-version":
 				capture.observed[0].changed--
-			case "link-proof":
-				capture.observed[0].link = "expected-symlink-target"
 			case "database-closed", "database-changed":
 				db, err := sql.Open("sqlite", filepath.Join(source, "generation.sqlite"))
 				if err != nil {

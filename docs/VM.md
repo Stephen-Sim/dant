@@ -6,7 +6,13 @@ dant's desktop, task engine, data, and Codex run inside an Ubuntu VM. The Window
 
 These defaults apply only to newly created VMs. Resuming an existing VM preserves its configured memory and disk capacity, including larger custom sizes. It does not resize or shrink a disk. Changing an existing VM's resources requires a separate maintenance operation.
 
-On a fresh installation, first choose whether you have an existing dant backup. A portable backup can be imported before a VM is available. Otherwise the guide explains how to create a work computer, detect Hyper-V/VMware, or connect an existing SSH computer. Creation requires your explicit action; merely viewing the guide does not create a VM. Existing configured installations open normally. After connecting a new VM, preview and restore an imported backup to continue with its memory and projects; see [backups](backups.md).
+On a fresh installation, first choose whether you have an existing dant backup. A portable backup can be imported before a VM is available. Otherwise the guide explains how to create a work computer, detect Hyper-V/VMware, or connect an existing SSH computer. Creation requires your explicit action; merely viewing the guide does not create a VM. Existing configured installations open normally. After connecting a new VM, preview and restore an imported backup to continue with its memory, skills and chat/task history; see [backups](backups.md).
+
+## Disk space and checkpoints
+
+A dynamically expanding VHDX has separate virtual capacity and host file usage; deleting files inside Linux does not immediately shrink the host file. An AVHDX is a differencing disk that can contain the VM's current writes and depends on its parent VHDX. Never delete either file directly while it belongs to that chain. Remove an unwanted checkpoint through Hyper-V so it merges the current data safely; this removes that rollback point and may require temporary free space. Disk compaction is a separate offline maintenance operation.
+
+New managed Hyper-V VMs disable automatic checkpoints. Explicitly resuming an existing owned VM also confirms this policy is disabled before starting it; inspection and suspension do not change it. Existing checkpoints are retained until explicitly removed. Normal agent backups never export a complete VHDX: they select agent data and managed skills. A full VM export created for a separate maintenance recovery is an additional retained copy, with no automatic deletion policy. Confirm its role, dependencies and the current VM's health before removing it.
 
 ## Worker deployment and operation
 

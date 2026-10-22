@@ -16,7 +16,8 @@ BeforeAll {
             [int]$DiskGB = 64,
             [switch]$DifferencingDisk,
             [switch]$FallbackSwitch,
-            [switch]$SparseSource
+            [switch]$SparseSource,
+            [switch]$AutomaticCheckpoints
         )
         $directory = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $data = Join-Path $directory 'data'
@@ -38,6 +39,7 @@ BeforeAll {
             calls = [Collections.Generic.List[object]]::new(); starts = 0; converts = 0; resizes = @(); creates = @()
             patches = @(); transcriptions = 0; transcriptStops = 0; networkReads = 0; error = $null
             allocations = 0; clearedSparse = $false
+            checkpoints = [bool]$AutomaticCheckpoints; checkpointChanges = 0
         }
         function Assert-CreationFixturePath([string]$Path) {
             $resolved = [IO.Path]::GetFullPath($Path)
@@ -59,9 +61,14 @@ BeforeAll {
             $fixture.now = $fixture.now.AddSeconds($(if ($Failure -eq 'missing-ip') { 600 } else { $Seconds }))
         }
         function Get-VM {
-            param([string]$Name)
-            if ($Name) {
-                if ($ExistingState) { return [pscustomobject]@{Name = 'fixture'; State = $ExistingState} }
+            param([string]$Name, [guid]$Id)
+            if ($Name -or $PSBoundParameters.ContainsKey('Id')) {
+                if ($ExistingState) {
+                    $identity = if ($Failure -eq 'checkpoint-identity' -and $fixture.checkpointChanges) { [guid]'22222222-2222-4222-8222-222222222222' } else { [guid]'11111111-1111-4111-8111-111111111111' }
+                    $state = if ($Failure -eq 'checkpoint-state' -and $fixture.checkpointChanges) { 'Pausing' } else { $ExistingState }
+                    $policy = if ($Failure -eq 'checkpoint-type') { 'unknown' } else { $fixture.checkpoints }
+                    return [pscustomobject]@{Name = 'fixture'; Id = $identity; State = $state; AutomaticCheckpointsEnabled = $policy}
+                }
                 return
             }
             if ($Failure -eq 'registered-source') { return [pscustomobject]@{Name = 'registered-fixture'} }
@@ -69,8 +76,8 @@ BeforeAll {
         function Get-VMHardDiskDrive {
             param([Parameter(ValueFromPipeline = $true)]$VM, [string]$VMName)
             process {
-                if ($VMName) {
-                    return [pscustomobject]@{Path = $(if ($Failure -eq 'foreign-disk') { Join-Path $disks 'foreign.vhdx' } elseif ($DifferencingDisk) { Join-Path $disks 'child.avhdx' } else { $disk })}
+                if ($VMName -or ($VM -and $ExistingState)) {
+                    return [pscustomobject]@{Path = $(if ($Failure -eq 'foreign-disk' -or ($Failure -eq 'checkpoint-disk' -and $fixture.checkpointChanges)) { Join-Path $disks 'foreign.vhdx' } elseif ($DifferencingDisk) { Join-Path $disks 'child.avhdx' } else { $disk })}
                 }
                 if ($VM) { return [pscustomobject]@{Path = $fixture.source} }
             }
@@ -126,9 +133,20 @@ BeforeAll {
             $fixture.creates += ,@{generation = $Generation; memory = $MemoryStartupBytes; disk = $VHDPath; switch = $SwitchName}
         }
         function Set-VMProcessor { param($VMName, $Count) $fixture.calls.Add(@{command = 'cpu'; count = $Count}) }
-        function Set-VM { param($Name, $AutomaticStartAction, $AutomaticStopAction, $AutomaticCheckpointsEnabled) $fixture.calls.Add(@{command = 'policy'; start = $AutomaticStartAction; stop = $AutomaticStopAction; checkpoints = $AutomaticCheckpointsEnabled}) }
+        function Set-VM {
+            param($Name, $VM, $AutomaticStartAction, $AutomaticStopAction, $AutomaticCheckpointsEnabled)
+            if ($VM) {
+                if ($VM.Id -ne [guid]'11111111-1111-4111-8111-111111111111' -or $AutomaticCheckpointsEnabled -ne $false) { throw 'fixture checkpoint identity mismatch' }
+                $fixture.checkpointChanges++
+                $fixture.calls.Add(@{command = 'checkpoints'})
+                if ($Failure -eq 'checkpoint-failed') { throw 'synthetic checkpoint policy failure' }
+                if ($Failure -ne 'checkpoint-unconfirmed') { $fixture.checkpoints = $false }
+                return
+            }
+            $fixture.calls.Add(@{command = 'policy'; start = $AutomaticStartAction; stop = $AutomaticStopAction; checkpoints = $AutomaticCheckpointsEnabled})
+        }
         function Set-VMDvdDrive { param($VMName, $Path) Assert-CreationFixturePath $Path; $fixture.calls.Add(@{command = 'dvd'; path = $Path}) }
-        function Start-VM { param($Name) $fixture.starts++; if ($Failure -eq 'start') { throw 'synthetic start failure' } }
+        function Start-VM { param($Name, $VM) $fixture.calls.Add(@{command = 'start'}); $fixture.starts++; if ($Failure -eq 'start') { throw 'synthetic start failure' } }
         function Get-VMNetworkAdapter {
             param($VMName)
             $fixture.networkReads++
@@ -245,6 +263,33 @@ Describe 'Hyper-V creation with only synthetic disks and denied external boundar
             $result.binding | Should -BeNullOrEmpty
             $result.status.stage | Should -Be 'failed:checking-hyper-v'
             $result.transcriptStops | Should -Be 1
+        }
+    }
+
+    It 'disables automatic checkpoints on an owned existing VM before resume without replaying a disabled policy' {
+        foreach ($state in @('Off', 'Saved', 'Running')) {
+            $result = Invoke-CreationFixture -ExistingState $state -Resume -AutomaticCheckpoints -DifferencingDisk
+            $result.error | Should -BeNullOrEmpty
+            $result.checkpointChanges | Should -Be 1
+            $result.checkpoints | Should -BeFalse
+            $result.calls[0].command | Should -Be 'checkpoints'
+            $result.starts | Should -Be $(if ($state -eq 'Running') { 0 } else { 1 })
+            $result.resizes.Count | Should -Be 0
+            $result.creates.Count | Should -Be 0
+        }
+        $disabled = Invoke-CreationFixture -ExistingState Saved -Resume
+        $disabled.checkpointChanges | Should -Be 0
+        $disabled.starts | Should -Be 1
+    }
+
+    It 'preserves existing checkpoints and refuses to start after unconfirmed policy or ownership changes' {
+        foreach ($failure in @('checkpoint-type', 'checkpoint-failed', 'checkpoint-unconfirmed', 'checkpoint-identity', 'checkpoint-disk', 'checkpoint-state', 'foreign-disk')) {
+            $result = Invoke-CreationFixture -ExistingState Saved -Resume -AutomaticCheckpoints -Failure $failure
+            $result.error | Should -Not -BeNullOrEmpty
+            $result.starts | Should -Be 0
+            $result.converts | Should -Be 0
+            $result.resizes.Count | Should -Be 0
+            $result.checkpointChanges | Should -Be $(if ($failure -in @('checkpoint-type', 'foreign-disk')) { 0 } else { 1 })
         }
     }
 

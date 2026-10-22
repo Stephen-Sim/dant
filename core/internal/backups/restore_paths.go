@@ -100,8 +100,12 @@ func restoreLocations(options RestoreOptions) (restorePaths, error) {
 }
 
 func writeRestoreJSON(ctx context.Context, name string, value any) error {
+	maximum := restoreJournalMaxBytes
+	if journal, ok := value.(restoreJournal); ok && journal.SchemaVersion == scopedRestoreJournalVersion {
+		maximum = scopedRestoreJournalMaxBytes
+	}
 	raw, err := json.Marshal(value)
-	if err != nil || len(raw) > restoreJournalMaxBytes {
+	if err != nil || len(raw) > maximum {
 		return ErrRestoreFailed
 	}
 

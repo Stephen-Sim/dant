@@ -7,10 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,7 +23,6 @@ import (
 const sqliteConnectionLimit = 128
 const sqliteMagic = "SQLite format 3\x00"
 
-var firefoxPIDLock = regexp.MustCompile(`^[A-Za-z0-9._-]{1,253}:\+[1-9][0-9]{0,9}$`)
 var sqliteSidecars = [...]string{"-wal", "-shm", "-journal"}
 
 type WorkerBackupOptions struct {
@@ -50,7 +49,6 @@ type observedSource struct {
 	name    string
 	stat    os.FileInfo
 	changed int64
-	link    string
 }
 
 type capturedDatabase struct {
@@ -60,7 +58,6 @@ type capturedDatabase struct {
 
 type workerCapture struct {
 	ctx                context.Context
-	options            WorkerBackupOptions
 	staging, workspace string
 	entries            []ArchiveEntry
 	observed           []observedSource
@@ -70,8 +67,8 @@ type workerCapture struct {
 }
 
 // CreateWorkerBackup captures bounded private files before exposing an archive.
-// Only application-owned data databases are opened by SQLite. Workspace
-// databases, including browser profiles and their sidecars, remain opaque bytes.
+// Only application-owned data and skill roots are visited. Skill files retain
+// their original bytes; execution environments and browser profiles are omitted.
 func CreateWorkerBackup(ctx context.Context, options WorkerBackupOptions) (*WorkerBackup, error) {
 	if !filepath.IsAbs(options.DataDir) || !filepath.IsAbs(options.WorkspaceRoot) || !sourceIdentity.MatchString(options.SourceID) || !archiveVersion.MatchString(options.AppVersion) {
 		return nil, ErrInvalid
@@ -132,7 +129,10 @@ func CreateWorkerBackup(ctx context.Context, options WorkerBackupOptions) (*Work
 		})
 		return cleanupError
 	}
-	capture := workerCapture{ctx: ctx, options: options, staging: staging, workspace: workspace, entries: []ArchiveEntry{}}
+	capture := workerCapture{
+		ctx: ctx, staging: staging,
+		workspace: workspace, entries: []ArchiveEntry{},
+	}
 	success := false
 	defer func() {
 		for _, database := range capture.databases {
@@ -164,7 +164,15 @@ func CreateWorkerBackup(ctx context.Context, options WorkerBackupOptions) (*Work
 	if options.Now != nil {
 		now = options.Now
 	}
-	manifest := Manifest{SchemaVersion: 1, CreatedAt: now().UnixMilli(), AppVersion: options.AppVersion, SourceID: options.SourceID, Files: capture.count, Bytes: capture.bytes}
+	manifest := Manifest{
+		SchemaVersion: AgentDataSchemaVersion,
+		Scope:         AgentDataScope,
+		CreatedAt:     now().UnixMilli(),
+		AppVersion:    options.AppVersion,
+		SourceID:      options.SourceID,
+		Files:         capture.count,
+		Bytes:         capture.bytes,
+	}
 	if !manifest.Valid() {
 		return nil, ErrInvalid
 	}
@@ -224,7 +232,7 @@ func sourceVersion(name string, info os.FileInfo) (int64, error) {
 	return fileChangeTime(name, info)
 }
 
-func (capture *workerCapture) observe(name string, info os.FileInfo, link string) error {
+func (capture *workerCapture) observe(name string, info os.FileInfo) error {
 	if len(capture.observed) > MaxFiles*5 {
 		return ErrSizeLimit
 	}
@@ -236,24 +244,8 @@ func (capture *workerCapture) observe(name string, info os.FileInfo, link string
 			return ErrSourceChanged
 		}
 	}
-	capture.observed = append(capture.observed, observedSource{name, info, changed, link})
+	capture.observed = append(capture.observed, observedSource{name, info, changed})
 	return nil
-}
-
-func excludedBackupName(domain, prefix, name string) bool {
-	switch name {
-	case "node_modules", ".cache", ".ssh", ".codex", ".openai":
-		return true
-	}
-
-	if domain == "data" && prefix == "" {
-		switch name {
-		case "runtime", "deploy", "diagnostics", "logs", "cache", "tmp", "updates", "backups", ".env", ".dant-core-owner.lock":
-			return true
-		}
-	}
-
-	return false
 }
 
 func (capture *workerCapture) directory(directory, domain, prefix string) error {
@@ -265,12 +257,12 @@ func (capture *workerCapture) directory(directory, domain, prefix string) error 
 		return ErrInvalid
 	}
 
-	if err := capture.observe(directory, before, ""); err != nil {
+	if err := capture.observe(directory, before); err != nil {
 		return err
 	}
-	children, err := os.ReadDir(directory)
+	children, err := capture.children(directory, domain, prefix)
 	if err != nil {
-		return ErrInvalid
+		return err
 	}
 	sort.Slice(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
 	for _, child := range children {
@@ -283,7 +275,10 @@ func (capture *workerCapture) directory(directory, domain, prefix string) error 
 			relative = prefix + "/" + name
 		}
 		source := filepath.Join(directory, name)
-		if excludedBackupName(domain, prefix, name) || (domain == "data" && containsRoot(capture.workspace, source)) || containsRoot(capture.staging, source) {
+		if !agentScopeCandidate(domain, relative) {
+			continue
+		}
+		if (domain == "data" && containsRoot(capture.workspace, source)) || containsRoot(capture.staging, source) {
 			continue
 		}
 		if !ValidArchivePath(relative) {
@@ -312,16 +307,22 @@ func (capture *workerCapture) directory(directory, domain, prefix string) error 
 		if err != nil {
 			return ErrInvalid
 		}
-		target := filepath.Join(capture.staging, domain, filepath.FromSlash(relative))
-		if domain == "workspace" && name == "lock" && info.Mode()&os.ModeSymlink != 0 {
-			ok, err := capture.firefoxLock(directory, source, info)
+		if !agentArchiveEntryAllowed(domain, relative, info.IsDir()) {
+			if domain == "workspace" && info.IsDir() && skillRuntimeDirectory(name) {
+				continue
+			}
+			return ErrInvalid
+		}
+		if domain == "workspace" && info.IsDir() {
+			present, err := agentWorkspaceAncestorPresent(source, relative)
 			if err != nil {
 				return err
 			}
-			if ok {
+			if !present {
 				continue
 			}
 		}
+		target := filepath.Join(capture.staging, domain, filepath.FromSlash(relative))
 		if len(capture.entries) >= MaxFiles || info.Mode()&os.ModeSymlink != 0 {
 			return ErrInvalid
 		}
@@ -338,7 +339,7 @@ func (capture *workerCapture) directory(directory, domain, prefix string) error 
 		if _, err := ordinaryBackupFile(source); err != nil {
 			return err
 		}
-		if err := capture.observe(source, info, ""); err != nil {
+		if err := capture.observe(source, info); err != nil {
 			return err
 		}
 		database := false
@@ -364,7 +365,7 @@ func (capture *workerCapture) directory(directory, domain, prefix string) error 
 						return err
 					}
 				}
-				if err := capture.observe(sidecar, sidecarInfo, ""); err != nil {
+				if err := capture.observe(sidecar, sidecarInfo); err != nil {
 					return err
 				}
 			}
@@ -398,34 +399,31 @@ func (capture *workerCapture) directory(directory, domain, prefix string) error 
 	return nil
 }
 
-func (capture *workerCapture) firefoxLock(directory, source string, info os.FileInfo) (bool, error) {
-	target, err := os.Readlink(source)
-	if err != nil || !firefoxPIDLock.MatchString(target) {
-		return false, nil
-	}
-	markers := []observedSource{}
-	for _, name := range []string{"prefs.js", "times.json", "compatibility.ini", "places.sqlite"} {
-		file := filepath.Join(directory, name)
-		stat, err := ordinaryBackupFile(file)
+func (capture *workerCapture) children(directory, domain, prefix string) ([]fs.DirEntry, error) {
+	names, bounded := agentAncestorChildren(domain, prefix)
+	if !bounded {
+		children, err := os.ReadDir(directory)
 		if err != nil {
-			return false, nil
+			return nil, ErrInvalid
 		}
-		changed, err := sourceVersion(file, stat)
+		return children, nil
+	}
+	children := make([]fs.DirEntry, 0, len(names))
+	for _, name := range names {
+		source := filepath.Join(directory, name)
+		info, err := os.Lstat(source)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := capture.observe(source, nil); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err != nil {
-			return false, nil
+			return nil, ErrInvalid
 		}
-		markers = append(markers, observedSource{name: file, stat: stat, changed: changed})
+		children = append(children, fs.FileInfoToDirEntry(info))
 	}
-	database, err := sqliteFile(filepath.Join(directory, "places.sqlite"))
-	if err != nil || !database {
-		return false, nil
-	}
-
-	if err := capture.observe(source, info, target); err != nil {
-		return false, err
-	}
-	capture.observed = append(capture.observed, markers...)
-	return true, nil
+	return children, nil
 }
 
 func (capture *workerCapture) validate() error {
@@ -446,12 +444,6 @@ func (capture *workerCapture) validate() error {
 		changed, err := sourceVersion(source.name, current)
 		if err != nil || changed != source.changed {
 			return ErrSourceChanged
-		}
-		if source.link != "" {
-			target, err := os.Readlink(source.name)
-			if err != nil || target != source.link {
-				return ErrSourceChanged
-			}
 		}
 	}
 	for _, database := range capture.databases {

@@ -14,7 +14,7 @@ import (
 
 func TestWorkerCaptureUsesAConsistentDataSQLiteSnapshotAndOmitsItsLiveWALSidecars(t *testing.T) {
 	options := workerSnapshotFixture(t)
-	name := filepath.Join(options.DataDir, "owned.sqlite")
+	name := filepath.Join(memoryFixtureRoot(t, options.DataDir), "owned.sqlite")
 	db, err := sql.Open("sqlite", name)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestWorkerCaptureUsesAConsistentDataSQLiteSnapshotAndOmitsItsLiveWALSidecar
 			t.Fatal("data snapshot serialized a live SQLite sidecar")
 		}
 	}
-	copied, err := sql.Open("sqlite", filepath.Join(backup.Archive.Directory, "data", "owned.sqlite"))
+	copied, err := sql.Open("sqlite", filepath.Join(backup.Archive.Directory, "data", "memory", "dant", "owned.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestWorkerCaptureUsesAConsistentDataSQLiteSnapshotAndOmitsItsLiveWALSidecar
 
 func TestWorkerCaptureRejectsAnOrphanSidecarWhoseMainPathIsADirectory(t *testing.T) {
 	options := workerSnapshotFixture(t)
-	main := filepath.Join(options.DataDir, "ambiguous.sqlite")
+	main := filepath.Join(memoryFixtureRoot(t, options.DataDir), "ambiguous.sqlite")
 	if err := os.Mkdir(main, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -65,21 +65,6 @@ func TestWorkerCaptureRejectsAnOrphanSidecarWhoseMainPathIsADirectory(t *testing
 	assertSnapshotStagesEmpty(t, options.TemporaryRoot)
 	if raw, err := os.ReadFile(main + "-wal"); err != nil || string(raw) != "retained sidecar bytes" {
 		t.Fatal("rejected sidecar detection modified source evidence", err)
-	}
-}
-
-func TestFirefoxLockConsumerRejectsOrdinaryFilesWithoutReadingUnrelatedTargets(t *testing.T) {
-	capture, directory := captureBoundaryFixture(t)
-	name := filepath.Join(directory, "lock")
-	if err := os.WriteFile(name, []byte("ordinary user file"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Lstat(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if skipped, err := capture.firefoxLock(directory, name, info); err != nil || skipped || len(capture.observed) != 0 {
-		t.Fatal("ordinary file acquired the special browser runtime-lock exclusion", err)
 	}
 }
 

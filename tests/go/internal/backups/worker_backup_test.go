@@ -138,7 +138,7 @@ func TestWorkerRestoreRejectsLiveServiceAndUnsafeRoots(t *testing.T) {
 	}
 }
 
-func TestWorkerCapturePreservesOpaqueWorkspaceAndSnapshotsOnlyOwnedSQLite(t *testing.T) {
+func TestWorkerCapturePreservesOpaqueSkillAssetsAndSnapshotsOnlyOwnedSQLite(t *testing.T) {
 	root := t.TempDir()
 	data := filepath.Join(root, "data")
 	workspace := filepath.Join(root, "workspace")
@@ -150,10 +150,12 @@ func TestWorkerCapturePreservesOpaqueWorkspaceAndSnapshotsOnlyOwnedSQLite(t *tes
 	os.WriteFile(filepath.Join(data, "state.json"), []byte(restoreFixtureState), 0600)
 	os.WriteFile(filepath.Join(data, "logs", "excluded"), []byte("excluded"), 0600)
 	os.WriteFile(filepath.Join(workspace, "node_modules", "excluded"), nil, 0600)
+	skills := skillFixtureRoot(t, workspace)
+	memory := memoryFixtureRoot(t, data)
 	opaque := []byte("SQLite format 3\x00not an actual database\xff")
-	os.WriteFile(filepath.Join(workspace, "browser.sqlite"), opaque, 0600)
-	os.WriteFile(filepath.Join(workspace, "browser.sqlite-wal"), []byte{0, 1, 2, 255}, 0600)
-	db, err := sql.Open("sqlite", filepath.Join(data, "owned.sqlite"))
+	os.WriteFile(filepath.Join(skills, "asset.sqlite"), opaque, 0600)
+	os.WriteFile(filepath.Join(skills, "asset.sqlite-wal"), []byte{0, 1, 2, 255}, 0600)
+	db, err := sql.Open("sqlite", filepath.Join(memory, "owned.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,11 +181,11 @@ func TestWorkerCapturePreservesOpaqueWorkspaceAndSnapshotsOnlyOwnedSQLite(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	copied, err := os.ReadFile(filepath.Join(archive.Directory, "workspace", "browser.sqlite"))
+	copied, err := os.ReadFile(filepath.Join(archive.Directory, "workspace", testRestoreID, ".agents", "skills", "asset.sqlite"))
 	if err != nil || !bytes.Equal(copied, opaque) {
 		t.Fatal("workspace database bytes changed")
 	}
-	db, err = sql.Open("sqlite", filepath.Join(archive.Directory, "data", "owned.sqlite"))
+	db, err = sql.Open("sqlite", filepath.Join(archive.Directory, "data", "memory", "dant", "owned.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

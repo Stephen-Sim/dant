@@ -40,6 +40,7 @@ var reservedPath = regexp.MustCompile(`(?i)^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]
 
 type Manifest struct {
 	SchemaVersion int    `json:"schemaVersion"`
+	Scope         string `json:"scope,omitempty"`
 	CreatedAt     int64  `json:"createdAt"`
 	AppVersion    string `json:"appVersion"`
 	SourceID      string `json:"sourceId"`
@@ -48,7 +49,9 @@ type Manifest struct {
 }
 
 func (manifest Manifest) Valid() bool {
-	return manifest.SchemaVersion == 1 && manifest.CreatedAt > 0 && manifest.CreatedAt <= 9007199254740991 && archiveVersion.MatchString(manifest.AppVersion) && sourceIdentity.MatchString(manifest.SourceID) && manifest.Files >= 0 && manifest.Files <= MaxFiles && manifest.Bytes >= 0 && manifest.Bytes <= MaxBackupBytes
+	validSchema := manifest.SchemaVersion == 1 && manifest.Scope == "" ||
+		manifest.SchemaVersion == AgentDataSchemaVersion && manifest.Scope == AgentDataScope
+	return validSchema && manifest.CreatedAt > 0 && manifest.CreatedAt <= 9007199254740991 && archiveVersion.MatchString(manifest.AppVersion) && sourceIdentity.MatchString(manifest.SourceID) && manifest.Files >= 0 && manifest.Files <= MaxFiles && manifest.Bytes >= 0 && manifest.Bytes <= MaxBackupBytes
 }
 
 type ArchiveEntry struct {
@@ -150,6 +153,7 @@ func ValidateArchive(ctx context.Context, input io.Reader, staging string) (Vali
 	seen := make(map[string]bool)
 	parents := make(map[string]struct{})
 	index := 0
+	magic := ""
 	count := 0
 	total := int64(0)
 	footer := false
@@ -175,7 +179,8 @@ func ValidateArchive(ctx context.Context, input io.Reader, staging string) (Vali
 		}
 		if index == 0 {
 			index++
-			if string(line) != ArchiveMagic {
+			magic = string(line)
+			if magic != ArchiveMagic && magic != AgentDataArchiveMagic {
 				return ValidatedArchive{}, ErrInvalid
 			}
 			continue
@@ -191,6 +196,11 @@ func ValidateArchive(ctx context.Context, input io.Reader, staging string) (Vali
 		}
 		if manifest == nil {
 			if frame.Type != "header" || !required(object, "schemaVersion", "createdAt", "appVersion", "sourceId", "files", "bytes") || !frame.Manifest.Valid() {
+				return ValidatedArchive{}, ErrInvalid
+			}
+			_, scoped := object["scope"]
+			if frame.SchemaVersion == 1 && (scoped || magic != ArchiveMagic) ||
+				frame.SchemaVersion == AgentDataSchemaVersion && (!scoped || len(object) != 8 || magic != AgentDataArchiveMagic) {
 				return ValidatedArchive{}, ErrInvalid
 			}
 			copy := frame.Manifest
@@ -236,6 +246,14 @@ func ValidateArchive(ctx context.Context, input io.Reader, staging string) (Vali
 		}
 		if (frame.Type != "file" && frame.Type != "directory") || (frame.Domain != "data" && frame.Domain != "workspace") || !ValidArchivePath(frame.Path) || frame.Size < 0 || frame.Size > MaxFileBytes || frame.Executable == nil || !required(object, "size") || (frame.Type == "directory" && frame.Size != 0) || len(entries) >= MaxFiles {
 			return ValidatedArchive{}, ErrInvalid
+		}
+		if manifest.Scope == AgentDataScope && !agentArchiveEntryAllowed(frame.Domain, frame.Path, frame.Type == "directory") {
+			return ValidatedArchive{}, ErrInvalid
+		}
+		if manifest.Scope == AgentDataScope && frame.Domain == "workspace" {
+			if root, owned := agentWorkspaceRoot(frame.Path); owned && frame.Path != root && !seen["workspace/"+root] {
+				return ValidatedArchive{}, ErrInvalid
+			}
 		}
 		key := frame.Domain + "/" + frame.Path
 		if _, exists := seen[key]; exists {
@@ -311,7 +329,11 @@ func WriteArchive(ctx context.Context, output io.Writer, archive ValidatedArchiv
 		return ErrInvalid
 	}
 
-	if _, err := io.WriteString(output, ArchiveMagic+"\n"); err != nil {
+	magic := ArchiveMagic
+	if archive.Manifest.Scope == AgentDataScope {
+		magic = AgentDataArchiveMagic
+	}
+	if _, err := io.WriteString(output, magic+"\n"); err != nil {
 		return err
 	}
 	encoder := json.NewEncoder(output)
@@ -324,12 +346,25 @@ func WriteArchive(ctx context.Context, output io.Writer, archive ValidatedArchiv
 	}
 	count := 0
 	total := int64(0)
+	workspaceRoots := make(map[string]bool)
 	for _, entry := range archive.Entries {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if !ValidArchivePath(entry.Path) || (entry.Domain != "data" && entry.Domain != "workspace") || entry.Size < 0 || entry.Size > MaxFileBytes {
 			return ErrInvalid
+		}
+		if archive.Manifest.Scope == AgentDataScope && !agentArchiveEntryAllowed(entry.Domain, entry.Path, entry.Directory) {
+			return ErrInvalid
+		}
+		if archive.Manifest.Scope == AgentDataScope && entry.Domain == "workspace" {
+			if root, owned := agentWorkspaceRoot(entry.Path); owned {
+				if entry.Path == root {
+					workspaceRoots[root] = true
+				} else if !workspaceRoots[root] {
+					return ErrInvalid
+				}
+			}
 		}
 		kind := "file"
 		if entry.Directory {
