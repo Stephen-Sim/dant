@@ -671,7 +671,8 @@ test('restoring requires the metadata and warning preview plus a separate explic
   f.button('[data-backup-prepare]').click();
   await settle();
   assert.equal(f.calls.filter((call) => call.route.endsWith('/restore')).length, 0);
-  assert.match(f.document.body.textContent, /Restoring replaces the current work computer data/);
+  assert.match(f.document.body.textContent, /Restoring replaces agent data and included skills/);
+  assert.match(f.document.body.textContent, /Older backups can also replace workspace files/);
   assert.match(f.document.body.textContent, /tasks stay paused/);
   assert.match(f.document.body.textContent, /sign in again/);
   assert.match(

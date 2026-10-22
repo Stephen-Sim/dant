@@ -16,7 +16,7 @@ func TestPreflightScannerRejectsUnavailableCancelledAndUnownedEntries(t *testing
 			defer cancel()
 			scanner := footprintScanner{ctx: ctx, workspace: options.WorkspaceRoot, observed: workerCapture{ctx: ctx}}
 			directory := options.WorkspaceRoot
-			name, prefix := "original", ""
+			name, prefix := "original", captureBoundaryPrefix
 			switch scenario {
 			case "cancelled directory", "cancelled child":
 				cancel()
@@ -27,7 +27,7 @@ func TestPreflightScannerRejectsUnavailableCancelledAndUnownedEntries(t *testing
 			case "missing child":
 				name = "missing"
 			case "invalid child path":
-				prefix = ".."
+				prefix += "/.."
 			case "hardlinked child":
 				if err := os.Link(filepath.Join(directory, name), filepath.Join(t.TempDir(), "second-owner")); err != nil {
 					t.Fatal(err)
@@ -37,7 +37,7 @@ func TestPreflightScannerRejectsUnavailableCancelledAndUnownedEntries(t *testing
 			}
 			var err error
 			if scenario == "cancelled directory" || scenario == "missing directory" || scenario == "directory is file" {
-				err = scanner.directory(directory, "workspace", "")
+				err = scanner.directory(directory, "workspace", captureBoundaryPrefix)
 			} else {
 				err = scanner.child(directory, "workspace", prefix, name)
 			}

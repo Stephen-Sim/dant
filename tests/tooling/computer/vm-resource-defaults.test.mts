@@ -68,12 +68,15 @@ $existingBranch = $ast.Find({ param($node)
     $node.Clauses[0].Item1.Extent.Text -eq '$existing'
 }, $true)
 if (!$existingBranch) { throw 'fixture_resume_branch_missing' }
-$existing = [pscustomobject]@{State='Running';MemoryStartup=16GB}
+. (Join-Path $scriptDirectory 'computer/hyperv-create.ps1')
+$existing = [pscustomobject]@{Id=[guid]'11111111-1111-4111-8111-111111111111';State='Running';MemoryStartup=16GB;AutomaticCheckpointsEnabled=$false}
 $Name = 'isolated-fixture'
 $script:capacity = 128GB
 $before = $script:resizes.Count
-function Get-VMHardDiskDrive { param($VMName) [pscustomobject]@{Path=$disk} }
+function Get-VM { param($Id) return $existing }
+function Get-VMHardDiskDrive { param($VM) [pscustomobject]@{Path=$disk} }
 function Start-VM { throw 'fixture_unexpected_start' }
+function Set-VM { throw 'fixture_unexpected_policy_replay' }
 function New-VM { throw 'fixture_unexpected_create' }
 function Set-VMMemory { throw 'fixture_unexpected_memory_change' }
 function Set-VMProcessor { throw 'fixture_unexpected_processor_change' }

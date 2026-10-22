@@ -28,7 +28,7 @@ func BenchmarkWorkerCaptureSmallFiles(b *testing.B) {
 		content[index] = byte(index)
 	}
 	for index := range fileCount {
-		if err := os.WriteFile(filepath.Join(workspace, fmt.Sprintf("file-%04d.bin", index)), content, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(skillFixtureRoot(b, workspace), fmt.Sprintf("file-%04d.bin", index)), content, 0600); err != nil {
 			b.Fatal(err)
 		}
 	}

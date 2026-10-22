@@ -1,7 +1,8 @@
 export const backupMessages = {
   en: {
     title: 'Work computer backups',
-    description: 'Keep local copies of work computer data. Restore only when you choose.',
+    description:
+      'Save memory, skills, chats, tasks and saved attachments. Browser profiles, virtual environments and projects are excluded.',
     mode: 'Backup mode',
     manual: 'Manual',
     automatic: 'Automatic',
@@ -13,7 +14,8 @@ export const backupMessages = {
     empty: 'No backups yet.',
     preview: 'Preview restore',
     previewTitle: 'Restore preview',
-    replaces: 'Restoring replaces the current work computer data.',
+    replaces:
+      'Restoring replaces agent data and included skills. Older backups can also replace workspace files.',
     restore: 'Replace data and restore',
     different: 'This backup is from a different work computer.',
     differentVersion: 'The backup and current work computer use different service versions.',
@@ -70,7 +72,7 @@ export const backupMessages = {
   },
   zh: {
     title: '工作电脑备份',
-    description: '在本地保存工作电脑数据的副本，只在你选择时恢复。',
+    description: '保存记忆、Skills、聊天、任务和已保存的附件，不包含浏览器资料、虚拟环境和项目。',
     mode: '备份模式',
     manual: '手动',
     automatic: '自动',
@@ -82,7 +84,7 @@ export const backupMessages = {
     empty: '还没有备份。',
     preview: '预览恢复',
     previewTitle: '恢复预览',
-    replaces: '恢复会替换当前工作电脑的数据。',
+    replaces: '恢复会替换 agent 数据和备份中的 Skills。旧版备份也可能替换工作区文件。',
     restore: '替换数据并恢复',
     different: '此备份来自另一台工作电脑。',
     differentVersion: '备份与当前工作电脑的服务版本不同。',

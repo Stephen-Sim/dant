@@ -80,7 +80,7 @@ func TestWorkerSnapshotDataSQLiteMustBeValidButWorkspaceBytesStayOpaque(t *testi
 	for _, mode := range []string{"invalid-sqlite", "sqlite-sidecar-hardlink", "source-replaced", "new-sidecar", "cancelled-after-copy"} {
 		t.Run(mode, func(t *testing.T) {
 			options := workerSnapshotFixture(t)
-			file := filepath.Join(options.DataDir, "fixture.sqlite")
+			file := filepath.Join(memoryFixtureRoot(t, options.DataDir), "fixture.sqlite")
 			if mode == "invalid-sqlite" {
 				if err := os.WriteFile(file, append([]byte(sqliteMagic), []byte("not a database")...), 0600); err != nil {
 					t.Fatal(err)
@@ -138,8 +138,9 @@ func TestWorkerSnapshotDataSQLiteMustBeValidButWorkspaceBytesStayOpaque(t *testi
 
 func TestWorkerSnapshotClosesEverySQLiteConnectionOnConnectionLimit(t *testing.T) {
 	options := workerSnapshotFixture(t)
+	memory := memoryFixtureRoot(t, options.DataDir)
 	for index := 0; index <= sqliteConnectionLimit; index++ {
-		name := filepath.Join(options.DataDir, fmt.Sprintf("%03d.sqlite", index))
+		name := filepath.Join(memory, fmt.Sprintf("%03d.sqlite", index))
 		db, err := sql.Open("sqlite", name)
 		if err != nil {
 			t.Fatal(err)
@@ -156,7 +157,7 @@ func TestWorkerSnapshotClosesEverySQLiteConnectionOnConnectionLimit(t *testing.T
 	}
 	assertSnapshotStagesEmpty(t, options.TemporaryRoot)
 	for index := 0; index <= sqliteConnectionLimit; index++ {
-		name := filepath.Join(options.DataDir, fmt.Sprintf("%03d.sqlite", index))
+		name := filepath.Join(memory, fmt.Sprintf("%03d.sqlite", index))
 		db, err := sql.Open("sqlite", name)
 		if err != nil {
 			t.Fatal(err)
@@ -201,11 +202,11 @@ func TestWorkerSnapshotNestedWorkspaceIsCapturedOnceAndNonDatabaseSidecarsSurviv
 		t.Fatal(err)
 	}
 	for _, name := range []string{"notes", "notes-wal", "orphan-journal"} {
-		if err := os.WriteFile(filepath.Join(options.DataDir, name), []byte("opaque"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(memoryFixtureRoot(t, options.DataDir), name), []byte("opaque"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(options.WorkspaceRoot, "project"), []byte("one copy"), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(skillFixtureRoot(t, options.WorkspaceRoot), "asset.bin"), []byte("one copy"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	backup, err := CreateWorkerBackup(t.Context(), options)
@@ -217,7 +218,7 @@ func TestWorkerSnapshotNestedWorkspaceIsCapturedOnceAndNonDatabaseSidecarsSurviv
 	if err := backup.WriteTo(t.Context(), &output); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(output.String(), `"path":"project"`) != 1 || strings.Contains(output.String(), `"path":"workspace/project"`) || !strings.Contains(output.String(), `"path":"orphan-journal"`) {
+	if strings.Count(output.String(), `"path":"49954ce5-c8c5-4f6e-a7d8-531530d09479/.agents/skills/asset.bin"`) != 1 || strings.Contains(output.String(), `"path":"workspace/49954ce5-c8c5-4f6e-a7d8-531530d09479`) || !strings.Contains(output.String(), `"path":"memory/dant/orphan-journal"`) {
 		t.Fatal("nested workspace duplicated or opaque non-SQLite sidecar omitted")
 	}
 }

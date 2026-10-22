@@ -2,6 +2,7 @@ package backups
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -13,10 +14,13 @@ import (
 )
 
 type restoreJournal struct {
-	RestoreID string                       `json:"restoreId"`
-	Phase     contracts.WorkerRestorePhase `json:"phase"`
-	Data      directoryID                  `json:"data"`
-	Workspace directoryID                  `json:"workspace"`
+	SchemaVersion int                          `json:"schemaVersion,omitempty"`
+	Scope         string                       `json:"scope,omitempty"`
+	RestoreID     string                       `json:"restoreId"`
+	Phase         contracts.WorkerRestorePhase `json:"phase"`
+	Data          directoryID                  `json:"data"`
+	Workspace     directoryID                  `json:"workspace"`
+	Components    []scopedRestoreComponent     `json:"components,omitempty"`
 }
 
 type RestoreReceipt struct {
@@ -50,13 +54,21 @@ func ordinaryIdentity(name string) (directoryID, error) {
 
 func readJournal(name string) (*restoreJournal, error) {
 	var journal restoreJournal
-	if err := readRestoreJSON(name, &journal); errors.Is(err, os.ErrNotExist) {
+	raw, err := files.ReadRegular(name, scopedRestoreJournalMaxBytes)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	} else if err != nil {
 		return nil, ErrRestoreFailed
 	}
+	object, err := contracts.DecodeObject(raw, scopedRestoreJournalMaxBytes)
+	if err != nil || json.Unmarshal(raw, &journal) != nil {
+		return nil, ErrRestoreFailed
+	}
 
-	if !restoreID.MatchString(journal.RestoreID) || !journal.Phase.Valid() || !journal.Data.valid() || !journal.Workspace.valid() {
+	if journal.SchemaVersion == scopedRestoreJournalVersion {
+		return readScopedRestoreJournal(raw, journal, object)
+	}
+	if len(raw) > restoreJournalMaxBytes || journal.SchemaVersion != 0 || journal.Scope != "" || len(journal.Components) != 0 || !restoreID.MatchString(journal.RestoreID) || !journal.Phase.Valid() || !journal.Data.valid() || !journal.Workspace.valid() {
 		return nil, ErrRestoreFailed
 	}
 
@@ -65,7 +77,7 @@ func readJournal(name string) (*restoreJournal, error) {
 
 func discardJournalTemporary(name string) error {
 	name += ".tmp"
-	if _, err := files.ReadRegular(name, restoreJournalMaxBytes); errors.Is(err, os.ErrNotExist) {
+	if _, err := files.ReadRegular(name, scopedRestoreJournalMaxBytes); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return ErrRestoreFailed
@@ -79,7 +91,11 @@ func discardJournalTemporary(name string) error {
 }
 
 func clearJournal(name string) error {
-	if _, err := files.ReadRegular(name, restoreJournalMaxBytes); err != nil {
+	return clearRestoreJSONFile(name, restoreJournalMaxBytes)
+}
+
+func clearRestoreJSONFile(name string, maximum int64) error {
+	if _, err := files.ReadRegular(name, maximum); err != nil {
 		return ErrRestoreFailed
 	}
 
@@ -91,6 +107,9 @@ func clearJournal(name string) error {
 }
 
 func recoverPending(ctx context.Context, options RestoreOptions, journal restoreJournal) error {
+	if journal.SchemaVersion == scopedRestoreJournalVersion {
+		return recoverScopedRestore(ctx, options, journal)
+	}
 	options.RestoreID = journal.RestoreID
 	locations, err := restoreLocations(options)
 	if err != nil {
@@ -348,6 +367,10 @@ func restoreWorkerWithStorage(ctx context.Context, options RestoreOptions, locat
 	if err != nil {
 		return receipt, err
 	}
+	dataParent, err := ordinaryIdentity(locations.dataParent)
+	if err != nil {
+		return receipt, err
+	}
 	original := restoreJournal{RestoreID: options.RestoreID, Phase: contracts.WorkerRestorePhasePrepared, Data: data, Workspace: workspace}
 	defer func() {
 		if result == nil {
@@ -417,6 +440,9 @@ func restoreWorkerWithStorage(ctx context.Context, options RestoreOptions, locat
 		CreatedAt int64  `json:"createdAt"`
 	}{RestoreReceipt{Restored: true, RestoreID: options.RestoreID}, archive.Manifest.SourceID, time.Now().UnixMilli()}); err != nil {
 		return receipt, err
+	}
+	if archive.Manifest.Scope == AgentDataScope {
+		return restoreAgentData(ctx, options, locations, archive, storage, scopedRestoreAnchor{Data: data, Workspace: workspace, DataParent: dataParent})
 	}
 
 	if err := storage.writeJSON(ctx, locations.journal, original); err != nil {

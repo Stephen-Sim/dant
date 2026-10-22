@@ -79,7 +79,7 @@ func TestWindowsCapturedSourceVersionRejectsAnOrdinaryReplacementBeforeRecording
 	if err := os.WriteFile(name, []byte("replacement bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := capture.observe(name, identity, ""); !errors.Is(err, ErrSourceChanged) || len(capture.observed) != 0 {
+	if err := capture.observe(name, identity); !errors.Is(err, ErrSourceChanged) || len(capture.observed) != 0 {
 		t.Fatal("a replacement acquired the captured source identity", err)
 	}
 	if raw, err := os.ReadFile(retained); err != nil || string(raw) != "original bytes" {

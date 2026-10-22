@@ -6,6 +6,25 @@ function Get-DantHyperVAttributes([string]$Path) {
     [System.IO.File]::GetAttributes($Path)
 }
 
+function Get-DantOwnedHyperVResumeVM([guid]$Id, [string]$Disk) {
+    $machines = @(Get-VM -Id $Id -ErrorAction Stop)
+    if ($machines.Count -ne 1 -or $machines[0].Id -ne $Id) {
+        throw 'The managed Hyper-V identity changed.'
+    }
+
+    foreach ($drive in @(Get-VMHardDiskDrive -VM $machines[0])) {
+        $candidate = $drive.Path
+        for ($depth = 0; $candidate -and $depth -lt 16; $depth++) {
+            if ([System.IO.Path]::GetFullPath($candidate) -eq [System.IO.Path]::GetFullPath($Disk)) {
+                return $machines[0]
+            }
+            $candidate = (Get-VHD -Path $candidate -ErrorAction Stop).ParentPath
+        }
+    }
+
+    throw 'The managed Hyper-V VM does not use its expected disk.'
+}
+
 function Invoke-DantHyperVCreate {
     param(
         [Parameter(Mandatory=$true)][string]$ProjectRoot,
@@ -55,24 +74,27 @@ function Invoke-DantHyperVCreate {
         $existing = Get-VM -Name $Name -ErrorAction SilentlyContinue
         if ($existing -and !$Resume) { throw "VM '$Name' already exists. Use -Resume to refresh its connection; it has not been modified." }
         if ($existing) {
-            $attached = @(Get-VMHardDiskDrive -VMName $Name)
-            $usesExpectedDisk = $false
-            foreach ($drive in $attached) {
-                $candidate = $drive.Path
-                for ($depth = 0; $candidate -and $depth -lt 16; $depth++) {
-                    if ([System.IO.Path]::GetFullPath($candidate) -eq [System.IO.Path]::GetFullPath($disk)) {
-                        $usesExpectedDisk = $true
-                        break
-                    }
-                    $candidate = (Get-VHD -Path $candidate).ParentPath
+            $identity = [guid]$existing.Id
+            $existing = Get-DantOwnedHyperVResumeVM $identity $disk
+            if ($existing.State -notin @('Off', 'Saved', 'Running')) {
+                throw "VM is $($existing.State). Resolve that state in Hyper-V Manager, then use -Resume."
+            }
+            if ($existing.AutomaticCheckpointsEnabled -isnot [bool]) {
+                throw 'The automatic checkpoint policy could not be confirmed.'
+            }
+
+            if ($existing.AutomaticCheckpointsEnabled) {
+                $observedState = $existing.State
+                Set-VM -VM $existing -AutomaticCheckpointsEnabled $false -ErrorAction Stop
+                $existing = Get-DantOwnedHyperVResumeVM $identity $disk
+                if ($existing.AutomaticCheckpointsEnabled -isnot [bool] -or
+                    $existing.AutomaticCheckpointsEnabled -ne $false -or
+                    $existing.State -ne $observedState) {
+                    throw 'The managed Hyper-V checkpoint policy or power state changed.'
                 }
             }
 
-            if (!$usesExpectedDisk) {
-                throw "VM '$Name' does not use the expected dant disk. Refusing to operate on it."
-            }
-            if ($existing.State -eq 'Off' -or $existing.State -eq 'Saved') { Start-VM -Name $Name }
-            elseif ($existing.State -ne 'Running') { throw "VM is $($existing.State). Resolve that state in Hyper-V Manager, then use -Resume." }
+            if ($existing.State -eq 'Off' -or $existing.State -eq 'Saved') { Start-VM -VM $existing }
         } else {
             if ($Resume) { throw "VM '$Name' does not exist. Run without -Resume for initial creation." }
             if (Test-Path -LiteralPath $disk) { throw "Disk '$disk' already exists. It has been preserved; inspect vm-setup-status.json and the previous log before recovery." }

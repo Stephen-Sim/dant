@@ -13,7 +13,8 @@ BeforeAll {
             [switch]$ElevatedOutput,
             [switch]$NoReceipt,
             [string]$Failure,
-            [string]$Metadata
+            [string]$Metadata,
+            [switch]$AutomaticCheckpoints
         )
         $directory = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         [void][IO.Directory]::CreateDirectory((Join-Path $directory 'vm'))
@@ -49,6 +50,9 @@ BeforeAll {
         $global:dantCoverageFixtureAdministrator = !$NoAdministrator
         $global:dantCoverageFixtureElevations = 0
         $global:dantCoverageFixtureElevationArguments = @()
+        $global:dantCoverageFixtureCheckpoints = [bool]$AutomaticCheckpoints
+        $global:dantCoverageFixtureCheckpointChanges = 0
+        $global:dantCoverageFixtureEvents = [Collections.Generic.List[string]]::new()
         function New-Object {
             param([string]$TypeName, [Parameter(ValueFromRemainingArguments = $true)][object[]]$ArgumentList)
             if ($TypeName -eq 'Security.Principal.WindowsPrincipal') {
@@ -64,20 +68,33 @@ BeforeAll {
             $global:dantCoverageFixtureQueries++
             if ($Failure -eq 'permission') { throw 'Synthetic management permission refusal' }
             if ($ChangeBinding -and $global:dantCoverageFixtureQueries -gt 1) { [IO.File]::WriteAllText($bindingPath, '{}') }
-            $identity = if ($Failure -eq 'wrong-identity' -or ($Failure -eq 'post-identity' -and $global:dantCoverageFixtureQueries -gt 2)) { '22222222-2222-4222-8222-222222222222' } else { $vmIdentity }
+            $identity = if ($Failure -eq 'wrong-identity' -or ($Failure -eq 'post-identity' -and $global:dantCoverageFixtureQueries -gt 2) -or ($Failure -eq 'checkpoint-identity' -and $global:dantCoverageFixtureCheckpointChanges)) { '22222222-2222-4222-8222-222222222222' } else { $vmIdentity }
             $observedState = if ($Failure -eq 'post-state' -and $global:dantCoverageFixtureQueries -gt 2) { 'Pausing' } elseif ($Failure -eq 'network-state' -and $global:dantCoverageFixtureQueries -gt 3) { 'Saved' } else { $global:dantCoverageFixtureVmState }
             if ($Failure -eq 'ambiguous') { return @([pscustomobject]@{Id = [guid]$identity; State = $observedState}, [pscustomobject]@{Id = [guid]$identity; State = $observedState}) }
-            return [pscustomobject]@{Id = [guid]$identity; State = $observedState}
+            $policy = if ($Failure -eq 'checkpoint-type') { 'unknown' } else { $global:dantCoverageFixtureCheckpoints }
+            return [pscustomobject]@{Id = [guid]$identity; State = $observedState; AutomaticCheckpointsEnabled = $policy}
         }
-        function Get-VMHardDiskDrive { param($VM) return [pscustomobject]@{Path = $(if ($ForeignDisk -or $Failure -eq 'child-disk') { Join-Path $directory 'foreign.vhdx' } else { $disk })} }
+        function Get-VMHardDiskDrive { param($VM) return [pscustomobject]@{Path = $(if ($ForeignDisk -or $Failure -eq 'child-disk' -or ($Failure -eq 'checkpoint-disk' -and $global:dantCoverageFixtureCheckpointChanges)) { Join-Path $directory 'foreign.vhdx' } else { $disk })} }
         function Get-VHD { param($Path) if ($Failure -eq 'child-disk') { return [pscustomobject]@{ParentPath = $disk} }; throw 'Foreign ancestry stops inside the fixture' }
         function Get-VMNetworkAdapter {
             param($VM)
+            if ($Failure -eq 'network-checkpoints') { $global:dantCoverageFixtureCheckpoints = $true }
             $addresses = if ($Failure -eq 'address-overflow') { @(1..17 | ForEach-Object { "192.0.2.$_" }) } else { @('192.0.2.44', '127.0.0.1', '169.254.3.2', '0.0.0.0', '224.0.0.1', '192.0.2.44', '2001:db8::1', '999.1.2.3', 123, '192.000.2.1') }
             return [pscustomobject]@{IPAddresses = $addresses}
         }
         function Save-VM { param($VM) $global:dantCoverageFixtureSaves++; $global:dantCoverageFixtureVmState = 'Saved' }
-        function Start-VM { param($VM) $global:dantCoverageFixtureStarts++; $global:dantCoverageFixtureVmState = 'Running' }
+        function Set-VM {
+            param($VM, $AutomaticCheckpointsEnabled)
+            if ($VM.Id.ToString() -ne $vmIdentity -or $AutomaticCheckpointsEnabled -ne $false) { throw 'Unexpected fixture checkpoint mutation' }
+            $global:dantCoverageFixtureCheckpointChanges++
+            $global:dantCoverageFixtureEvents.Add('checkpoints')
+            if ($Failure -eq 'checkpoint-failed') { throw 'Synthetic checkpoint policy failure' }
+            if ($Failure -ne 'checkpoint-unconfirmed') { $global:dantCoverageFixtureCheckpoints = $false }
+            if ($Failure -eq 'checkpoint-state') { $global:dantCoverageFixtureVmState = 'Off' }
+            if ($Failure -eq 'checkpoint-binding') { [IO.File]::WriteAllText($bindingPath, '{}') }
+            if ($Failure -eq 'checkpoint-intent') { [IO.File]::WriteAllText($receiptPath, '{}') }
+        }
+        function Start-VM { param($VM) $global:dantCoverageFixtureEvents.Add('start'); $global:dantCoverageFixtureStarts++; $global:dantCoverageFixtureVmState = 'Running' }
         function Start-Process {
             param($FilePath, $ArgumentList, $Verb, $WindowStyle, [switch]$PassThru)
             if ($Verb -ne 'RunAs' -or $WindowStyle -ne 'Hidden' -or !$PassThru) { throw 'Unexpected synthetic elevation contract' }
@@ -115,6 +132,9 @@ BeforeAll {
             queries = $global:dantCoverageFixtureQueries
             elevations = $global:dantCoverageFixtureElevations
             arguments = $global:dantCoverageFixtureElevationArguments
+            checkpointChanges = $global:dantCoverageFixtureCheckpointChanges
+            checkpoints = $global:dantCoverageFixtureCheckpoints
+            events = @($global:dantCoverageFixtureEvents)
             leftoverResults = @(Get-ChildItem -LiteralPath $directory -Filter '.vm-lifecycle-result-*.json').Count
             receiptUnchanged = $(if ($NoReceipt) { !(Test-Path -LiteralPath $receiptPath) } else { [IO.File]::ReadAllText($receiptPath) -ceq $originalReceipt })
         }
@@ -183,6 +203,44 @@ Describe 'Managed VM lifecycle with synthetic Hyper-V commands' {
         $result.starts | Should -Be 1
         @($result.reply.addresses).Count | Should -Be 1
         $result.reply.addresses[0] | Should -Be '192.0.2.44'
+    }
+
+    It 'repairs enabled automatic checkpoints only during owned resume and before starting' {
+        foreach ($state in @('Saved', 'Running', 'Off')) {
+            $result = Invoke-LifecycleFixture -Action resume -State $state -AutomaticCheckpoints
+            $result.reply.ok | Should -BeTrue
+            $result.checkpointChanges | Should -Be 1
+            $result.checkpoints | Should -BeFalse
+            $result.events[0] | Should -Be 'checkpoints'
+            $result.starts | Should -Be $(if ($state -eq 'Saved') { 1 } else { 0 })
+            $result.reply.changed | Should -Be ($state -eq 'Saved')
+        }
+        foreach ($action in @('inspect', 'suspend')) {
+            $result = Invoke-LifecycleFixture -Action $action -AutomaticCheckpoints
+            $result.reply.ok | Should -BeTrue
+            $result.checkpointChanges | Should -Be 0
+            $result.checkpoints | Should -BeTrue
+        }
+        $disabled = Invoke-LifecycleFixture -Action resume -State Saved
+        $disabled.checkpointChanges | Should -Be 0
+        $disabled.starts | Should -Be 1
+    }
+
+    It 'does not start after unconfirmed checkpoint policy or a changed VM, disk, binding or intent' {
+        foreach ($failure in @('checkpoint-type', 'checkpoint-failed', 'checkpoint-unconfirmed', 'checkpoint-identity', 'checkpoint-disk', 'checkpoint-state', 'checkpoint-binding', 'checkpoint-intent')) {
+            $result = Invoke-LifecycleFixture -Action resume -State Saved -AutomaticCheckpoints -Failure $failure
+            $result.reply.ok | Should -BeFalse
+            $result.saves | Should -Be 0
+            $result.starts | Should -Be 0
+            $result.checkpointChanges | Should -Be $(if ($failure -eq 'checkpoint-type') { 0 } else { 1 })
+        }
+        $foreign = Invoke-LifecycleFixture -Action resume -State Saved -AutomaticCheckpoints -ForeignDisk
+        $foreign.reply.ok | Should -BeFalse
+        $foreign.checkpointChanges | Should -Be 0
+        $networkChange = Invoke-LifecycleFixture -Action resume -State Running -Failure network-checkpoints
+        $networkChange.reply.ok | Should -BeFalse
+        $networkChange.starts | Should -Be 0
+        $networkChange.checkpointChanges | Should -Be 0
     }
 
     It 'does not replay already satisfied lifecycle changes' {

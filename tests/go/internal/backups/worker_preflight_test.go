@@ -21,7 +21,7 @@ func preflightFixture(t *testing.T) WorkerPreflightOptions {
 	return WorkerPreflightOptions{DataDir: options.DataDir, WorkspaceRoot: options.WorkspaceRoot, SourceID: "isolated-preflight"}
 }
 
-func TestWorkerPreflightIsReadOnlyAndBoundsTheCompleteOpaqueArchive(t *testing.T) {
+func TestWorkerPreflightIsReadOnlyAndBoundsTheAgentDataArchive(t *testing.T) {
 	options := preflightFixture(t)
 	for _, directory := range []string{filepath.Join(options.DataDir, "logs"), filepath.Join(options.WorkspaceRoot, "node_modules"), filepath.Join(options.WorkspaceRoot, "empty")} {
 		if err := os.Mkdir(directory, 0700); err != nil {
@@ -34,7 +34,7 @@ func TestWorkerPreflightIsReadOnlyAndBoundsTheCompleteOpaqueArchive(t *testing.T
 		}
 	}
 	content := bytes.Repeat([]byte{0, 255, 1, 42, 13}, ChunkBytes/5+1)
-	name := filepath.Join(options.WorkspaceRoot, "unicode-&-\u2028-日本語.bin")
+	name := filepath.Join(skillFixtureRoot(t, options.WorkspaceRoot), "unicode-&-\u2028-日本語.bin")
 	if err := os.WriteFile(name, content, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +47,9 @@ func TestWorkerPreflightIsReadOnlyAndBoundsTheCompleteOpaqueArchive(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedData := int64(len(restoreFixtureState) + len("original data"))
-	expectedContent := expectedData + int64(len("original workspace")+len(content))
-	if footprint.Files != 4 || footprint.ContentBytes != expectedContent || footprint.DataBytes != expectedData {
+	expectedData := int64(len(restoreFixtureState))
+	expectedContent := expectedData + int64(len(content))
+	if footprint.Files != 2 || footprint.ContentBytes != expectedContent || footprint.DataBytes != expectedData {
 		t.Fatal("unexpected included metadata", footprint)
 	}
 	if footprint.StagingBytes < footprint.ContentBytes || footprint.RequiredBytes != footprint.StagingBytes+footprint.ArchiveBytes+PreflightHeadroomBytes {
@@ -84,7 +84,7 @@ func TestWorkerPreflightIsReadOnlyAndBoundsTheCompleteOpaqueArchive(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	roundTrip, err := os.ReadFile(filepath.Join(archive.Directory, "workspace", filepath.Base(name)))
+	roundTrip, err := os.ReadFile(filepath.Join(archive.Directory, "workspace", testRestoreID, ".agents", "skills", filepath.Base(name)))
 	if err != nil || !bytes.Equal(roundTrip, content) {
 		t.Fatal("opaque file bytes changed without per-file staging Sync")
 	}
@@ -150,7 +150,7 @@ func TestWorkerPreflightRejectsMissingNestedLinkedOversizedAndUnrecognizedSource
 					count, size = 6, MaxFileBytes
 				}
 				for index := range count {
-					file, err := os.Create(filepath.Join(options.WorkspaceRoot, strings.Repeat("x", index+1)))
+					file, err := os.Create(filepath.Join(skillFixtureRoot(t, options.WorkspaceRoot), strings.Repeat("x", index+1)))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -163,11 +163,11 @@ func TestWorkerPreflightRejectsMissingNestedLinkedOversizedAndUnrecognizedSource
 					}
 				}
 			case "hardlink":
-				if err := os.Link(filepath.Join(options.WorkspaceRoot, "original"), filepath.Join(options.WorkspaceRoot, "linked")); err != nil {
+				if err := os.Link(filepath.Join(options.WorkspaceRoot, "original"), filepath.Join(skillFixtureRoot(t, options.WorkspaceRoot), "linked")); err != nil {
 					t.Fatal(err)
 				}
 			case "unknown-link":
-				if err := os.Symlink(filepath.Join(options.WorkspaceRoot, "original"), filepath.Join(options.WorkspaceRoot, "linked")); err != nil {
+				if err := os.Symlink(filepath.Join(options.WorkspaceRoot, "original"), filepath.Join(skillFixtureRoot(t, options.WorkspaceRoot), "linked")); err != nil {
 					t.Skip("isolated symlink creation unavailable")
 				}
 			}
@@ -178,7 +178,7 @@ func TestWorkerPreflightRejectsMissingNestedLinkedOversizedAndUnrecognizedSource
 	}
 }
 
-func TestWorkerPreflightRetainsTheExistingFirefoxLockProof(t *testing.T) {
+func TestWorkerPreflightExcludesBrowserProfilesRegardlessOfRuntimeLockFormat(t *testing.T) {
 	options := preflightFixture(t)
 	profile := filepath.Join(options.WorkspaceRoot, "browser-profile")
 	if err := os.Mkdir(profile, 0700); err != nil {
@@ -197,14 +197,14 @@ func TestWorkerPreflightRetainsTheExistingFirefoxLockProof(t *testing.T) {
 	}
 
 	footprint, err := PreflightWorkerBackup(t.Context(), options)
-	if err != nil || footprint.Files != 7 {
-		t.Fatal("recognized runtime lock was not safely excluded", err)
+	if err != nil || footprint.Files != 1 {
+		t.Fatal("browser profile contents were included", err)
 	}
 	if err := os.WriteFile(filepath.Join(profile, "places.sqlite"), []byte("not a SQLite-format marker"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PreflightWorkerBackup(t.Context(), options); err == nil {
-		t.Fatal("a lookalike profile without the established format proof was accepted")
+	if footprint, err := PreflightWorkerBackup(t.Context(), options); err != nil || footprint.Files != 1 {
+		t.Fatal("out-of-scope browser data affected the estimate", err)
 	}
 }
 
@@ -222,7 +222,7 @@ func TestWorkerPreflightStopsDuringScanningAndRejectsChangedObservedSources(t *t
 		workspace: options.WorkspaceRoot,
 		observed:  workerCapture{ctx: t.Context()},
 	}
-	if err := scanner.directory(options.WorkspaceRoot, "workspace", ""); err != nil {
+	if err := scanner.directory(options.WorkspaceRoot, "workspace", captureBoundaryPrefix); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(options.WorkspaceRoot, "original"), []byte("changed source"), 0600); err != nil {
@@ -233,7 +233,7 @@ func TestWorkerPreflightStopsDuringScanningAndRejectsChangedObservedSources(t *t
 	}
 
 	scanner.entries = MaxFiles
-	if err := scanner.child(options.WorkspaceRoot, "workspace", "", "original"); err == nil {
+	if err := scanner.child(options.WorkspaceRoot, "workspace", captureBoundaryPrefix, "original"); err == nil {
 		t.Fatal("bounded entry budget admitted another real source file")
 	}
 }
@@ -277,7 +277,7 @@ func TestEphemeralCaptureStillRejectsTamperingCancellationAndPartialArchiveWrite
 		t.Fatal(err)
 	}
 
-	name := filepath.Join(capture.Archive.Directory, "workspace", "original")
+	name := filepath.Join(capture.Archive.Directory, "data", "state.json")
 	if err := os.WriteFile(name, []byte("tampered workspace"), 0600); err != nil {
 		t.Fatal(err)
 	}
