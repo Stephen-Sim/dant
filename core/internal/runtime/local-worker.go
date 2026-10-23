@@ -44,6 +44,7 @@ type WorkerOptions struct {
 	SkillContext          func() string
 	RunVoiceMessage       func(context.Context, VoiceMessageCommand) ([]byte, error)
 	Changed               func()
+	Disconnected          func(DisconnectInfo)
 }
 type connectionAttempt struct {
 	done   chan struct{}
@@ -349,7 +350,7 @@ func (value *LocalWorker) open(ctx context.Context, generation uint64, conversat
 	value.account = account
 	value.monitors.Add(1)
 	value.mu.Unlock()
-	go value.monitorAccount(rpc, generation, accountEvents, unsubscribe)
+	go value.monitorAccount(rpc, generation, executor, accountEvents, unsubscribe)
 	return account, nil
 }
 

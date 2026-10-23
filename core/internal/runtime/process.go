@@ -15,9 +15,10 @@ type ProcessOptions struct {
 	Environment []string
 }
 type Executor struct {
-	RPC     *RPC
-	Stopped <-chan struct{}
-	Stop    func() error
+	RPC      *RPC
+	Stopped  <-chan struct{}
+	Stop     func() error
+	ExitInfo func() ProcessExit
 }
 type ProcessFactory func(context.Context, ProcessOptions) (*Executor, error)
 
@@ -43,10 +44,22 @@ func SpawnExecutor(ctx context.Context, options ProcessOptions) (*Executor, erro
 		return nil, ErrDisconnected
 	}
 	stopped := make(chan struct{})
+	var exitMu sync.Mutex
+	exit := ProcessExit{}
+	exitInfo := func() ProcessExit {
+		exitMu.Lock()
+		defer exitMu.Unlock()
+		return exit
+	}
 	var stopOnce sync.Once
 	stop := func() error {
 		var result error
 		stopOnce.Do(func() {
+			exitMu.Lock()
+			if !exit.Observed {
+				exit.StopRequested = true
+			}
+			exitMu.Unlock()
 			result = command.Process.Signal(syscall.SIGTERM)
 		})
 		return result
@@ -61,8 +74,17 @@ func SpawnExecutor(ctx context.Context, options ProcessOptions) (*Executor, erro
 	}
 	go func() {
 		_ = command.Wait()
+		exitMu.Lock()
+		if state := command.ProcessState; state != nil {
+			exit.Observed = true
+			exit.Code = state.ExitCode()
+			if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				exit.Signal = int(status.Signal())
+			}
+		}
+		exitMu.Unlock()
 		close(stopped)
-		rpc.fail(ErrDisconnected)
+		rpc.failWith(DisconnectProcessExit, ErrDisconnected)
 	}()
-	return &Executor{RPC: rpc, Stopped: stopped, Stop: stop}, nil
+	return &Executor{RPC: rpc, Stopped: stopped, Stop: stop, ExitInfo: exitInfo}, nil
 }

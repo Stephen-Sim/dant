@@ -16,25 +16,31 @@ import (
 const StopConfirmationTimeout = 15 * time.Second
 
 func (value *Engine) Pause(ctx context.Context) error {
+	return value.pause(ctx, pauseReasonUser)
+}
+
+func (value *Engine) pause(ctx context.Context, reason string) error {
 	value.mu.Lock()
 	if value.closed {
 		value.mu.Unlock()
 		return ErrClosed
 	}
 	value.paused = true
+	value.pauseReason = reason
 	active := value.active
 	queued := append([]string{}, value.queue...)
 	value.queue = []string{}
 	if active != nil {
 		active.pauseOnly = true
 		active.stopRequested = true
+		active.stopReason = reason
 		active.cancelPreparation()
 	}
 	value.changeLocked()
 	value.mu.Unlock()
-	_, err := value.store.PauseContinuingWork(value.ctx, 0, "user-paused")
+	_, err := value.store.PauseContinuingWork(value.ctx, 0, reason)
 	value.mu.Lock()
-	if updateErr := value.pauseQueuedLocked(value.ctx, queued, "user-paused"); updateErr != nil && err == nil {
+	if updateErr := value.pauseQueuedLocked(value.ctx, queued, reason); updateErr != nil && err == nil {
 		err = updateErr
 	}
 	value.mu.Unlock()
@@ -61,18 +67,22 @@ func (value *Engine) interrupt(ctx context.Context, active *execution) error {
 	active.cancelPreparation()
 	turn, thread := active.turnID, active.threadID
 	submitted := active.startSubmitted
+	reason := active.stopReason
+	if reason == "" {
+		reason = pauseReasonUser
+	}
 	value.mu.Unlock()
 	if value.options.OwnerEnded != nil && turn != "" {
 		value.options.OwnerEnded(turn)
 	}
 	if !submitted {
-		return value.finish(active, contracts.TaskStatusPaused, "user-paused")
+		return value.finish(active, contracts.TaskStatusPaused, reason)
 	}
 	if turn != "" && thread != "" {
 		if _, err := value.worker.Request(value.ctx, "turn/interrupt", contracts.RawObject{"threadId": raw(thread), "turnId": raw(turn)}); err != nil {
 			value.mu.Lock()
 			active.unknown = true
-			value.paused = true
+			value.pauseLocked(pauseReasonStopUnknown)
 			value.changeLocked()
 			value.mu.Unlock()
 			return ErrUnknown
@@ -161,7 +171,7 @@ func (value *Engine) ResumePaused(ctx context.Context, ids []string, options Res
 		return nil, err
 	}
 	if len(selected) > 0 {
-		value.paused = false
+		value.clearPauseLocked()
 	}
 	value.queue = append(value.queue, selected...)
 	value.changeLocked()
@@ -179,7 +189,7 @@ func (value *Engine) Acquire(ctx context.Context) error {
 	value.acquiring = true
 	value.changeLocked()
 	value.mu.Unlock()
-	err := value.Pause(ctx)
+	err := value.pause(ctx, pauseReasonHumanControl)
 	value.mu.Lock()
 	value.acquiring = false
 	if err == nil {
@@ -324,6 +334,9 @@ func (value *Engine) CancelProgress(ctx context.Context, target ProgressTarget, 
 		active.cancelRequested = !pauseOnly
 		active.pauseOnly = pauseOnly
 		active.stopRequested = true
+		if pauseOnly {
+			active.stopReason = pauseReasonUser
+		}
 		active.cancelPreparation()
 		value.changeLocked()
 		value.mu.Unlock()

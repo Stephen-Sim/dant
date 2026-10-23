@@ -21,7 +21,7 @@ func (value *Engine) FenceUnconfirmedStop(ctx context.Context) error {
 	value.mu.Lock()
 	defer value.mu.Unlock()
 
-	value.paused = true
+	value.pauseLocked(pauseReasonStopUnknown)
 	value.confirmedStopped = false
 	active := value.active
 	if active != nil {
@@ -42,7 +42,7 @@ func (value *Engine) FenceUnconfirmedStop(ctx context.Context) error {
 			message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusPaused))
 			message.Submission = contracts.Some(contracts.SubmissionStatusUnknown)
 			message.UnknownOutcome = true
-			message.PauseReason = contracts.Some("executor-stop-unconfirmed")
+			message.PauseReason = contracts.Some(pauseReasonStopUnknown)
 		}
 
 		for index := range state.WorkTasks {

@@ -933,18 +933,30 @@ main {
   height: 14px;
 }
 .computer-meta {
-  height: 34px;
+  min-height: 44px;
   flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 15px;
+  gap: 12px;
+  padding: 6px 15px;
   color: var(--text-faint);
   font-size: calc(var(--app-font-size) * 10 / 13);
+}
+.computer-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.computer-meta .text-btn {
+  flex-shrink: 0;
+  padding: 5px 8px;
+  font-size: inherit;
+  white-space: nowrap;
 }
 .computer-meta .icon-btn {
   width: 25px;
   height: 25px;
+  flex-shrink: 0;
 }
 .computer-meta svg {
   width: 13px;
@@ -3437,28 +3449,6 @@ textarea:disabled {
 }
 .rail-skills {
   margin-top: 14px;
-}
-.computer-agent-notice {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--surface-soft);
-  flex-shrink: 0;
-}
-.computer-agent-notice p {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: calc(var(--app-font-size) * 10 / 13);
-  line-height: 1.7;
-  min-width: 0;
-}
-.computer-agent-notice .text-btn {
-  font-size: calc(var(--app-font-size) * 10 / 13);
-  padding: 5px 8px;
-  flex-shrink: 0;
 }
 .skill-card-toggle {
   min-height: 28px;

@@ -43,6 +43,8 @@ Offline preparation and activation must bind the exact attempt, source, bundle, 
 
 Restore checks include conversation identities, verified attachment bytes under the target root, skill contents, SQLite memory/schedules, paused work and retained uncertainty. A restore must not replay unfinished tasks or scheduled deliveries. Supported earlier data formats keep their compatibility validation and backups. See [Go Core](go-core.md) and [backups](backups.md).
 
+For reconnect acceptance, click **Reconnect** once and confirm the fresh Controller and Worker identities, target source, online state and desktop preview. Use a newly authorized verification task that makes no external changes to check execution after reconnection. Keep earlier unknown tasks and outbox records intact; do not resume or resend them as a connectivity test. Record connection recovery and the new task's outcome separately. Only publish after the exact installed candidate and live Worker pass their checks.
+
 ## Live features
 
 Live checks require an authorized account and device scope; they are not unit-test side effects.

@@ -297,7 +297,7 @@ func (value *Engine) failContinuation(active *execution, cause error, unknown bo
 	value.mu.Lock()
 	active.unknown = unknown
 	if unknown || err != nil {
-		value.paused = true
+		value.pauseLocked(pauseReasonContinuation)
 	}
 	if value.active == active {
 		value.active = nil
@@ -317,7 +317,7 @@ func (value *Engine) failContinuation(active *execution, cause error, unknown bo
 		if unknown {
 			submission = contracts.SubmissionStatusUnknown
 		}
-		_, _ = value.store.Update(value.ctx, active.messageID, patch(contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "submission": raw(submission), "unknownOutcome": raw(unknown), "pauseReason": raw("continuation-unconfirmed")}))
+		_, _ = value.store.Update(value.ctx, active.messageID, patch(contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "submission": raw(submission), "unknownOutcome": raw(unknown), "pauseReason": raw(pauseReasonContinuation)}))
 	}
 	if err != nil {
 		return err

@@ -31,6 +31,9 @@ func TestRPCSubscriberCapacityAndOverflowCloseTheTransportWithoutDroppingEvidenc
 		t.Fatal("observer overflow silently dropped execution evidence")
 	}
 	<-fixture.client.Done()
+	if fixture.client.closureReason() != DisconnectEventOverflow {
+		t.Fatal("event overflow lost its diagnostic classification")
+	}
 }
 
 func TestRPCFullWriteQueueRejectsUnsentActionsAndCancellationWithoutRetry(t *testing.T) {

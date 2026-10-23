@@ -256,8 +256,24 @@ test('a connected VM retains the real desktop while its agent is offline, with l
       defined(f.document.querySelector<HTMLButtonElement>('[data-action="takeover"]')).title,
       hint,
     );
-    assert.ok(
-      f.document.querySelector<HTMLButtonElement>('.computer-agent-notice [data-action="connect"]'),
+    const reconnect = defined(
+      f.document.querySelector<HTMLButtonElement>('.computer-meta [data-action="connect"]'),
+    );
+    assert.equal(reconnect.textContent, language === 'en' ? 'Reconnect' : '刷新连接');
+    assert.equal(reconnect.type, 'button');
+    assert.equal(f.document.querySelectorAll('[data-action="connect"]').length, 1);
+    assert.equal(f.document.querySelector('[data-action="screen-refresh"]'), null);
+    assert.equal(f.document.querySelector('.computer-agent-notice'), null);
+    assert.equal(f.document.querySelector('.computer-footer .takeover-call-hint'), null);
+    assert.equal(
+      defined(f.document.querySelector('[data-action="takeover"]')).getAttribute(
+        'aria-describedby',
+      ),
+      'computer-connection-status',
+    );
+    assert.equal(
+      defined(f.document.querySelector('#computer-connection-status')).getAttribute('role'),
+      'status',
     );
     assert.equal(f.c.screenVisible(), true);
     f.c.restartScreen();
@@ -370,19 +386,110 @@ test('human input keeps its exact lease during a connected call without sending 
 
 test('manual Reconnect restores the executor path explicitly without resuming or replaying a task', async () => {
   const f = fixture();
-  await f.click('.computer-agent-notice [data-action="connect"]');
+  await f.click('.computer-meta [data-action="connect"]');
   assert.deepEqual(
     f.requests.map((item) => item.route),
     ['/connect', '/state'],
   );
   assert.equal(f.c.state.worker.status, 'online');
-  f.c.render();
-  assert.equal(f.document.querySelector<HTMLElement>('.computer-agent-notice'), null);
+  assert.equal(f.document.querySelector('[data-action="connect"]'), null);
+  assert.ok(f.document.querySelector('.computer-meta [data-action="screen-refresh"]'));
   assert.equal(
     defined(f.document.querySelector<HTMLButtonElement>('[data-action="takeover"]')).disabled,
     false,
   );
   assert.equal(f.screens.length, 0);
+});
+
+test('the single connection row announces connecting and prevents duplicate reconnects until completion', async () => {
+  for (const [language, connecting] of [
+    ['en', 'Connecting'],
+    ['zh', '连接中'],
+  ] as const) {
+    const f = fixture(language),
+      post = f.c.post;
+    let release: (() => void) | undefined,
+      attempts = 0;
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    f.c.post = async (route, body) => {
+      attempts++;
+      await wait;
+      return post(route, body);
+    };
+    const request = f.c.action('connect'),
+      reconnect = defined(
+        f.document.querySelector<HTMLButtonElement>('.computer-meta [data-action="connect"]'),
+      );
+    assert.equal(reconnect.disabled, true);
+    assert.equal(reconnect.getAttribute('aria-busy'), 'true');
+    assert.equal(reconnect.textContent, connecting);
+    assert.equal(
+      defined(f.document.querySelector('#computer-connection-status')).textContent,
+      connecting,
+    );
+    assert.equal(f.document.querySelector('[data-action="screen-refresh"]'), null);
+    await f.c.action('connect');
+    assert.equal(attempts, 1);
+    defined(release)();
+    await request;
+    assert.equal(f.document.querySelector('[data-action="connect"]'), null);
+    assert.equal(f.c.pendingActions.has('connect'), false);
+    assert.ok(f.document.querySelector('[data-action="screen-refresh"]'));
+  }
+});
+
+test('connection snapshots keep one recovery action and restore it after a failed manual reconnect', async () => {
+  for (const boundary of ['controller', 'worker'] as const) {
+    const f = fixture();
+    defined(f.c.state[boundary]).status = 'connecting';
+    f.c.render();
+    const reconnect = defined(
+      f.document.querySelector<HTMLButtonElement>('.computer-meta [data-action="connect"]'),
+    );
+    assert.equal(reconnect.disabled, true);
+    assert.equal(reconnect.getAttribute('aria-busy'), 'true');
+    assert.equal(f.document.querySelector('[data-action="screen-refresh"]'), null);
+    assert.equal(f.document.querySelectorAll('[data-action="connect"]').length, 1);
+  }
+  const f = fixture();
+  f.c.post = async (route) => {
+    f.requests.push({ route });
+    throw Error('Fixture connection failure');
+  };
+  await assert.rejects(f.c.action('connect'), /Fixture connection failure/);
+  const reconnect = defined(
+    f.document.querySelector<HTMLButtonElement>('.computer-meta [data-action="connect"]'),
+  );
+  assert.equal(reconnect.disabled, false);
+  assert.equal(reconnect.getAttribute('aria-busy'), null);
+  assert.equal(reconnect.textContent, 'Reconnect');
+  assert.deepEqual(
+    f.requests.map((item) => item.route),
+    ['/connect'],
+  );
+  assert.equal(f.c.pendingActions.has('connect'), false);
+});
+
+test('online connection status preserves agent control, human control and desktop refresh without reconnect', () => {
+  for (const [control, status] of [
+    ['agent', 'Controlled by dant'],
+    ['human', 'You have control'],
+  ]) {
+    const f = fixture();
+    f.c.state.worker.status = 'online';
+    f.c.state.computer.status = defined(control);
+    f.c.render();
+    assert.equal(
+      defined(f.document.querySelector('#computer-connection-status')).textContent,
+      status,
+    );
+    assert.equal(f.document.querySelector('[data-action="connect"]'), null);
+    assert.ok(f.document.querySelector('.computer-meta [data-action="screen-refresh"]'));
+    assert.equal(
+      defined(f.document.querySelector<HTMLButtonElement>('[data-action="takeover"]')).disabled,
+      false,
+    );
+  }
 });
 
 test('older snapshots without a controller retain their previous online-only preview contract', () => {
@@ -425,8 +532,10 @@ test('a slow frame decodes before publication while the prior image survives sta
 
 test('decode errors keep the last good frame, report localized retry status and recover on a valid refresh', async () => {
   for (const language of ['en', 'zh']) {
-    const f = fixture(language),
-      img = f.document.querySelector<HTMLImageElement>('#screen');
+    const f = fixture(language);
+    f.c.state.worker.status = 'online';
+    f.c.render();
+    const img = f.document.querySelector<HTMLImageElement>('#screen');
     f.decode = 'error';
     f.c.restartScreen();
     await settle();

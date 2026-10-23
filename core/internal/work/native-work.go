@@ -142,6 +142,7 @@ func (value *Engine) PauseNativeWork(ctx context.Context, owner ToolContext) err
 	}
 	active.pauseOnly = true
 	active.stopRequested = true
+	active.stopReason = pauseReasonUser
 	value.changeLocked()
 	value.mu.Unlock()
 	return value.interrupt(ctx, active)

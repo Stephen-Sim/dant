@@ -209,7 +209,7 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 			receipt.Queued = false
 		} else if call != nil && call.Provider == "subscription" {
 			message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusPaused))
-			message.PauseReason = contracts.Some("voice-call")
+			message.PauseReason = contracts.Some(pauseReasonVoiceCall)
 			receipt.Queued = false
 		} else if active := value.active; active != nil && active.startAcknowledged && active.attemptID == "" && !active.finishing && !active.stopRequested && !active.unknown && (!active.nativeVoice || active.nativeBackground) {
 			if len(value.pendingFollowups) >= MaxPendingFollowups {
@@ -218,9 +218,9 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 			receipt.SteerTurnID = active.turnID
 			receipt.Queued = false
 		}
-		if value.paused || value.takeover || value.acquiring {
+		if reason := value.admissionPauseReasonLocked(); reason != "" {
 			message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusPaused))
-			message.PauseReason = contracts.Some("human-control")
+			message.PauseReason = contracts.Some(reason)
 			receipt.Queued = false
 			receipt.CallID = ""
 			receipt.SteerTurnID = ""

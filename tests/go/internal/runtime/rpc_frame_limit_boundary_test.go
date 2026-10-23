@@ -84,4 +84,7 @@ func TestOversizedFinalRPCFrameRetiresSentActionsWithoutAllowingReplay(t *testin
 	if !client.Closed() || output.remaining != 0 {
 		t.Fatal("oversized final frame was not bounded and retired")
 	}
+	if client.closureReason() != DisconnectFrameTooLarge {
+		t.Fatal("oversized final frame lost its diagnostic classification")
+	}
 }

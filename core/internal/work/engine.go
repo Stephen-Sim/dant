@@ -47,6 +47,7 @@ type execution struct {
 	terminal            bool
 	finishing           bool
 	stopRequested       bool
+	stopReason          string
 	cancelRequested     bool
 	pauseOnly           bool
 	unknown             bool
@@ -94,6 +95,7 @@ type Engine struct {
 	mu               sync.Mutex
 	closed           bool
 	paused           bool
+	pauseReason      string
 	takeover         bool
 	acquiring        bool
 	confirmedStopped bool
@@ -159,8 +161,11 @@ func New(ctx context.Context, persistence *store.Store, worker Worker, options O
 	}
 	value.referenceGate = make(chan struct{}, 1)
 	value.voiceTasks = make(map[string]*voiceTask)
-	value.paused = unconfirmedState(persistence.Snapshot())
-	_, value.inheritedStopFence = persistence.Snapshot().Extra[executorStopFenceKey]
+	state := persistence.Snapshot()
+	if reason := unconfirmedPauseReason(state); reason != "" {
+		value.pauseLocked(reason)
+	}
+	_, value.inheritedStopFence = state.Extra[executorStopFenceKey]
 	value.workers.Add(1)
 	go value.run()
 	return value, nil
@@ -407,12 +412,12 @@ func (value *Engine) enqueueLocked(ctx context.Context, message *contracts.ChatM
 	if len(value.queue) >= MaxQueue {
 		return runtime.ErrBackpressure
 	}
-	if value.paused || value.takeover || value.acquiring {
-		_, err = value.store.Update(ctx, current.ID, patch(map[string]json.RawMessage{"status": raw(contracts.TaskStatusPaused), "pauseReason": raw("user-paused")}))
+	if reason := value.admissionPauseReasonLocked(); reason != "" {
+		_, err = value.store.Update(ctx, current.ID, patch(map[string]json.RawMessage{"status": raw(contracts.TaskStatusPaused), "pauseReason": raw(reason)}))
 		return err
 	}
 	if call := value.CallSnapshot(); call != nil && call.Provider == "subscription" {
-		_, err = value.store.Update(ctx, current.ID, patch(contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "pauseReason": raw("voice-call")}))
+		_, err = value.store.Update(ctx, current.ID, patch(contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "pauseReason": raw(pauseReasonVoiceCall)}))
 		return err
 	}
 	if _, err = value.store.Update(ctx, current.ID, patch(map[string]json.RawMessage{"status": raw(contracts.TaskStatusQueued), "queuedAt": raw(value.Timestamp()), "pauseReason": json.RawMessage("null")})); err != nil {
@@ -508,19 +513,7 @@ func (value *Engine) pump() {
 }
 
 func unconfirmedState(state contracts.State) bool {
-	if _, present := state.Extra[executorStopFenceKey]; present {
-		return true
-	}
-	if unconfirmedVoiceTasks(state) {
-		return true
-	}
-	for index := range state.WorkTasks {
-		record := &state.WorkTasks[index]
-		if record.UnknownOutcome || record.Status == contracts.WorkStatusUnknown || workstate.Unconfirmed(record) {
-			return true
-		}
-	}
-	return false
+	return unconfirmedPauseReason(state) != ""
 }
 
 func (value *Engine) ensureEvents() error {
@@ -589,14 +582,16 @@ func (value *Engine) disconnected() {
 		active.unknown = active.startSubmitted && !active.terminal
 		active.stopRequested = true
 	}
-	value.paused = value.paused || active != nil
+	if active != nil {
+		value.pauseLocked(pauseReasonDisconnected)
+	}
 	value.changeLocked()
 	value.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	if active != nil {
-		_ = value.finish(active, contracts.TaskStatusPaused, "executor-disconnected")
+		_ = value.finish(active, contracts.TaskStatusPaused, pauseReasonDisconnected)
 	}
 }
 
@@ -620,7 +615,7 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 		if unknown || active.stopRequested {
 			status = contracts.TaskStatusPaused
 		}
-		_ = value.finish(active, status, "executor_request_failed")
+		_ = value.finish(active, status, pauseReasonRequestFailed)
 	}
 	if err := value.ensureEvents(); err != nil {
 		failed(err)
@@ -693,7 +688,7 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 	if err = value.updateExecutionMessage(active, contracts.RawObject{"submission": raw(contracts.SubmissionStatusConfirmed), "turnId": raw(turn.ID), "executorConfirmedAt": raw(value.Timestamp())}); err != nil {
 		value.mu.Lock()
 		active.unknown = true
-		value.paused = true
+		value.pauseLocked(pauseReasonUnknown)
 		value.changeLocked()
 		value.mu.Unlock()
 		return
@@ -703,7 +698,7 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 		if recordErr != nil {
 			value.mu.Lock()
 			active.unknown = true
-			value.paused = true
+			value.pauseLocked(pauseReasonUnknown)
 			value.changeLocked()
 			value.mu.Unlock()
 			return

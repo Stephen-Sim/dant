@@ -85,7 +85,7 @@ func (value *Engine) ResumeProgress(ctx context.Context, id string, kind store.P
 	if err != nil {
 		return nil, err
 	}
-	value.paused = false
+	value.clearPauseLocked()
 	value.changeLocked()
 	return record, nil
 }

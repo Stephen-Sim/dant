@@ -393,31 +393,72 @@ test('the actual message renderer builds recent history first while keeping repl
   assert.ok(f.document.querySelector('[data-id="message-10"]'));
 });
 
-test('paused status, visible original time and delivery ticks share a compact wrapping footer', () => {
+test('paused outgoing messages retain their original time and delivery receipt without a task label', () => {
   for (const language of ['en', 'zh']) {
     const f = fixture(language);
-    f.state.messages = [
-      {
-        id: 'paused',
+    f.state.messages = [{}, { executorConfirmedAt: at }, { receipt: { readAt: at } }].map(
+      (confirmation, index) => ({
+        id: 'paused-' + index,
         role: 'user',
         text: 'Continue',
         status: 'paused',
-        executorConfirmedAt: at,
         time: at,
-      },
-    ];
+        ...confirmation,
+      }),
+    );
     f.render();
-    const footer = defined(f.document.querySelector('.message-meta')),
-      status = defined(footer.querySelector('.task-status')),
-      delivery = defined(footer.querySelector('.delivery-state')),
-      time = defined(footer.querySelector('.message-time'));
-    assert.equal(status.parentNode, footer);
-    assert.equal(status.nextElementSibling, time);
-    assert.equal(time.nextElementSibling, delivery);
-    assert.equal(status.textContent, language === 'en' ? 'Paused' : '已暂停');
-    assert.ok(delivery.querySelector('[data-icon="check-check"]'));
-    assert.equal(time.textContent, f.c.formatTime(at));
+    for (const [index, message] of f.state.messages.entries()) {
+      const article = defined(f.document.querySelector(`[data-id="${message.id}"]`)),
+        footer = defined(article.querySelector('.message-meta')),
+        delivery = defined(footer.querySelector('.delivery-state')),
+        time = defined(footer.querySelector('.message-time'));
+      assert.equal(footer.querySelector('.task-status') === null, true);
+      assert.equal(time.nextElementSibling, delivery);
+      assert.equal(time.textContent, f.c.formatTime(at));
+      assert.equal(time.getAttribute('datetime'), new Date(at).toISOString());
+      assert.ok(delivery.querySelector(`[data-icon="${index ? 'check-check' : 'check'}"]`));
+      assert.equal(article.querySelector('.retry-message'), null);
+      assert.equal(message.status, 'paused');
+    }
   }
+});
+
+test('completed labels and failure retry controls remain beside the original message metadata', () => {
+  for (const language of ['en', 'zh']) {
+    const f = fixture(language);
+    f.state.messages = (['completed', 'failed', 'interrupted'] as const).map((status) => ({
+      id: status,
+      role: 'user',
+      text: 'Saved request',
+      status,
+      executorConfirmedAt: at,
+      time: at,
+    }));
+    f.render();
+    for (const message of f.state.messages) {
+      const article = defined(f.document.querySelector(`[data-id="${message.id}"]`)),
+        time = defined(article.querySelector('.message-time')),
+        delivery = defined(article.querySelector('.delivery-state')),
+        label = article.querySelector('.task-status'),
+        retry = article.querySelector<HTMLButtonElement>('.retry-message');
+      assert.equal(time.textContent, f.c.formatTime(at));
+      assert.equal(time.nextElementSibling, delivery);
+      assert.ok(delivery.querySelector('[data-icon="check-check"]'));
+      if (message.status === 'completed') {
+        assert.equal(defined(label).textContent, language === 'en' ? 'Completed' : '已完成');
+        assert.equal(defined(label).nextElementSibling, time);
+        assert.equal(retry, null);
+      } else {
+        assert.equal(label, null);
+        assert.equal(defined(retry).dataset.retry, message.id);
+        assert.match(defined(retry).textContent, language === 'en' ? /Retry/ : /重试/);
+      }
+      assert.equal(message.status, message.id);
+    }
+  }
+});
+
+test('message metadata remains visible in a compact wrapping footer', () => {
   const rules = new Map<string, Map<string, string>>();
   postcss
     .parse(fs.readFileSync(new URL('../../../ui/style.css', import.meta.url), 'utf8'))

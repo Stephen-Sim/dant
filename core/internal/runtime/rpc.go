@@ -42,6 +42,7 @@ type RPC struct {
 	stop     func()
 	mu       sync.Mutex
 	closed   bool
+	reason   DisconnectReason
 	next     uint64
 	pending  map[string]*pendingRequest
 	events   map[chan Event]func(Event) bool
@@ -81,7 +82,7 @@ func NewRPC(
 	}()
 	go func() {
 		<-lifetime.Done()
-		value.fail(ErrDisconnected)
+		value.failWith(DisconnectContext, ErrDisconnected)
 	}()
 	return value, nil
 }
@@ -97,12 +98,17 @@ func (value *RPC) Closed() bool {
 }
 
 func (value *RPC) fail(cause error) {
+	value.failWith(disconnectReason(cause), cause)
+}
+
+func (value *RPC) failWith(reason DisconnectReason, cause error) {
 	value.mu.Lock()
 	if value.closed {
 		value.mu.Unlock()
 		return
 	}
 	value.closed = true
+	value.reason = reason
 	for key, pending := range value.pending {
 		pending.result <- rpcResult{err: &OperationError{
 			Cause:          cause,
@@ -128,7 +134,7 @@ func (value *RPC) fail(cause error) {
 }
 
 func (value *RPC) Close() {
-	value.fail(ErrDisconnected)
+	value.failWith(DisconnectExplicit, ErrDisconnected)
 }
 
 func (value *RPC) SubscribeEvents() (
@@ -184,7 +190,7 @@ func (value *RPC) emit(event Event) bool {
 	}
 	value.mu.Unlock()
 	if overflow {
-		value.fail(ErrBackpressure)
+		value.failWith(DisconnectEventOverflow, ErrBackpressure)
 		return false
 	}
 	return true
@@ -227,7 +233,7 @@ func (value *RPC) write() {
 			count, err := value.input.Write(frame.data)
 			if err != nil || count != len(frame.data) {
 				frame.result <- ErrDisconnected
-				value.fail(ErrDisconnected)
+				value.failWith(DisconnectWriteFailure, ErrDisconnected)
 				return
 			}
 			frame.result <- nil
@@ -242,7 +248,7 @@ func (value *RPC) read() {
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		if len(raw) > MaxRPCFrameBytes {
-			value.fail(ErrInvalidProtocol)
+			value.failWith(DisconnectFrameTooLarge, ErrInvalidProtocol)
 			return
 		}
 		object, err := contracts.DecodeObject(raw, MaxRPCFrameBytes)
@@ -298,7 +304,15 @@ func (value *RPC) read() {
 		}
 		value.settle(id.key, pending, rpcResult{object: result})
 	}
-	value.fail(ErrDisconnected)
+	if err := scanner.Err(); err != nil {
+		reason := DisconnectReadError
+		if errors.Is(err, bufio.ErrTooLong) {
+			reason = DisconnectFrameTooLarge
+		}
+		value.failWith(reason, ErrDisconnected)
+		return
+	}
+	value.failWith(DisconnectEOF, ErrDisconnected)
 }
 
 func (value *RPC) settle(key string, pending *pendingRequest, result rpcResult) {

@@ -421,6 +421,11 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 	}
 	active.finishing = true
 	active.cancelPreparation()
+	if reason == "" || !active.startSubmitted && active.stopRequested && reason == pauseReasonRequestFailed {
+		if active.stopReason != "" {
+			reason = active.stopReason
+		}
+	}
 	final := contracts.TaskStatusFailed
 	if status == contracts.TaskStatusCompleted {
 		final = contracts.TaskStatusReview
@@ -432,7 +437,7 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 	}
 	if active.unknown {
 		final = contracts.TaskStatusPaused
-		value.paused = true
+		value.pauseLocked(reason)
 	}
 	ids := append([]string{}, active.messageIDs...)
 	assistantIDs := append([]string{}, active.assistantIDs...)
@@ -540,7 +545,7 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 	value.mu.Lock()
 	if err != nil {
 		active.unknown = true
-		value.paused = true
+		value.pauseLocked(pauseReasonUnknown)
 		active.finishing = false
 		value.changeLocked()
 		value.mu.Unlock()

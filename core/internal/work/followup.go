@@ -72,21 +72,21 @@ func (value *Engine) followup(ctx context.Context, message *contracts.ChatMessag
 		value.mu.Lock()
 		if unknown && value.currentLocked(active) {
 			active.unknown = true
-			value.paused = true
+			value.pauseLocked(pauseReasonUnknown)
 		}
 		value.mu.Unlock()
 		submission := contracts.SubmissionStatusNotSubmitted
 		if unknown {
 			submission = contracts.SubmissionStatusUnknown
 		}
-		_ = value.updateFollowup(value.ctx, active, message.ID, contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "submission": raw(submission), "unknownOutcome": raw(unknown), "pauseReason": raw("submission-unknown")})
+		_ = value.updateFollowup(value.ctx, active, message.ID, contracts.RawObject{"status": raw(contracts.TaskStatusPaused), "submission": raw(submission), "unknownOutcome": raw(unknown), "pauseReason": raw(pauseReasonUnknown)})
 		return nil, err
 	}
 	if err = value.updateFollowup(value.ctx, active, message.ID, contracts.RawObject{"submission": raw(contracts.SubmissionStatusConfirmed), "turnId": raw(expectedTurnID), "executorConfirmedAt": raw(value.Timestamp())}); err != nil {
 		value.mu.Lock()
 		if value.currentLocked(active) {
 			active.unknown = true
-			value.paused = true
+			value.pauseLocked(pauseReasonUnknown)
 			value.changeLocked()
 		}
 		value.mu.Unlock()

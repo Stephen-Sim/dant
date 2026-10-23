@@ -237,6 +237,13 @@ func (app *WorkerApp) assembleExecution() error {
 			changed()
 		}
 	}
+	disconnected := options.Disconnected
+	options.Disconnected = func(info workerRuntime.DisconnectInfo) {
+		app.reportExecutorDisconnect(info)
+		if disconnected != nil {
+			disconnected(info)
+		}
+	}
 	options.SkillContext = func() string {
 		context, err := app.skills.Context(app.ctx)
 		if err != nil {
