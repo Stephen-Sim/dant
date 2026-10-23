@@ -12,7 +12,20 @@ const idleControlMaxBytes = 4096
 // connection recovery. Durable unknown task outcomes remain untouched. The
 // Worker must independently reserve admission and prove its old executor stops.
 func IdleConnectionQuiescent(state contracts.WorkerSnapshot) bool {
-	if state.Worker.Status != contracts.ConnectionStatusOffline || !state.Executor.Paused ||
+	return idleConnectionQuiescent(state, contracts.ConnectionStatusOffline)
+}
+
+// IdleConnectionRecovered verifies the same paused admission boundary after an
+// explicit reconnect, while durable unknown outcomes remain unchanged.
+func IdleConnectionRecovered(state contracts.WorkerSnapshot) bool {
+	return idleConnectionQuiescent(state, contracts.ConnectionStatusOnline)
+}
+
+func idleConnectionQuiescent(state contracts.WorkerSnapshot, status contracts.ConnectionStatus) bool {
+	if _, unknown := state.Extra["executorStopUnconfirmed"]; unknown {
+		return false
+	}
+	if state.Worker.Status != status || !state.Executor.Paused ||
 		state.Active != nil || state.Call != nil || state.Queue == nil || len(state.Queue) != 0 ||
 		state.Takeover || state.Acquiring {
 		return false

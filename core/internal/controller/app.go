@@ -706,19 +706,26 @@ func (app *App) connectWithOptions(ctx context.Context, options connectionOption
 	if err != nil || state.Worker.Status != contracts.ConnectionStatusOffline {
 		return err
 	}
+	if _, unknown := state.Extra["executorStopUnconfirmed"]; unknown {
+		return computer.ErrPauseUnconfirmed
+	}
 
 	if recoveryCurrent != nil {
 		if !computer.IdleConnectionQuiescent(state) {
 			return computer.ErrPauseUnconfirmed
 		}
 	} else if !computer.ServiceUpdateQuiescent(state, true) {
-		return computer.ErrPauseUnconfirmed
-	}
-	paused := state.Executor.Paused
-	if recoveryCurrent != nil {
-		if _, unknown := state.Extra["executorStopUnconfirmed"]; unknown {
+		if !computer.IdleConnectionQuiescent(state) {
 			return computer.ErrPauseUnconfirmed
 		}
+		recoveryCurrent, err = app.recoverCurrentConnection(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	paused := state.Executor.Paused
+	conversationID := state.ConversationID
+	if recoveryCurrent != nil {
 		if err := recoveryCurrent(); err != nil {
 			return err
 		}
@@ -735,11 +742,17 @@ func (app *App) connectWithOptions(ctx context.Context, options connectionOption
 	if err != nil || state.Worker.Status != contracts.ConnectionStatusOnline {
 		return computer.ErrSessionUnavailable
 	}
+	if state.Executor.Paused != paused || state.ConversationID != conversationID {
+		return computer.ErrPauseUnconfirmed
+	}
+	if _, unknown := state.Extra["executorStopUnconfirmed"]; unknown {
+		return computer.ErrPauseUnconfirmed
+	}
 	if recoveryCurrent != nil {
 		if err := recoveryCurrent(); err != nil {
 			return err
 		}
-		if state.Executor.Paused != paused {
+		if !computer.IdleConnectionRecovered(state) {
 			return computer.ErrPauseUnconfirmed
 		}
 	}

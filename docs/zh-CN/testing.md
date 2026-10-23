@@ -19,6 +19,8 @@
 
 保持递归发现。`npm test` 与 `npm run test:coverage` 使用同一份维护中的 TypeScript 测试清单。Go 命令校验每个镜像测试映射，并显式传递 `-overlay`，保留包内私有访问和平台后缀，不为测试导出内部接口。从 `core/` 裸运行 `go test ./...` 不会发现 `tests/go/`。
 
+两个 Node 入口在 Windows 上逐个运行维护中的测试文件，其他平台最多同时运行四个文件。共享调度规则限制 Windows 上 Git Bash、PowerShell 和 Python 夹具短进程之间的资源竞争。全部测试、子进程截止时间和覆盖率要求继续启用。
+
 Rust 运行时模块仅在 `#[cfg(test)]` 下通过明确 `#[path]` 引入外部测试模块，保留私有访问；原生 LLVM 报告测量 `src-tauri/` 运行时及构建源码，测试模块不计入其分母。
 
 ## Go Core 行为

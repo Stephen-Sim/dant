@@ -13,7 +13,7 @@ import (
 	"github.com/Stephen-Sim/dant/core/internal/security"
 )
 
-const pendingSessionMaxBytes = 8192
+const recoverySessionMaxBytes = 8192
 
 type connectionOptions struct {
 	RecoverExecutor bool
@@ -41,53 +41,8 @@ func (app *App) recoverPendingConnection(ctx context.Context, cause error) (func
 			return nil, err
 		}
 	}
-
-	generation := app.bridge.Generation()
-	identity := app.bindingIdentity()
-	current := func() error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		app.mu.Lock()
-		closed := app.closed
-		app.mu.Unlock()
-		latest, err := computer.ReadBinding(app.options.DataDir)
-		if err != nil || computer.BindingDigest(latest) != pending.BindingDigest ||
-			app.bindingIdentity() != identity || app.bridge.Generation() != generation ||
-			app.bridge.Status() != contracts.ConnectionStatusOnline || closed {
-			return computer.ErrBridgeChanged
-		}
-		return nil
-	}
-	if err := current(); err != nil {
-		return nil, err
-	}
-	response, err := app.bridge.Request(ctx, http.MethodGet, "/api/session", nil, nil)
+	current, err := app.recoverySessionCurrent(ctx, pending.BindingDigest, pending.Version, pending.Source)
 	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, pendingSessionMaxBytes+1))
-	if err != nil || response.StatusCode != http.StatusOK || len(raw) > pendingSessionMaxBytes {
-		return nil, computer.ErrSessionUnavailable
-	}
-	if _, err := contracts.DecodeObject(raw, pendingSessionMaxBytes); err != nil {
-		return nil, computer.ErrSessionUnavailable
-	}
-	var session struct {
-		Product  string `json:"product"`
-		Mode     string `json:"mode"`
-		Runtime  string `json:"runtime"`
-		Protocol int    `json:"protocol"`
-		Version  string `json:"version"`
-		Source   string `json:"source"`
-	}
-	if json.Unmarshal(raw, &session) != nil || session.Product != "dant" || session.Mode != "worker" ||
-		session.Runtime != security.CoreRuntime || session.Protocol != security.CoreProtocolVersion ||
-		session.Version != pending.Version || session.Source != pending.Source {
-		return nil, computer.ErrSessionUnavailable
-	}
-	if err := current(); err != nil {
 		return nil, err
 	}
 	if app.diagnostics != nil {
@@ -96,6 +51,71 @@ func (app *App) recoverPendingConnection(ctx context.Context, cause error) (func
 			Method: http.MethodPost,
 			Route:  computerConnectRoute,
 		})
+	}
+	return current, nil
+}
+
+func (app *App) recoverCurrentConnection(ctx context.Context) (func() error, error) {
+	binding, err := computer.ReadBinding(app.options.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	return app.recoverySessionCurrent(ctx, computer.BindingDigest(binding), app.options.Version, app.options.BuildSource)
+}
+
+// Re-read the authenticated session before and after executor recovery. A live
+// tunnel alone does not prove the same Worker still owns this connection.
+func (app *App) recoverySessionCurrent(ctx context.Context, digest, version, source string) (func() error, error) {
+	generation := app.bridge.Generation()
+	identity := app.bindingIdentity()
+	localCurrent := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		app.mu.Lock()
+		closed := app.closed
+		app.mu.Unlock()
+		latest, err := computer.ReadBinding(app.options.DataDir)
+		if err != nil || computer.BindingDigest(latest) != digest ||
+			app.bindingIdentity() != identity || app.bridge.Generation() != generation ||
+			app.bridge.Status() != contracts.ConnectionStatusOnline || closed {
+			return computer.ErrBridgeChanged
+		}
+		return nil
+	}
+	current := func() error {
+		if err := localCurrent(); err != nil {
+			return err
+		}
+		response, err := app.bridge.Request(ctx, http.MethodGet, "/api/session", nil, nil)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(response.Body, recoverySessionMaxBytes+1))
+		if err != nil || response.StatusCode != http.StatusOK || len(raw) > recoverySessionMaxBytes {
+			return computer.ErrSessionUnavailable
+		}
+		if _, err := contracts.DecodeObject(raw, recoverySessionMaxBytes); err != nil {
+			return computer.ErrSessionUnavailable
+		}
+		var session struct {
+			Product  string `json:"product"`
+			Mode     string `json:"mode"`
+			Runtime  string `json:"runtime"`
+			Protocol int    `json:"protocol"`
+			Version  string `json:"version"`
+			Source   string `json:"source"`
+		}
+		if json.Unmarshal(raw, &session) != nil || session.Product != "dant" || session.Mode != "worker" ||
+			session.Runtime != security.CoreRuntime || session.Protocol != security.CoreProtocolVersion ||
+			session.Version != version || session.Source != source {
+			return computer.ErrSessionUnavailable
+		}
+		return localCurrent()
+	}
+	if err := current(); err != nil {
+		return nil, err
 	}
 	return current, nil
 }

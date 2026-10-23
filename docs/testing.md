@@ -19,6 +19,8 @@ Tests follow the production owner: Go for Core behavior, TypeScript for browser 
 
 Keep discovery recursive. `npm test` and `npm run test:coverage` use the same maintained TypeScript test inventory. Go commands validate every mirrored test mapping and pass Go's explicit `-overlay` option. This preserves package-private access and platform suffixes without exporting internals for tests. Bare `go test ./...` from `core/` does not discover `tests/go/`.
 
+Both Node entrypoints run maintained test files one at a time on Windows and at most four at a time on other platforms. This shared policy bounds competition between Git Bash, PowerShell and Python fixture processes on Windows. Every test, subprocess deadline and coverage requirement remains enabled.
+
 Rust runtime modules include their external test modules only under `#[cfg(test)]` and explicit `#[path]`, preserving private access. Native LLVM coverage measures `src-tauri/` runtime/build source; test modules do not inflate its denominator.
 
 ## Go Core behavior
