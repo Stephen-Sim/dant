@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 )
@@ -51,7 +52,23 @@ func workerFixture(t *testing.T, options WorkerOptions) (*LocalWorker, *workerSo
 
 func rpcMethod(t *testing.T, fixture *rpcFixture, expected string) contracts.RawObject {
 	t.Helper()
-	request, open := <-fixture.requests
+	var request contracts.RawObject
+	var open bool
+	select {
+	case request, open = <-fixture.requests:
+	default:
+		deadline := time.NewTimer(10 * time.Second)
+		defer deadline.Stop()
+		select {
+		case request, open = <-fixture.requests:
+		case <-fixture.client.Done():
+			t.Fatalf("fixture RPC closed before method %s", expected)
+		case <-t.Context().Done():
+			t.Fatalf("fixture scope ended before method %s", expected)
+		case <-deadline.C:
+			t.Fatalf("fixture did not produce method %s within 10 seconds", expected)
+		}
+	}
 	var method string
 	if !open || json.Unmarshal(request["method"], &method) != nil || method != expected {
 		t.Fatalf("expected bounded fixture method %s", expected)

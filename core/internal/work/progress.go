@@ -78,7 +78,7 @@ func (value *Engine) ResumeProgress(ctx context.Context, id string, kind store.P
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	state := value.store.Snapshot()
-	if kind != store.ProgressWork || value.closed || value.maintenance || value.takeover || value.acquiring || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline || value.progressOwnedLocked(id, kind, state) {
+	if kind != store.ProgressWork || value.closed || value.maintenance || value.takeover || value.acquiring || value.active != nil && value.active.conversationOnly || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline || value.progressOwnedLocked(id, kind, state) {
 		return nil, ErrBusy
 	}
 	record, err := value.store.ResumeWork(ctx, id, turnID)

@@ -108,7 +108,11 @@ func (app *App) serve(writer http.ResponseWriter, request *http.Request) {
 	}
 	path := request.URL.Path
 	if app.diagnostics != nil {
-		app.diagnostics.Log("http.request", diagnostics.Fields{Method: request.Method, Route: path})
+		diagnosticRoute := path
+		if id, reveal := strings.CutPrefix(path, "/api/credentials/reveal/"); reveal && id != "" && !strings.Contains(id, "/") {
+			diagnosticRoute = "/api/credentials/reveal/:id"
+		}
+		app.diagnostics.Log("http.request", diagnostics.Fields{Method: request.Method, Route: diagnosticRoute})
 	}
 
 	if path == "/events" {

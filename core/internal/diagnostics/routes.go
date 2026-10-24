@@ -13,6 +13,7 @@ var routes = func() map[string]bool {
 		"/api/messages", "/api/messages/:id", "/api/messages/:id/reaction", "/api/messages/:id/metadata",
 		"/api/messages/:id/output-link/resolve", "/api/history", "/api/credentials", "/api/credentials/:id",
 		"/api/credentials/requests/:id", "/api/skills", "/api/skills/:name", "/api/skills/:name/export",
+		"/api/credentials/reveal/:id",
 		"/api/skills/import/preview", "/api/skills/import", "/api/skills/import/previews/:id",
 		"/api/telegram", "/api/telegram/config", "/api/telegram/pair", "/api/telegram/disconnect",
 		"/api/login", "/api/logout", "/api/voice-key", "/api/settings", "/api/controller/settings",

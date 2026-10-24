@@ -60,6 +60,98 @@ test('desktop mutations use the native bridge serially and recover after a faile
   transport.close();
 });
 
+test('captured chat submissions bypass a blocked control lane, remain ordered and recheck their target at dispatch', async () => {
+  const starts: NativeApiRequest[] = [];
+  let finishConnect: ((value: ReturnType<typeof response>) => void) | undefined,
+    finishChat: ((value: ReturnType<typeof response>) => void) | undefined,
+    scope = 'conversation-a';
+  const transport = createTransport({
+    desktop: true,
+    invokeRequest: async (_command, request) => {
+      starts.push(request);
+      if (request.route === '/api/connect')
+        return new Promise((resolve) => {
+          finishConnect = resolve;
+        });
+      if (request.route === '/api/messages')
+        return new Promise((resolve) => {
+          finishChat = resolve;
+        });
+      return response({ ok: true });
+    },
+  });
+  const control = transport.json('/api/connect', { method: 'POST' });
+  await until(() => finishConnect);
+  const chat = transport.json('/api/messages', {
+    method: 'POST',
+    body: { conversationId: scope },
+    beforeSend: () => scope === 'conversation-a',
+  });
+  try {
+    await until(() => finishChat);
+    const stale = transport.json('/api/realtime/message', {
+        method: 'POST',
+        body: { conversationId: scope, callId: 'call-a' },
+        beforeSend: () => scope === 'conversation-a',
+      }),
+      rejected = assert.rejects(
+        stale,
+        (cause) =>
+          requestError(cause).code === 'request_scope_changed' &&
+          !requestError(cause).unknownOutcome,
+      ),
+      settings = transport.json('/api/settings', { method: 'PATCH', body: { language: 'en' } });
+    assert.deepEqual(
+      starts.map((request) => request.route),
+      ['/api/connect', '/api/messages'],
+    );
+    defined(finishConnect)(response({ ok: true }));
+    await Promise.all([control, settings]);
+    assert.deepEqual(
+      starts.map((request) => request.route),
+      ['/api/connect', '/api/messages', '/api/settings'],
+    );
+    scope = 'conversation-b';
+    defined(finishChat)(response({ ok: true }));
+    await Promise.all([chat, rejected]);
+    assert.equal(
+      starts.some((request) => request.route === '/api/realtime/message'),
+      false,
+    );
+    assert.equal(starts[1]?.body, '{"conversationId":"conversation-a"}');
+    assert.equal(Object.hasOwn(defined(starts[1]), 'beforeSend'), false);
+  } finally {
+    finishConnect?.(response({ ok: true }));
+    finishChat?.(response({ ok: true }));
+    await Promise.allSettled([control, chat]);
+    transport.close();
+  }
+});
+
+test('a failed chat submission is not retried and does not break the next guarded chat dispatch', async () => {
+  let calls = 0,
+    checks = 0;
+  const transport = createTransport({
+    desktop: true,
+    invokeRequest: async () => {
+      if (++calls === 1) throw Error('unconfirmed network result');
+      return response({ ok: true });
+    },
+  });
+  const beforeSend = () => {
+    checks++;
+    return true;
+  };
+  await assert.rejects(
+    transport.json('/api/messages', { method: 'POST', beforeSend }),
+    (cause) => requestError(cause).unknownOutcome,
+  );
+  await transport.json('/api/realtime/message', { method: 'POST', beforeSend });
+  assert.equal(calls, 2);
+  assert.equal(checks, 2);
+  transport.close();
+});
+
 test('guarded queued writes fail closed after another mutation without weakening ordinary write order', async () => {
   let finishConnection: ((value: ReturnType<typeof response>) => void) | undefined;
   const starts: NativeApiRequest[] = [],

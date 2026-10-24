@@ -120,6 +120,7 @@ import { createMarkdownCache, formatMessageTime } from './chat/render-cache.mts'
 import { createMessageWindow, messageHistoryScope } from './chat/message-window.mts';
 import { createTransport } from './platform/transport.mts';
 import { createMessageSubmissions, createCallStops } from './chat/pending.mts';
+import { createOutgoingMessages } from './chat/outgoing.mts';
 import { SpeechHelper } from './platform/speech.mts';
 import {
   createAppearance,
@@ -447,7 +448,10 @@ const filePreview = createFilePreview({
   icon: (name) => ico(name),
   openExternal: (file) => textEditor.open(file),
 });
-const messageSubmissions = createMessageSubmissions(),
+const messageSubmissions = createMessageSubmissions({
+    getScope: () => composerAttachmentScope(state),
+  }),
+  outgoingMessages = createOutgoingMessages(),
   callStops = createCallStops((id) => post('/call/stop', { callId: id }));
 const managedSettings = createManagedSettings({
   getState: () => state,
@@ -1043,10 +1047,22 @@ function post(route: '/login', body?: unknown): Promise<LoginDetails>;
 function post(route: '/provision', body?: unknown): Promise<ProvisioningState>;
 function post(route: '/call', body?: unknown): Promise<CallStartResult>;
 function post(route: '/call/connected', body?: unknown): Promise<{ connectedAt?: number }>;
-function post(route: '/messages' | '/realtime/message', body?: unknown): Promise<SendResult>;
-function post(route: string, body?: unknown): Promise<unknown>;
-function post(route: string, body: unknown = {}): Promise<unknown> {
-  return api(route, { method: 'POST', body });
+function post(
+  route: '/messages' | '/realtime/message',
+  body?: unknown,
+  options?: Pick<ApiOptions, 'beforeSend'>,
+): Promise<SendResult>;
+function post(
+  route: string,
+  body?: unknown,
+  options?: Pick<ApiOptions, 'beforeSend'>,
+): Promise<unknown>;
+function post(
+  route: string,
+  body: unknown = {},
+  options: Pick<ApiOptions, 'beforeSend'> = {},
+): Promise<unknown> {
+  return api(route, { method: 'POST', body, ...options });
 }
 function updateInstallState() {
   return {
@@ -1161,6 +1177,7 @@ function render() {
   progressPanel.capture();
   memorySettings.setVisible(page === 'memory');
   workDisclosures.capture();
+  reconcileOutgoingMessages();
   settingsNavigation.sync(page === 'settings');
   vmBackups.setVisible(
     page === 'settings' &&
@@ -1387,7 +1404,7 @@ function renderVoiceRecorder() {
   return `<section class="voice-message-recorder" data-key="voice-message-recorder" aria-label="${t('recordAudio')}"><button type="button" class="icon-btn" data-action="cancel-record" title="${t('cancelRecording')}" aria-label="${t('cancelRecording')}" ${busy || unknown ? 'disabled' : ''}>${ico('x')}</button><div class="voice-recording-content"><div class="voice-recording-state"><i class="voice-recording-dot ${paused || ready ? 'paused' : ''}" aria-hidden="true"></i><span>${t(busy ? 'voiceSending' : preparing ? 'recordStarting' : paused ? 'recordPaused' : ready ? 'voicePreview' : 'recording')}</span><time data-record-duration>${recordingTime()}</time></div>${draft?.previewURL && (paused || ready) ? `<audio data-key="voice-preview-${draft.generation}" controls preload="metadata" src="${esc(draft.previewURL)}" aria-label="${t('voicePreview')}"></audio>` : ''}</div>${draft && !ready ? `<button type="button" class="icon-btn voice-record-pause" data-action="pause-record" title="${t(paused ? 'resumeRecording' : 'pauseRecording')}" aria-label="${t(paused ? 'resumeRecording' : 'pauseRecording')}" ${busy || preparing ? 'disabled' : ''}>${ico(paused ? 'play' : 'pause')}</button>` : ''}<button type="button" class="send-btn voice-send-btn" data-action="send-voice" title="${t('sendVoice')}" aria-label="${t('sendVoice')}" ${!draft || busy || sending || uploading || preparing || unknown || !eventConnected || speechBlocked() ? 'disabled' : ''}>${ico('arrow-up')}</button></section>`;
 }
 function renderChat() {
-  return `${chatCollections.renderPinnedBar()}${currentState().settings?.showWorkSummary === true ? renderWorkSummary(workProgress(state, { language: language(), connected: eventConnected })) : ''}<div id="messages" class="messages">${messageWindow.control(currentState().messages, messageHistoryScope(state), language())}<div class="message-column" data-key="message-column">${currentState().messages.length ? renderMessages() : firstRun.render() || `<div class="welcome">${eyes('hero')}<h1>${t('hello')}</h1><p>${t('intro')}</p>${currentState().worker.status !== ConnectionStatus.Online ? `<button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button><small>${t('setupHint')}</small>` : ''}</div>`}</div></div><div class="composer-wrap" data-key="composer-wrap">${renderUnreadControl()}${managedSettings.renderRequests()}${taskReplies.render()}${replyTo ? `<div class="reply-preview" data-key="reply-preview"><div><small>${t('reply')} ${currentState().messages.find((message) => message.id === replyTo)?.role === 'assistant' ? 'dant' : t('you')}</small><span>${esc((currentState().messages.find((message) => message.id === replyTo)?.text || '').slice(0, 180))}</span></div>${button('cancel-reply', 'x', t('close'))}</div>` : ''}${attachments.length ? `<div class="attachment-chips" data-key="attachments">${attachments.map(renderDraftAttachment).join('')}</div>` : ''}${renderUnconfirmedMessage()}${renderVoiceRecorder()}<form id="message-form" class="composer-box" ${recordDraft || recordStarting ? 'hidden' : ''}><textarea id="composer" rows="1" placeholder="${t('placeholder')}" aria-label="${t('placeholder')}">${esc(composerDraft)}</textarea><div class="composer-tools">${renderAttachmentOptions()}<button type="button" class="icon-btn" data-action="record" title="${t('recordAudio')}" aria-label="${t('recordAudio')}" ${speechBlocked() || dictating || recordStarting || recordDraft ? 'disabled' : ''}>${ico('mic')}</button>${currentState().active || currentState().queue?.length ? button('stop', 'square', t('stop')) : ''}<button class="send-btn" type="submit" title="${t('send')}" aria-label="${t('send')}" ${sending || uploading || recording || recordStarting || recordDraft || !eventConnected ? 'disabled' : ''}>${ico('arrow-up')}</button></div></form>${uploading ? `<small class="composer-status">${t('uploading')}</small>` : dictating ? `<small class="composer-status">${t('dictating')}</small>` : speakingId ? `<small class="composer-status">${t('reading')} <button type="button" class="text-link" data-action="speech-stop">${t('stop')}</button></small>` : ''}</div>`;
+  return `${chatCollections.renderPinnedBar()}${currentState().settings?.showWorkSummary === true ? renderWorkSummary(workProgress(state, { language: language(), connected: eventConnected })) : ''}<div id="messages" class="messages">${messageWindow.control(currentState().messages, messageHistoryScope(state), language())}<div class="message-column" data-key="message-column">${currentState().messages.length || outgoingMessages.visible(composerAttachmentScope(state)).length ? renderMessages() : firstRun.render() || `<div class="welcome">${eyes('hero')}<h1>${t('hello')}</h1><p>${t('intro')}</p>${currentState().worker.status !== ConnectionStatus.Online ? `<button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button><small>${t('setupHint')}</small>` : ''}</div>`}</div></div><div class="composer-wrap" data-key="composer-wrap">${renderUnreadControl()}${managedSettings.renderRequests()}${taskReplies.render()}${replyTo ? `<div class="reply-preview" data-key="reply-preview"><div><small>${t('reply')} ${currentState().messages.find((message) => message.id === replyTo)?.role === 'assistant' ? 'dant' : t('you')}</small><span>${esc((currentState().messages.find((message) => message.id === replyTo)?.text || '').slice(0, 180))}</span></div>${button('cancel-reply', 'x', t('close'))}</div>` : ''}${attachments.length ? `<div class="attachment-chips" data-key="attachments">${attachments.map(renderDraftAttachment).join('')}</div>` : ''}${renderUnconfirmedMessage()}${renderVoiceRecorder()}<form id="message-form" class="composer-box" ${recordDraft || recordStarting ? 'hidden' : ''}><textarea id="composer" rows="1" placeholder="${t('placeholder')}" aria-label="${t('placeholder')}">${esc(composerDraft)}</textarea><div class="composer-tools">${renderAttachmentOptions()}<button type="button" class="icon-btn" data-action="record" title="${t('recordAudio')}" aria-label="${t('recordAudio')}" ${speechBlocked() || dictating || recordStarting || recordDraft ? 'disabled' : ''}>${ico('mic')}</button>${currentState().active || currentState().queue?.length ? button('stop', 'square', t('stop')) : ''}<button class="send-btn" type="submit" title="${t('send')}" aria-label="${t('send')}" ${sending || uploading || recording || recordStarting || recordDraft || !eventConnected ? 'disabled' : ''}>${ico('arrow-up')}</button></div></form>${uploading ? `<small class="composer-status">${t('uploading')}</small>` : dictating ? `<small class="composer-status">${t('dictating')}</small>` : speakingId ? `<small class="composer-status">${t('reading')} <button type="button" class="text-link" data-action="speech-stop">${t('stop')}</button></small>` : ''}</div>`;
 }
 function renderDraftAttachment(file: Attachment) {
   if (String(file.type || '').startsWith('image/'))
@@ -1517,43 +1534,60 @@ function renderMessages() {
     timeStyle: 'medium',
   });
   let last: number | null = null;
-  return messages
-    .map((message) => {
-      const date = messageDate(message.time),
-        at = date?.getTime() ?? null,
-        separator =
-          !!date &&
-          (last === null ||
-            (at !== null && at - last > 1800000) ||
-            date.toDateString() !== new Date(last).toDateString());
-      if (date && at !== null) last = at;
-      const time = separator
-        ? `<div class="time-divider" data-key="time-${esc(message.id)}">${formatTime(message.time, true)}</div>`
-        : '';
-      const timestamp = date ? ` title="${esc(timestampFormat.format(date))}"` : '';
-      if (message.kind === 'call') {
-        const seconds = Math.max(0, Number(message.seconds) || 0);
+  return (
+    messages
+      .map((message) => {
+        const date = messageDate(message.time),
+          at = date?.getTime() ?? null,
+          separator =
+            !!date &&
+            (last === null ||
+              (at !== null && at - last > 1800000) ||
+              date.toDateString() !== new Date(last).toDateString());
+        if (date && at !== null) last = at;
+        const time = separator
+          ? `<div class="time-divider" data-key="time-${esc(message.id)}">${formatTime(message.time, true)}</div>`
+          : '';
+        const timestamp = date ? ` title="${esc(timestampFormat.format(date))}"` : '';
+        if (message.kind === 'call') {
+          const seconds = Math.max(0, Number(message.seconds) || 0);
+          return (
+            time +
+            `<div class="call-log" data-id="${esc(message.id)}"><span${timestamp}>${ico('phone')}${formatCallDuration(seconds)}<small>· ${t('callEnded')}</small>${chatHistory.renderEdited(message)}</span><div class="message-actions" role="toolbar" aria-label="${t('messageActions')}">${chatHistory.renderActions(message)}</div></div>`
+          );
+        }
+        const messageTime = date
+          ? `<time class="message-time" datetime="${date.toISOString()}" aria-label="${esc(timestampFormat.format(date))}">${esc(formatTime(message.time))}</time>`
+          : '';
+        const replied = message.replyTo ? messagesById.get(message.replyTo) : undefined,
+          isUser = message.role === 'user',
+          assistantReaction =
+            isUser && typeof message.assistantReaction === 'string'
+              ? message.assistantReaction
+              : null,
+          assistantReactionLabel = assistantReaction
+            ? t('dantReacted') + reactionName(assistantReaction)
+            : '';
         return (
           time +
-          `<div class="call-log" data-id="${esc(message.id)}"><span${timestamp}>${ico('phone')}${formatCallDuration(seconds)}<small>· ${t('callEnded')}</small>${chatHistory.renderEdited(message)}</span><div class="message-actions" role="toolbar" aria-label="${t('messageActions')}">${chatHistory.renderActions(message)}</div></div>`
+          `<article class="message ${isUser ? 'user' : 'assistant'} ${emojiFor === message.id ? 'has-picker' : ''}" data-id="${esc(message.id)}"><div class="message-content"><div class="message-bubble-row"><div class="bubble ${!message.text && message.attachments?.length ? 'file-only' : ''}">${taskReplies.renderMessageReference(message)}${replied ? `<blockquote><small>${t('reply')} ${replied.role === 'assistant' ? 'dant' : t('you')}</small>${esc((replied.text || '').slice(0, 240))}</blockquote>` : ''}${message.text ? `<div class="markdown">${md(message.text)}</div>` : ''}${renderAttachments(message.attachments)}${message.status === 'streaming' ? '<span class="stream-cursor"></span>' : ''}</div><div class="message-actions" role="toolbar" aria-label="${t('messageActions')}"><button type="button" title="${t('reply')}" aria-label="${t('reply')}" data-reply="${esc(message.id)}">${ico('reply')}</button><button type="button" title="${t('reactions')}" aria-label="${t('reactions')}" data-picker="${esc(message.id)}">${ico('smile')}</button>${chatHistory.renderActions(message)}${emojiFor === message.id ? `<div class="reaction-menu" role="group" aria-label="${t('reactions')}">${defaultReactions.map((reaction) => `<button type="button" data-react="${esc(message.id)}" data-emoji="${esc(reaction.emoji)}" data-reaction-id="${reaction.id}" title="${esc(translate(language(), reaction.en, reaction.zh))}" aria-label="${esc(translate(language(), reaction.en, reaction.zh))}" aria-pressed="${(message.reactions || []).includes(reaction.emoji)}">${reaction.emoji}</button>`).join('')}</div>` : ''}</div></div><div class="message-meta">${chatHistory.renderEdited(message)}<div class="reactions">${assistantReaction ? `<span class="assistant-reaction" role="img" title="${esc(assistantReactionLabel)}" aria-label="${esc(assistantReactionLabel)}"><small aria-hidden="true">dant</small><span aria-hidden="true">${esc(assistantReaction)}</span></span>` : ''}${(message.reactions || []).map((emoji) => `<button type="button" data-react="${esc(message.id)}" data-emoji="${esc(emoji)}" title="${esc(t('removeReaction') + ': ' + reactionName(emoji))}" aria-label="${esc(t('removeReaction') + ': ' + reactionName(emoji))}" aria-pressed="true">${esc(emoji)}</button>`).join('')}</div>${isUser ? `${message.status === TaskStatus.Completed ? `<span class="task-status ${message.status}">${t(message.status)}</span>` : ''}${messageTime}<span class="delivery-state" title="${t(message.executorConfirmedAt || message.receipt?.readAt ? 'executorRead' : 'received')}">${message.executorConfirmedAt || message.receipt?.readAt || message.status === 'read' ? ico('check-check') : message.receivedAt || hasValue([TaskStatus.Queued, TaskStatus.Accepted, TaskStatus.Running, TaskStatus.Paused, TaskStatus.Review, TaskStatus.Completed], message.status || '') ? ico('check') : ''}</span>` : `${messageTime}${renderAssistantReadState(message)}`}</div>${isUser && hasValue([TaskStatus.Failed, TaskStatus.Interrupted], message.status || '') ? `<button type="button" class="retry-message" data-retry="${esc(message.id)}">${unknownTask(message) ? t('viewUnknown') : t(message.status) + ' · ' + t('retry')}</button>` : ''}${message.error && message.status !== TaskStatus.Cancelled ? `<small class="error">${esc(errorText(message.error))}</small>` : ''}</div></article>`
         );
-      }
-      const messageTime = date
-        ? `<time class="message-time" datetime="${date.toISOString()}" aria-label="${esc(timestampFormat.format(date))}">${esc(formatTime(message.time))}</time>`
-        : '';
-      const replied = message.replyTo ? messagesById.get(message.replyTo) : undefined,
-        isUser = message.role === 'user',
-        assistantReaction =
-          isUser && typeof message.assistantReaction === 'string'
-            ? message.assistantReaction
-            : null,
-        assistantReactionLabel = assistantReaction
-          ? t('dantReacted') + reactionName(assistantReaction)
-          : '';
-      return (
-        time +
-        `<article class="message ${isUser ? 'user' : 'assistant'} ${emojiFor === message.id ? 'has-picker' : ''}" data-id="${esc(message.id)}"><div class="message-content"><div class="message-bubble-row"><div class="bubble ${!message.text && message.attachments?.length ? 'file-only' : ''}">${taskReplies.renderMessageReference(message)}${replied ? `<blockquote><small>${t('reply')} ${replied.role === 'assistant' ? 'dant' : t('you')}</small>${esc((replied.text || '').slice(0, 240))}</blockquote>` : ''}${message.text ? `<div class="markdown">${md(message.text)}</div>` : ''}${renderAttachments(message.attachments)}${message.status === 'streaming' ? '<span class="stream-cursor"></span>' : ''}</div><div class="message-actions" role="toolbar" aria-label="${t('messageActions')}"><button type="button" title="${t('reply')}" aria-label="${t('reply')}" data-reply="${esc(message.id)}">${ico('reply')}</button><button type="button" title="${t('reactions')}" aria-label="${t('reactions')}" data-picker="${esc(message.id)}">${ico('smile')}</button>${chatHistory.renderActions(message)}${emojiFor === message.id ? `<div class="reaction-menu" role="group" aria-label="${t('reactions')}">${defaultReactions.map((reaction) => `<button type="button" data-react="${esc(message.id)}" data-emoji="${esc(reaction.emoji)}" data-reaction-id="${reaction.id}" title="${esc(translate(language(), reaction.en, reaction.zh))}" aria-label="${esc(translate(language(), reaction.en, reaction.zh))}" aria-pressed="${(message.reactions || []).includes(reaction.emoji)}">${reaction.emoji}</button>`).join('')}</div>` : ''}</div></div><div class="message-meta">${chatHistory.renderEdited(message)}<div class="reactions">${assistantReaction ? `<span class="assistant-reaction" role="img" title="${esc(assistantReactionLabel)}" aria-label="${esc(assistantReactionLabel)}"><small aria-hidden="true">dant</small><span aria-hidden="true">${esc(assistantReaction)}</span></span>` : ''}${(message.reactions || []).map((emoji) => `<button type="button" data-react="${esc(message.id)}" data-emoji="${esc(emoji)}" title="${esc(t('removeReaction') + ': ' + reactionName(emoji))}" aria-label="${esc(t('removeReaction') + ': ' + reactionName(emoji))}" aria-pressed="true">${esc(emoji)}</button>`).join('')}</div>${isUser ? `${message.status === TaskStatus.Completed ? `<span class="task-status ${message.status}">${t(message.status)}</span>` : ''}${messageTime}<span class="delivery-state" title="${t(message.executorConfirmedAt || message.receipt?.readAt ? 'executorRead' : 'received')}">${message.executorConfirmedAt || message.receipt?.readAt || message.status === 'read' ? ico('check-check') : message.receivedAt || hasValue([TaskStatus.Queued, TaskStatus.Accepted, TaskStatus.Running, TaskStatus.Paused, TaskStatus.Review, TaskStatus.Completed], message.status || '') ? ico('check') : ''}</span>` : `${messageTime}${renderAssistantReadState(message)}`}</div>${isUser && hasValue([TaskStatus.Failed, TaskStatus.Interrupted], message.status || '') ? `<button type="button" class="retry-message" data-retry="${esc(message.id)}">${unknownTask(message) ? t('viewUnknown') : t(message.status) + ' · ' + t('retry')}</button>` : ''}${message.error && message.status !== TaskStatus.Cancelled ? `<small class="error">${esc(errorText(message.error))}</small>` : ''}</div></article>`
-      );
+      })
+      .join('') + renderOutgoingMessages()
+  );
+}
+function renderOutgoingMessages() {
+  return outgoingMessages
+    .visible(composerAttachmentScope(state))
+    .map((entry) => {
+      const attempt = entry.attempt,
+        replied = currentState().messages.find((message) => message.id === attempt.reply),
+        status = entry.unknown
+          ? t('sendUnknown')
+          : entry.sending
+            ? translate(language(), 'Sending…', '正在发送…')
+            : translate(language(), 'Sent · synchronizing…', '已发送，正在同步…');
+      return `<article class="message user outgoing-message" data-key="outgoing-${esc(attempt.clientMessageId)}" data-outgoing-client-id="${esc(attempt.clientMessageId)}"><div class="message-content"><div class="message-bubble-row"><div class="bubble ${!attempt.payload.text && attempt.items?.length ? 'file-only' : ''}">${replied ? `<blockquote><small>${t('reply')} ${replied.role === 'assistant' ? 'dant' : t('you')}</small>${esc(replied.text.slice(0, 240))}</blockquote>` : ''}${attempt.payload.text ? `<div class="markdown">${md(attempt.payload.text)}</div>` : ''}${renderAttachments(attempt.items)}</div></div><div class="message-meta"><span class="outgoing-state" role="status">${esc(status)}</span></div></div></article>`;
     })
     .join('');
 }
@@ -3658,6 +3692,18 @@ async function action(a: string) {
     if (a === 'takeover' || a === 'connect') render();
   }
 }
+function reconcileOutgoingMessages() {
+  if (!state) return;
+  for (const entry of outgoingMessages.sync(state.messages, composerAttachmentScope(state))) {
+    const attempt = entry.attempt;
+    messageSubmissions.acknowledged(attempt.clientMessageId);
+    if (
+      (entry.sending || entry.unknown) &&
+      clearSentDraft(attempt.raw, attempt.items, attempt.reply)
+    )
+      taskReplies.acknowledged(attempt.workReply);
+  }
+}
 function clearSentDraft(
   raw: string | null | undefined,
   items: readonly Attachment[] = [],
@@ -3669,14 +3715,17 @@ function clearSentDraft(
     composerDraft = '';
     if (current) current.value = '';
   }
-  attachments = attachments.filter((item) => !items.some((sent) => sent.id === item.id));
+  attachments = attachments.filter((item) => !items.includes(item));
   if (replyTo === reply) replyTo = null;
   return unchanged && !attachments.length && replyTo === null;
 }
 async function checkUnconfirmedMessage() {
   const uncertain = messageSubmissions.unknown;
   if (!uncertain) return;
-  state = await api('/state');
+  const scope = composerAttachmentScope(state),
+    fresh = await api('/state');
+  if (composerAttachmentScope(state) !== scope || composerAttachmentScope(fresh) !== scope) return;
+  state = fresh;
   const found = messageSubmissions.find(currentState().messages);
   if (found) {
     messageSubmissions.acknowledged(uncertain.clientMessageId);
@@ -3706,7 +3755,13 @@ async function send(confirmResend = false) {
   const raw = input.value,
     text = raw.trim(),
     items = [...attachments],
-    reply = replyTo;
+    reply = replyTo,
+    scope = composerAttachmentScope(state),
+    conversationId = currentState().conversationId,
+    callScope = JSON.stringify([
+      currentState().call?.provider ?? null,
+      currentState().call?.id ?? currentState().call?.callId ?? null,
+    ]);
   if (!text && !items.length) return;
   if (messageSubmissions.unknown && !confirmResend) {
     toast(t('sendUnknownHint'));
@@ -3719,40 +3774,79 @@ async function send(confirmResend = false) {
       !workReply && currentState().call?.provider === 'subscription' ? currentState().call : null;
   if (nativeCall && items.length) throw Error(t('callAttachment'));
   const route = nativeCall ? '/realtime/message' : '/messages',
-    payload = nativeCall
-      ? { callId: nativeCall.id || nativeCall.callId, text, ...(reply ? { replyTo: reply } : {}) }
-      : {
-          text,
-          attachments: items.map((item) => item.id),
-          replyTo: reply,
-          ...(workReply ? { workReply } : {}),
-        };
+    payload = {
+      ...(typeof conversationId === 'string' && conversationId ? { conversationId } : {}),
+      ...(nativeCall
+        ? { callId: nativeCall.id || nativeCall.callId, text, ...(reply ? { replyTo: reply } : {}) }
+        : {
+            text,
+            attachments: items.map((item) => item.id),
+            replyTo: reply,
+            ...(workReply ? { workReply } : {}),
+          }),
+    };
   const attempt = messageSubmissions.prepare(route, payload, { confirmResend });
   attempt.raw = raw;
   attempt.items = items;
   attempt.reply = reply;
   attempt.workReply = workReply;
+  const outgoing = outgoingMessages.begin(attempt, scope);
   sending = true;
   taskReplies.setPending(true);
   render();
   try {
-    const result = await post(route, { ...payload, clientMessageId: attempt.clientMessageId });
-    if (result.unknownOutcome || (result.message || result).submission === SubmissionStatus.Unknown)
+    const result = await post(
+      route,
+      { ...payload, clientMessageId: attempt.clientMessageId },
+      {
+        beforeSend: () =>
+          !unloading &&
+          !updateInstalling &&
+          !pendingActions.has('connect') &&
+          !pendingActions.has('import-vm') &&
+          eventConnected &&
+          composerAttachmentScope(state) === scope &&
+          JSON.stringify([
+            currentState().call?.provider ?? null,
+            currentState().call?.id ?? currentState().call?.callId ?? null,
+          ]) === callScope,
+      },
+    );
+    reconcileOutgoingMessages();
+    if (
+      !outgoing.observed &&
+      (result.unknownOutcome || (result.message || result).submission === SubmissionStatus.Unknown)
+    )
       throw Object.assign(Error(t('sendUnknownHint')), { unknownOutcome: true });
+    outgoingMessages.acknowledged(outgoing);
     messageSubmissions.acknowledged(attempt.clientMessageId);
-    if (clearSentDraft(raw, items, reply)) taskReplies.acknowledged(workReply);
+    if (
+      !outgoing.observed &&
+      composerAttachmentScope(state) === scope &&
+      clearSentDraft(raw, items, reply)
+    )
+      taskReplies.acknowledged(workReply);
   } catch (cause) {
+    reconcileOutgoingMessages();
+    if (outgoing.observed) {
+      messageSubmissions.acknowledged(attempt.clientMessageId);
+      return;
+    }
     const error = requestError(cause);
     if (error.unknownOutcome) {
       messageSubmissions.unconfirmed(attempt);
-      throw Error(t('sendUnknownHint'));
+      outgoingMessages.unconfirmed(outgoing);
+      if (composerAttachmentScope(state) === scope) throw Error(t('sendUnknownHint'));
+      return;
     }
-    throw error;
+    outgoingMessages.rejected(outgoing);
+    if (composerAttachmentScope(state) === scope) throw error;
   } finally {
     sending = false;
     taskReplies.setPending(false);
-    render();
-    document.querySelector<HTMLTextAreaElement>('#composer')?.focus({ preventScroll: true });
+    if (!unloading) render();
+    if (composerAttachmentScope(state) === scope)
+      document.querySelector<HTMLTextAreaElement>('#composer')?.focus({ preventScroll: true });
   }
 }
 async function upload(file: File) {
@@ -4294,7 +4388,9 @@ async function sendVoice(confirmResend = false) {
   if (!eventConnected) throw Error(t('connectionLost'));
   if (speechBlocked()) throw Error(t('recordDuringCall'));
   const workReply = taskReplies.prepare(),
-    generation = draft.generation;
+    generation = draft.generation,
+    scope = composerAttachmentScope(state),
+    conversationId = currentState().conversationId;
   draft.busy = true;
   sending = true;
   taskReplies.setPending(true);
@@ -4307,19 +4403,32 @@ async function sendVoice(confirmResend = false) {
       if (recording && recording.state !== 'inactive') recording.stop();
       await draft.stopped;
     }
-    if (recordDraft !== draft || generation !== recordGeneration || unloading) return;
+    if (
+      recordDraft !== draft ||
+      generation !== recordGeneration ||
+      unloading ||
+      composerAttachmentScope(state) !== scope
+    )
+      return;
     if (!draft.file?.size) throw Error(t('recordEmpty'));
     if (!draft.uploaded) {
       const form = new FormData();
       form.append('file', draft.file);
       draft.uploaded = await api('/upload', { method: 'POST', body: form });
     }
-    if (recordDraft !== draft || generation !== recordGeneration || unloading) return;
+    if (
+      recordDraft !== draft ||
+      generation !== recordGeneration ||
+      unloading ||
+      composerAttachmentScope(state) !== scope
+    )
+      return;
     if (!eventConnected) throw Error(t('connectionLost'));
     if (speechBlocked()) throw Error(t('recordDuringCall'));
     taskReplies.prepare();
     const payload = {
         text: '',
+        ...(typeof conversationId === 'string' && conversationId ? { conversationId } : {}),
         attachments: [draft.uploaded.id],
         replyTo: null,
         ...(workReply ? { workReply } : {}),
@@ -4332,10 +4441,25 @@ async function sendVoice(confirmResend = false) {
     attempt.workReply = workReply;
     draft.attempt = attempt;
     try {
-      const result = await post('/messages', {
-        ...payload,
-        clientMessageId: attempt.clientMessageId,
-      });
+      const result = await post(
+        '/messages',
+        {
+          ...payload,
+          clientMessageId: attempt.clientMessageId,
+        },
+        {
+          beforeSend: () =>
+            !unloading &&
+            !updateInstalling &&
+            !pendingActions.has('connect') &&
+            !pendingActions.has('import-vm') &&
+            recordDraft === draft &&
+            generation === recordGeneration &&
+            eventConnected &&
+            !speechBlocked() &&
+            composerAttachmentScope(state) === scope,
+        },
+      );
       if (
         result.unknownOutcome ||
         (result.message || result).submission === SubmissionStatus.Unknown
@@ -4935,6 +5059,7 @@ export type MainFunctions = {
   renderAttachments: typeof renderAttachments;
   messageDate: typeof messageDate;
   renderMessages: typeof renderMessages;
+  renderOutgoingMessages: typeof renderOutgoingMessages;
   positionReactionMenus: typeof positionReactionMenus;
   renderComputer: typeof renderComputer;
   renderSettings: typeof renderSettings;
@@ -5003,6 +5128,7 @@ export type MainFunctions = {
   openExternal: typeof openExternal;
   action: typeof action;
   clearSentDraft: typeof clearSentDraft;
+  reconcileOutgoingMessages: typeof reconcileOutgoingMessages;
   checkUnconfirmedMessage: typeof checkUnconfirmedMessage;
   send: typeof send;
   upload: typeof upload;
@@ -5034,6 +5160,9 @@ export type MainFunctions = {
   boot: typeof boot;
 };
 export type MainBindings = {
+  pendingActions: typeof pendingActions;
+  unloading: typeof unloading;
+  outgoingMessages: typeof outgoingMessages;
   attachments: typeof attachments;
   composerImagePreviews: typeof composerImagePreviews;
   createComposerImagePreviews: typeof createComposerImagePreviews;

@@ -1,4 +1,5 @@
 import { escapeHtml as escape } from '../shared/html.mts';
+import { createCredentialReveal } from '../credentials/reveal.mts';
 import {
   isRecord,
   isSafeInteger,
@@ -20,6 +21,7 @@ import type {
   SkillLibrary,
 } from '../shared/contracts.mts';
 interface CredentialDraft {
+  scope: string;
   id: string | null;
   name: string;
   service: string;
@@ -164,7 +166,13 @@ const baseCopy = {
     credentialService: '服务或网站',
     credentialUsername: '用户名（可选）',
     credentialSecret: '密码、Token 或 API Key',
-    credentialKeep: '留空保留已有秘密值；已有值不会显示。',
+    credentialKeep: '替换值留空会保留已有密码。显示已有值不会修改它。',
+    credentialStored: '已保存的密码、Token 或 API Key',
+    credentialShowStored: '显示已有值',
+    credentialHideStored: '隐藏已有值',
+    credentialShowTyped: '显示输入值',
+    credentialHideTyped: '隐藏输入值',
+    credentialRevealFailed: '无法显示凭据。请检查工作电脑连接后重试。',
     credentialSave: '保存凭据',
     credentialContinue: '保存并继续',
     credentialReason: '用途',
@@ -223,7 +231,14 @@ const baseCopy = {
     credentialService: 'Service or website',
     credentialUsername: 'Username (optional)',
     credentialSecret: 'Password, token or API key',
-    credentialKeep: 'Leave blank to keep the current secret. Existing values are never shown.',
+    credentialKeep: 'Leave blank to keep the current secret. Revealing it does not change it.',
+    credentialStored: 'Saved password, token or API key',
+    credentialShowStored: 'Show saved value',
+    credentialHideStored: 'Hide saved value',
+    credentialShowTyped: 'Show input',
+    credentialHideTyped: 'Hide input',
+    credentialRevealFailed:
+      'The credential could not be shown. Check the work computer connection and try again.',
     credentialSave: 'Save credential',
     credentialContinue: 'Save and continue',
     credentialReason: 'Purpose',
@@ -463,6 +478,8 @@ export function createManagedSettings({
       vm?.user ?? null,
       vm?.port ?? null,
       vm?.keyPath ?? null,
+      vm?.knownHosts ?? null,
+      vm?.provider ?? null,
     ]);
   };
   const owner = () => ({ scope: scope(), generation: navigationGeneration, modal: getModal() });
@@ -478,9 +495,40 @@ export function createManagedSettings({
     return node;
   };
   const clearSecret = () => {
+    credentialReveal.reset();
+    replacementVisible = false;
     const input = document.querySelector<HTMLInputElement>('#credential-secret');
-    if (input) input.value = '';
+    if (input) {
+      input.value = '';
+      input.type = 'password';
+    }
   };
+  let replacementVisible = false;
+  const credentialReveal = createCredentialReveal({
+    request,
+    identity: () => {
+      const draft = credentialDraft,
+        modal = getModal(),
+        conversationId = getState()?.conversationId;
+      return draft?.id &&
+        draft.scope === scope() &&
+        conversationId &&
+        online() &&
+        modal?.type === 'credential' &&
+        modal.key === draft.id &&
+        credentials().items.some((item) => item.id === draft.id)
+        ? { credentialId: draft.id, conversationId, computer: scope(), modal }
+        : null;
+    },
+    changed: render,
+    clear: () => {
+      const input = document.querySelector<HTMLTextAreaElement>('#credential-revealed-secret');
+      if (input) {
+        input.value = '';
+        input.hidden = true;
+      }
+    },
+  });
   const fail = (kind: string, key: string) => {
     if (kind === 'credential') credentialError = key;
     else skillError = key;
@@ -495,6 +543,7 @@ export function createManagedSettings({
     clearSecret();
     credentialError = '';
     credentialDraft = {
+      scope: scope(),
       id: item.id || null,
       name: requestItem?.name || item.name || '',
       service: requestItem?.service || item.service || '',
@@ -628,6 +677,11 @@ export function createManagedSettings({
       : '';
   }
   function syncModal(current: UiModal | null, page: string): UiModal | null {
+    if (current?.type === 'credential' && credentialDraft?.scope !== scope()) {
+      onClose(current);
+      return null;
+    }
+    if (!online()) credentialReveal.reset();
     if (current?.type === 'skill-import' && importDraft?.scope !== scope()) {
       onClose(current);
       return null;
@@ -645,6 +699,7 @@ export function createManagedSettings({
       const item = credentials().requests?.find((item) => !dismissed.has(item.id));
       if (item) {
         credentialDraft = {
+          scope: scope(),
           id: null,
           name: item.name,
           service: item.service,
@@ -680,11 +735,15 @@ export function createManagedSettings({
     if (current?.type === 'skill-import' && importDraft) return renderImport();
     if (current?.type === 'credential' && credentialDraft) {
       const draft = credentialDraft,
-        locked = !online() || busy;
+        locked = !online() || busy,
+        reveal = credentialReveal.state,
+        savedValue = draft.id
+          ? `<section class="credential-stored-value"><label for="credential-revealed-secret">${tr('credentialStored')}</label><textarea id="credential-revealed-secret" rows="3" readonly hidden autocomplete="off" spellcheck="false" aria-label="${tr('credentialStored')}"></textarea><button type="button" class="text-btn" data-credential-reveal aria-controls="credential-revealed-secret" aria-pressed="${reveal.visible}" ${locked || !reveal.available ? 'disabled' : ''}>${tr(reveal.visible || reveal.pending ? 'credentialHideStored' : 'credentialShowStored')}</button>${reveal.pending ? `<small role="status">${tr('loading')}</small>` : ''}${reveal.failed ? `<p class="error" role="status">${tr('credentialRevealFailed')}</p>` : ''}</section>`
+          : '';
       return shell(
         tr(draft.requestId ? 'credentialRequest' : draft.id ? 'credentialEdit' : 'credentialAdd'),
         'credential-' + current.key,
-        `<form id="credential-form" autocomplete="off"><p class="card-description">${tr('credentialsHint')}</p>${draft.reason ? `<p class="credential-purpose"><strong>${tr('credentialReason')}</strong> ${escape(draft.reason)}</p>` : ''}<div class="form-grid"><label>${tr('credentialName')}<input name="name" value="${escape(draft.name)}" maxlength="100" required ${draft.requestId ? 'readonly' : ''}></label><label>${tr('credentialService')}<input name="service" value="${escape(draft.service)}" maxlength="200" required ${draft.requestId ? 'readonly' : ''}></label><label class="wide">${tr('credentialUsername')}<input name="username" value="${escape(draft.username)}" maxlength="300" autocomplete="off"></label><label class="wide">${tr('credentialSecret')}<input id="credential-secret" name="secret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="16000" ${draft.id ? '' : 'required'}></label></div>${draft.id ? `<p class="muted">${tr('credentialKeep')}</p>` : ''}${credentialError ? `<p class="error" role="status">${tr(credentialError)}</p>` : ''}<div class="form-actions">${draft.requestId ? control('credentialCancel', 'data-credential-cancel', locked) : control('cancel', 'data-action="close-modal"', busy)}<button type="submit" class="text-btn primary" ${locked ? 'disabled' : ''}>${tr(busy ? 'pending' : draft.requestId ? 'credentialContinue' : 'credentialSave')}</button></div></form>`,
+        `<form id="credential-form" autocomplete="off"><p class="card-description">${tr('credentialsHint')}</p>${draft.reason ? `<p class="credential-purpose"><strong>${tr('credentialReason')}</strong> ${escape(draft.reason)}</p>` : ''}<div class="form-grid"><label>${tr('credentialName')}<input name="name" value="${escape(draft.name)}" maxlength="100" required ${draft.requestId ? 'readonly' : ''}></label><label>${tr('credentialService')}<input name="service" value="${escape(draft.service)}" maxlength="200" required ${draft.requestId ? 'readonly' : ''}></label><label class="wide">${tr('credentialUsername')}<input name="username" value="${escape(draft.username)}" maxlength="300" autocomplete="off"></label><label class="wide">${tr('credentialSecret')}<input id="credential-secret" name="secret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="16000" ${draft.id ? '' : 'required'}></label><button type="button" class="text-btn" data-credential-toggle-input aria-controls="credential-secret" aria-pressed="${replacementVisible}">${tr(replacementVisible ? 'credentialHideTyped' : 'credentialShowTyped')}</button></div>${savedValue}${draft.id ? `<p class="muted">${tr('credentialKeep')}</p>` : ''}${credentialError ? `<p class="error" role="status">${tr(credentialError)}</p>` : ''}<div class="form-actions">${draft.requestId ? control('credentialCancel', 'data-credential-cancel', locked) : control('cancel', 'data-action="close-modal"', busy)}<button type="submit" class="text-btn primary" ${locked ? 'disabled' : ''}>${tr(busy ? 'pending' : draft.requestId ? 'credentialContinue' : 'credentialSave')}</button></div></form>`,
       );
     }
     if (current?.type === 'skill' && skillDraft) {
@@ -1087,6 +1146,20 @@ export function createManagedSettings({
     click('[data-credential-add]', () => {
       if (online() && !busy) credentialEditor();
     });
+    click('[data-credential-reveal]', () => credentialReveal.toggle());
+    click('[data-credential-toggle-input]', (node) => {
+      const input = document.querySelector<HTMLInputElement>('#credential-secret');
+      if (!input) return;
+      replacementVisible = !replacementVisible;
+      input.type = replacementVisible ? 'text' : 'password';
+      node.setAttribute('aria-pressed', String(replacementVisible));
+      node.textContent = tr(replacementVisible ? 'credentialHideTyped' : 'credentialShowTyped');
+    });
+    credentialReveal.apply(
+      document.querySelector<HTMLTextAreaElement>('#credential-revealed-secret'),
+    );
+    const replacement = document.querySelector<HTMLInputElement>('#credential-secret');
+    if (replacement) replacement.type = replacementVisible ? 'text' : 'password';
     click('[data-credential-edit]', (node) => {
       if (online() && !busy) {
         const item = credentials().items?.find((item) => item.id === node.dataset.credentialEdit);

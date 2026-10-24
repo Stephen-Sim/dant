@@ -48,6 +48,18 @@ func (value *Store) Message(id string) (*contracts.ChatMessage, error) {
 }
 
 func (value *Store) Add(ctx context.Context, input *contracts.ChatMessage) (*contracts.ChatMessage, error) {
+	return value.addMessage(ctx, "", input)
+}
+
+// AddConversation commits a message only within its captured conversation.
+func (value *Store) AddConversation(ctx context.Context, conversationID string, input *contracts.ChatMessage) (*contracts.ChatMessage, error) {
+	if conversationID == "" {
+		return nil, ErrMessageConflict
+	}
+	return value.addMessage(ctx, conversationID, input)
+}
+
+func (value *Store) addMessage(ctx context.Context, conversationID string, input *contracts.ChatMessage) (*contracts.ChatMessage, error) {
 	if input == nil || !input.Role.Valid() {
 		return nil, ErrInvalidState
 	}
@@ -83,6 +95,9 @@ func (value *Store) Add(ctx context.Context, input *contracts.ChatMessage) (*con
 		}
 	}
 	err = value.Mutate(ctx, func(state *contracts.State) error {
+		if conversationID != "" && state.ConversationID != conversationID {
+			return ErrMessageConflict
+		}
 		for _, prior := range state.Messages {
 			if prior != nil && prior.ID == message.ID {
 				return ErrMessageConflict

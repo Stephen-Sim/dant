@@ -84,6 +84,7 @@ func (app *WorkerApp) routes() (http.Handler, error) {
 	})
 	registerFileRoutes(mux, app.attachments, app.change)
 	security.RegisterCredentialRoutes(mux, app.credentials)
+	security.RegisterCredentialRevealRoute(mux, app.credentials, app.store.ConversationID)
 	skills.RegisterRoutes(mux, skills.RouteOptions{
 		Library: app.skills, Importer: app.skillImporter, Attachments: app.attachments,
 		Online: app.online,

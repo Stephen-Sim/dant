@@ -55,6 +55,25 @@ func TestAccountLoginAndDisconnectPublishStateWithoutOpeningATaskThread(t *testi
 		if len(changes) < 3 {
 			t.Fatal("account completion did not notify the API state projection")
 		}
+		worker.mu.Lock()
+		priorEpoch := worker.accountEpoch
+		worker.mu.Unlock()
+		fixture.send(t, `{"method":"account/updated","params":{}}`)
+		unchanged := rpcMethod(t, fixture, "account/read")
+		worker.mu.Lock()
+		invalidatedBeforeRead := worker.accountEpoch == priorEpoch+1
+		worker.mu.Unlock()
+		if !invalidatedBeforeRead {
+			t.Fatal("an account notification retained authority while metadata was pending")
+		}
+		replyFixture(t, fixture, unchanged, `{"account":{"type":"chatgpt","planType":"fixture-plan"}}`)
+		synctest.Wait()
+		worker.mu.Lock()
+		retainedInvalidation := worker.accountEpoch == priorEpoch+1
+		worker.mu.Unlock()
+		if !retainedInvalidation {
+			t.Fatal("identical public metadata was mistaken for unchanged workspace ownership")
+		}
 		select {
 		case request := <-fixture.requests:
 			t.Fatalf("account observer opened unrelated work: %s", request["method"])

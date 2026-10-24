@@ -318,6 +318,9 @@ func (app *WorkerApp) assembleExecution() error {
 	}
 	app.engine, err = work.New(app.ctx, app.store, app.worker, work.Options{
 		ToolRouter: app,
+		OpenConversation: func(ctx context.Context, conversationID string, isCurrent func() bool) (work.ConversationSession, error) {
+			return app.worker.OpenConversation(ctx, conversationID, isCurrent)
+		},
 		Memory: work.ReferenceMemoryFunc(func(ctx context.Context, query, conversationID, workID string) (string, error) {
 			var workIdentity *string
 			if workID != "" {

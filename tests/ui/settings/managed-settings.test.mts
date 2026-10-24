@@ -100,14 +100,16 @@ function fixture({
       textarea.textContent = decoder.textContent;
     }
     reconcile(app, template.content);
-    const password = document.querySelector<HTMLInputElement>('#credential-secret');
-    if (password && !Object.hasOwn(password, 'value')) {
-      let live = '';
-      Object.defineProperty(password, 'value', {
-        get: () => live,
-        set: (value: string) => (live = String(value)),
-      });
-    }
+    for (const password of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+      '#credential-secret, #credential-revealed-secret',
+    ))
+      if (!Object.hasOwn(password, 'value')) {
+        let live = '';
+        Object.defineProperty(password, 'value', {
+          get: () => live,
+          set: (value: string) => (live = String(value)),
+        });
+      }
     ui.bind();
     document
       .querySelectorAll<HTMLButtonElement>('[data-action="close-modal"]')
@@ -119,7 +121,9 @@ function fixture({
     render();
   }
   const request = async (route: string, options: ApiOptions = {}) => {
-    calls.push({ route, ...structuredClone(options) });
+    const { beforeSend, ...serializable } = options;
+    calls.push({ route, ...structuredClone(serializable), ...(beforeSend ? { beforeSend } : {}) });
+    if (beforeSend && !beforeSend()) throw Error('The request scope changed');
     if (wait) await wait(route, options);
     const rejected = fail?.(route, options);
     if (rejected)
@@ -127,6 +131,12 @@ function fixture({
     const method = options.method || 'GET';
     if (route === '/credentials' && method === 'GET') return structuredClone(backend.credentials);
     if (route === '/skills' && method === 'GET') return structuredClone(backend.skills);
+    if (route.startsWith('/credentials/reveal/') && method === 'POST')
+      return {
+        id: route.split('/').at(-1),
+        conversationId: state.conversationId,
+        secret: 'synthetic saved secret',
+      };
     if (route.startsWith('/credentials/requests/')) {
       backend.credentials.requests = backend.credentials.requests.filter(
         (item) => item.id !== route.split('/').at(-1),
@@ -263,6 +273,126 @@ function fixture({
     },
   };
 }
+
+test('credential editing reveals separately from replacement input and blank Save preserves the stored secret', async () => {
+  const f = fixture({
+    credentials: {
+      items: [{ id: 'synthetic-id', name: 'Synthetic', service: 'fixture.invalid' }],
+      requests: [],
+    },
+  });
+  f.state.conversationId = 'synthetic-conversation';
+  await f.click('[data-credential-edit]');
+  assert.equal(
+    f.calls.some((call) => call.route.startsWith('/credentials/reveal/')),
+    false,
+  );
+  const replacement = defined(f.document.querySelector<HTMLInputElement>('#credential-secret'));
+  assert.equal(replacement.type, 'password');
+  assert.equal(replacement.value, '');
+  await f.click('[data-credential-reveal]');
+  const saved = defined(
+    f.document.querySelector<HTMLTextAreaElement>('#credential-revealed-secret'),
+  );
+  assert.equal(saved.value, 'synthetic saved secret');
+  assert.equal(saved.hasAttribute('readonly'), true);
+  assert.equal(replacement.value, '');
+  assert.equal(
+    f.document.querySelector('main')?.innerHTML.includes('synthetic saved secret'),
+    false,
+  );
+  assert.equal(JSON.stringify(f.state).includes('synthetic saved secret'), false);
+  await f.submit('#credential-form');
+  const patch = f.calls.find(
+    (call) => call.method === 'PATCH' && call.route === '/credentials/synthetic-id',
+  );
+  assert.ok(patch);
+  assert.equal(Object.hasOwn(observedRecord(patch.body), 'secret'), false);
+  assert.equal(saved.value, '');
+});
+
+test('typed credential secrets toggle locally and survive rerender without becoming a saved reveal', async () => {
+  const f = fixture();
+  await f.click('[data-credential-add]');
+  const input = defined(f.input('secret', 'synthetic replacement'));
+  await f.click('[data-credential-toggle-input]');
+  assert.equal(input.getAttribute('type'), 'text');
+  assert.equal(input.value, 'synthetic replacement');
+  assert.equal(f.calls.length, 0);
+  f.render();
+  assert.equal(input.getAttribute('type'), 'text');
+  assert.equal(input.value, 'synthetic replacement');
+  await f.click('[data-credential-toggle-input]');
+  assert.equal(input.getAttribute('type'), 'password');
+  f.closeModal();
+  assert.equal(input.value, '');
+});
+
+test('closing or switching the computer during a pending reveal drops its plaintext response', async () => {
+  for (const changed of ['close', 'computer', 'knownHosts', 'provider'] as const) {
+    const f = fixture({
+      credentials: {
+        items: [{ id: 'synthetic-id', name: 'Synthetic', service: 'fixture.invalid' }],
+        requests: [],
+      },
+    });
+    f.state.conversationId = 'synthetic-conversation';
+    f.state.settings.vm = { host: 'same-computer', knownHosts: 'old-trust', provider: 'hyperv' };
+    await f.click('[data-credential-edit]');
+    let finish: () => void = () => {};
+    f.wait = (route) =>
+      route.startsWith('/credentials/reveal/')
+        ? new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+        : undefined;
+    const pending = f.click('[data-credential-reveal]');
+    await settle();
+    if (changed === 'close') f.closeModal();
+    else if (changed === 'computer') {
+      f.state.settings.vm = { host: 'replacement-computer' };
+      f.render();
+    } else {
+      f.state.settings.vm = {
+        ...f.state.settings.vm,
+        [changed]: changed === 'provider' ? 'vmware' : 'replacement-trust',
+      };
+      f.render();
+    }
+    finish();
+    await pending;
+    assert.equal(f.modal, null);
+    assert.equal(f.document.querySelector('#credential-revealed-secret'), null);
+    assert.equal(JSON.stringify(f.state).includes('synthetic saved secret'), false);
+  }
+});
+
+test('changing only trust or provider drops an already visible secret even when record IDs stay identical', async () => {
+  for (const changed of ['knownHosts', 'provider'] as const) {
+    const f = fixture({
+      credentials: {
+        items: [{ id: 'synthetic-id', name: 'Synthetic', service: 'fixture.invalid' }],
+        requests: [],
+      },
+    });
+    f.state.conversationId = 'synthetic-conversation';
+    f.state.settings.vm = { host: 'same-computer', knownHosts: 'old-trust', provider: 'hyperv' };
+    await f.click('[data-credential-edit]');
+    await f.click('[data-credential-reveal]');
+    const visible = defined(
+      f.document.querySelector<HTMLTextAreaElement>('#credential-revealed-secret'),
+    );
+    assert.equal(visible.value, 'synthetic saved secret');
+    f.state.settings.vm = {
+      ...f.state.settings.vm,
+      [changed]: changed === 'provider' ? 'vmware' : 'replacement-trust',
+    };
+    f.render();
+    assert.equal(visible.value, '');
+    assert.equal(f.modal, null);
+    assert.equal(f.document.querySelector('#credential-revealed-secret'), null);
+  }
+});
 
 test('vault and skill dictionaries are balanced and both languages render safe metadata and offline controls', async () => {
   assert.deepEqual(Object.keys(managedMessages.zh).sort(), Object.keys(managedMessages.en).sort());

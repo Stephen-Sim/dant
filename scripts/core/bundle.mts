@@ -24,6 +24,7 @@ export const VM_BUNDLE_FILES = Object.freeze(
     'resources/config/protocol.json',
     'vm/bootstrap.sh',
     'vm/control.py',
+    'vm/conversation-namespace.py',
     'vm/desktop.py',
     'vm/desktop_mcp.py',
     'vm/guest.py',

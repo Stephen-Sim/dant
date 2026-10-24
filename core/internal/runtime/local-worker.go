@@ -53,20 +53,23 @@ type connectionAttempt struct {
 	err    error
 }
 type LocalWorker struct {
-	ctx             context.Context
-	cancel          context.CancelFunc
-	source          ConversationSource
-	options         WorkerOptions
-	mu              sync.Mutex
-	generation      uint64
-	status          contracts.ConnectionStatus
-	lastError       contracts.Optional[string]
-	rpc             *RPC
-	executor        *Executor
-	connecting      *connectionAttempt
-	account, models contracts.RawObject
-	closed          bool
-	monitors        sync.WaitGroup
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	source              ConversationSource
+	options             WorkerOptions
+	mu                  sync.Mutex
+	generation          uint64
+	status              contracts.ConnectionStatus
+	lastError           contracts.Optional[string]
+	rpc                 *RPC
+	executor            *Executor
+	connecting          *connectionAttempt
+	account, models     contracts.RawObject
+	closed              bool
+	monitors            sync.WaitGroup
+	accountEpoch        uint64
+	conversationOpening bool
+	conversationSession *ConversationSession
 }
 
 func NewLocalWorker(ctx context.Context, source ConversationSource, options WorkerOptions) (*LocalWorker, error) {
@@ -397,6 +400,12 @@ func (value *LocalWorker) CloseContext(ctx context.Context) error {
 	case <-ctx.Done():
 		return ErrStopUnconfirmed
 	}
+	value.mu.Lock()
+	unconfirmedConversation := value.conversationOpening || value.conversationSession != nil
+	value.mu.Unlock()
+	if unconfirmedConversation {
+		return ErrStopUnconfirmed
+	}
 	return nil
 }
 
@@ -468,6 +477,7 @@ func (value *LocalWorker) RequestGuarded(ctx context.Context, method string, par
 	if method == "account/logout" {
 		value.mu.Lock()
 		if value.generation == generation && value.rpc == rpc {
+			value.accountEpoch++
 			value.account = contracts.RawObject{"account": json.RawMessage("null")}
 		}
 		value.mu.Unlock()

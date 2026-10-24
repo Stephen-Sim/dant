@@ -6,11 +6,11 @@ Connect the work computer, then open **Settings → Credential vault** or the **
 
 ## Credential workflow
 
-Add a name, service or hostname, optional username, and a password, token or API key in the dedicated password field. The list shows metadata only. Editing never fetches the existing secret: leave the password field blank to retain it, or enter a replacement. Removal requires confirmation.
+Add a name, service or hostname, optional username, and a password, token or API key in the dedicated password field. The list shows metadata only. Editing keeps the saved secret hidden until you explicitly choose **Show saved value**. This fetches it into a separate read-only field; **Hide saved value**, closing the editor, or changing its conversation or work computer clears it and discards late responses. Leave the replacement password field blank to retain the saved value, or enter a replacement. **Show input / Hide input** only changes the visibility of what you typed. Removal requires confirmation.
 
 When dant needs a credential, its model tools can find matching saved metadata and retrieve the value for the login operation. A missing credential produces a request with its service and purpose. The app opens a separate secure form and keeps a request entry available in chat and settings. **Save and continue** stores the value and resumes the waiting tool; **Cancel request** declines it. Never put the value in the ordinary chat composer.
 
-The VM vault uses AES-256-GCM encryption. Its master key is a separate file restricted to the ordinary VM user with mode `0600`; this protects stored files, not against that same VM user or an administrator. This vault does not use Windows DPAPI. Windows settings, state events, lists and the offline cache contain credential metadata, not secret values. Typed secrets stay in the current password control through ordinary UI updates and clear when the form closes or succeeds; they are not saved in localStorage or displayed in toasts.
+The VM vault uses AES-256-GCM encryption. Its master key is a separate file restricted to the ordinary VM user with mode `0600`; this protects stored files, not against that same VM user or an administrator. This vault does not use Windows DPAPI. Windows settings, state events, lists, diagnostics and the offline cache contain credential metadata, not secret values. An authenticated reveal returns a `Cache-Control: no-store` response only to the requesting editor. Typed secrets stay in the current password control through ordinary UI updates and clear when the form closes or succeeds; neither typed nor revealed values are saved in localStorage or displayed in toasts.
 
 `credential_get` intentionally supplies the secret to the model's scoped tool context when needed for login. It is not an ordinary chat response. Secrets must not be echoed into chat, command output, repositories or skill files. The optional paid voice API key remains a separate configuration described in [voice configuration](VOICE-KEY.md).
 
@@ -36,16 +36,17 @@ The model may discover and create a skill when a procedure is reusable. Saving c
 
 ## API boundaries
 
-| Routes                                                       | Purpose                                                                                                     |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `GET /api/credentials`                                       | Metadata and pending requests only                                                                          |
-| `POST /api/credentials`, `PATCH/DELETE /api/credentials/:id` | Create, update or remove a saved credential                                                                 |
-| `POST/DELETE /api/credentials/requests/:id`                  | Fulfill or cancel the requested credential                                                                  |
-| `GET /api/skills`, `GET /api/skills/:name`                   | List metadata or read managed instructions, text files and read-only binary asset metadata                  |
-| `POST /api/skills`, `PATCH/DELETE /api/skills/:name`         | Save, edit, toggle or remove a managed skill                                                                |
-| `POST /api/skills/import/preview`, `POST /api/skills/import` | Preview a GitHub/file source, then save the selected skill without overwriting                              |
-| `DELETE /api/skills/import/previews/:id`                     | Discard an unused preview; expiry also releases it                                                          |
-| `POST /api/skills/:name/export`                              | Package a managed skill as a ZIP attachment; download the returned attachment through the normal file route |
+| Routes                                                       | Purpose                                                                                                          |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `GET /api/credentials`                                       | Metadata and pending requests only                                                                               |
+| `POST /api/credentials`, `PATCH/DELETE /api/credentials/:id` | Create, update or remove a saved credential                                                                      |
+| `POST/DELETE /api/credentials/requests/:id`                  | Fulfill or cancel the requested credential                                                                       |
+| `POST /api/credentials/reveal/:id`                           | Explicitly show one saved value in its current editor; requires `conversationId` and returns a no-store response |
+| `GET /api/skills`, `GET /api/skills/:name`                   | List metadata or read managed instructions, text files and read-only binary asset metadata                       |
+| `POST /api/skills`, `PATCH/DELETE /api/skills/:name`         | Save, edit, toggle or remove a managed skill                                                                     |
+| `POST /api/skills/import/preview`, `POST /api/skills/import` | Preview a GitHub/file source, then save the selected skill without overwriting                                   |
+| `DELETE /api/skills/import/previews/:id`                     | Discard an unused preview; expiry also releases it                                                               |
+| `POST /api/skills/:name/export`                              | Package a managed skill as a ZIP attachment; download the returned attachment through the normal file route      |
 
 All routes use the existing local Controller and VM authentication boundary. An acknowledged write is not automatically repeated if the following metadata refresh fails.
 

@@ -49,6 +49,7 @@ export function createTransport({
 }: TransportOptions = {}) {
   let token = '',
     ipc: Promise<unknown> = Promise.resolve(),
+    chatIpc: Promise<unknown> = Promise.resolve(),
     mutationRevision = 0,
     generation = 0;
   let source: SourceApi | null = null,
@@ -94,12 +95,18 @@ export function createTransport({
     )
       return Promise.reject(new Error('Invalid local API route'));
     const encoded = body === undefined || body === null ? null : JSON.stringify(body);
+    const guardedChatSubmission =
+      method === 'POST' &&
+      (route === apiPath('/messages') || route === apiPath('/realtime/message')) &&
+      typeof beforeSend === 'function';
     let guardedRevision = mutationRevision;
     const checkBeforeSend = () => {
       if (!beforeSend) return;
       let valid = false;
       try {
-        valid = (!desktop || guardedRevision === mutationRevision) && beforeSend() === true;
+        valid =
+          (!desktop || guardedChatSubmission || guardedRevision === mutationRevision) &&
+          beforeSend() === true;
       } catch {
         // A failed precondition cannot authorize crossing the native boundary.
       }
@@ -149,8 +156,9 @@ export function createTransport({
       }
     };
     // Reads never hold up controls or wait behind long connection/backup work.
-    // Mutations retain their original order and are never retried. Every lane
-    // still crosses the same authenticated, fixed-endpoint native bridge.
+    // Control writes retain their order. Captured chat submissions have their own
+    // ordered lane so connection/input work cannot delay outgoing chat. Every lane
+    // crosses the same authenticated native bridge; mutations are never retried.
     if (
       !desktop ||
       method === 'GET' ||
@@ -169,8 +177,17 @@ export function createTransport({
         mutationRevision++;
       }
     };
-    const request = ipc.then(mutate, mutate);
-    ipc = request.catch(() => {});
+    const request = (guardedChatSubmission ? chatIpc : ipc).then(mutate, mutate);
+    if (guardedChatSubmission)
+      chatIpc = request.then(
+        () => undefined,
+        () => undefined,
+      );
+    else
+      ipc = request.then(
+        () => undefined,
+        () => undefined,
+      );
     return request;
   }
   const refreshToken = async () => {

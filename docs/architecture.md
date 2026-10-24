@@ -248,6 +248,10 @@ Current Codex sessions use `approvalPolicy: 'never'` and `danger-full-access` in
 
 Human takeover reserves ownership, interrupts the exact turn and waits for a confirmed stop before granting a guest control lease. Python tools and UI input share the lock/lease. Expired or mismatched sessions cannot inject input; returning control does not replay paused work. These controls cannot guarantee termination of previously detached processes or replace OS permissions.
 
+Fresh ordinary chat during a confirmed human lease uses a separately owned, ephemeral conversation process. It cannot register tasks, route tools, resume old work or replace the saved task thread. Bubblewrap exposes a private home/config/work directory, read-only runtime libraries and minimal network configuration; the original user's files, desktop sockets and service tokens are absent. The pinned app-server receives no environments or dynamic tools. Its fixed environment-backed provider uses the current account's existing inference endpoint, with no managed login or inherited/cloud configuration. Credentials stay in the child environment for its bounded lifetime and are never copied to an auth file. Process termination is joined before private directories or admission ownership are released; an uncertain submission is never replayed.
+
+The namespace root is read-only, with separate writable home/config/work mounts. Its fixed `/etc/codex/requirements.toml` contains an empty `[mcp_servers]` table, and the private workspace cannot rename or replace its policy parents. New VMs install the system `bubblewrap` package. Existing VMs require that Ubuntu package and a successful namespace preflight before an update stops the current Worker; the updater does not run automatic `sudo` or use a user-local binary as a substitute for the system security profile. A missing or blocked prerequisite preserves the running version.
+
 ## Persistence and lifecycle
 
 | Owner              | Data                                                                    | Recovery rule                                                              |

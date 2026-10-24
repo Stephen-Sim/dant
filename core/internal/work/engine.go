@@ -41,33 +41,37 @@ type execution struct {
 	updatedAt      float64
 	step           contracts.TaskProgressStage
 
-	startSubmitted      bool
-	startAcknowledged   bool
-	startRejected       bool
-	terminal            bool
-	finishing           bool
-	stopRequested       bool
-	stopReason          string
-	cancelRequested     bool
-	pauseOnly           bool
-	unknown             bool
-	waiting             bool
-	planWaiting         bool
-	credentialWaits     int
-	credentialNotified  bool
-	inputDelivered      bool
-	blockerSequence     int
-	requestNotices      map[string]bool
-	workObserved        bool
-	humanResponse       bool
-	nativeVoice         bool
-	voiceTask           bool
-	conversationalInput bool
-	nativeBackground    bool
-	callID              string
-	handoffID           string
-	nativeAdmission     *ContinuationAdmission
-	record              *contracts.WorkRecord
+	startSubmitted       bool
+	startAcknowledged    bool
+	startRejected        bool
+	terminal             bool
+	finishing            bool
+	stopRequested        bool
+	stopReason           string
+	cancelRequested      bool
+	pauseOnly            bool
+	unknown              bool
+	waiting              bool
+	planWaiting          bool
+	credentialWaits      int
+	credentialNotified   bool
+	inputDelivered       bool
+	blockerSequence      int
+	requestNotices       map[string]bool
+	workObserved         bool
+	humanResponse        bool
+	nativeVoice          bool
+	voiceTask            bool
+	conversationalInput  bool
+	conversationOnly     bool
+	conversationSession  ConversationSession
+	conversationCancel   func()
+	conversationStopping bool
+	nativeBackground     bool
+	callID               string
+	handoffID            string
+	nativeAdmission      *ContinuationAdmission
+	record               *contracts.WorkRecord
 
 	outputs           map[string]string
 	outputOrder       []string
@@ -92,21 +96,22 @@ type Engine struct {
 	worker  Worker
 	options Options
 
-	mu               sync.Mutex
-	closed           bool
-	paused           bool
-	pauseReason      string
-	takeover         bool
-	acquiring        bool
-	confirmedStopped bool
-	loaded           bool
-	epoch            uint64
-	active           *execution
-	queue            []string
-	pendingFollowups map[string]bool
-	pendingRequests  map[string]runtime.Event
-	completedTurns   []string
-	completedItems   []string
+	mu                sync.Mutex
+	closed            bool
+	paused            bool
+	pauseReason       string
+	takeover          bool
+	acquiring         bool
+	confirmedStopped  bool
+	loaded            bool
+	epoch             uint64
+	active            *execution
+	queue             []string
+	pendingFollowups  map[string]bool
+	pendingRequests   map[string]runtime.Event
+	conversationQueue map[string]bool
+	completedTurns    []string
+	completedItems    []string
 
 	changes                 map[chan struct{}]struct{}
 	signals                 map[chan Signal]struct{}
@@ -149,12 +154,13 @@ func New(ctx context.Context, persistence *store.Store, worker Worker, options O
 		worker:  worker,
 		options: options,
 
-		queue:            []string{},
-		pendingFollowups: make(map[string]bool),
-		pendingRequests:  make(map[string]runtime.Event),
-		changes:          make(map[chan struct{}]struct{}),
-		wake:             make(chan struct{}, 1),
-		confirmedStopped: true,
+		queue:             []string{},
+		pendingFollowups:  make(map[string]bool),
+		pendingRequests:   make(map[string]runtime.Event),
+		conversationQueue: make(map[string]bool),
+		changes:           make(map[chan struct{}]struct{}),
+		wake:              make(chan struct{}, 1),
+		confirmedStopped:  true,
 
 		toolSlots:  make(chan struct{}, MaxToolWorkers),
 		quietFiles: make(map[string][]contracts.Attachment),
@@ -300,7 +306,7 @@ func (value *Engine) Current(owner ToolContext) bool {
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	active := value.active
-	return !value.closed && !value.takeover && !value.acquiring && active != nil && !active.finishing && !active.stopRequested && !active.unknown && active.conversationID == owner.ConversationID && active.turnID == owner.TurnID && active.threadID == owner.ThreadID && active.startAcknowledged && value.store.ConversationID() == owner.ConversationID && value.worker.Snapshot().Status == contracts.ConnectionStatusOnline
+	return !value.closed && !value.takeover && !value.acquiring && active != nil && !active.conversationOnly && !active.finishing && !active.stopRequested && !active.unknown && active.conversationID == owner.ConversationID && active.turnID == owner.TurnID && active.threadID == owner.ThreadID && active.startAcknowledged && value.store.ConversationID() == owner.ConversationID && value.worker.Snapshot().Status == contracts.ConnectionStatusOnline
 }
 
 func (value *Engine) current(active *execution) bool {
@@ -341,8 +347,10 @@ func (value *Engine) HistoryTransaction(
 	}
 	if change.Clear {
 		value.queue = []string{}
+		value.conversationQueue = make(map[string]bool)
 	}
 	if change.WithdrawID != "" {
+		delete(value.conversationQueue, change.WithdrawID)
 		value.queue = slices.DeleteFunc(value.queue, func(id string) bool {
 			return id == change.WithdrawID
 		})
@@ -413,7 +421,8 @@ func (value *Engine) enqueueLocked(ctx context.Context, message *contracts.ChatM
 		return runtime.ErrBackpressure
 	}
 	resumeAfterControl := freshHumanInput && value.canAdmitAfterHumanControlLocked()
-	if reason := value.admissionPauseReasonLocked(); reason != "" && !resumeAfterControl {
+	conversationOnly := freshHumanInput && value.canAdmitConversationLocked(current)
+	if reason := value.admissionPauseReasonLocked(); reason != "" && !resumeAfterControl && !conversationOnly {
 		_, err = value.store.Update(ctx, current.ID, patch(map[string]json.RawMessage{"status": raw(contracts.TaskStatusPaused), "pauseReason": raw(reason)}))
 		return err
 	}
@@ -428,6 +437,9 @@ func (value *Engine) enqueueLocked(ctx context.Context, message *contracts.ChatM
 		value.clearPauseLocked()
 	}
 	value.queue = append(value.queue, current.ID)
+	if conversationOnly {
+		value.conversationQueue[current.ID] = true
+	}
 	value.changeLocked()
 	value.Wake()
 	return nil
@@ -451,7 +463,8 @@ func (value *Engine) pump() {
 		value.mu.Unlock()
 		return
 	}
-	if value.closed || value.maintenance || value.paused || value.takeover || value.acquiring || value.openingThread || value.active != nil || len(value.queue) == 0 || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline || (value.options.Calls != nil && value.options.Calls.PendingWork()) {
+	conversationOnly := len(value.queue) > 0 && value.conversationQueue[value.queue[0]] && value.conversationAdmissionReadyLocked() && value.confirmedStopped
+	if value.closed || value.maintenance || (value.paused || value.takeover) && !conversationOnly || value.acquiring || value.openingThread || value.active != nil || len(value.queue) == 0 || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline || (value.options.Calls != nil && value.options.Calls.PendingWork()) {
 		value.mu.Unlock()
 		return
 	}
@@ -464,6 +477,7 @@ func (value *Engine) pump() {
 	}
 	if err != nil {
 		value.queue = value.queue[1:]
+		delete(value.conversationQueue, messageID)
 		value.mu.Unlock()
 		value.Wake()
 		return
@@ -495,10 +509,12 @@ func (value *Engine) pump() {
 		return
 	}
 	value.queue = value.queue[1:]
+	delete(value.conversationQueue, messageID)
 	value.epoch++
 	prepare, cancel := context.WithCancel(value.ctx)
 	active := &execution{epoch: value.epoch, conversationID: state.ConversationID, messageID: messageID, messageIDs: []string{messageID}, startedAt: value.Timestamp(), updatedAt: value.Timestamp(), step: contracts.TaskProgressStagePreparing, outputs: make(map[string]string), items: make(map[string]string), stopped: make(chan struct{}), prepare: prepare, cancelPreparation: cancel}
 	active.conversationalInput = message.WorkKind == "conversation"
+	active.conversationOnly = conversationOnly
 	if voice != nil {
 		active.nativeVoice = true
 		active.nativeBackground = voice.background
@@ -606,6 +622,10 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 			value.mu.Unlock()
 			return
 		}
+		if active.conversationStopping {
+			value.mu.Unlock()
+			return
+		}
 		unknown := active.startSubmitted && !active.startAcknowledged
 		var operation *runtime.OperationError
 		if errors.As(err, &operation) && !operation.UnknownOutcome {
@@ -621,15 +641,27 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 		}
 		_ = value.finish(active, status, pauseReasonRequestFailed)
 	}
-	if err := value.ensureEvents(); err != nil {
-		failed(err)
+	var eventErr error
+	if active.conversationOnly {
+		eventErr = value.openConversation(active)
+	} else {
+		eventErr = value.ensureEvents()
+	}
+	if eventErr != nil {
+		failed(eventErr)
 		return
 	}
 	if err := value.updateExecutionMessage(active, contracts.RawObject{"status": raw(contracts.TaskStatusRunning), "submission": raw(contracts.SubmissionStatusPreparing), "error": json.RawMessage("null")}); err != nil {
 		failed(err)
 		return
 	}
-	thread, err := value.thread(active)
+	var thread string
+	var err error
+	if active.conversationOnly {
+		thread, err = value.conversationThread(active)
+	} else {
+		thread, err = value.thread(active)
+	}
 	if err != nil {
 		failed(err)
 		return
@@ -647,7 +679,7 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 		failed(err)
 		return
 	}
-	if value.options.Deliverables != nil {
+	if !active.conversationOnly && value.options.Deliverables != nil {
 		active.baseline, err = value.options.Deliverables.CaptureBaseline(active.prepare, value.outputDirectory(active.conversationID))
 		if err != nil {
 			failed(err)
@@ -670,7 +702,13 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 	if model := value.store.Snapshot().Settings.Model; model != "" {
 		params["model"] = raw(model)
 	}
-	result, err := value.requestOwned(value.ctx, "turn/start", params, func() bool { return value.dispatchCurrent(active) })
+	var result contracts.RawObject
+	if active.conversationOnly {
+		params = value.conversationTurnParams(active, params)
+		result, err = value.conversationRequest(value.ctx, active, "turn/start", params)
+	} else {
+		result, err = value.requestOwned(value.ctx, "turn/start", params, func() bool { return value.dispatchCurrent(active) })
+	}
 	if err != nil {
 		failed(err)
 		return
@@ -726,7 +764,11 @@ func (value *Engine) start(active *execution, message *contracts.ChatMessage) {
 	value.changeLocked()
 	value.mu.Unlock()
 	for _, event := range events {
-		_ = value.Handle(value.ctx, event)
+		if active.conversationOnly {
+			_ = value.handleConversationEvent(value.ctx, active, event)
+		} else {
+			_ = value.Handle(value.ctx, event)
+		}
 	}
 }
 
@@ -846,6 +888,7 @@ func (value *Engine) Close() error {
 	}
 	value.closed = true
 	value.cancel()
+	active := value.active
 	eventCancel := value.eventCancel
 	for channel := range value.signals {
 		close(channel)
@@ -859,6 +902,10 @@ func (value *Engine) Close() error {
 	if eventCancel != nil {
 		eventCancel()
 	}
+	var conversationErr error
+	if active != nil && active.conversationOnly {
+		conversationErr = value.closeConversation(active)
+	}
 	value.workers.Wait()
-	return nil
+	return conversationErr
 }

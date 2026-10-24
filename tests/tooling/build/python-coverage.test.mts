@@ -88,6 +88,7 @@ test('Python discovery includes new and unimported maintained paths while ignori
     fs.writeFileSync(path.join(root, '.gitignore'), '.cache/\n');
     for (const file of [
       'scripts/never-imported.py',
+      'vm/conversation-namespace.py',
       'vm/worker-install.py',
       'other/tool.py',
       'tests/vm/test_tool.py',
@@ -100,6 +101,7 @@ test('Python discovery includes new and unimported maintained paths while ignori
     assert.deepEqual(discoverPythonSources(root), [
       'other/tool.py',
       'scripts/never-imported.py',
+      'vm/conversation-namespace.py',
       'vm/worker-install.py',
     ]);
     const add = spawnSync('git', ['-C', root, 'add', 'scripts/never-imported.py'], {
@@ -110,6 +112,7 @@ test('Python discovery includes new and unimported maintained paths while ignori
     assert.deepEqual(discoverPythonSources(root), [
       'other/tool.py',
       'scripts/never-imported.py',
+      'vm/conversation-namespace.py',
       'vm/worker-install.py',
     ]);
     fs.rmSync(path.join(root, 'scripts/never-imported.py'));

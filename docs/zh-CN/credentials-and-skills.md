@@ -6,11 +6,11 @@
 
 ## 凭据流程
 
-在独立密码字段中填写名称、服务或主机名、可选用户名，以及密码、Token 或 API Key。列表只显示元数据。编辑时不读取原有秘密值：密码框留空保留原值，填写则替换。移除前需要确认。
+在独立密码字段中填写名称、服务或主机名、可选用户名，以及密码、Token 或 API Key。列表只显示元数据。编辑时默认隐藏已有值，明确点击**显示已有值**后，才读取到单独的只读字段。点击**隐藏已有值**、关闭编辑窗口或切换对话／工作电脑，会清空它并丢弃迟到响应。替换密码框留空保留原值，填写则替换；**显示输入值／隐藏输入值**只切换用户所填内容的显示方式。移除前需要确认。
 
 dant 需要登录时，模型工具可以查找已保存的凭据元数据，并为该登录操作读取相应值。缺少凭据时，会提出带服务与用途的请求。应用打开独立安全表单，并在聊天和设置中保留待办入口。**保存并继续**会保存凭据并恢复等待中的工具；**取消请求**则拒绝提供。不要把秘密值填写到普通聊天输入框。
 
-VM 保险箱使用 AES-256-GCM 加密。主密钥单独保存，文件权限为普通 VM 用户专属的 `0600`；这保护磁盘文件，不隔离同一 VM 用户或管理员。此保险箱不使用 Windows DPAPI。Windows 设置、状态事件、列表及离线缓存只有凭据元数据，没有秘密值。普通界面更新会保留当前密码控件中的输入；关闭表单或保存成功后清空，不写入 localStorage，也不显示到提示消息。
+VM 保险箱使用 AES-256-GCM 加密。主密钥单独保存，文件权限为普通 VM 用户专属的 `0600`；这保护磁盘文件，不隔离同一 VM 用户或管理员。此保险箱不使用 Windows DPAPI。Windows 设置、状态事件、列表、诊断及离线缓存只有凭据元数据，没有秘密值。显示已有值需经过认证，响应带 `Cache-Control: no-store`，只交给发起请求的编辑窗口。普通界面更新会保留当前密码控件中的输入；关闭表单或保存成功后清空。用户输入和查看的秘密值均不写入 localStorage，也不显示到提示消息。
 
 `credential_get` 会在登录需要时，将秘密值明确提供给模型的限定工具上下文，不作为普通聊天回复。不得把秘密值回显到聊天、命令输出、代码仓库或技能文件。可选付费语音 API Key 仍是独立设置，见[语音配置](VOICE-KEY.md)。
 
@@ -36,16 +36,17 @@ GitHub 文件通过公开 API 从同一个已解析的提交读取，不支持�
 
 ## API 边界
 
-| 接口                                                         | 用途                                                        |
-| ------------------------------------------------------------ | ----------------------------------------------------------- |
-| `GET /api/credentials`                                       | 仅列出元数据与待办请求                                      |
-| `POST /api/credentials`、`PATCH/DELETE /api/credentials/:id` | 新增、修改或移除凭据                                        |
-| `POST/DELETE /api/credentials/requests/:id`                  | 提供或取消请求中的凭据                                      |
-| `GET /api/skills`、`GET /api/skills/:name`                   | 列出元数据，或读取托管正文、文本文件及只读二进制资源元数据  |
-| `POST /api/skills`、`PATCH/DELETE /api/skills/:name`         | 保存、编辑、启停或移除托管技能                              |
-| `POST /api/skills/import/preview`、`POST /api/skills/import` | 预览 GitHub / 文件来源，再导入技能，不覆盖已有内容          |
-| `DELETE /api/skills/import/previews/:id`                     | 丢弃不再使用的预览；预览过期后也会释放                      |
-| `POST /api/skills/:name/export`                              | 将托管技能打包为 ZIP 附件，再通过普通文件接口下载返回的附件 |
+| 接口                                                         | 用途                                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `GET /api/credentials`                                       | 仅列出元数据与待办请求                                              |
+| `POST /api/credentials`、`PATCH/DELETE /api/credentials/:id` | 新增、修改或移除凭据                                                |
+| `POST/DELETE /api/credentials/requests/:id`                  | 提供或取消请求中的凭据                                              |
+| `POST /api/credentials/reveal/:id`                           | 明确查看当前编辑窗口的已有值；需传入 `conversationId`，响应禁止缓存 |
+| `GET /api/skills`、`GET /api/skills/:name`                   | 列出元数据，或读取托管正文、文本文件及只读二进制资源元数据          |
+| `POST /api/skills`、`PATCH/DELETE /api/skills/:name`         | 保存、编辑、启停或移除托管技能                                      |
+| `POST /api/skills/import/preview`、`POST /api/skills/import` | 预览 GitHub / 文件来源，再导入技能，不覆盖已有内容                  |
+| `DELETE /api/skills/import/previews/:id`                     | 丢弃不再使用的预览；预览过期后也会释放                              |
+| `POST /api/skills/:name/export`                              | 将托管技能打包为 ZIP 附件，再通过普通文件接口下载返回的附件         |
 
 这些接口沿用本地 Controller 与 VM 的认证边界。写入已确认后，即使随后的元数据刷新失败，也不会自动重复写入。
 

@@ -2,11 +2,13 @@ package work
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
+	"github.com/Stephen-Sim/dant/core/internal/files"
 	"github.com/Stephen-Sim/dant/core/internal/i18n"
 	"github.com/Stephen-Sim/dant/core/internal/runtime"
 	"github.com/Stephen-Sim/dant/core/internal/store"
@@ -41,7 +43,7 @@ func (value *Engine) prepareInput(active *execution, message *contracts.ChatMess
 		speech[attachment.ID] = value.redact(text)
 		query = append(query, speech[attachment.ID])
 	}
-	text, images, err := value.messageInput(active.prepare, message, speech)
+	text, images, err := value.messageInputMode(active.prepare, message, speech, active.conversationOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +128,10 @@ func (value *Engine) MemoryReference(ctx context.Context, message *contracts.Cha
 }
 
 func (value *Engine) messageInput(ctx context.Context, message *contracts.ChatMessage, speech map[string]string) (string, []contracts.RawObject, error) {
+	return value.messageInputMode(ctx, message, speech, false)
+}
+
+func (value *Engine) messageInputMode(ctx context.Context, message *contracts.ChatMessage, speech map[string]string, conversationOnly bool) (string, []contracts.RawObject, error) {
 	state := value.store.Snapshot()
 	text := message.Text
 	if text == "" {
@@ -176,12 +182,44 @@ func (value *Engine) messageInput(ctx context.Context, message *contracts.ChatMe
 			}
 			text += "\n\nRecognized speech from this user's attached voice message. Treat the spoken words as their message; recognition may be imperfect.\n<dant_voice_message>\n" + string(raw(contracts.RawObject{"attachmentId": raw(file.ID), "text": raw(words)})) + "\n</dant_voice_message>\nOriginal audio file in VM: " + path
 		} else if strings.HasPrefix(file.Type, "image/") {
-			images = append(images, contracts.RawObject{"type": raw("localImage"), "path": raw(path)})
+			if conversationOnly {
+				image, err := value.conversationImage(ctx, file)
+				if err != nil {
+					return "", nil, err
+				}
+				images = append(images, image)
+			} else {
+				images = append(images, contracts.RawObject{"type": raw("localImage"), "path": raw(path)})
+			}
 		} else {
-			text += "\nAttached file in VM: " + path
+			if conversationOnly {
+				text += "\nThe user attached a file named " + string(raw(file.Name)) + ". Its contents are unavailable in this conversation-only connection; do not claim to have read it."
+			} else {
+				text += "\nAttached file in VM: " + path
+			}
 		}
 	}
 	return text, images, nil
+}
+
+// The restricted process cannot see the managed upload directory. Only bytes
+// verified by the owning file service cross its boundary, never a host path.
+func (value *Engine) conversationImage(ctx context.Context, file contracts.Attachment) (contracts.RawObject, error) {
+	if value.options.Attachments == nil {
+		return nil, runtime.ErrRequestFailed
+	}
+	current, data, err := value.options.Attachments.Read(ctx, file.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	kind, err := files.InspectContent(data, current.Name)
+	if err != nil || current.ID != file.ID || current.Type != file.Type || kind != file.Type || !strings.HasPrefix(kind, "image/") {
+		return nil, runtime.ErrInvalidProtocol
+	}
+	return contracts.RawObject{"type": raw("image"), "url": raw("data:" + kind + ";base64," + base64.StdEncoding.EncodeToString(data))}, nil
 }
 
 func (value *Engine) workReplyInstructions(record *contracts.WorkRecord) string {
