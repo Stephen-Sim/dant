@@ -29,6 +29,7 @@ type ConversationSession struct {
 	origin                   *RPC
 	generation, accountEpoch uint64
 	conversationID, root     string
+	directory                *conversationDirectory
 	isCurrent                func() bool
 	once                     sync.Once
 	done                     chan struct{}
@@ -113,23 +114,14 @@ func (value *LocalWorker) OpenConversation(ctx context.Context, conversationID s
 			}
 		}
 	}
-	root, err := os.MkdirTemp("", "dant-conversation-")
+	directory, err := createConversationDirectory()
 	if err != nil {
-		return nil, ErrDisconnected
+		return nil, err
 	}
-	for _, directory := range []string{"home", "config", "work", "managed"} {
-		if err = os.Mkdir(filepath.Join(root, directory), 0o700); err != nil {
-			_ = os.RemoveAll(root)
-			return nil, ErrDisconnected
-		}
-	}
-	if err = os.WriteFile(filepath.Join(root, "managed", "requirements.toml"), []byte(conversationManagedRequirements), 0o600); err != nil {
-		_ = os.RemoveAll(root)
-		return nil, ErrDisconnected
-	}
+	root := directory.path
 	options, err := conversationProcessOptions(root, command, auth.arguments())
 	if err != nil {
-		_ = os.RemoveAll(root)
+		directory.remove()
 		return nil, err
 	}
 	options.Environment = append(options.Environment, conversationTokenEnv+"="+auth.token)
@@ -139,8 +131,12 @@ func (value *LocalWorker) OpenConversation(ctx context.Context, conversationID s
 	lifetime, cancel := context.WithTimeout(value.ctx, conversationLifetime)
 	if err := guard(); err != nil {
 		cancel()
-		_ = os.RemoveAll(root)
+		directory.remove()
 		return nil, err
+	}
+	if !directory.current() {
+		cancel()
+		return nil, ErrWorkerRole
 	}
 	executor, err := value.options.Factory(lifetime, options)
 	// Drop the launch frame's plaintext references; never retain ProcessOptions.
@@ -155,7 +151,7 @@ func (value *LocalWorker) OpenConversation(ctx context.Context, conversationID s
 		// A successful factory owns a complete executor. Incomplete capabilities
 		// cannot establish that a child stopped, so retain its private directory.
 		if executor == nil {
-			_ = os.RemoveAll(root)
+			directory.remove()
 		} else {
 			retainedOpening = true
 			if executor.Stop != nil {
@@ -169,7 +165,7 @@ func (value *LocalWorker) OpenConversation(ctx context.Context, conversationID s
 					if executor.RPC != nil {
 						<-executor.RPC.Done()
 					}
-					_ = os.RemoveAll(root)
+					directory.remove()
 					value.mu.Lock()
 					value.conversationOpening = false
 					value.mu.Unlock()
@@ -180,7 +176,7 @@ func (value *LocalWorker) OpenConversation(ctx context.Context, conversationID s
 	}
 	session := &ConversationSession{worker: value, executor: executor, ctx: lifetime, cancel: cancel,
 		origin: origin, generation: generation, accountEpoch: accountEpoch,
-		conversationID: conversationID, root: root, isCurrent: isCurrent, done: make(chan struct{})}
+		conversationID: conversationID, root: root, directory: directory, isCurrent: isCurrent, done: make(chan struct{})}
 	value.mu.Lock()
 	value.conversationSession = session
 	value.monitors.Add(1)
@@ -371,7 +367,7 @@ func (session *ConversationSession) monitor() {
 	session.subscriptionsClosed = true
 	session.subscriptionsMu.Unlock()
 	session.subscriptions.Wait()
-	_ = os.RemoveAll(session.root)
+	session.directory.remove()
 	session.worker.mu.Lock()
 	if session.worker.conversationSession == session {
 		session.worker.conversationSession = nil

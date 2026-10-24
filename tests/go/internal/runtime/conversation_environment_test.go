@@ -13,6 +13,10 @@ import (
 func conversationEnvironmentFixture(t *testing.T) (string, string) {
 	t.Helper()
 	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -26,6 +30,10 @@ func conversationEnvironmentFixture(t *testing.T) (string, string) {
 	}
 	command := filepath.Join(t.TempDir(), "synthetic-codex")
 	if err := os.WriteFile(command, []byte("synthetic executable fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command, err = filepath.EvalSymlinks(command)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return root, command

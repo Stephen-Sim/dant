@@ -84,7 +84,19 @@ func (f *conversationFixture) start(t *testing.T) *ConversationSession {
 	done := f.opening(t, func() bool { return true })
 	replyFixture(t, f.child, rpcMethod(t, f.child, "initialize"), `{"userAgent":"dant/0.163.0 (synthetic; test)","codexHome":"/conversation/config","platformOs":"linux","platformFamily":"unix"}`)
 	rpcMethod(t, f.child, "initialized")
-	result := <-done
+	var result struct {
+		session *ConversationSession
+		err     error
+	}
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	select {
+	case result = <-done:
+	case <-t.Context().Done():
+		t.Fatal("conversation scope ended before its handshake finished")
+	case <-deadline.C:
+		t.Fatal("conversation handshake did not finish within 10 seconds")
+	}
 	if result.err != nil || result.session == nil {
 		t.Fatal("isolated conversation did not start", result.err)
 	}
