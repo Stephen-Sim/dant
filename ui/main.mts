@@ -74,6 +74,7 @@ import { languages, isLanguage, normalizeLanguage, languageInfo } from './i18n/l
 import { loadLanguage } from './i18n/localization.mts';
 import { translate } from './i18n/messages.mts';
 import './style.css';
+import './chat/composer-image-previews.css';
 import {
   createElement,
   MessageCircle,
@@ -166,6 +167,10 @@ import {
   composerAttachmentScope,
   createComposerAttachments,
 } from './chat/composer-attachments.mts';
+import {
+  createComposerImagePreviews,
+  renderComposerImage,
+} from './chat/composer-image-previews.mts';
 import { createUpdates } from './settings/updates.mts';
 import { createNativeUpdates } from './platform/native-updates.mts';
 import { createUpdateDraft, updateDraftScope } from './settings/update-draft.mts';
@@ -414,6 +419,17 @@ let fontInventory: FontInventory | null = null,
   appearanceAdvanced = false;
 const transport = createTransport({ base, onToken: (value) => (token = value) });
 const downloads = createDownloads({ base, getToken: () => token });
+const composerImagePreviews = createComposerImagePreviews({
+  getAttachments: () => attachments,
+  getScope: () => composerAttachmentScope(state),
+  openModal,
+  remove: (file) => {
+    const previewOpen = modal && composerImagePreviews.file(modal) === file;
+    attachments = attachments.filter((item) => item !== file);
+    if (previewOpen) closeModal();
+    else render();
+  },
+});
 const textEditor = createTextEditor({
   desktop: Boolean(window.__TAURI_INTERNALS__),
   getLanguage: language,
@@ -1154,6 +1170,7 @@ function render() {
   appUpdates.setVisible(page === 'settings' && settingsNavigation.isVisible('about'));
   modal = managedSettings.syncModal(modal, page);
   modal = filePreview.syncModal(modal);
+  modal = composerImagePreviews.syncModal(modal);
   if (typeof taskDetails !== 'undefined') taskDetails.syncModal(modal);
   appearance.sync(currentState().settings);
   const composer = document.querySelector<HTMLTextAreaElement>('#composer');
@@ -1373,6 +1390,8 @@ function renderChat() {
   return `${chatCollections.renderPinnedBar()}${currentState().settings?.showWorkSummary === true ? renderWorkSummary(workProgress(state, { language: language(), connected: eventConnected })) : ''}<div id="messages" class="messages">${messageWindow.control(currentState().messages, messageHistoryScope(state), language())}<div class="message-column" data-key="message-column">${currentState().messages.length ? renderMessages() : firstRun.render() || `<div class="welcome">${eyes('hero')}<h1>${t('hello')}</h1><p>${t('intro')}</p>${currentState().worker.status !== ConnectionStatus.Online ? `<button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button><small>${t('setupHint')}</small>` : ''}</div>`}</div></div><div class="composer-wrap" data-key="composer-wrap">${renderUnreadControl()}${managedSettings.renderRequests()}${taskReplies.render()}${replyTo ? `<div class="reply-preview" data-key="reply-preview"><div><small>${t('reply')} ${currentState().messages.find((message) => message.id === replyTo)?.role === 'assistant' ? 'dant' : t('you')}</small><span>${esc((currentState().messages.find((message) => message.id === replyTo)?.text || '').slice(0, 180))}</span></div>${button('cancel-reply', 'x', t('close'))}</div>` : ''}${attachments.length ? `<div class="attachment-chips" data-key="attachments">${attachments.map(renderDraftAttachment).join('')}</div>` : ''}${renderUnconfirmedMessage()}${renderVoiceRecorder()}<form id="message-form" class="composer-box" ${recordDraft || recordStarting ? 'hidden' : ''}><textarea id="composer" rows="1" placeholder="${t('placeholder')}" aria-label="${t('placeholder')}">${esc(composerDraft)}</textarea><div class="composer-tools">${renderAttachmentOptions()}<button type="button" class="icon-btn" data-action="record" title="${t('recordAudio')}" aria-label="${t('recordAudio')}" ${speechBlocked() || dictating || recordStarting || recordDraft ? 'disabled' : ''}>${ico('mic')}</button>${currentState().active || currentState().queue?.length ? button('stop', 'square', t('stop')) : ''}<button class="send-btn" type="submit" title="${t('send')}" aria-label="${t('send')}" ${sending || uploading || recording || recordStarting || recordDraft || !eventConnected ? 'disabled' : ''}>${ico('arrow-up')}</button></div></form>${uploading ? `<small class="composer-status">${t('uploading')}</small>` : dictating ? `<small class="composer-status">${t('dictating')}</small>` : speakingId ? `<small class="composer-status">${t('reading')} <button type="button" class="text-link" data-action="speech-stop">${t('stop')}</button></small>` : ''}</div>`;
 }
 function renderDraftAttachment(file: Attachment) {
+  if (String(file.type || '').startsWith('image/'))
+    return renderComposerImage(file, { language: language(), fileURL });
   return `<span class="${String(file.type || '').startsWith('audio/') ? 'draft-audio' : ''}" data-id="${esc(file.id)}">${ico(String(file.type || '').startsWith('audio/') ? 'mic' : 'paperclip')}<span>${esc(file.name)}</span>${String(file.type || '').startsWith('audio/') ? `<audio controls preload="metadata" src="${esc(fileURL(file))}" aria-label="${esc(file.name)}"></audio>` : ''}<button type="button" data-remove="${esc(file.id)}" aria-label="${t('close')}">×</button></span>`;
 }
 function renderAttachmentOptions() {
@@ -2693,9 +2712,12 @@ function renderModal() {
   if (modal.type === 'task-detail') return taskDetails.renderModal(modal);
   if (modal.type === 'file') return filePreview.renderModal(modal);
   if (modal.type === 'image') {
-    const file =
-      conversationFiles().find((item) => item.id === modal?.fileId) ||
-      (typeof taskDetails === 'undefined' ? null : taskDetails.file(modal.fileId));
+    const draft = composerImagePreviews.file(modal),
+      file =
+        draft === undefined
+          ? conversationFiles().find((item) => item.id === modal?.fileId) ||
+            (typeof taskDetails === 'undefined' ? null : taskDetails.file(modal.fileId))
+          : draft;
     if (!file) return '';
     return `<div class="modal-backdrop image-backdrop" data-key="modal-backdrop"><section class="dialog image-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1"><div class="dialog-header"><h2 id="dialog-title">${esc(file.name)}</h2><div><button type="button" class="icon-btn" data-download="${esc(file.id)}" aria-label="${t('download')}">${ico('download')}</button>${button('close-modal', 'x', t('close'))}</div></div><div class="image-preview-body"><img src="${fileURL(file)}" alt="${esc(file.name)}"></div></section></div>`;
   }
@@ -2857,19 +2879,14 @@ function bind() {
       (el) =>
         (el.onclick = () => openModal({ type: 'image', fileId: requiredData(el, 'preview') })),
     );
+  composerImagePreviews.bind(document);
   bindAttachmentImages(document, {
     ready:
       eventConnected &&
       (!currentState().controller ||
         (currentState().controller?.status === ConnectionStatus.Online &&
           currentState().controller?.cached !== true)),
-    scope: JSON.stringify([
-      currentState().conversationId ?? null,
-      currentState().settings?.vm?.host ?? null,
-      currentState().settings?.vm?.user ?? null,
-      currentState().settings?.vm?.port ?? null,
-      currentState().settings?.vm?.keyPath ?? null,
-    ]),
+    scope: composerAttachmentScope(state),
   });
   filePreview.bind(
     (id) =>
@@ -2877,9 +2894,12 @@ function bind() {
       (typeof taskDetails === 'undefined' ? null : taskDetails.file(id)),
   );
   downloads.bind(
-    (id) =>
-      conversationFiles().find((file) => file.id === id) ||
-      (typeof taskDetails === 'undefined' ? null : taskDetails.file(id)),
+    composerImagePreviews.resolveDownload(
+      modal,
+      (id) =>
+        conversationFiles().find((file) => file.id === id) ||
+        (typeof taskDetails === 'undefined' ? null : taskDetails.file(id)),
+    ),
     () =>
       toast(
         translate(
@@ -2993,13 +3013,13 @@ function bind() {
           ).catch((error) => toast(errorText(error)))),
     );
   bindSteer();
-  document.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach(
-    (el) =>
-      (el.onclick = () => {
+  document.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach((el) => {
+    if (!el.classList.contains('draft-image-remove'))
+      el.onclick = () => {
         attachments = attachments.filter((a) => a.id !== el.dataset.remove);
         render();
-      }),
-  );
+      };
+  });
   const fileInput = document.querySelector<HTMLInputElement>('#file-input');
   if (fileInput)
     fileInput.onchange = async () => {
@@ -5014,6 +5034,11 @@ export type MainFunctions = {
   boot: typeof boot;
 };
 export type MainBindings = {
+  attachments: typeof attachments;
+  composerImagePreviews: typeof composerImagePreviews;
+  createComposerImagePreviews: typeof createComposerImagePreviews;
+  composerAttachmentScope: typeof composerAttachmentScope;
+  renderComposerImage: typeof renderComposerImage;
   composerAttachments: typeof composerAttachments;
   callStops: typeof callStops;
   createElement: typeof createElement;

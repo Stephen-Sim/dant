@@ -2,6 +2,11 @@ import { apiPath } from '../../ui/platform/native-protocol.mts';
 import type { ApiOptions } from '../../ui/shared/contracts.mts';
 import type { MainFunctions, MainBindings } from '../../ui/main.mts';
 import { createMessageWindow } from '../../ui/chat/message-window.mts';
+import { composerAttachmentScope } from '../../ui/chat/composer-attachments.mts';
+import {
+  createComposerImagePreviews,
+  renderComposerImage,
+} from '../../ui/chat/composer-image-previews.mts';
 
 const missing = (..._args: unknown[]): never => {
   throw Error('Entrypoint fixture function was not installed');
@@ -179,6 +184,16 @@ export function uiEntrypointFixture<T extends object>(
   context: T,
 ): Omit<T, keyof UiMainFunctions> & UiMainFunctions & Omit<Partial<MainBindings>, keyof T> {
   const bindings: Partial<MainBindings> = {
+    attachments: [],
+    createComposerImagePreviews,
+    composerImagePreviews: {
+      bind() {},
+      file: () => undefined,
+      syncModal: (modal) => modal,
+      resolveDownload: (_modal, resolve) => (id) => (id ? resolve(id) : undefined),
+    },
+    composerAttachmentScope,
+    renderComposerImage,
     composerAttachments: {
       bind() {},
       sync: () => 0,

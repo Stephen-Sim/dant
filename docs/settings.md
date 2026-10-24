@@ -48,6 +48,8 @@ After **Return to dant** has finished and the executor has confirmed stopping, a
 
 Paste a clipboard image into the message composer to add it as an attachment, or use the attachment picker. Ordinary text paste keeps its normal behavior, and mixed text/image paste keeps the text while attaching the images. The existing limits of five attachments and 10 MiB per file apply. Uploads remain tied to their original conversation and computer; a late response cannot add files to a different chat or connection.
 
+Before sending, image attachments show a thumbnail so you can check which image is attached. Select a thumbnail to open a larger preview, or remove that image without clearing the rest of your draft. Other files keep their filename and file-type indicator.
+
 Each message's **…** menu has **Pin / Unpin** and **Star / Unstar**. Pinned messages appear in a compact summary above chat; select it to jump to the original, or cycle between multiple pins. The top chat **…** menu contains **Starred messages**, **Search** and **Media, docs & links**. These lists can reveal an older message through lazy loading. Pinning and starring save message metadata on the work computer without sending instructions, changing read receipts or reopening tasks; they also work during a confirmed call or active task.
 
 To hear a text reply, open its **…** menu and choose **Read aloud**; while it is playing, the same menu shows **Stop reading**. Opening the menu does not start playback. Read-aloud is unavailable while a reply is streaming or another audio activity blocks it. Audio attachments keep their own playback controls.

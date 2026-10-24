@@ -1,12 +1,12 @@
 import type { NativeInvoke } from '../../../ui/platform/transport.mts';
-import type { Timer } from '../../../ui/shared/contracts.mts';
+import type { Attachment, Timer, UiModal } from '../../../ui/shared/contracts.mts';
 import { errorCode, errorMessage } from '../../../ui/shared/json.mts';
 import { htmlTag } from '../../support/fixture-assertions.mts';
 type DownloadOptions = NonNullable<Parameters<typeof createDownloads>[0]>;
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { defined, invokeHandler } from '../../support/fixture-assertions.mts';
 import { stripTypeScriptTypes } from 'node:module';
-import { sourceIndex } from '../../support/source-fixtures.mts';
+import { sourceCallStatement, sourceIndex } from '../../support/source-fixtures.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,6 +15,7 @@ import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { attachmentName, createDownloads } from '../../../ui/files/downloads.mts';
 import { canPreviewFile } from '../../../ui/files/file-preview.mts';
+import { createComposerImagePreviews } from '../../../ui/chat/composer-image-previews.mts';
 
 const id = '10b72b2a-346f-48c0-a243-1cb22871d91d',
   token = 'a'.repeat(64),
@@ -412,5 +413,76 @@ test('all app attachment download affordances are buttons and image preview rema
   );
   assert.equal(document.querySelector<HTMLElement>('a'), null);
   assert.doesNotMatch(modal, /<a[^>]+download=/);
-  assert.match(source, /downloads\.bind\(\s*\(?id\)?\s*=>\s*conversationFiles\(\)\.find/);
+});
+
+test('the actual main download binding resolves history and saved task files without adopting stale draft images', () => {
+  const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8'),
+    { document, Event } = parseHTML(`<button data-draft-preview="${id}"></button>`),
+    history: Attachment = { ...file },
+    saved: Attachment = { ...file, id: '10000000-0000-4000-8000-000000000001' },
+    draft: Attachment = { ...file, type: 'image/png', name: 'Unsent.png' },
+    lookups: (string | undefined)[] = [];
+  let scope = 'conversation-a/computer-a',
+    resolve: Parameters<ReturnType<typeof createDownloads>['bind']>[0] | null = null;
+  const context = uiEntrypointFixture({
+    modal: null as UiModal | null,
+    attachments: [draft],
+    conversationFiles: () => [history],
+    taskDetails: {
+      file(value: string | undefined) {
+        lookups.push(value);
+        return value === saved.id ? saved : null;
+      },
+    },
+    downloads: {
+      bind(value: Parameters<ReturnType<typeof createDownloads>['bind']>[0]) {
+        resolve = value;
+      },
+    },
+  });
+  context.composerImagePreviews = createComposerImagePreviews({
+    getAttachments: () => context.attachments,
+    getScope: () => scope,
+    openModal: (modal) => {
+      context.modal = modal;
+    },
+    remove: () => assert.fail('Binding downloads must not remove an unsent image'),
+  });
+  vm.createContext(uiFixtureContext(context));
+  const bind = () => {
+    vm.runInContext(sourceCallStatement(source, 'downloads.bind'), context);
+    return defined(resolve);
+  };
+
+  const ordinary = bind();
+  assert.equal(ordinary(history.id), history, 'history takes precedence over saved task files');
+  assert.deepEqual(lookups, []);
+  assert.equal(ordinary(saved.id), saved, 'pruned history can still download a saved task file');
+  assert.deepEqual(lookups, [saved.id]);
+  assert.equal(ordinary('missing'), null);
+  assert.equal(ordinary(undefined), undefined);
+
+  context.composerImagePreviews.bind(document);
+  defined(document.querySelector('button')).dispatchEvent(new Event('click'));
+  const selected = bind();
+  assert.equal(selected(draft.id), draft, 'the selected image resolves its exact unsent DTO');
+  assert.equal(
+    selected(saved.id),
+    saved,
+    'an image modal keeps unrelated task downloads available',
+  );
+  scope = 'conversation-b/computer-b';
+  assert.equal(
+    selected(draft.id),
+    null,
+    'changed ownership cannot fall back to a colliding history ID',
+  );
+  context.attachments = [{ ...draft }];
+  scope = 'conversation-a/computer-a';
+  assert.equal(selected(draft.id), null, 'the old resolver cannot adopt a same-ID replacement');
+  assert.equal(
+    bind()(draft.id),
+    null,
+    'rebinding the stale modal does not authorize its replacement',
+  );
 });

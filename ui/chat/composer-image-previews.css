@@ -1,0 +1,71 @@
+.attachment-chips {
+  align-items: flex-start;
+}
+.attachment-chips > .draft-image {
+  position: relative;
+  flex: 0 1 112px;
+  width: 112px;
+  max-width: 100%;
+  min-width: 0;
+}
+.draft-image > .draft-image-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+.draft-image-preview .attachment-image {
+  position: absolute;
+  inset: 3px;
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  max-height: none;
+  border-radius: 7px;
+  object-fit: contain;
+  opacity: 0;
+}
+.draft-image-preview .attachment-image-loading,
+.draft-image-preview .attachment-image-error {
+  padding: 12px 5px;
+  font-size: calc(var(--app-font-size) * 9 / 13);
+}
+.draft-image > .draft-image-remove {
+  position: absolute;
+  inset-block-start: 5px;
+  inset-inline-end: 5px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  font-size: calc(var(--app-font-size) * 17 / 13);
+  line-height: 1;
+  box-shadow: 0 1px 4px var(--subtle-shadow);
+}
+.draft-image-remove:hover {
+  background: var(--hover);
+}
+.draft-image-name {
+  display: block;
+  overflow: hidden;
+  margin: 4px 2px 0;
+  color: var(--text-muted);
+  font-size: calc(var(--app-font-size) * 10 / 13);
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 520px) {
+  .attachment-chips > .draft-image {
+    flex-basis: 96px;
+    width: 96px;
+  }
+}
