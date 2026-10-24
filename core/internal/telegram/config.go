@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
@@ -177,18 +178,47 @@ func restoreConfig(data []byte) (Config, bool, error) {
 }
 
 func (gateway *Gateway) saveLocked(ctx context.Context) error {
-	current, err := os.Lstat(gateway.directory)
-	if err != nil || !os.SameFile(gateway.identity, current) {
+	if ctx.Err() != nil || !gateway.currentDirectory() {
 		return ErrConfig
 	}
 	data, err := json.Marshal(gateway.config)
 	if err != nil || len(data) > MaxConfigBytes {
 		return ErrConfig
 	}
+	target, targetErr := files.CaptureIdentity(gateway.file)
+	if targetErr != nil && !errors.Is(targetErr, fs.ErrNotExist) || targetErr == nil && !target.Mode().IsRegular() {
+		return ErrConfig
+	}
+	stored, err := files.ReadRegular(gateway.file, MaxConfigBytes)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return ErrConfig
+	}
+	if ctx.Err() != nil || !gateway.currentDirectory() {
+		return ErrConfig
+	}
+	// Idle mirror scans and completed empty polls still reach this boundary.
+	// Replacing identical bytes invalidates an otherwise stable agent-data backup.
+	if err == nil && bytes.Equal(stored, data) {
+		current, err := files.CaptureIdentity(gateway.file)
+		if err != nil || target == nil || !current.Mode().IsRegular() || !os.SameFile(target, current) ||
+			target.Size() != current.Size() || !target.ModTime().Equal(current.ModTime()) ||
+			ctx.Err() != nil || !gateway.currentDirectory() {
+			return ErrConfig
+		}
+		privateMode := current.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) == 0600
+		if contracts.RuntimeOperatingSystem(runtime.GOOS) == contracts.RuntimeOperatingSystemWindows || privateMode {
+			return nil
+		}
+	}
 	if err = files.WriteAtomic(ctx, gateway.file, data, 0600); err != nil {
 		return ErrConfig
 	}
 	return nil
+}
+
+func (gateway *Gateway) currentDirectory() bool {
+	current, err := files.CaptureIdentity(gateway.directory)
+	return err == nil && current.IsDir() && os.SameFile(gateway.identity, current)
 }
 
 func readConfig(directory string) (string, fs.FileInfo, Config, bool, error) {
