@@ -4343,12 +4343,23 @@ async function notify(message: string) {
 }
 const readTimers = new Map<string, Timer>(),
   readTargets = new Map<string, HTMLElement>(),
-  readPending = new Set<string>(),
+  readPending = new Map<
+    string,
+    { scope: string; attachmentIds: string[]; acknowledged: boolean }
+  >(),
   readBatch = new Set<string>(),
   readAttachmentSnapshots = new Map<string, string[]>();
+let readScope = '';
 let readObserver: IntersectionObserver | null = null;
 let readRoot: HTMLElement | null = null;
 let readFlush: Timer | null = null;
+function readReceiptScope() {
+  return JSON.stringify([
+    messageHistoryScope(state),
+    state?.settings.vm?.knownHosts ?? null,
+    state?.settings.vm?.provider ?? null,
+  ]);
+}
 function canReadMessages() {
   return (
     !!state &&
@@ -4406,7 +4417,26 @@ function stopReadTracking() {
   readFlush = null;
   readBatch.clear();
 }
+function syncReadReceipts() {
+  const scope = readReceiptScope();
+  if (readScope !== scope || !eventConnected) {
+    stopReadTracking();
+    readPending.clear();
+    readScope = scope;
+  }
+  for (const [id, receipt] of readPending) {
+    const message = state?.messages.find((item) => item.id === id);
+    if (
+      receipt.scope !== scope ||
+      !unreadAssistant(message) ||
+      (receipt.acknowledged &&
+        JSON.stringify(receipt.attachmentIds) !== JSON.stringify(observedAttachmentIds(message)))
+    )
+      readPending.delete(id);
+  }
+}
 function refreshReadTimers() {
+  syncReadReceipts();
   if (!canReadMessages()) {
     stopReadTracking();
     return;
@@ -4453,6 +4483,7 @@ function refreshReadTimers() {
 }
 function flushReadReceipts() {
   readFlush = null;
+  syncReadReceipts();
   const ids = [...readBatch].filter(
     (id) =>
       canReadMessages() &&
@@ -4462,23 +4493,58 @@ function flushReadReceipts() {
   readBatch.clear();
   if (!ids.length) return;
   const attachmentSnapshots = Object.fromEntries(
-    ids.map((id) => [id, [...(readAttachmentSnapshots.get(id) || [])]]),
-  );
-  ids.forEach((id) => {
-    readPending.add(id);
+      ids.map((id) => [id, [...(readAttachmentSnapshots.get(id) || [])]]),
+    ),
+    scope = readReceiptScope(),
+    conversationId = state?.conversationId,
+    receipts = new Map(
+      ids.map((id) => [
+        id,
+        { scope, attachmentIds: attachmentSnapshots[id] || [], acknowledged: false },
+      ]),
+    );
+  for (const [id, receipt] of receipts) {
+    readPending.set(id, receipt);
     clearReadTimer(id);
-  });
-  post('/read', { ids, attachmentSnapshots })
+  }
+  api('/read', {
+    method: 'POST',
+    body: {
+      ...(typeof conversationId === 'string' ? { conversationId } : {}),
+      ids,
+      attachmentSnapshots,
+    },
+    beforeSend: () =>
+      eventConnected &&
+      readReceiptScope() === scope &&
+      ids.every((id) => readPending.get(id) === receipts.get(id)),
+  })
     .then(() => {
-      ids.forEach((id) => readPending.delete(id));
-      updateRead();
+      let current = false;
+      for (const [id, receipt] of receipts) {
+        if (readPending.get(id) !== receipt) continue;
+        // Keep this receipt pending until a state snapshot confirms it. Sending
+        // it again could invalidate every native poll while the VM is slow.
+        receipt.acknowledged = true;
+        current = true;
+      }
+      if (current) updateRead();
     })
     .catch(() => {
-      ids.forEach((id) => readPending.delete(id));
-      setTimeout(updateRead, 1000);
+      let current = false;
+      for (const [id, receipt] of receipts) {
+        if (readPending.get(id) !== receipt) continue;
+        readPending.delete(id);
+        current = true;
+      }
+      if (current)
+        setTimeout(() => {
+          if (readReceiptScope() === scope) updateRead();
+        }, 1000);
     });
 }
 function updateRead() {
+  syncReadReceipts();
   if (!canReadMessages()) {
     stopReadTracking();
     return;
@@ -4515,8 +4581,7 @@ function updateRead() {
     clearReadTimer(id);
     readObserver?.unobserve(element);
     readTargets.delete(id);
-    // An in-flight receipt belongs to its message, not the replaced DOM node.
-    if (!current || !unread) readPending.delete(id);
+    // Receipt ownership follows the message and scope, not its rendered node.
   }
   for (const [id, element] of nodes)
     if (

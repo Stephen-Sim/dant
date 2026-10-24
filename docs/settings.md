@@ -42,6 +42,8 @@ Chat shows a time divider at the start of the conversation, on a new day, and af
 
 Task pauses remain visible in Work progress without adding a **Paused** label below the chat bubble. Sent times, delivery checks and **Read / Unread** receipts remain visible independently of task status.
 
+Paused text-chat requests also appear in Work progress with a control to resume that one request. Unconfirmed outcomes require explicit confirmation before another attempt. Voice and registered work retain their existing owner and recovery controls.
+
 Each message's **…** menu has **Pin / Unpin** and **Star / Unstar**. Pinned messages appear in a compact summary above chat; select it to jump to the original, or cycle between multiple pins. The top chat **…** menu contains **Starred messages**, **Search** and **Media, docs & links**. These lists can reveal an older message through lazy loading. Pinning and starring save message metadata on the work computer without sending instructions, changing read receipts or reopening tasks; they also work during a confirmed call or active task.
 
 To hear a text reply, open its **…** menu and choose **Read aloud**; while it is playing, the same menu shows **Stop reading**. Opening the menu does not start playback. Read-aloud is unavailable while a reply is streaming or another audio activity blocks it. Audio attachments keep their own playback controls.

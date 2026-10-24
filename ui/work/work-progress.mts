@@ -356,11 +356,22 @@ export function workProgress(
         ),
     },
     messages = state?.messages || [],
+    voiceConversationTurns = new Set(
+      (state?.completions || [])
+        .filter((completion) => completion.work?.source === 'voice')
+        .map((completion) => completion.turnId),
+    ),
     users = messages.filter(
       (message) =>
         message.role === 'user' &&
         message.kind !== 'call' &&
-        message.workKind !== 'conversation' &&
+        (message.workKind !== 'conversation' ||
+          (message.status === TaskStatus.Paused &&
+            !message.voiceCallId &&
+            !voiceConversationTurns.has(message.turnId || '') &&
+            state?.active?.messageId !== message.id &&
+            !state?.active?.messageIds?.includes(message.id) &&
+            (!message.turnId || state?.active?.turnId !== message.turnId))) &&
         !(message.voiceCallId && !message.turnId),
     ),
     byId = new Map(messages.map((message) => [message.id, message]));

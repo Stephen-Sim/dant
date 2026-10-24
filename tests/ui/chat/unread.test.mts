@@ -1,5 +1,5 @@
 import type { ReadMessage } from '../../../ui/chat/read-state.mts';
-import type { Timer } from '../../../ui/shared/contracts.mts';
+import type { ApiOptions, Timer } from '../../../ui/shared/contracts.mts';
 import { isRecord } from '../../../ui/shared/json.mts';
 type VisibilityOptions = NonNullable<Parameters<typeof createReadVisibility>[0]>;
 type ReadBody = { ids?: string[]; attachmentSnapshots?: Record<string, string[]> };
@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { createReadVisibility } from '../../../ui/chat/read-state.mts';
+import { createTransport } from '../../../ui/platform/transport.mts';
 
 function rect(value: {
   left: number;
@@ -290,7 +291,11 @@ function fixture(language = 'en') {
       height: 300,
     });
   defined(article).getBoundingClientRect = () => rect(rectangle);
-  const state: { settings: { language: string }; messages: ReadMessage[] } = {
+  const state: {
+    conversationId?: string;
+    settings: { language: string };
+    messages: ReadMessage[];
+  } = {
     settings: { language },
     messages: [
       {
@@ -348,6 +353,11 @@ function fixture(language = 'en') {
       disconnect() {}
     },
   });
+  c.api = (route, options) => {
+    if (options?.beforeSend && options.beforeSend() !== true)
+      return Promise.reject(Error('Receipt target changed'));
+    return c.post(route, options?.body);
+  };
   vm.createContext(uiFixtureContext(c));
   vm.runInContext(
     stripTypeScriptTypes(
@@ -411,6 +421,318 @@ function fixture(language = 'en') {
     },
   };
 }
+
+test('acknowledged receipts let a slow native state poll deliver the authoritative read state', async () => {
+  const f = fixture(),
+    pendingReads: ReturnType<typeof deferred>[] = [];
+  let backendRead = false;
+  const response = (value: unknown) => ({ status: 200, body: JSON.stringify(value) });
+  const transport = createTransport({
+    desktop: true,
+    pollDelay: 5,
+    invokeRequest: async (_command, request) => {
+      if (request.method === 'POST') {
+        assert.equal(request.route, '/api/read');
+        assert.ok(request.body);
+        const body: unknown = JSON.parse(request.body);
+        f.requests.push({ route: '/read', body });
+        backendRead = true;
+        return response({ ok: true });
+      }
+      assert.equal(request.route, '/api/state');
+      const pending = deferred();
+      pendingReads.push(pending);
+      return pending.promise;
+    },
+  });
+  f.c.api = (route, options) => transport.json('/api' + route, options);
+  // This is the same transport used by the desktop. It discards state reads
+  // crossing a mutation, so repeated receipts cannot be allowed to starve it.
+  f.c.post = (route, body) => transport.json('/api' + route, { method: 'POST', body });
+  transport.startEvents({
+    onEvent: (event) => {
+      assert.ok(isRecord(event.data));
+      assert.ok(typeof event.data.read === 'boolean');
+      defined(f.c.state.messages[0]).read = event.data.read;
+      f.render();
+      f.c.updateRead();
+    },
+  });
+  try {
+    assert.equal(pendingReads.length, 1);
+    f.c.updateRead();
+    f.advance(450);
+    await settle();
+    assert.equal(f.requests.length, 1);
+    assert.equal(backendRead, true);
+    assert.equal(defined(f.c.state.messages[0]).read, false, 'a POST is not a state snapshot');
+    // Hold the native state request beyond the 450ms dwell, as with the SSH
+    // round-trip in the installed Controller, and keep it delayed for seconds.
+    f.advance(2000);
+    await settle();
+    assert.equal(f.requests.length, 1, 'a successful receipt waits for state reconciliation');
+    defined(pendingReads[0]).resolve(response({ read: false }));
+    await settle();
+    assert.equal(pendingReads.length, 2, 'the crossed old snapshot is discarded');
+    f.advance(2000);
+    await settle();
+    assert.equal(f.requests.length, 1, 'there is no receipt storm during the next slow poll');
+    defined(pendingReads[1]).resolve(response({ read: backendRead }));
+    await settle();
+    assert.equal(defined(f.c.state.messages[0]).read, true);
+    assert.match(
+      f.c.renderAssistantReadState(defined(f.c.state.messages[0])),
+      /data-read-state="read"/,
+    );
+    assert.equal(f.c.unreadMessages().length, 0);
+    assert.equal(f.document.querySelector('.unread-jump'), null);
+    f.advance(2000);
+    await settle();
+    assert.equal(f.requests.length, 1);
+  } finally {
+    transport.close();
+    for (const pending of pendingReads) pending.resolve(response({ read: backendRead }));
+    f.c.stopReadTracking();
+    await settle();
+  }
+});
+
+test('late receipt outcomes cannot release the pending receipt of the same ID in another conversation', async () => {
+  for (const outcome of ['success', 'failure'] as const) {
+    const f = fixture(),
+      first = deferred(),
+      second = deferred();
+    f.c.state.conversationId = 'first-conversation';
+    f.c.post = (route, body) => {
+      f.requests.push({ route, body: structuredClone(body) });
+      return f.requests.length === 1 ? first.promise : second.promise;
+    };
+    f.c.updateRead();
+    f.advance(450);
+    assert.equal(f.requests.length, 1);
+    f.c.state.conversationId = 'second-conversation';
+    f.c.updateRead();
+    f.advance(450);
+    assert.equal(f.requests.length, 2, 'the new conversation completes its own dwell');
+    if (outcome === 'success') first.resolve({ ok: true });
+    else first.reject(Error('Old connection closed'));
+    await settle();
+    f.advance(2000);
+    await settle();
+    assert.equal(f.requests.length, 2, 'an old callback does not release the new pending receipt');
+    assert.equal(defined(f.c.state.messages[0]).read, false);
+    second.resolve({ ok: true });
+    await settle();
+    f.advance(1000);
+    await settle();
+    assert.equal(f.requests.length, 2);
+    defined(f.c.state.messages[0]).read = true;
+    f.c.updateRead();
+    f.c.stopReadTracking();
+  }
+});
+
+test('a queued receipt captures its conversation and cannot cross a changed target', async () => {
+  const f = fixture(),
+    pending = deferred(),
+    api = f.c.api;
+  let queued: ApiOptions | undefined;
+  f.c.state.conversationId = 'first-conversation';
+  f.c.api = (_route, options) => {
+    queued = options;
+    return pending.promise;
+  };
+  f.c.updateRead();
+  f.advance(450);
+  const captured = defined(queued),
+    body = captured.body;
+  assert.ok(isRecord(body));
+  assert.equal(body.conversationId, 'first-conversation');
+  assert.equal(defined(captured.beforeSend)(), true);
+  f.c.state.conversationId = 'second-conversation';
+  f.c.updateRead();
+  assert.equal(
+    defined(captured.beforeSend)(),
+    false,
+    'the native queue must not dispatch this receipt',
+  );
+  assert.equal(body.conversationId, 'first-conversation', 'the captured body is unchanged');
+  f.c.api = api;
+  pending.reject(Error('Receipt target changed'));
+  await settle();
+  f.advance(450);
+  await settle();
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.requests[0], {
+    route: '/read',
+    body: { conversationId: 'second-conversation', ids: ['a'], attachmentSnapshots: { a: [] } },
+  });
+  f.c.stopReadTracking();
+});
+
+test('acknowledged receipts survive DOM replacement and reconcile while minimized without fabricating reads', async () => {
+  const f = fixture(),
+    attachment = '10000000-0000-4000-8000-000000000001';
+  f.c.updateRead();
+  f.advance(450);
+  await settle();
+  assert.equal(f.requests.length, 1);
+  assert.equal(defined(f.c.state.messages[0]).read, false);
+  const replacement = defined(f.article).cloneNode(true);
+  assert.ok(replacement instanceof defined(f.document.defaultView).HTMLElement);
+  replacement.getBoundingClientRect = () => rect(f.rectangle);
+  defined(f.article).replaceWith(replacement);
+  f.c.updateRead();
+  f.advance(2000);
+  await settle();
+  assert.equal(f.requests.length, 1, 'new markup is not a new receipt revision');
+  f.c.readVisibility.visible = false;
+  f.c.updateRead();
+  defined(f.c.state.messages[0]).read = true;
+  f.c.updateRead();
+  Object.assign(defined(f.c.state.messages[0]), {
+    read: false,
+    attachments: [{ id: attachment }],
+    visibleAttachmentIds: [],
+  });
+  f.c.updateRead();
+  f.advance(1000);
+  assert.equal(f.requests.length, 1, 'minimized windows do not acknowledge new attachments');
+  f.c.readVisibility.visible = true;
+  f.c.updateRead();
+  f.advance(449);
+  assert.equal(f.requests.length, 1);
+  f.advance(1);
+  assert.equal(
+    f.requests.length,
+    2,
+    'the prior receipt was reconciled outside the rendered target map',
+  );
+  assert.deepEqual(readBody(defined(f.requests[1]).body).attachmentSnapshots, { a: [attachment] });
+  await settle();
+  f.c.stopReadTracking();
+});
+
+test('a receipt acknowledged while minimized waits for state and releases a later attachment revision', async () => {
+  const f = fixture(),
+    pending = deferred(),
+    attachment = '10000000-0000-4000-8000-000000000001';
+  f.c.post = (route, body) => {
+    f.requests.push({ route, body: structuredClone(body) });
+    return pending.promise;
+  };
+  f.c.updateRead();
+  f.advance(450);
+  f.c.readVisibility.visible = false;
+  f.c.updateRead();
+  pending.resolve({ ok: true });
+  await settle();
+  f.advance(2000);
+  assert.equal(f.requests.length, 1);
+  assert.equal(
+    defined(f.c.state.messages[0]).read,
+    false,
+    'a background callback does not invent a read',
+  );
+  defined(f.c.state.messages[0]).read = true;
+  f.c.updateRead();
+  Object.assign(defined(f.c.state.messages[0]), {
+    read: false,
+    attachments: [{ id: attachment }],
+    visibleAttachmentIds: [],
+  });
+  f.c.readVisibility.visible = true;
+  f.c.updateRead();
+  f.advance(450);
+  await settle();
+  assert.equal(f.requests.length, 2);
+  assert.deepEqual(readBody(defined(f.requests[1]).body).attachmentSnapshots, { a: [attachment] });
+  f.c.stopReadTracking();
+});
+
+test('disconnect clears unreconciled receipt ownership and a new connection requires fresh visible dwell', async () => {
+  const f = fixture();
+  f.c.updateRead();
+  f.advance(450);
+  await settle();
+  assert.equal(f.requests.length, 1);
+  f.c.eventConnected = false;
+  f.c.updateRead();
+  f.advance(2000);
+  assert.equal(f.requests.length, 1);
+  f.c.eventConnected = true;
+  f.c.updateRead();
+  f.advance(449);
+  assert.equal(f.requests.length, 1);
+  f.advance(1);
+  await settle();
+  assert.equal(f.requests.length, 2);
+  assert.equal(defined(f.c.state.messages[0]).read, false);
+  f.c.stopReadTracking();
+});
+
+test('changing only the known-hosts file or provider releases acknowledged receipts for cloned message IDs', async () => {
+  for (const field of ['knownHosts', 'provider'] as const) {
+    const f = fixture();
+    f.c.state.conversationId = 'same-conversation';
+    Object.assign(f.c.state.settings, { vm: { [field]: 'first-target' } });
+    f.c.updateRead();
+    f.advance(450);
+    await settle();
+    assert.equal(f.requests.length, 1);
+    f.advance(1000);
+    await settle();
+    assert.equal(f.requests.length, 1, 'an unchanged target retains the acknowledged receipt');
+    Object.assign(f.c.state.settings, { vm: { [field]: 'second-target' } });
+    f.c.updateRead();
+    f.advance(449);
+    assert.equal(f.requests.length, 1);
+    f.advance(1);
+    await settle();
+    assert.equal(f.requests.length, 2, `${field} changes require a new target receipt`);
+    assert.equal(defined(f.c.state.messages[0]).read, false);
+    f.c.stopReadTracking();
+  }
+});
+
+test('a queued receipt rejects changes to only known-hosts or provider and preserves legacy omissions', async () => {
+  for (const field of ['knownHosts', 'provider'] as const) {
+    const f = fixture(),
+      pending = deferred();
+    let queued: ApiOptions | undefined;
+    f.c.api = (_route, options) => {
+      queued = options;
+      return pending.promise;
+    };
+    f.c.updateRead();
+    f.advance(450);
+    const captured = defined(queued),
+      body = captured.body;
+    assert.ok(isRecord(body));
+    assert.equal(
+      Object.hasOwn(body, 'conversationId'),
+      false,
+      'legacy state receives no invented identity',
+    );
+    assert.equal(defined(captured.beforeSend)(), true);
+    Object.assign(f.c.state.settings, { vm: {} });
+    assert.equal(
+      defined(captured.beforeSend)(),
+      true,
+      'omitted optional target fields remain absent',
+    );
+    Object.assign(f.c.state.settings, { vm: { [field]: 'new-target' } });
+    assert.equal(
+      defined(captured.beforeSend)(),
+      false,
+      `${field} changes cannot cross the native queue`,
+    );
+    f.c.updateRead();
+    pending.reject(Error('Receipt target changed'));
+    await settle();
+    f.c.stopReadTracking();
+  }
+});
 
 test('history outside the rendered message window remains unread and is never acknowledged by the visible message tracker', async () => {
   const f = fixture();

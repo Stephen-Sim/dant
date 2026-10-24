@@ -25,6 +25,8 @@ Executor disconnection records retain the first observed reason, such as end-of-
 
 Adjacent text fragments for the same thread, turn and message are combined before delivery to a slow observer. This reduces repeated history writes without dropping text or moving fragments across completion events, tool requests or ownership changes. The transport reader remains available for RPC responses while persistence catches up. Each observer retains the 64-event limit and a 64 MiB payload budget; non-combinable overload still closes the connection with `event-overflow`. Closing a subscription preserves admitted events in order and does not wait for a stopped consumer.
 
+The desktop refreshes chat state through the authenticated native API. A successful visible-message receipt stays pending until a current state snapshot confirms it, so slow VM refreshes do not trigger repeated writes that keep invalidating those snapshots. Replacing a message's DOM node retains its receipt ownership. Changing the conversation or computer invalidates queued receipts; late replies cannot clear a newer request for the same message. Only visible messages in a foreground window that is not minimized start a receipt.
+
 Task admission preserves the safety pause reason, distinguishing an explicit user pause, human control, executor disconnection and an unconfirmed submission or continuation. Receiving another message while stopped does not relabel that pause as `user-paused`. An explicit pause or resume can change that state, but reconnecting or updating the application does not automatically retry unknown work. Historical records without this evidence cannot establish the original cause.
 
 ## A missing desktop does not always mean the VM crashed

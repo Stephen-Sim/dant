@@ -7,6 +7,8 @@ import { stripTypeScriptTypes } from 'node:module';
 import {
   sourceIndex,
   sourceCallStatement,
+  sourceDeclaration,
+  sourceSection,
   sourceSelectorBinding,
 } from '../../support/source-fixtures.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';
@@ -37,6 +39,204 @@ const state = (): ProgressSnapshot &
   messages: [],
   queue: [],
   completions: [],
+});
+
+function recoveryView(
+  data: ReturnType<typeof state>,
+  { connected = true, controlled = false, language = 'en' } = {},
+) {
+  const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8'),
+    context = uiEntrypointFixture({
+      progressActions: { busy: false, renderConfirmation: () => '' },
+      workDisclosures: { capture() {}, bind() {}, isOpen: () => false },
+      workProgress,
+      renderWorkPriority,
+      renderWorkReply,
+      renderActiveWork,
+      renderWorkTaskHistory,
+      renderVoiceWorkHistory,
+      state: data,
+      language: () => language,
+      eventConnected: connected,
+      pendingActions: new Set(),
+      t: (value: string) => value,
+      esc: (value: unknown) => String(value ?? ''),
+      ico: () => '',
+      formatTime: () => '',
+      humanControl: () => controlled,
+    });
+  context.taskReplies ??= createTaskReplyController({
+    document: context.document,
+    getModel: () => ({}),
+  });
+  vm.createContext(uiFixtureContext(context));
+  vm.runInContext(
+    sourceDeclaration(source, 'const unknownTask=') +
+      '\n' +
+      sourceSection(source, 'function renderProgress(){', 'function renderModal(){'),
+    context,
+  );
+  return parseHTML(context.renderProgress()).document;
+}
+
+test('paused chat conversations expose one explicit recovery action while ordinary replies stay out of work history', () => {
+  const data = state();
+  data.messages = [
+    {
+      id: 'paused-chat',
+      role: 'user',
+      workKind: 'conversation',
+      text: 'Continue this isolated text request',
+      status: 'paused',
+      submission: 'confirmed',
+      turnId: 'paused-turn',
+      time: 20,
+    },
+    {
+      id: 'uncertain-chat',
+      role: 'user',
+      workKind: 'conversation',
+      text: 'An earlier uncertain request',
+      status: 'paused',
+      submission: 'unknown',
+      unknownOutcome: true,
+      turnId: 'uncertain-turn',
+      time: 10,
+    },
+    ...(['running', 'review', 'completed', 'queued'] as const).map((status) => ({
+      id: 'ordinary-' + status,
+      role: 'user',
+      workKind: 'conversation',
+      text: 'Ordinary reply',
+      status,
+      time: 30,
+    })),
+  ];
+  const before = structuredClone(data);
+  for (const language of ['en', 'zh']) {
+    const model = workProgress(data, { language }),
+      document = recoveryView(data, { language });
+    assert.deepEqual(
+      model.history.map((item) => item.message?.id),
+      ['paused-chat', 'uncertain-chat'],
+    );
+    const resume = document.querySelectorAll<HTMLButtonElement>('[data-task-resume]'),
+      uncertain = document.querySelectorAll<HTMLButtonElement>('[data-task-unknown]');
+    assert.equal(resume.length, 1);
+    assert.equal(defined(resume[0]).dataset.taskResume, 'paused-chat');
+    assert.equal(defined(resume[0]).hasAttribute('disabled'), false);
+    assert.equal(uncertain.length, 1);
+    assert.equal(defined(uncertain[0]).dataset.taskUnknown, 'uncertain-chat');
+    assert.equal(document.querySelector('[data-task-accept]'), null);
+    assert.equal(model.completedCount, 0);
+  }
+  assert.deepEqual(data, before, 'recovery discovery cannot resume or rewrite a request');
+});
+
+test('paused conversation recovery retains offline, human-control and active-owner guards', () => {
+  const data = state();
+  data.messages = [
+    {
+      id: 'paused-chat',
+      role: 'user',
+      workKind: 'conversation',
+      text: 'Paused text',
+      status: 'paused',
+      submission: 'confirmed',
+      turnId: 'paused-turn',
+    },
+  ];
+  for (const condition of ['disconnected', 'worker-offline', 'cached', 'human-control'] as const) {
+    const current = structuredClone(data);
+    if (condition === 'worker-offline') current.worker = { status: 'offline' };
+    if (condition === 'cached') current.controller = { status: 'online', cached: true };
+    const document = recoveryView(current, {
+      connected: condition !== 'disconnected',
+      controlled: condition === 'human-control',
+    });
+    assert.equal(
+      defined(
+        document.querySelector<HTMLButtonElement>('[data-task-resume="paused-chat"]'),
+      ).hasAttribute('disabled'),
+      true,
+      condition,
+    );
+  }
+  for (const visible of [true, false]) {
+    data.active = { messageId: 'paused-chat', turnId: 'paused-turn', status: 'running', visible };
+    assert.equal(
+      workProgress(data).history.some((item) => item.message?.id === 'paused-chat'),
+      false,
+    );
+    assert.equal(recoveryView(data).querySelector('[data-task-resume="paused-chat"]'), null);
+  }
+  data.active = { messageId: 'another-message', turnId: 'another-turn', status: 'running' };
+  assert.equal(
+    workProgress(data).history.some((item) => item.message?.id === 'paused-chat'),
+    true,
+  );
+  data.active = null;
+  data.queue = ['paused-chat'];
+  assert.equal(workProgress(data).history.length, 0);
+  assert.equal(recoveryView(data).querySelector('[data-task-resume]'), null);
+  data.queue = [];
+  defined(data.messages[0]).progressDismissedAt = 100;
+  assert.equal(workProgress(data).history.length, 0);
+});
+
+test('paused conversations owned by registered or voice work do not duplicate recovery entries', () => {
+  const data = state();
+  data.messages = [
+    {
+      id: 'paused-chat',
+      role: 'user',
+      workKind: 'conversation',
+      text: 'Registered backing request',
+      status: 'paused',
+      submission: 'confirmed',
+      turnId: 'older-turn',
+    },
+  ];
+  data.workTasks = [
+    {
+      id: 'registered',
+      turnId: 'latest-turn',
+      turnIds: ['older-turn', 'latest-turn'],
+      messageId: 'paused-chat',
+      status: 'paused',
+      title: 'The durable work owner',
+      executionEndedAt: 100,
+      plan: { steps: [{ step: 'Finish', status: 'pending' }] },
+    },
+  ];
+  let model = workProgress(data),
+    document = recoveryView(data);
+  assert.equal(model.history.length, 1);
+  assert.equal(defined(model.history[0]).id, 'registered');
+  assert.equal(document.querySelectorAll('[data-task-work-resume]').length, 1);
+  assert.equal(document.querySelector('[data-task-resume]'), null);
+  data.workTasks = [];
+  data.messages.push({ id: 'voice-result', role: 'assistant', text: 'Call result' });
+  data.completions = [
+    {
+      id: 'voice-receipt',
+      turnId: 'older-turn',
+      messageIds: ['voice-result'],
+      work: { source: 'voice', status: 'paused' },
+    },
+  ];
+  model = workProgress(data);
+  assert.equal(model.history.length, 1);
+  assert.equal(defined(model.history[0]).id, 'voice-receipt');
+  document = recoveryView(data);
+  assert.equal(document.querySelector('[data-task-resume]'), null);
+  data.completions = [];
+  defined(data.messages[0]).voiceCallId = 'original-call';
+  assert.equal(
+    workProgress(data).history.length,
+    0,
+    'a call input is not an independent chat task',
+  );
 });
 
 test('priority sorts ongoing and recent display entries without reordering live work or the executor queue', () => {
