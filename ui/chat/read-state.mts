@@ -40,6 +40,7 @@ export function createReadVisibility({
   async function refresh() {
     if (closed || !api) return;
     const current = ++generation;
+    publish(false);
     try {
       const [minimized, focused] = await Promise.all([api.isMinimized(), api.isFocused()]);
       if (!closed && current === generation) publish(minimized === false && focused === true);
@@ -90,6 +91,8 @@ export function createReadVisibility({
       .catch(() => publish(false));
   }
   return {
+    // Native focus remains authoritative when WebView document focus lags.
+    documentFocusRequired: !desktop,
     get visible() {
       return visible;
     },

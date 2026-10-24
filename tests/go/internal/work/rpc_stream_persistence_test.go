@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,9 +27,16 @@ type persistedStreamWorker struct {
 }
 
 type persistedStreamExpectation struct {
-	messageID   string
-	text        string
-	encodedText []byte
+	messageID string
+	text      string
+	units     int
+	digest    [sha256.Size]byte
+}
+
+type persistedStreamWriteProgress struct {
+	units          int
+	digest         [sha256.Size]byte
+	expectedPrefix bool
 }
 
 type persistedStreamObservation struct {
@@ -62,18 +70,36 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			name = "explicit pause waits for interrupted provider turn"
 		}
 		t.Run(name, func(t *testing.T) {
+			started := time.Now()
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			blocked, release := make(chan struct{}), make(chan struct{})
 			var armed atomic.Bool
 			var expectedWrite atomic.Pointer[persistedStreamExpectation]
+			var lastWrite atomic.Pointer[persistedStreamWriteProgress]
 			var observedWrite atomic.Bool
+			var attemptedWrites, atomicWrites, decodedWrites atomic.Int64
 			durable := make(chan persistedStreamObservation, 1)
+			reportProgress := func(phase string) {
+				t.Helper()
+				var actual persistedStreamWriteProgress
+				if value := lastWrite.Load(); value != nil {
+					actual = *value
+				}
+				var expected persistedStreamExpectation
+				if value := expectedWrite.Load(); value != nil {
+					expected = *value
+				}
+				t.Logf("stream fixture phase=%s elapsed=%s attemptedWrites=%d atomicWrites=%d decodedWrites=%d actualUTF16=%d expectedUTF16=%d actualSHA256=%x expectedSHA256=%x expectedPrefix=%t",
+					phase, time.Since(started).Round(time.Millisecond), attemptedWrites.Load(), atomicWrites.Load(), decodedWrites.Load(),
+					actual.units, expected.units, actual.digest, expected.digest, actual.expectedPrefix)
+			}
 			var releaseOnce sync.Once
 			releaseWrite := func() { releaseOnce.Do(func() { close(release) }) }
 			defer releaseWrite()
 			persistence, err := store.Open(t.TempDir(), store.Options{
 				Write: func(ctx context.Context, path string, data []byte, mode fs.FileMode) error {
+					attemptedWrites.Add(1)
 					if armed.CompareAndSwap(true, false) {
 						close(blocked)
 						select {
@@ -85,10 +111,11 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 					if err := files.WriteAtomic(ctx, path, data, mode); err != nil {
 						return err
 					}
+					atomicWrites.Add(1)
 					// Observe the successful durable write without repeatedly cloning
 					// the entire large Store snapshot while the stream is draining.
 					want := expectedWrite.Load()
-					if want != nil && !observedWrite.Load() && bytes.Contains(data, want.encodedText) {
+					if want != nil && !observedWrite.Load() {
 						var saved struct {
 							Messages []struct {
 								ID     string         `json:"id"`
@@ -98,10 +125,20 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 							} `json:"messages"`
 						}
 						err := json.Unmarshal(data, &saved)
+						decodedWrites.Add(1)
 						matchedID := ""
 						for _, message := range saved.Messages {
-							if message.Role == contracts.RoleAssistant && message.Text == want.text && message.TaskID == want.messageID {
-								matchedID = message.ID
+							if message.Role == contracts.RoleAssistant && message.TaskID == want.messageID {
+								progress := &persistedStreamWriteProgress{
+									units: contracts.UTF16Length(message.Text), digest: sha256.Sum256([]byte(message.Text)),
+									expectedPrefix: strings.HasPrefix(want.text, message.Text),
+								}
+								lastWrite.Store(progress)
+								if !progress.expectedPrefix {
+									err = fmt.Errorf("owned stream no longer matches its expected prefix")
+								} else if message.Text == want.text {
+									matchedID = message.ID
+								}
 							}
 						}
 						if (err != nil || matchedID != "") && observedWrite.CompareAndSwap(false, true) {
@@ -137,6 +174,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			if len(history) < minimumHistorySize {
 				t.Fatal("synthetic persistence fixture did not contain a substantial history")
 			}
+			reportProgress("history-ready")
 
 			inputReader, input := io.Pipe()
 			output, producer := io.Pipe()
@@ -188,6 +226,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 					}
 					return request
 				case <-deadline.C:
+					reportProgress("request-timeout")
 					t.Fatalf("RPC request %s did not reach the isolated provider", method)
 					return nil
 				}
@@ -213,6 +252,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			const turnID = "persisted-stream-turn"
 			reply(next("turn/start", workerRuntime.RequestTimeout), contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw(turnID)})})
 			owner := waitToolScope(t, engine, turnID)
+			reportProgress("turn-ready")
 			notification := func(method string, params contracts.RawObject) error {
 				params["threadId"], params["turnId"] = raw(owner.ThreadID), raw(owner.TurnID)
 				return send(contracts.RawObject{"method": raw(method), "params": raw(params)})
@@ -226,7 +266,9 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			}
 			select {
 			case <-blocked:
+				reportProgress("write-blocked")
 			case <-time.After(5 * time.Second):
+				reportProgress("write-block-timeout")
 				t.Fatal("stream did not reach the real store write boundary")
 			}
 
@@ -274,6 +316,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 					}
 				}
 			case <-time.After(5 * time.Second):
+				reportProgress("reader-flood-timeout")
 				t.Fatal("slow persistence blocked the RPC reader")
 			}
 			reply(probeRequest, contracts.RawObject{"ok": raw(true)})
@@ -283,26 +326,31 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 					t.Fatal("stream backlog prevented a provider RPC response", err)
 				}
 			case <-time.After(3 * time.Second):
+				reportProgress("response-timeout")
 				t.Fatal("RPC response waited for the blocked store consumer")
 			}
 			if client.Closed() {
 				t.Fatal("valid adjacent text was treated as an uncertain executor disconnect")
 			}
-			encodedText, err := json.Marshal(expected.String())
-			if err != nil {
-				t.Fatal(err)
-			}
-			expectedWrite.Store(&persistedStreamExpectation{messageID: message.ID, text: expected.String(), encodedText: encodedText})
+			reportProgress("reader-responsive")
+			expectedText := expected.String()
+			expectedWrite.Store(&persistedStreamExpectation{messageID: message.ID, text: expectedText,
+				units: contracts.UTF16Length(expectedText), digest: sha256.Sum256([]byte(expectedText))})
 			releaseWrite()
+			reportProgress("drain-released")
 			var observed persistedStreamObservation
 			select {
 			case observed = <-durable:
 				if observed.err != nil {
+					reportProgress("durable-observation-failed")
 					t.Fatal("the real durable stream write could not be observed", observed.err)
 				}
 			case <-ctx.Done():
 				t.Fatal("stream persistence observation was cancelled", ctx.Err())
-			case <-time.After(10 * time.Second):
+			// Eventual full-state persistence has its own instrumented-work allowance.
+			// The blocked reader/probe/interrupt and response bounds above stay short.
+			case <-time.After(workerRuntime.RequestTimeout):
+				reportProgress("durable-timeout")
 				t.Fatal("complete owned text did not reach the real atomic write")
 			}
 			if state := engine.Snapshot(); state.Active == nil || state.Executor.Paused || state.Active.TurnID.Value != owner.TurnID {
@@ -312,6 +360,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			if err != nil || streamed.Role != contracts.RoleAssistant || streamed.TaskID.Value != message.ID || streamed.Text != expected.String() || streamed.Status.Value != contracts.MessageStatusStreaming {
 				t.Fatal("owned streaming text was not committed before the provider completion", err)
 			}
+			reportProgress("stream-durable")
 
 			pauseResult := make(chan error, 1)
 			if paused {
@@ -348,6 +397,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 				}
 			}
 			waitSnapshot(t, engine, func(state Snapshot) bool { return state.Active == nil && !state.Finishing })
+			reportProgress("terminal-observed")
 			state := persistence.Snapshot()
 			preserved, _ := json.Marshal(state.Messages[:historyCount])
 			if !bytes.Equal(history, preserved) || len(state.Messages) != historyCount+2 {
@@ -380,6 +430,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 				t.Fatalf("terminal stream unexpectedly replayed work: %s", eventString(request, "method"))
 			default:
 			}
+			reportProgress("complete")
 		})
 	}
 }

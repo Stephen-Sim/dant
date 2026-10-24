@@ -6,7 +6,11 @@ type ReadBody = { ids?: string[]; attachmentSnapshots?: Record<string, string[]>
 import { uiEntrypointFixture } from '../../support/ui-entrypoint-fixtures.mts';
 import { defined } from '../../support/fixture-assertions.mts';
 import { stripTypeScriptTypes } from 'node:module';
-import { sourceSection, sourceSelectorBinding } from '../../support/source-fixtures.mts';
+import {
+  sourceEventListener,
+  sourceSection,
+  sourceSelectorBinding,
+} from '../../support/source-fixtures.mts';
 import { uiFixtureContext } from '../../support/language-context.mts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -62,7 +66,11 @@ const deferred = <Value = unknown,>() => {
   return { promise, resolve: defined(resolve), reject: defined(reject) };
 };
 function nativeFixture(
-  options: { failListen?: boolean; loadWindow?: VisibilityOptions['loadWindow'] } = {},
+  options: {
+    failListen?: boolean;
+    loadWindow?: VisibilityOptions['loadWindow'];
+    onChange?: (visible: boolean) => void;
+  } = {},
 ) {
   const listeners = new Map<string, (event: { payload?: unknown }) => void>(),
     changes: boolean[] = [],
@@ -91,7 +99,10 @@ function nativeFixture(
   };
   const guard = createReadVisibility({
     desktop: true,
-    onChange: (value) => changes.push(value),
+    onChange: (value) => {
+      changes.push(value);
+      options.onChange?.(value);
+    },
     loadWindow: options.loadWindow || (() => Promise.resolve({ getCurrentWindow: () => native })),
     window,
   });
@@ -117,6 +128,7 @@ function nativeFixture(
 
 test('native foreground is confirmed before reads and minimize invalidates visibility synchronously', async () => {
   const f = nativeFixture();
+  assert.equal(f.guard.documentFocusRequired, false);
   assert.equal(f.guard.visible, false);
   await settle();
   assert.equal(f.guard.visible, true);
@@ -197,6 +209,7 @@ test('browser fallback does not load native APIs and native initialization failu
     },
   });
   assert.equal(browser.visible, true);
+  assert.equal(browser.documentFocusRequired, true);
   await browser.refresh();
   browser.dispose();
   assert.equal(browser.visible, false);
@@ -265,7 +278,8 @@ function fixture(language = 'en') {
     article = document.querySelector<HTMLElement>('article'),
     timers = new Map<Timer, { callback: () => void; at: number }>(),
     requests: { route: string; body: unknown }[] = [],
-    observerCalls: (() => void)[] = [];
+    observerCalls: (() => void)[] = [],
+    windowListeners = new Map<string, () => void>();
   defined(root).getBoundingClientRect = () =>
     rect({
       left: 0,
@@ -291,17 +305,27 @@ function fixture(language = 'en') {
   };
   const c = uiEntrypointFixture({
     document,
-    window: { IntersectionObserver: true },
+    window: {
+      IntersectionObserver: true,
+      addEventListener: (name: string, callback: () => void) => {
+        windowListeners.set(name, callback);
+      },
+    },
     state,
     eventConnected: true,
     page: 'chat',
     chatMode: 'text',
-    readVisibility: { visible: true },
+    readVisibility: {
+      visible: true,
+      documentFocusRequired: true,
+      async refresh() {},
+    },
     modal: null as string | null,
     pc: null as object | null,
     callMini: false,
     fallbackLanguage: language,
     positionReactionMenus() {},
+    restartScreen() {},
     ico: (name: string) => `<svg data-icon="${name}"></svg>`,
     eyes: () => '<i></i>',
     button: () => '<button></button>',
@@ -335,7 +359,9 @@ function fixture(language = 'en') {
         '\n' +
         part('function renderRail(){', 'function renderHeader(') +
         '\n' +
-        part('const readTimers=', 'async function handleEvent('),
+        part('const readTimers=', 'async function handleEvent(') +
+        '\n' +
+        sourceEventListener(source, 'window', 'blur'),
     ),
     c,
   );
@@ -365,6 +391,7 @@ function fixture(language = 'en') {
     root,
     requests,
     timers,
+    windowListeners,
     render,
     advance,
     get rectangle() {
@@ -504,6 +531,120 @@ test('only foreground visible bubbles receive a receipt after a continuous viewp
   defined(f.c.state.messages[0]).read = true;
   f.c.updateRead();
   assert.equal(f.timers.size, 0);
+});
+
+test('confirmed native foreground reads visible retained replies while WebView document focus lags', async () => {
+  const f = fixture(),
+    native = nativeFixture({ onChange: () => f.c.updateRead() });
+  f.c.readVisibility = native.guard;
+  f.focused = false;
+  defined(f.c.state.messages[0]).status = 'paused';
+  f.c.updateRead();
+  f.advance(1000);
+  assert.equal(f.requests.length, 0, 'native initialization must confirm foreground first');
+  await settle();
+  f.advance(449);
+  assert.equal(f.requests.length, 0);
+  f.advance(1);
+  assert.deepEqual(f.requests, [
+    { route: '/read', body: { ids: ['a'], attachmentSnapshots: { a: [] } } },
+  ]);
+  assert.equal(defined(f.c.state.messages[0]).read, false);
+  native.guard.dispose();
+  f.c.stopReadTracking();
+});
+
+test('WebView blur cancels dwell until a fresh native foreground query confirms the window', async () => {
+  const f = fixture(),
+    native = nativeFixture({ onChange: () => f.c.updateRead() });
+  f.c.readVisibility = native.guard;
+  await settle();
+  f.advance(300);
+  const minimized = deferred(),
+    focused = deferred();
+  native.query = { minimized: minimized.promise, focused: focused.promise };
+  f.focused = false;
+  defined(f.windowListeners.get('blur'))();
+  assert.equal(native.guard.visible, false, 'cached native focus cannot authorize a read');
+  f.advance(1000);
+  assert.equal(f.requests.length, 0, 'a pending native query does not complete viewport dwell');
+  minimized.resolve(false);
+  focused.resolve(true);
+  await settle();
+  f.advance(449);
+  assert.equal(f.requests.length, 0, 'fresh focus restarts the entire viewport dwell');
+  f.advance(1);
+  assert.equal(f.requests.length, 1);
+  native.guard.dispose();
+  f.c.stopReadTracking();
+});
+
+test('native focus loss invalidates a delayed WebView blur query and preserves unread state', async () => {
+  const f = fixture(),
+    native = nativeFixture({ onChange: () => f.c.updateRead() });
+  f.c.readVisibility = native.guard;
+  await settle();
+  f.advance(300);
+  const minimized = deferred(),
+    focused = deferred();
+  native.query = { minimized: minimized.promise, focused: focused.promise };
+  f.focused = false;
+  defined(f.windowListeners.get('blur'))();
+  defined(native.listeners.get('focus'))({ payload: false });
+  minimized.resolve(false);
+  focused.resolve(true);
+  await settle();
+  f.advance(1000);
+  assert.equal(native.guard.visible, false);
+  assert.equal(f.requests.length, 0);
+  assert.equal(defined(f.c.state.messages[0]).read, false);
+  native.guard.dispose();
+  f.c.stopReadTracking();
+});
+
+test('replacing a visible message element rebinds its observer and restarts viewport dwell', () => {
+  const f = fixture();
+  f.c.updateRead();
+  f.advance(300);
+  const replacement = defined(f.article).cloneNode(true);
+  assert.ok(replacement instanceof defined(f.document.defaultView).HTMLElement);
+  replacement.getBoundingClientRect = () => rect(f.rectangle);
+  defined(f.article).replaceWith(replacement);
+  assert.equal(defined(f.article).isConnected, false);
+  f.c.updateRead();
+  f.advance(449);
+  assert.equal(f.requests.length, 0, 'a new DOM element must complete its own viewport dwell');
+  f.advance(1);
+  assert.equal(f.requests.length, 1, 'the detached old node must not strand the read receipt');
+});
+
+test('replacing a message element preserves its in-flight receipt and observes later attachments', async () => {
+  const f = fixture(),
+    pending = deferred(),
+    attachment = '10000000-0000-4000-8000-000000000001';
+  f.c.post = (route, body) => {
+    f.requests.push({ route, body: structuredClone(body) });
+    return pending.promise;
+  };
+  f.c.updateRead();
+  f.advance(450);
+  assert.equal(f.requests.length, 1);
+  const replacement = defined(f.article).cloneNode(true);
+  assert.ok(replacement instanceof defined(f.document.defaultView).HTMLElement);
+  replacement.getBoundingClientRect = () => rect(f.rectangle);
+  defined(f.article).replaceWith(replacement);
+  defined(f.c.state.messages[0]).attachments = [{ id: attachment }];
+  f.c.updateRead();
+  f.advance(1000);
+  assert.equal(f.requests.length, 1, 'DOM replacement must not duplicate an in-flight receipt');
+  pending.resolve({ ok: true });
+  await settle();
+  f.advance(449);
+  assert.equal(f.requests.length, 1);
+  f.advance(1);
+  assert.equal(f.requests.length, 2);
+  assert.deepEqual(readBody(defined(f.requests[1]).body).attachmentSnapshots, { a: [attachment] });
+  f.c.stopReadTracking();
 });
 
 test('a retained last reply shows unread independently of task status and still requires viewport dwell', () => {

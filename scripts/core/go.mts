@@ -21,6 +21,9 @@ const GO_OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 const GO_ROOT_MAX_CHARS = 4096;
 const GO_TEST_PACKAGE_TIMEOUT = '120s';
 const GO_WINDOWS_TEST_PACKAGE_TIMEOUT = '300s';
+// Race instrumentation also covers full-state JSON persistence in stress cases.
+// Keep their cumulative package budget separate from normal tests and RPC latency assertions.
+const GO_RACE_TEST_PACKAGE_TIMEOUT = '240s';
 const GO_TEST_PACKAGE_PARALLELISM = 2;
 const GO_TEST_CASE_PARALLELISM = 4;
 const modes = ['format', 'format-check', 'vet', 'test', 'coverage', 'check', 'race'] as const;
@@ -145,7 +148,11 @@ export function runCoreGo(
   if (mode === 'race' && platform !== 'linux')
     throw Error('The core race check requires Linux and a working C compiler.');
   const packageTimeout =
-    platform === 'win32' ? GO_WINDOWS_TEST_PACKAGE_TIMEOUT : GO_TEST_PACKAGE_TIMEOUT;
+    mode === 'race'
+      ? GO_RACE_TEST_PACKAGE_TIMEOUT
+      : platform === 'win32'
+        ? GO_WINDOWS_TEST_PACKAGE_TIMEOUT
+        : GO_TEST_PACKAGE_TIMEOUT;
   const coverage = mode === 'check' || mode === 'coverage' ? createCoverageReport(root) : undefined;
   let overlay: CoreGoTestOverlay | undefined;
   const steps: readonly CoreGoMode[] =

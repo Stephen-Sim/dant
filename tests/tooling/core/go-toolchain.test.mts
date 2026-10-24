@@ -322,7 +322,7 @@ test('failed or timed out commands stop checks and report the failed stage', () 
   }
 });
 
-test('Linux race tests require their compiler prerequisite and never turn into a skipped Windows check', () => {
+test('Linux race tests require their compiler prerequisite and have a separate instrumentation budget', () => {
   const unsupported = fixture({ platform: 'win32' });
   assert.throws(
     () => runCoreGo('race', unsupported.options),
@@ -339,7 +339,7 @@ test('Linux race tests require their compiler prerequisite and never turn into a
     '-p=2',
     '-parallel=4',
     '-count=1',
-    '-timeout=120s',
+    '-timeout=240s',
     './...',
   ]);
   assert.equal(linux.calls.at(-1)?.options.env?.CGO_ENABLED, '1');
@@ -347,6 +347,19 @@ test('Linux race tests require their compiler prerequisite and never turn into a
   assert.equal(linux.calls.at(-1)?.options.timeout, 600000);
   assert.equal(linux.calls.at(-1)?.options.maxBuffer, 8 * 1024 * 1024);
   assert.equal(linux.overlayClosed, 1);
+});
+
+test('an exhausted race budget fails once and closes its overlay without retrying the tests', () => {
+  const f = fixture({
+    platform: 'linux',
+    command: () => ({ status: null, error: Error('isolated race timeout') }),
+  });
+  assert.throws(() => runCoreGo('race', f.options), /Go core race failed/);
+  const commands = f.calls.filter((call) => call.args[0] === 'test');
+  assert.equal(commands.length, 1);
+  assert.ok(commands[0]?.args.includes('-timeout=240s'));
+  assert.equal(commands[0]?.options.timeout, 600000);
+  assert.equal(f.overlayClosed, 1);
 });
 
 test('the command boundary rejects missing, unknown and additional arguments', () => {

@@ -4357,7 +4357,7 @@ function canReadMessages() {
     chatMode === 'text' &&
     readVisibility.visible &&
     !document.hidden &&
-    document.hasFocus() &&
+    (!readVisibility.documentFocusRequired || document.hasFocus()) &&
     !modal &&
     (!pc || callMini)
   );
@@ -4508,16 +4508,16 @@ function updateRead() {
       element,
     ]),
   );
-  for (const [id, element] of readTargets)
-    if (
-      !nodes.has(id) ||
-      !unreadAssistant(currentState().messages.find((item) => item.id === id))
-    ) {
-      clearReadTimer(id);
-      readObserver?.unobserve(element);
-      readTargets.delete(id);
-      readPending.delete(id);
-    }
+  for (const [id, element] of readTargets) {
+    const current = nodes.get(id),
+      unread = unreadAssistant(currentState().messages.find((item) => item.id === id));
+    if (current === element && unread) continue;
+    clearReadTimer(id);
+    readObserver?.unobserve(element);
+    readTargets.delete(id);
+    // An in-flight receipt belongs to its message, not the replaced DOM node.
+    if (!current || !unread) readPending.delete(id);
+  }
   for (const [id, element] of nodes)
     if (
       unreadAssistant(currentState().messages.find((item) => item.id === id)) &&
@@ -4696,6 +4696,7 @@ window.addEventListener('focus', () => {
 });
 window.addEventListener('blur', () => {
   stopReadTracking();
+  void readVisibility.refresh();
   restartScreen();
 });
 window.addEventListener('resize', () => {
