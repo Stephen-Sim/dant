@@ -793,6 +793,12 @@ class SeedTests(unittest.TestCase):
                 config = json.loads(output.getvalue().split(b"\n", 1)[1])
                 self.assertEqual(config["users"][0]["ssh_authorized_keys"], [public])
                 self.assertIsNone(config["users"][0]["sudo"])
+                helpers = {entry['path']: entry for entry in config['write_files']}
+                namespace_helper = helpers['/opt/dant/conversation-namespace.py']
+                self.assertEqual(namespace_helper['permissions'], '0755')
+                self.assertEqual(namespace_helper['content'], (ROOT / 'vm/conversation-namespace.py').read_text(encoding='utf-8'))
+                self.assertIn('python3 /opt/dant/conversation-namespace.py --install --user dant',
+                              helpers['/opt/dant/bootstrap.sh']['content'])
             finally:
                 iso.close()
 

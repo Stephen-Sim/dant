@@ -10,7 +10,10 @@ import (
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/runtime"
+	"github.com/Stephen-Sim/dant/core/internal/store"
 )
+
+const nativeConversationIDLimit = 128
 
 var clientInputID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
@@ -50,7 +53,7 @@ func (native *Native) queue(s *nativeSession) (*ContextQueue, error) {
 				if !allowed || message == nil || entry.isCurrent != nil && !entry.isCurrent() {
 					return ErrContextRejected
 				}
-				if _, err := native.options.Store.Update(ctx, message.ID, contracts.MessagePatch{"status": rawValue(contracts.TaskStatusQueued), "submission": rawValue(contracts.SubmissionStatusSubmitting), "voiceCallId": rawValue(callID)}); err != nil {
+				if _, err := native.options.Store.UpdateConversation(ctx, state.ConversationID, message.ID, contracts.MessagePatch{"status": rawValue(contracts.TaskStatusQueued), "submission": rawValue(contracts.SubmissionStatusSubmitting), "voiceCallId": rawValue(callID)}); err != nil {
 					return ErrContextRejected
 				}
 				native.mu.Lock()
@@ -137,6 +140,14 @@ func (native *Native) Message(ctx context.Context, input NativeMessage) (NativeM
 	}
 
 	state := native.options.Store.Snapshot()
+	if input.ConversationID != nil {
+		if *input.ConversationID == "" || len(*input.ConversationID) > nativeConversationIDLimit {
+			return NativeMessageResult{}, ErrCallInput
+		}
+		if *input.ConversationID != state.ConversationID {
+			return NativeMessageResult{}, ErrVoiceCancelled
+		}
+	}
 	if slices.Contains(state.DeletedClientMessageIDs, input.ClientMessageID) {
 		return NativeMessageResult{}, ErrCallInput
 	}
@@ -175,7 +186,7 @@ func (native *Native) Message(ctx context.Context, input NativeMessage) (NativeM
 	if input.ReplyTo != nil {
 		reply = contracts.Some(*input.ReplyTo)
 	}
-	message, err := native.options.Store.Add(ctx, &contracts.ChatMessage{
+	message, err := native.options.Store.AddConversation(ctx, state.ConversationID, &contracts.ChatMessage{
 		Role:            contracts.RoleUser,
 		Text:            input.Text,
 		ReplyTo:         reply,
@@ -188,10 +199,15 @@ func (native *Native) Message(ctx context.Context, input NativeMessage) (NativeM
 		Reactions:       []string{},
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrMessageConflict) {
+			return NativeMessageResult{}, ErrVoiceCancelled
+		}
 		return NativeMessageResult{}, err
 	}
 	native.changed()
-	return native.SubmitCallMessage(ctx, input.CallID, message)
+	return native.submitCallMessage(ctx, input.CallID, message, nil, func() bool {
+		return native.options.Store.Snapshot().ConversationID == state.ConversationID
+	})
 }
 
 func (native *Native) SubmitCallMessage(ctx context.Context, callID string, message *contracts.ChatMessage) (NativeMessageResult, error) {
@@ -299,7 +315,7 @@ func (native *Native) submitCallMessage(
 		patch["executorConfirmedAt"] = rawValue(native.options.Now().UnixMilli())
 		patch["pauseReason"] = json.RawMessage("null")
 		patch["error"] = json.RawMessage("null")
-		saved, err = native.options.Store.Update(ctx, message.ID, patch)
+		saved, err = native.options.Store.UpdateConversation(ctx, state.ConversationID, message.ID, patch)
 		entry.result = NativeMessageResult{Message: saved, CallID: callID, Submission: contracts.SubmissionStatusConfirmed, VoiceContext: &voiceContext}
 		entry.err = err
 		native.changed()
@@ -324,7 +340,7 @@ func (native *Native) submitCallMessage(
 	patch["error"] = rawValue("The current call did not accept this typed message.")
 	bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	_, saveErr := native.options.Store.Update(bounded, message.ID, patch)
+	_, saveErr := native.options.Store.UpdateConversation(bounded, state.ConversationID, message.ID, patch)
 	entry.err = &VoiceInputError{"voice_input_unconfirmed", wireSubmission, unknown}
 	if saveErr != nil {
 		entry.err = saveErr

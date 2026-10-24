@@ -26,6 +26,18 @@ func (value *LocalWorker) monitorAccount(rpc *RPC, generation uint64, executor *
 			if !open {
 				return
 			}
+			// The public account DTO may omit workspace identity. Even identical
+			// email/plan metadata cannot prove that the credential owner is unchanged.
+			value.mu.Lock()
+			current := !value.closed && value.generation == generation && value.rpc == rpc
+			conversation := value.conversationSession
+			if current {
+				value.accountEpoch++
+			}
+			value.mu.Unlock()
+			if current && conversation != nil {
+				conversation.stop()
+			}
 			account, err := rpc.Request(value.ctx, "account/read", nil)
 			if err != nil {
 				if rpc.Closed() {
@@ -35,7 +47,7 @@ func (value *LocalWorker) monitorAccount(rpc *RPC, generation uint64, executor *
 			}
 
 			value.mu.Lock()
-			current := !value.closed && value.generation == generation && value.rpc == rpc
+			current = !value.closed && value.generation == generation && value.rpc == rpc
 			if current {
 				value.account = account
 			}

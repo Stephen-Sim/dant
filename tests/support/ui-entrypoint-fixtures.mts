@@ -13,7 +13,11 @@ const missing = (..._args: unknown[]): never => {
 };
 type UiMainFunctions = Omit<MainFunctions, 'api' | 'post'> & {
   api: (route: string, options?: ApiOptions) => Promise<unknown>;
-  post: (route: string, body?: unknown) => Promise<unknown>;
+  post: (
+    route: string,
+    body?: unknown,
+    options?: Pick<ApiOptions, 'beforeSend'>,
+  ) => Promise<unknown>;
 };
 const entrypointSlots: UiMainFunctions = {
   currentState: missing,
@@ -80,6 +84,7 @@ const entrypointSlots: UiMainFunctions = {
   renderAttachments: missing,
   messageDate: missing,
   renderMessages: missing,
+  renderOutgoingMessages: () => '',
   positionReactionMenus: missing,
   renderComputer: missing,
   renderSettings: missing,
@@ -148,6 +153,7 @@ const entrypointSlots: UiMainFunctions = {
   openExternal: missing,
   action: missing,
   clearSentDraft: missing,
+  reconcileOutgoingMessages() {},
   checkUnconfirmedMessage: missing,
   send: missing,
   upload: missing,
@@ -184,6 +190,22 @@ export function uiEntrypointFixture<T extends object>(
   context: T,
 ): Omit<T, keyof UiMainFunctions> & UiMainFunctions & Omit<Partial<MainBindings>, keyof T> {
   const bindings: Partial<MainBindings> = {
+    pendingActions: new Set(),
+    unloading: false,
+    outgoingMessages: {
+      begin: (attempt, scope) => ({
+        attempt,
+        scope,
+        sending: true,
+        unknown: false,
+        observed: false,
+      }),
+      sync: () => [],
+      visible: () => [],
+      acknowledged() {},
+      unconfirmed() {},
+      rejected() {},
+    },
     attachments: [],
     createComposerImagePreviews,
     composerImagePreviews: {

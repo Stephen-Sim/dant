@@ -44,6 +44,7 @@ var bundleAllowlist = map[string]bool{
 	GuestBinaryPath:                     true,
 	"vm/bootstrap.sh":                   true,
 	"vm/control.py":                     true,
+	"vm/conversation-namespace.py":      true,
 	"vm/desktop_mcp.py":                 true,
 	"vm/desktop.py":                     true,
 	"vm/guest.py":                       true,

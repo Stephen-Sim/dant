@@ -38,6 +38,7 @@ func (value *Engine) pause(ctx context.Context, reason string) error {
 	active := value.active
 	queued := append([]string{}, value.queue...)
 	value.queue = []string{}
+	value.conversationQueue = make(map[string]bool)
 	if active != nil {
 		active.pauseOnly = true
 		active.stopRequested = true
@@ -75,6 +76,9 @@ func (value *Engine) interrupt(ctx context.Context, active *execution) error {
 	active.cancelPreparation()
 	turn, thread := active.turnID, active.threadID
 	submitted := active.startSubmitted
+	if submitted && active.conversationOnly {
+		active.conversationStopping = true
+	}
 	reason := active.stopReason
 	if reason == "" {
 		reason = pauseReasonUser
@@ -84,6 +88,24 @@ func (value *Engine) interrupt(ctx context.Context, active *execution) error {
 		value.options.OwnerEnded(turn)
 	}
 	if !submitted {
+		return value.finish(active, contracts.TaskStatusPaused, reason)
+	}
+	if active.conversationOnly {
+		confirmed, err := active.conversationSession.TerminateConfirmed(ctx)
+		if err != nil || !confirmed {
+			value.mu.Lock()
+			active.unknown = true
+			value.confirmedStopped = false
+			value.changeLocked()
+			value.mu.Unlock()
+			return ErrUnknown
+		}
+		value.mu.Lock()
+		if value.active == active {
+			active.terminal = true
+			active.unknown = active.startSubmitted && !active.startAcknowledged
+		}
+		value.mu.Unlock()
 		return value.finish(active, contracts.TaskStatusPaused, reason)
 	}
 	if turn != "" && thread != "" {
@@ -111,7 +133,7 @@ func (value *Engine) interrupt(ctx context.Context, active *execution) error {
 func (value *Engine) ResumePaused(ctx context.Context, ids []string, options ResumeOptions) ([]string, error) {
 	value.mu.Lock()
 	defer value.mu.Unlock()
-	if value.closed || value.maintenance || value.takeover || value.acquiring || value.active != nil && value.active.unknown {
+	if value.closed || value.maintenance || value.takeover || value.acquiring || value.active != nil && (value.active.unknown || value.active.conversationOnly) {
 		return nil, ErrBusy
 	}
 	if value.worker.Snapshot().Status != contracts.ConnectionStatusOnline {
@@ -259,8 +281,15 @@ func (value *Engine) ConfirmStopped(ctx context.Context) error {
 		return ErrUnknown
 	}
 	value.mu.Lock()
-	value.confirmedStopped = true
 	active := value.active
+	value.mu.Unlock()
+	if active != nil && active.conversationOnly {
+		if err := value.closeConversation(active); err != nil {
+			return err
+		}
+	}
+	value.mu.Lock()
+	value.confirmedStopped = true
 	closed := value.closed
 	if active != nil {
 		active.terminal = true

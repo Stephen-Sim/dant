@@ -36,8 +36,8 @@ type NativeEngine interface {
 
 type NativePersistence interface {
 	Snapshot() contracts.State
-	Add(context.Context, *contracts.ChatMessage) (*contracts.ChatMessage, error)
-	Update(context.Context, string, contracts.MessagePatch) (*contracts.ChatMessage, error)
+	AddConversation(context.Context, string, *contracts.ChatMessage) (*contracts.ChatMessage, error)
+	UpdateConversation(context.Context, string, string, contracts.MessagePatch) (*contracts.ChatMessage, error)
 }
 
 type NativeOptions struct {
@@ -114,6 +114,7 @@ type NativeMessageResult struct {
 type NativeMessage struct {
 	ClientMessageID, Text, CallID string
 	ReplyTo                       *string
+	ConversationID                *string
 }
 
 type nativeContinuation struct {

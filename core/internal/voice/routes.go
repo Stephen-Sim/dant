@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/httpapi"
 	"github.com/Stephen-Sim/dant/core/internal/security"
 )
@@ -139,6 +140,14 @@ func RegisterRoutes(mux *http.ServeMux, options RouteOptions) {
 		callID, _ := httpapi.String(body, "callId", true)
 		clientID, _ := httpapi.String(body, "clientMessageId", true)
 		text, _ := httpapi.String(body, "text", true)
+		var conversationID *string
+		if raw, present := body["conversationId"]; present {
+			id, err := httpapi.String(body, "conversationId", true)
+			if err != nil || !contracts.ValidUnicodeJSON(raw) || id == "" || len(id) > nativeConversationIDLimit {
+				return ErrCallInput
+			}
+			conversationID = &id
+		}
 		var reply *string
 		if value, present := body["replyTo"]; present && string(value) != "null" {
 			var id string
@@ -147,7 +156,7 @@ func RegisterRoutes(mux *http.ServeMux, options RouteOptions) {
 			}
 			reply = &id
 		}
-		result, err := service.NativeMessage(request.Context(), NativeMessage{ClientMessageID: clientID, Text: text, CallID: callID, ReplyTo: reply})
+		result, err := service.NativeMessage(request.Context(), NativeMessage{ClientMessageID: clientID, Text: text, CallID: callID, ReplyTo: reply, ConversationID: conversationID})
 		if err != nil {
 			return err
 		}

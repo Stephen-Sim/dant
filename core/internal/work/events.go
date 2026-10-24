@@ -47,6 +47,10 @@ func (value *Engine) Handle(ctx context.Context, event runtime.Event) error {
 }
 
 func (value *Engine) handleEvent(ctx context.Context, event runtime.Event, routeMedia bool) error {
+	return value.handleBoundEvent(ctx, event, routeMedia, nil)
+}
+
+func (value *Engine) handleBoundEvent(ctx context.Context, event runtime.Event, routeMedia bool, bound *execution) error {
 	event = value.scopeMediaEvent(event)
 	if event.Method == "thread/tokenUsage/updated" && value.options.Usage != nil {
 		state := value.store.Snapshot()
@@ -64,6 +68,13 @@ func (value *Engine) handleEvent(ctx context.Context, event runtime.Event, route
 	}
 	value.mu.Lock()
 	active := value.active
+	if bound != nil && active != bound || active != nil && active.conversationOnly && bound != active {
+		value.mu.Unlock()
+		if bound != nil {
+			return nil
+		}
+		return value.rejectEvent(ctx, event)
+	}
 	turnID := eventTurn(event)
 	threadID := eventString(event.Params, "threadId")
 	isTurn := strings.HasPrefix(event.Method, "turn/") || strings.HasPrefix(event.Method, "item/")
@@ -421,6 +432,18 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 	}
 	active.finishing = true
 	active.cancelPreparation()
+	conversationStopConfirmed := true
+	if active.conversationOnly {
+		value.mu.Unlock()
+		closeErr := value.closeConversation(active)
+		value.mu.Lock()
+		if closeErr != nil {
+			conversationStopConfirmed = false
+			active.unknown = true
+			reason = pauseReasonStopUnknown
+			value.confirmedStopped = false
+		}
+	}
 	if reason == "" || !active.startSubmitted && active.stopRequested && reason == pauseReasonRequestFailed {
 		if active.stopReason != "" {
 			reason = active.stopReason
@@ -519,7 +542,7 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 			}
 		}
 	}
-	if err == nil && status == contracts.TaskStatusCompleted && (active.attemptID == "" || active.humanResponse || quietPublished) {
+	if err == nil && !active.conversationOnly && status == contracts.TaskStatusCompleted && (active.attemptID == "" || active.humanResponse || quietPublished) {
 		value.archiveFinalOutputs(active)
 		assistantIDs = append([]string{}, active.assistantIDs...)
 	}
@@ -573,7 +596,7 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 		}
 		task.result <- result
 	}
-	if active.terminal || !active.startSubmitted {
+	if (active.conversationOnly || active.terminal || !active.startSubmitted) && conversationStopConfirmed {
 		value.confirmedStopped = true
 	}
 	close(active.stopped)

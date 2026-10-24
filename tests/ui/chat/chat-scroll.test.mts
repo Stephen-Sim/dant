@@ -423,6 +423,7 @@ test('main captures before appearance or DOM mutation, restores after composer l
       sourceIndex(source, 'function renderRail(){'),
     );
   assert.ok(render.indexOf('chatScroll.capture()') < render.indexOf('appearance.sync'));
+  assert.ok(render.indexOf('chatScroll.capture()') < render.indexOf('reconcileOutgoingMessages()'));
   assert.ok(render.indexOf('chatScroll.restore()') > render.indexOf('resizeComposer()'));
   assert.doesNotMatch(render, /oldScroll|nearBottom/);
   assert.match(source, /unloading\s*=\s*true;\s*chatScroll\.dispose\(\)/);

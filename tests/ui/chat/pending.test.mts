@@ -52,6 +52,30 @@ test('only explicit resubmission creates a fresh id after an unknown outcome', (
   );
 });
 
+test('submission IDs and unknown acknowledgements retain their exact conversation/computer scope', () => {
+  let scope = 'computer-a/conversation-a',
+    next = 0;
+  const submissions = createMessageSubmissions({
+      getScope: () => scope,
+      newId: () => 'attempt-' + ++next,
+    }),
+    first = submissions.prepare('/messages', { text: 'Same text' });
+  scope = 'computer-b/conversation-a';
+  const second = submissions.prepare('/messages', { text: 'Same text' });
+  assert.notEqual(first.clientMessageId, second.clientMessageId);
+  submissions.unconfirmed(first);
+  assert.equal(submissions.unknown, null);
+  submissions.unconfirmed(second);
+  submissions.acknowledged(first.clientMessageId);
+  assert.equal(submissions.unknown, second);
+  scope = first.scope;
+  assert.equal(submissions.unknown, null);
+  assert.equal(
+    submissions.prepare('/messages', { text: 'Same text' }).clientMessageId,
+    'attempt-3',
+  );
+});
+
 test('disconnect keeps the exact call id, stop requests serialize, and a failed stop remains recoverable', async () => {
   const sent: string[] = [];
   let release: (() => void) | undefined;

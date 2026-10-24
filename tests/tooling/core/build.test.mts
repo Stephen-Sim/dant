@@ -445,6 +445,7 @@ test('a foreign source recreated after a physical move is preserved without repl
 
 test('VM resource allowlist matches both the Go deployer and Python cutover installer', () => {
   assert.equal(VM_BUNDLE_FILES.filter((name) => name === 'vm/guest_service.py').length, 1);
+  assert.equal(VM_BUNDLE_FILES.filter((name) => name === 'vm/conversation-namespace.py').length, 1);
   const go = fs.readFileSync('core/internal/computer/deployment.go', 'utf8');
   const goBlock = go.match(/var bundleAllowlist = map\[string\]bool\{([\s\S]*?)\n\}/)?.[1];
   assert.ok(goBlock);

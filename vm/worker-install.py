@@ -32,6 +32,7 @@ LEGACY_PROTOCOL_PATH = 'src/config/protocol.json'
 PROTOCOL_PATHS = frozenset({PROTOCOL_PATH, LEGACY_PROTOCOL_PATH})
 ALLOWLIST = frozenset({
     BINARY, PROTOCOL_PATH, LEGACY_PROTOCOL_PATH, 'vm/bootstrap.sh', 'vm/control.py',
+    'vm/conversation-namespace.py',
     'vm/desktop.py', 'vm/desktop_mcp.py', 'vm/guest.py', 'vm/install-speech.sh',
     'vm/install-transcription.sh', 'vm/install-worker.sh', 'vm/worker-install.py',
     'vm/install-speech.py', 'vm/install-transcription.py', 'vm/worker-update-guard.py',
@@ -64,6 +65,7 @@ BACKUP_CONTENT_LIMIT = 10 * 1024 * 1024 * 1024
 BACKUP_FILE_COUNT_LIMIT = 100000
 PREFLIGHT_LIMIT = 4096
 PREFLIGHT_TIMEOUT = 3 * 60
+CONVERSATION_NAMESPACE_TIMEOUT = 10
 SPACE_HEADROOM = 1024 * 1024 * 1024
 SPACE_ALLOCATION_LIMIT = 64 * 1024
 SOURCE_DIRECTORY = re.compile(r'source\.[A-Za-z0-9._-]{1,160}\Z')
@@ -890,6 +892,32 @@ def preserve_reconciliation(root, raw, reconciliation, previous):
         preserve_evidence(directory, name, preparation)
 
 
+def assert_conversation_runtime():
+    # Root bootstrap prepares the system package and any required per-program
+    # Ubuntu namespace policy. A user-local copy alone cannot establish that
+    # the kernel and AppArmor permit isolation; an update never repairs policy.
+    # Probe before recording a cutover or stopping the current Worker. This
+    # executes only a fixed /usr/bin/true, never Codex or user work.
+    arguments = [
+        '/usr/bin/bwrap', '--die-with-parent', '--new-session',
+        '--unshare-all', '--share-net', '--cap-drop', 'ALL',
+        '--ro-bind', '/', '/', '--remount-ro', '/', '--', '/usr/bin/true',
+    ]
+    try:
+        result = subprocess.run(
+            arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=CONVERSATION_NAMESPACE_TIMEOUT,
+            env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, close_fds=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        reject('conversation-runtime-missing')
+    except (OSError, subprocess.TimeoutExpired):
+        reject('conversation-runtime-unavailable')
+    if result.returncode != 0:
+        reject('conversation-runtime-unavailable')
+
+
 def _activate_locked(configuration, manual, service_directory, reconciliation=None):
     home, source = configuration['home'], configuration['source']
     root = home / 'dant'
@@ -906,6 +934,7 @@ def _activate_locked(configuration, manual, service_directory, reconciliation=No
     elif reconciliation is not None:
         reject('reconciliation-unconfirmed')
 
+    assert_conversation_runtime()
     assert_guest_endpoint(configuration)
     # Validate busy-work policy again while owning the installation lock.
     arguments = ['bash', str(source / 'vm/install-worker.sh'), str(source), '--guard-only']

@@ -41,7 +41,7 @@ func (value *Engine) ToolScope() (ToolContext, bool) {
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	active := value.active
-	if value.closed || value.takeover || value.acquiring || active == nil || !value.currentLocked(active) || !active.startAcknowledged || active.stopRequested || active.finishing || active.unknown || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline {
+	if value.closed || value.takeover || value.acquiring || active == nil || active.conversationOnly || !value.currentLocked(active) || !active.startAcknowledged || active.stopRequested || active.finishing || active.unknown || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline {
 		return ToolContext{}, false
 	}
 	return value.ownerLocked(active), true

@@ -76,6 +76,19 @@ type TokenUsage interface {
 	ObserveCodex(context.Context, string, json.RawMessage) (bool, error)
 }
 
+// ConversationSession is an independently owned model connection without
+// computer, task, or external-action capabilities.
+// The factory must establish its isolation before returning this capability.
+// It never shares the ordinary task executor's thread or tool authority.
+type ConversationSession interface {
+	RuntimeID() string
+	ValidateOwner() error
+	RequestGuarded(context.Context, string, contracts.RawObject, func() error) (contracts.RawObject, error)
+	SubscribeEvents() (<-chan runtime.Event, func(), error)
+	ReplyError(context.Context, runtime.RPCID, int, string) error
+	TerminateConfirmed(context.Context) (bool, error)
+}
+
 // CallService owns its media lifecycle. Durable task ownership remains here;
 // closing media must not imply cancellation or successful task completion.
 type CallService interface {
@@ -122,6 +135,7 @@ type Options struct {
 	OwnerEnded          func(string)
 	Transcribe          func(context.Context, contracts.Attachment) (string, error)
 	RecognizedCallInput func(context.Context, string, *contracts.ChatMessage) error
+	OpenConversation    func(context.Context, string, func() bool) (ConversationSession, error)
 }
 
 type Snapshot struct {

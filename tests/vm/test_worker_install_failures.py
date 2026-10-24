@@ -26,6 +26,38 @@ class WorkerInstallFailureTests(unittest.TestCase):
     def rejected(self, code):
         return self.assertRaisesRegex(installer.InstallError, '^' + code + '$')
 
+    def test_conversation_namespace_probe_is_bounded_and_has_no_inherited_authority(self):
+        with patch.object(installer.subprocess, 'run', return_value=types.SimpleNamespace(returncode=0)) as run:
+            installer.assert_conversation_runtime()
+        arguments = run.call_args.args[0]
+        options = run.call_args.kwargs
+        self.assertEqual(arguments[0], '/usr/bin/bwrap')
+        self.assertEqual(arguments[-2:], ['--', '/usr/bin/true'])
+        self.assertIn('--unshare-all', arguments)
+        self.assertEqual(options['env'], {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+        self.assertEqual(options['timeout'], installer.CONVERSATION_NAMESPACE_TIMEOUT)
+        self.assertTrue(options['close_fds'])
+        for stream in ('stdin', 'stdout', 'stderr'):
+            self.assertEqual(options[stream], subprocess.DEVNULL)
+
+    def test_missing_or_denied_namespace_keeps_the_existing_worker_and_data(self):
+        failures = [
+            ({'side_effect': FileNotFoundError()}, 'conversation-runtime-missing'),
+            ({'side_effect': PermissionError('synthetic')}, 'conversation-runtime-unavailable'),
+            ({'side_effect': subprocess.TimeoutExpired('synthetic', 1)}, 'conversation-runtime-unavailable'),
+            ({'return_value': types.SimpleNamespace(returncode=1)}, 'conversation-runtime-unavailable'),
+        ]
+        for boundary, reason in failures:
+            with self.subTest(reason=reason, boundary=boundary), patch.object(installer.subprocess, 'run', **boundary), self.rejected(reason):
+                installer.assert_conversation_runtime()
+        for reason in ('conversation-runtime-missing', 'conversation-runtime-unavailable'):
+            with self.subTest(reason=reason), self.f.isolated_activation(), patch.object(
+                    installer, 'assert_conversation_runtime', side_effect=installer.InstallError(reason)), self.rejected(reason):
+                self.f.activate()
+            self.assertEqual(self.f.state.read_bytes(), self.f.original)
+            self.assertEqual(self.f.calls, [])
+            self.assertFalse((self.f.home / 'dant/install-attempt.json').exists())
+
     def test_relative_and_non_directory_roots_never_create_or_modify_data(self):
         with self.rejected('path-invalid'):
             installer.ordinary_directory(pathlib.Path('relative'))

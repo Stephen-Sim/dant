@@ -99,7 +99,8 @@ files = [
     {'path': '/opt/dant/' + name, 'permissions': '0755',
      'content': (root / 'vm' / name).read_text(encoding='utf-8')}
     for name in ('desktop.py', 'desktop_mcp.py', 'voice_message.py', 'guest.py',
-                 'control.py', 'network_config.py', 'start-codex.sh', 'bootstrap.sh')
+                 'control.py', 'network_config.py', 'conversation-namespace.py',
+                 'start-codex.sh', 'bootstrap.sh')
 ]
 files += [{'path': '/opt/dant/' + network_config.PROTOCOL_RESOURCE.as_posix(), 'permissions': '0644',
            'content': json.dumps(protocol, ensure_ascii=False, indent=2) + '\n'}]

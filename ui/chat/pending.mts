@@ -2,6 +2,7 @@
 import type { Attachment, WorkReplyTarget } from '../shared/contracts.mts';
 import { requestError } from '../shared/contracts.mts';
 export interface MessageSubmission {
+  scope: string;
   route: string;
   payload: SubmissionPayload;
   signature: string;
@@ -13,6 +14,7 @@ export interface MessageSubmission {
   kind?: 'voice';
 }
 export interface SubmissionPayload {
+  conversationId?: string;
   text: string;
   callId?: string | undefined;
   attachments?: string[];
@@ -21,38 +23,52 @@ export interface SubmissionPayload {
 }
 export function createMessageSubmissions({
   newId = () => crypto.randomUUID(),
-}: { newId?: () => string } = {}) {
-  let attempt: MessageSubmission | null = null,
-    unknown: MessageSubmission | null = null;
+  getScope = () => '',
+}: { newId?: () => string; getScope?: () => string } = {}) {
+  const attempts = new Map<string, MessageSubmission>(),
+    unknowns = new Map<string, MessageSubmission>();
   return {
     get unknown() {
-      return unknown;
+      return unknowns.get(getScope()) ?? null;
     },
     prepare(route: string, payload: SubmissionPayload, { confirmResend = false } = {}) {
+      const scope = getScope(),
+        unknown = unknowns.get(scope);
       if (unknown && !confirmResend)
         throw Object.assign(new Error('Check the unconfirmed message before sending again'), {
           needsConfirmation: true,
         });
       if (confirmResend) {
-        attempt = null;
-        unknown = null;
+        attempts.delete(scope);
+        unknowns.delete(scope);
       }
       const signature = JSON.stringify({ route, payload });
-      if (!attempt || attempt.signature !== signature)
-        attempt = { route, payload: structuredClone(payload), signature, clientMessageId: newId() };
+      let attempt = attempts.get(scope);
+      if (!attempt || attempt.signature !== signature) {
+        attempt = {
+          scope,
+          route,
+          payload: structuredClone(payload),
+          signature,
+          clientMessageId: newId(),
+        };
+        attempts.set(scope, attempt);
+      }
       return attempt;
     },
     unconfirmed(value: MessageSubmission) {
-      unknown = value;
+      unknowns.set(value.scope, value);
     },
     acknowledged(clientMessageId: string) {
-      if (unknown?.clientMessageId === clientMessageId) unknown = null;
-      if (attempt?.clientMessageId === clientMessageId) attempt = null;
+      for (const [scope, value] of unknowns)
+        if (value.clientMessageId === clientMessageId) unknowns.delete(scope);
+      for (const [scope, value] of attempts)
+        if (value.clientMessageId === clientMessageId) attempts.delete(scope);
     },
     find<Message extends { clientMessageId?: string }>(
       messages: readonly Message[] | null | undefined,
     ) {
-      const expected = unknown;
+      const expected = unknowns.get(getScope());
       return (
         (expected &&
           (messages || []).find(

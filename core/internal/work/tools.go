@@ -12,6 +12,12 @@ func (value *Engine) Tool(ctx context.Context, name string, args contracts.RawOb
 	if owner.IsCurrent == nil || !owner.IsCurrent() {
 		return nil, ErrStaleOwner
 	}
+	value.mu.Lock()
+	conversationOnly := value.active != nil && value.active.conversationOnly
+	value.mu.Unlock()
+	if conversationOnly {
+		return nil, ErrPaused
+	}
 	switch name {
 	case "task_plan":
 		input, err := workstate.ReadPlanInput(args, value.redact)

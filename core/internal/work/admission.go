@@ -130,6 +130,7 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 		receipt.ContextProvider = call.Provider
 	}
 	resumeAfterControl := false
+	conversationOnly := false
 	err = value.store.Mutate(ctx, func(state *contracts.State) error {
 		if state.ConversationID != conversationID {
 			return ErrStaleOwner
@@ -212,7 +213,7 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 			message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusPaused))
 			message.PauseReason = contracts.Some(pauseReasonVoiceCall)
 			receipt.Queued = false
-		} else if active := value.active; active != nil && active.startAcknowledged && active.attemptID == "" && !active.finishing && !active.stopRequested && !active.unknown && (!active.nativeVoice || active.nativeBackground) {
+		} else if active := value.active; active != nil && !active.conversationOnly && active.startAcknowledged && active.attemptID == "" && !active.finishing && !active.stopRequested && !active.unknown && (!active.nativeVoice || active.nativeBackground) {
 			if len(value.pendingFollowups) >= MaxPendingFollowups {
 				return runtime.ErrBackpressure
 			}
@@ -220,7 +221,8 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 			receipt.Queued = false
 		}
 		resumeAfterControl = value.canAdmitAfterHumanControlLocked()
-		if reason := value.admissionPauseReasonLocked(); reason != "" && !resumeAfterControl {
+		conversationOnly = value.canAdmitConversationLocked(&message)
+		if reason := value.admissionPauseReasonLocked(); reason != "" && !resumeAfterControl && !conversationOnly {
 			message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusPaused))
 			message.PauseReason = contracts.Some(reason)
 			receipt.Queued = false
@@ -244,6 +246,9 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 	}
 	if receipt.Queued {
 		value.queue = append(value.queue, message.ID)
+		if conversationOnly {
+			value.conversationQueue[message.ID] = true
+		}
 	}
 	value.changeLocked()
 	if receipt.SteerTurnID != "" {

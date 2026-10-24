@@ -221,6 +221,7 @@ class WorkerInstallFixture(unittest.TestCase):
                 'LoadState': 'loaded', 'ActiveState': 'inactive', 'MainPID': '0', 'ControlGroup': ''}))
             stack.enter_context(patch.object(installer, 'assert_stopped', side_effect=self.assert_stopped))
             stack.enter_context(patch.object(installer, 'assert_guest_endpoint'))
+            stack.enter_context(patch.object(installer, 'assert_conversation_runtime'))
             stack.enter_context(patch.object(installer, 'ready', return_value=ready))
             stack.enter_context(patch.object(installer, 'reserve_maintenance', return_value=None))
             stack.enter_context(patch.object(installer, 'unix_username', return_value='fixture'))
