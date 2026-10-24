@@ -35,21 +35,22 @@ type writeFrame struct {
 }
 
 type RPC struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	input    io.WriteCloser
-	output   io.ReadCloser
-	stop     func()
-	mu       sync.Mutex
-	closed   bool
-	reason   DisconnectReason
-	next     uint64
-	pending  map[string]*pendingRequest
-	events   map[chan Event]func(Event) bool
-	writes   chan writeFrame
-	done     chan struct{}
-	workers  sync.WaitGroup
-	stopOnce sync.Once
+	ctx       context.Context
+	cancel    context.CancelFunc
+	input     io.WriteCloser
+	output    io.ReadCloser
+	stop      func()
+	mu        sync.Mutex
+	closed    bool
+	reason    DisconnectReason
+	next      uint64
+	pending   map[string]*pendingRequest
+	events    map[chan Event]*eventSubscription
+	eventWake chan struct{}
+	writes    chan writeFrame
+	done      chan struct{}
+	workers   sync.WaitGroup
+	stopOnce  sync.Once
 }
 
 func NewRPC(
@@ -68,14 +69,16 @@ func NewRPC(
 		output: output,
 		stop:   stop,
 
-		pending: make(map[string]*pendingRequest),
-		events:  make(map[chan Event]func(Event) bool),
-		writes:  make(chan writeFrame, RPCWriteQueue),
-		done:    make(chan struct{}),
+		pending:   make(map[string]*pendingRequest),
+		events:    make(map[chan Event]*eventSubscription),
+		eventWake: make(chan struct{}, 1),
+		writes:    make(chan writeFrame, RPCWriteQueue),
+		done:      make(chan struct{}),
 	}
-	value.workers.Add(2)
+	value.workers.Add(3)
 	go value.read()
 	go value.write()
+	go value.dispatchEvents()
 	go func() {
 		value.workers.Wait()
 		close(value.done)
@@ -116,8 +119,8 @@ func (value *RPC) failWith(reason DisconnectReason, cause error) {
 		}}
 		delete(value.pending, key)
 	}
-	for channel := range value.events {
-		close(channel)
+	for channel, subscription := range value.events {
+		subscription.close()
 		delete(value.events, channel)
 	}
 	value.mu.Unlock()
@@ -157,15 +160,15 @@ func (value *RPC) subscribeEvents(filter func(Event) bool) (<-chan Event, func()
 		return nil, nil, ErrBackpressure
 	}
 	channel := make(chan Event, RPCEventQueue)
-	value.events[channel] = filter
+	value.events[channel] = &eventSubscription{channel: channel, filter: filter}
 	var once sync.Once
 	return channel, func() {
 		once.Do(func() {
 			value.mu.Lock()
 			defer value.mu.Unlock()
-			if _, exists := value.events[channel]; exists {
+			if subscription, exists := value.events[channel]; exists {
 				delete(value.events, channel)
-				close(channel)
+				subscription.close()
 			}
 		})
 	}, nil
@@ -178,17 +181,16 @@ func (value *RPC) emit(event Event) bool {
 		return false
 	}
 	overflow := false
-	for channel, filter := range value.events {
-		if filter != nil && !filter(event) {
+	for _, subscription := range value.events {
+		if subscription.filter != nil && !subscription.filter(event) {
 			continue
 		}
-		select {
-		case channel <- event:
-		default:
+		if !subscription.enqueue(event) {
 			overflow = true
 		}
 	}
 	value.mu.Unlock()
+	value.wakeEvents()
 	if overflow {
 		value.failWith(DisconnectEventOverflow, ErrBackpressure)
 		return false

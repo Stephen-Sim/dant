@@ -29,6 +29,8 @@ Entrypoints stay small. Narrow interfaces belong to consumers, and blocking oper
 
 The application API uses loopback port `4317`, session tokens and validated host/origin headers. SSH provides the authenticated host-to-VM tunnel. The Worker's desktop bridge defaults to loopback port `4321`. Changing language, reading memory or receiving a timer event cannot grant execution permission.
 
+Codex event delivery uses bounded observer queues owned by the RPC connection. Unsent, adjacent agent text deltas with identical ownership and metadata may combine using their original UTF-16 code units. Requests and lifecycle events remain ordered barriers. One joined dispatcher delivers immutable events while the reader continues resolving RPC responses; slow history persistence cannot block that reader. The original 64-event capacity remains, with an additional aggregate payload budget. Shutdown flushes already admitted events without requiring the consumer to remain running.
+
 | Durable authority            | Contract                                                                                         |
 | ---------------------------- | ------------------------------------------------------------------------------------------------ |
 | `state.json`                 | Messages, durable work, submission/continuation receipts, timestamps and supported saved fields. |
