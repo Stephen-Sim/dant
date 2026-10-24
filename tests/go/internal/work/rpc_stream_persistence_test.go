@@ -133,15 +133,17 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 				<-client.Done()
 				<-readerDone
 			}()
-			next := func(method string) contracts.RawObject {
+			next := func(method string, timeout time.Duration) contracts.RawObject {
 				t.Helper()
+				deadline := time.NewTimer(timeout)
+				defer deadline.Stop()
 				select {
 				case request := <-requests:
 					if eventString(request, "method") != method {
 						t.Fatalf("expected %s, received %s", method, eventString(request, "method"))
 					}
 					return request
-				case <-time.After(5 * time.Second):
+				case <-deadline.C:
 					t.Fatalf("RPC request %s did not reach the isolated provider", method)
 					return nil
 				}
@@ -160,9 +162,12 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			if err != nil || engine.Enqueue(ctx, message) != nil {
 				t.Fatal("fixture work was not admitted", err)
 			}
-			reply(next("thread/start"), contracts.RawObject{"thread": raw(contracts.RawObject{"id": raw("thread-fixture")})})
+			// Preparing the real large-history store is setup, outside the stream
+			// responsiveness checks below. Race instrumentation can make those
+			// clones and atomic writes slower than the measured burst itself.
+			reply(next("thread/start", workerRuntime.RequestTimeout), contracts.RawObject{"thread": raw(contracts.RawObject{"id": raw("thread-fixture")})})
 			const turnID = "persisted-stream-turn"
-			reply(next("turn/start"), contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw(turnID)})})
+			reply(next("turn/start", workerRuntime.RequestTimeout), contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw(turnID)})})
 			owner := waitToolScope(t, engine, turnID)
 			notification := func(method string, params contracts.RawObject) error {
 				params["threadId"], params["turnId"] = raw(owner.ThreadID), raw(owner.TurnID)
@@ -186,7 +191,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 				_, err := client.Request(ctx, "fixture/read", nil)
 				probe <- err
 			}()
-			probeRequest := next("fixture/read")
+			probeRequest := next("fixture/read", 5*time.Second)
 			pieces := []string{"A", "中", "😀", "e\u0301", "\n"}
 			var expected strings.Builder
 			expected.WriteString("begin:")
@@ -248,7 +253,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			pauseResult := make(chan error, 1)
 			if paused {
 				go func() { pauseResult <- engine.Pause(ctx) }()
-				interrupt := next("turn/interrupt")
+				interrupt := next("turn/interrupt", 5*time.Second)
 				params, err := contracts.DecodeObject(interrupt["params"], 4096)
 				if err != nil || eventString(params, "turnId") != owner.TurnID || eventString(params, "threadId") != owner.ThreadID {
 					t.Fatal("pause interrupted a different execution owner", err)
