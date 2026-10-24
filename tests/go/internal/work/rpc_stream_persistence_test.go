@@ -25,6 +25,17 @@ type persistedStreamWorker struct {
 	rpc *workerRuntime.RPC
 }
 
+type persistedStreamExpectation struct {
+	messageID   string
+	text        string
+	encodedText []byte
+}
+
+type persistedStreamObservation struct {
+	messageID string
+	err       error
+}
+
 func (worker *persistedStreamWorker) Request(ctx context.Context, method string, params contracts.RawObject) (contracts.RawObject, error) {
 	return worker.rpc.Request(ctx, method, params)
 }
@@ -55,6 +66,9 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			defer cancel()
 			blocked, release := make(chan struct{}), make(chan struct{})
 			var armed atomic.Bool
+			var expectedWrite atomic.Pointer[persistedStreamExpectation]
+			var observedWrite atomic.Bool
+			durable := make(chan persistedStreamObservation, 1)
 			var releaseOnce sync.Once
 			releaseWrite := func() { releaseOnce.Do(func() { close(release) }) }
 			defer releaseWrite()
@@ -68,19 +82,49 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 							return ctx.Err()
 						}
 					}
-					return files.WriteAtomic(ctx, path, data, mode)
+					if err := files.WriteAtomic(ctx, path, data, mode); err != nil {
+						return err
+					}
+					// Observe the successful durable write without repeatedly cloning
+					// the entire large Store snapshot while the stream is draining.
+					want := expectedWrite.Load()
+					if want != nil && !observedWrite.Load() && bytes.Contains(data, want.encodedText) {
+						var saved struct {
+							Messages []struct {
+								ID     string         `json:"id"`
+								Role   contracts.Role `json:"role"`
+								Text   string         `json:"text"`
+								TaskID string         `json:"taskId"`
+							} `json:"messages"`
+						}
+						err := json.Unmarshal(data, &saved)
+						matchedID := ""
+						for _, message := range saved.Messages {
+							if message.Role == contracts.RoleAssistant && message.Text == want.text && message.TaskID == want.messageID {
+								matchedID = message.ID
+							}
+						}
+						if (err != nil || matchedID != "") && observedWrite.CompareAndSwap(false, true) {
+							durable <- persistedStreamObservation{messageID: matchedID, err: err}
+						}
+					}
+					return nil
 				},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer persistence.Close()
-			const historyCount = 1024
+			const (
+				historyCount       = 128
+				historyTextBytes   = 8 * 1024
+				minimumHistorySize = 1024 * 1024
+			)
 			if err := persistence.Mutate(ctx, func(state *contracts.State) error {
 				for index := range historyCount {
 					state.Messages = append(state.Messages, &contracts.ChatMessage{
 						ID: store.UUID(), Role: contracts.RoleAssistant,
-						Text:   fmt.Sprintf("synthetic archive %d: ", index) + strings.Repeat("h", 1024),
+						Text:   fmt.Sprintf("synthetic archive %d: ", index) + strings.Repeat("h", historyTextBytes),
 						Time:   contracts.Some(float64(1_700_000_000_000 + index)),
 						Status: contracts.Some(contracts.MessageStatus(contracts.TaskStatusCompleted)),
 					})
@@ -90,7 +134,7 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 				t.Fatal(err)
 			}
 			history, _ := json.Marshal(persistence.Snapshot().Messages)
-			if len(history) < 1024*1024 {
+			if len(history) < minimumHistorySize {
 				t.Fatal("synthetic persistence fixture did not contain a substantial history")
 			}
 
@@ -244,10 +288,29 @@ func TestRPCStreamPersistsCompleteOwnedTextDespiteSlowLargeHistoryWrites(t *test
 			if client.Closed() {
 				t.Fatal("valid adjacent text was treated as an uncertain executor disconnect")
 			}
+			encodedText, err := json.Marshal(expected.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedWrite.Store(&persistedStreamExpectation{messageID: message.ID, text: expected.String(), encodedText: encodedText})
 			releaseWrite()
-			waitBehaviorMessageText(t, engine, expected.String())
+			var observed persistedStreamObservation
+			select {
+			case observed = <-durable:
+				if observed.err != nil {
+					t.Fatal("the real durable stream write could not be observed", observed.err)
+				}
+			case <-ctx.Done():
+				t.Fatal("stream persistence observation was cancelled", ctx.Err())
+			case <-time.After(10 * time.Second):
+				t.Fatal("complete owned text did not reach the real atomic write")
+			}
 			if state := engine.Snapshot(); state.Active == nil || state.Executor.Paused || state.Active.TurnID.Value != owner.TurnID {
 				t.Fatal("streaming text changed execution ownership or introduced a pause")
+			}
+			streamed, err := persistence.Message(observed.messageID)
+			if err != nil || streamed.Role != contracts.RoleAssistant || streamed.TaskID.Value != message.ID || streamed.Text != expected.String() || streamed.Status.Value != contracts.MessageStatusStreaming {
+				t.Fatal("owned streaming text was not committed before the provider completion", err)
 			}
 
 			pauseResult := make(chan error, 1)
