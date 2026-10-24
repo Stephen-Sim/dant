@@ -179,6 +179,13 @@ export function uiEntrypointFixture<T extends object>(
   context: T,
 ): Omit<T, keyof UiMainFunctions> & UiMainFunctions & Omit<Partial<MainBindings>, keyof T> {
   const bindings: Partial<MainBindings> = {
+    composerAttachments: {
+      bind() {},
+      sync: () => 0,
+      upload: missing,
+      uploadFiles: missing,
+      dispose() {},
+    },
     workspaceLayout: { bind() {}, dispose() {} },
     chatCollections: {
       renderMenu: () => '',

@@ -48,6 +48,18 @@ func (value *Engine) admissionPauseReasonLocked() string {
 	return pauseReasonUnknown
 }
 
+// A new human request may use the returned computer without restarting any
+// earlier paused work. Releasing control alone never opens automatic admission.
+func (value *Engine) canAdmitAfterHumanControlLocked() bool {
+	return value.paused && value.pauseReason == pauseReasonHumanControl &&
+		!value.closed && !value.maintenance && !value.takeover && !value.acquiring &&
+		!value.computerAcquireReserved && !value.inheritedStopFence &&
+		value.confirmedStopped && value.active == nil && !value.openingThread &&
+		len(value.queue) == 0 && len(value.pendingFollowups) == 0 &&
+		value.callReservation == nil && value.CallSnapshot() == nil &&
+		value.worker.Snapshot().Status == contracts.ConnectionStatusOnline
+}
+
 func knownPauseReason(reason string) string {
 	switch reason {
 	case pauseReasonUser, pauseReasonHumanControl, pauseReasonVoiceCall,

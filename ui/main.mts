@@ -162,6 +162,10 @@ import { createChatCollections } from './chat/chat-collections.mts';
 import { searchMessages } from './chat/chat-search.mts';
 import { formatPresence } from './chat/presence.mts';
 import { createReadVisibility } from './chat/read-state.mts';
+import {
+  composerAttachmentScope,
+  createComposerAttachments,
+} from './chat/composer-attachments.mts';
 import { createUpdates } from './settings/updates.mts';
 import { createNativeUpdates } from './platform/native-updates.mts';
 import { createUpdateDraft, updateDraftScope } from './settings/update-draft.mts';
@@ -279,6 +283,29 @@ let apiVoiceChoices: string[] = [],
   speechGeneration = 0,
   attachmentMenu = false;
 const speech = new SpeechHelper();
+const composerAttachments = createComposerAttachments({
+  getScope: () => composerAttachmentScope(state),
+  isReady: () =>
+    !unloading &&
+    !updateInstalling &&
+    computerExecutorReady() &&
+    state?.call?.provider !== 'subscription',
+  getAttachments: () => attachments,
+  request: (file, signal) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api('/upload', { method: 'POST', body: form, signal });
+  },
+  add: (item) => attachments.push(item),
+  setUploading: (count) => {
+    uploading = count;
+  },
+  render,
+  error: (key) => t(key),
+  unavailable: () =>
+    t(state?.call?.provider === 'subscription' ? 'callAttachment' : 'connectionLost'),
+  failed: (error) => toast(errorText(error)),
+});
 const readVisibility = createReadVisibility({
   desktop: Boolean(window.__TAURI_INTERNALS__),
   onChange: () => {
@@ -1113,6 +1140,7 @@ function md(text: string): string {
   return markdownCache.render(text || '');
 }
 function render() {
+  composerAttachments.sync();
   chatScroll.capture();
   progressPanel.capture();
   memorySettings.setVisible(page === 'memory');
@@ -2777,6 +2805,7 @@ function bind() {
         (el.onclick = () => action(requiredData(el, 'action')).catch((e) => toast(errorText(e)))),
     );
   const composer = document.querySelector<HTMLTextAreaElement>('#composer');
+  composerAttachments.bind(composer);
   if (composer) {
     composer.oninput = () => {
       composerDraft = composer.value;
@@ -2976,7 +3005,7 @@ function bind() {
     fileInput.onchange = async () => {
       const files = [...(fileInput.files || [])];
       fileInput.value = '';
-      for (const file of files) await upload(file).catch((error) => toast(errorText(error)));
+      await composerAttachments.uploadFiles(files);
     };
   for (const key of ['model', 'nativeVoice', 'apiVoice', 'notifications'] as const) {
     const input = document.querySelector<HTMLInputElement | HTMLSelectElement>('#' + key);
@@ -3708,19 +3737,7 @@ async function send(confirmResend = false) {
 }
 async function upload(file: File) {
   if (updateInstalling) return;
-  if (file.size > MAX_ATTACHMENT_BYTES) throw Error(t('fileLimit'));
-  if (attachments.length + uploading >= 5) throw Error(t('attachmentLimit'));
-  uploading++;
-  render();
-  try {
-    const form = new FormData();
-    form.append('file', file);
-    const item = await api('/upload', { method: 'POST', body: form });
-    attachments.push(item);
-  } finally {
-    uploading--;
-    render();
-  }
+  await composerAttachments.upload(file);
 }
 function screenVisible() {
   return (
@@ -4771,6 +4788,7 @@ window.addEventListener('resize', () => {
 window.addEventListener('beforeunload', () => {
   unloading = true;
   chatScroll.dispose();
+  composerAttachments.dispose();
   workspaceLayout.dispose();
   messageWindow.dispose();
   chatCollections.dispose();
@@ -4996,6 +5014,7 @@ export type MainFunctions = {
   boot: typeof boot;
 };
 export type MainBindings = {
+  composerAttachments: typeof composerAttachments;
   callStops: typeof callStops;
   createElement: typeof createElement;
   renderWorkSummary: typeof renderWorkSummary;

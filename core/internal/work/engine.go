@@ -358,10 +358,10 @@ func (value *Engine) HistoryTransaction(
 func (value *Engine) Enqueue(ctx context.Context, message *contracts.ChatMessage) error {
 	value.mu.Lock()
 	defer value.mu.Unlock()
-	return value.enqueueLocked(ctx, message)
+	return value.enqueueLocked(ctx, message, false)
 }
 
-func (value *Engine) enqueueLocked(ctx context.Context, message *contracts.ChatMessage) error {
+func (value *Engine) enqueueLocked(ctx context.Context, message *contracts.ChatMessage, freshHumanInput bool) error {
 	if message == nil {
 		return store.ErrMessageNotFound
 	}
@@ -412,7 +412,8 @@ func (value *Engine) enqueueLocked(ctx context.Context, message *contracts.ChatM
 	if len(value.queue) >= MaxQueue {
 		return runtime.ErrBackpressure
 	}
-	if reason := value.admissionPauseReasonLocked(); reason != "" {
+	resumeAfterControl := freshHumanInput && value.canAdmitAfterHumanControlLocked()
+	if reason := value.admissionPauseReasonLocked(); reason != "" && !resumeAfterControl {
 		_, err = value.store.Update(ctx, current.ID, patch(map[string]json.RawMessage{"status": raw(contracts.TaskStatusPaused), "pauseReason": raw(reason)}))
 		return err
 	}
@@ -422,6 +423,9 @@ func (value *Engine) enqueueLocked(ctx context.Context, message *contracts.ChatM
 	}
 	if _, err = value.store.Update(ctx, current.ID, patch(map[string]json.RawMessage{"status": raw(contracts.TaskStatusQueued), "queuedAt": raw(value.Timestamp()), "pauseReason": json.RawMessage("null")})); err != nil {
 		return err
+	}
+	if resumeAfterControl {
+		value.clearPauseLocked()
 	}
 	value.queue = append(value.queue, current.ID)
 	value.changeLocked()

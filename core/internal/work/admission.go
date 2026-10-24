@@ -53,7 +53,7 @@ func (value *Engine) AdmitExternalMessage(ctx context.Context, conversationID st
 	if stored.Status.Value != contracts.MessageStatus(contracts.TaskStatusDraft) && stored.Status.Value != contracts.MessageStatus(contracts.TaskStatusQueued) {
 		return ErrPaused
 	}
-	return value.enqueueLocked(ctx, stored)
+	return value.enqueueLocked(ctx, stored, stored.Status.Value == contracts.MessageStatus(contracts.TaskStatusDraft))
 }
 
 func sameMessageRequest(left, right *contracts.ChatMessage) bool {
@@ -129,6 +129,7 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 		receipt.ContextCallID = call.ID
 		receipt.ContextProvider = call.Provider
 	}
+	resumeAfterControl := false
 	err = value.store.Mutate(ctx, func(state *contracts.State) error {
 		if state.ConversationID != conversationID {
 			return ErrStaleOwner
@@ -218,7 +219,8 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 			receipt.SteerTurnID = active.turnID
 			receipt.Queued = false
 		}
-		if reason := value.admissionPauseReasonLocked(); reason != "" {
+		resumeAfterControl = value.canAdmitAfterHumanControlLocked()
+		if reason := value.admissionPauseReasonLocked(); reason != "" && !resumeAfterControl {
 			message.Status = contracts.Some(contracts.MessageStatus(contracts.TaskStatusPaused))
 			message.PauseReason = contracts.Some(reason)
 			receipt.Queued = false
@@ -236,6 +238,9 @@ func (value *Engine) AdmitMessage(ctx context.Context, conversationID string, in
 	if receipt.Existing {
 		value.mu.Unlock()
 		return receipt, nil
+	}
+	if resumeAfterControl {
+		value.clearPauseLocked()
 	}
 	if receipt.Queued {
 		value.queue = append(value.queue, message.ID)

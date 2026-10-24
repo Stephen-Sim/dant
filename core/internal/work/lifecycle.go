@@ -25,6 +25,14 @@ func (value *Engine) pause(ctx context.Context, reason string) error {
 		value.mu.Unlock()
 		return ErrClosed
 	}
+	// Taking control cannot replace an earlier stop with a pause that a new
+	// request could clear after the computer is returned.
+	if reason == pauseReasonHumanControl && value.paused && value.pauseReason != pauseReasonHumanControl {
+		reason = value.pauseReason
+		if reason == "" {
+			reason = pauseReasonUnknown
+		}
+	}
 	value.paused = true
 	value.pauseReason = reason
 	active := value.active

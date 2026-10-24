@@ -39,7 +39,7 @@ func assertPausedAdmissionReason(t *testing.T, engine *Engine, persistence *stor
 }
 
 func TestNewMessagesDistinguishExplicitPauseAndHumanControl(t *testing.T) {
-	for _, scenario := range []string{"explicit-pause", "acquiring", "takeover", "released-control", "unexplained-safety-stop"} {
+	for _, scenario := range []string{"explicit-pause", "acquiring", "takeover", "unexplained-safety-stop"} {
 		t.Run(scenario, func(t *testing.T) {
 			engine, persistence, worker := engineFixture(t)
 			reason := "human-control"
@@ -63,11 +63,6 @@ func TestNewMessagesDistinguishExplicitPauseAndHumanControl(t *testing.T) {
 			default:
 				if err := engine.Acquire(t.Context()); err != nil {
 					t.Fatal(err)
-				}
-				if scenario == "released-control" {
-					if err := engine.Release(); err != nil {
-						t.Fatal(err)
-					}
 				}
 			}
 			assertPausedAdmissionReason(t, engine, persistence, worker, reason)

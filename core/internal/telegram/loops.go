@@ -24,10 +24,23 @@ func (gateway *Gateway) Start() {
 		workers.Add(2)
 		go func() {
 			defer workers.Done()
+			defer func() {
+				gateway.mu.Lock()
+				current := gateway.loopDone == done
+				if current {
+					gateway.connected = false
+				}
+				gateway.mu.Unlock()
+				cancel()
+				if current {
+					gateway.changed()
+				}
+			}()
 			gateway.pollLoop(ctx)
 		}()
 		go func() {
 			defer workers.Done()
+			defer cancel()
 			gateway.outboundLoop(ctx)
 		}()
 		workers.Wait()
@@ -118,6 +131,13 @@ func (gateway *Gateway) pollLoop(ctx context.Context) {
 			gateway.config.LastError = gateway.config.PollError
 		}
 		saveErr := gateway.saveLocked(ctx)
+		if saveErr != nil {
+			gateway.connected = false
+			if ctx.Err() == nil {
+				gateway.config.PollError = pointer(gateway.word("pollPersistenceFailed"))
+				gateway.config.LastError = gateway.config.PollError
+			}
+		}
 		gateway.mu.Unlock()
 		gateway.changed()
 		gateway.Wake()
