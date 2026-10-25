@@ -170,6 +170,110 @@ class GuestServiceTests(unittest.TestCase):
                 check(self.configuration)
         self.assertEqual(disappeared, [descriptor, descriptor])
 
+    def observe_volatile_table_metadata(self, fields, names):
+        self.current_candidate_listener()
+        real_open, real_fstat = proof.os.open, proof.os.fstat
+        tables = {}
+        observations = []
+
+        def opened(path, flags, *arguments, **options):
+            descriptor = real_open(path, flags, *arguments, **options)
+            tables[descriptor] = pathlib.Path(path).name in names
+            return descriptor
+
+        def observed(descriptor):
+            actual = real_fstat(descriptor)
+            if not tables.get(descriptor):
+                return actual
+            observations.append(descriptor)
+            values = {name: getattr(actual, name) for name in (
+                'st_mode', 'st_nlink', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns')}
+            for field in fields:
+                values[field] += len(observations)
+            return types.SimpleNamespace(**values)
+
+        with patch.object(proof.os, 'open', side_effect=opened), patch.object(proof.os, 'fstat', side_effect=observed):
+            self.observer.system_available(self.configuration)
+            self.observer.user_ready(self.configuration)
+        self.assertGreater(len(observations), 4)
+
+    def test_volatile_proc_table_metadata_keeps_verified_listener_ownership(self):
+        self.observe_volatile_table_metadata(('st_size', 'st_mtime_ns'), ('tcp', 'tcp6'))
+
+    def test_tcp6_mtime_refresh_keeps_the_same_opened_table_and_guest_owner(self):
+        self.observe_volatile_table_metadata(('st_mtime_ns',), ('tcp6',))
+
+    def test_proc_table_inode_type_and_link_changes_remain_unconfirmed(self):
+        file = self.process / 'net/tcp'
+        original_lstat, original_fstat, original_open = pathlib.Path.lstat, proof.os.fstat, proof.os.open
+
+        for boundary in ('admitted', 'opened', 'after-read', 'named-after'):
+            for field in ('st_dev', 'st_ino', 'st_mode', 'st_nlink'):
+                with self.subTest(boundary=boundary, field=field):
+                    named, held, descriptors = [], [], []
+
+                    def changed(actual):
+                        values = {name: getattr(actual, name) for name in (
+                            'st_mode', 'st_nlink', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns')}
+                        if field == 'st_mode':
+                            values[field] = stat.S_IFIFO
+                        else:
+                            values[field] += 1
+                        return types.SimpleNamespace(**values)
+
+                    def named_info(path, *arguments, **options):
+                        actual = original_lstat(path, *arguments, **options)
+                        named.append(path)
+                        if (boundary == 'admitted' and len(named) == 1) or (boundary == 'named-after' and len(named) == 2):
+                            return changed(actual)
+                        return actual
+
+                    def held_info(descriptor):
+                        actual = original_fstat(descriptor)
+                        held.append(descriptor)
+                        if (boundary == 'opened' and len(held) == 1) or (boundary == 'after-read' and len(held) == 2):
+                            return changed(actual)
+                        return actual
+
+                    def opened(path, flags):
+                        self.assertEqual(flags & getattr(os, 'O_NOFOLLOW', 0), getattr(os, 'O_NOFOLLOW', 0))
+                        self.assertEqual(flags & getattr(os, 'O_NONBLOCK', 0), getattr(os, 'O_NONBLOCK', 0))
+                        descriptor = original_open(path, flags)
+                        descriptors.append(descriptor)
+                        return descriptor
+
+                    with patch.object(pathlib.Path, 'lstat', named_info), patch.object(proof.os, 'fstat', side_effect=held_info), \
+                            patch.object(proof.os, 'open', side_effect=opened):
+                        with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+                            proof.read_socket_table(file)
+                    for descriptor in descriptors:
+                        with self.assertRaises(OSError):
+                            original_fstat(descriptor)
+
+    def test_proc_table_bounds_names_and_regular_file_metadata_are_not_relaxed(self):
+        table = self.process / 'net/tcp'
+        with patch.object(proof, 'SOCKET_BYTES', 3):
+            with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+                proof.read_socket_table(table)
+        with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+            proof.read_socket_table(self.process / 'stat')
+        with patch.object(proof.os, 'open', side_effect=PermissionError('synthetic table denial')):
+            with self.assertRaises(PermissionError):
+                proof.read_socket_table(table)
+        actual_fstat = proof.os.fstat
+
+        def metadata_changed(descriptor):
+            actual = actual_fstat(descriptor)
+            values = {name: getattr(actual, name) for name in (
+                'st_mode', 'st_nlink', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns')}
+            values['st_mtime_ns'] += 1
+            return types.SimpleNamespace(**values)
+
+        for path in (self.seed, self.process / 'stat', self.process / 'environ'):
+            with self.subTest(file=path.name), patch.object(proof.os, 'fstat', side_effect=metadata_changed):
+                with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+                    proof.read_bounded(path, proof.SCRIPT_BYTES)
+
     def test_a_disappearing_owned_listener_never_proves_endpoint_ownership(self):
         self.current_candidate_listener()
         descriptor = self.proc / '456/fd/3'

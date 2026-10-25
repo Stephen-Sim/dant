@@ -13,6 +13,7 @@ SERVICE_TIMEOUT = 5
 SERVICE_BYTES = 16 * 1024
 PROCESS_BYTES = 128 * 1024
 SOCKET_BYTES = 1024 * 1024
+SOCKET_TABLE_NAMES = ('tcp', 'tcp6')
 MAXIMUM_FDS = 1024
 SCRIPT_BYTES = 256 * 1024
 SYSTEM_UNIT = 'dant-guest.service'
@@ -63,6 +64,39 @@ def read_bounded(path, maximum):
         after = os.fstat(source.fileno())
     if len(raw) > maximum or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
         after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+    ):
+        unconfirmed()
+    return raw
+
+
+def read_socket_table(path):
+    path = pathlib.Path(path)
+    if path.name not in SOCKET_TABLE_NAMES:
+        unconfirmed()
+    admitted = path.lstat()
+    if not stat.S_ISREG(admitted.st_mode) or admitted.st_nlink != 1:
+        unconfirmed()
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, 'rb') as source:
+        before = os.fstat(source.fileno())
+        if (
+            not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or
+            (admitted.st_dev, admitted.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            unconfirmed()
+        # procfs generates socket tables on read. Traffic can change their
+        # size/mtime without changing this opened table's identity. Callers
+        # separately recheck the exact owned listening sockets and process.
+        raw = source.read(SOCKET_BYTES + 1)
+        after = os.fstat(source.fileno())
+        current = path.lstat()
+    if (
+        len(raw) > SOCKET_BYTES or
+        not stat.S_ISREG(after.st_mode) or after.st_nlink != 1 or
+        not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 or
+        (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino) or
+        (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino)
     ):
         unconfirmed()
     return raw
@@ -219,8 +253,8 @@ class GuestServiceObserver:
 
     def socket_records(self, directory):
         records = set()
-        for name in ('tcp', 'tcp6'):
-            lines = read_bounded(directory / name, SOCKET_BYTES).decode('ascii').splitlines()
+        for name in SOCKET_TABLE_NAMES:
+            lines = read_socket_table(directory / name).decode('ascii').splitlines()
             for line in lines[1:]:
                 fields = line.split()
                 if len(fields) < 10:
