@@ -507,26 +507,261 @@ class NamespaceFixture(unittest.TestCase):
         attachment = pathlib.Path(self.paths['kernel']) / 'profiles/other.1/attach'
         attachment.write_bytes(b'<unknown>\n')
         policies = pathlib.Path(self.paths['policies'])
+
         def changed():
             (policies / 'new-administrator-policy').write_bytes(b'profile other /** { }')
             return b'1\n'
-        with patch.object(namespace.AttachmentObserver, 'observe', side_effect=changed), self.assert_rejected('system-path-changed'):
+
+        with (
+            patch.object(namespace.time, 'sleep') as sleep,
+            patch.object(namespace.AttachmentObserver, 'observe', side_effect=changed) as observed,
+            self.assert_rejected('existing-bwrap-policy'),
+        ):
             self.setup.install()
+        sleep.assert_called_once_with(namespace.INSPECTION_RETRY_SECONDS)
+        observed.assert_called_once_with()
         self.assertFalse((policies / namespace.PROFILE_NAME).exists())
         self.assertFalse(any('--add' in call[0] for call in self.calls))
 
-    def test_policy_epoch_change_after_validation_stops_before_publication(self):
+    def test_policy_epoch_change_before_publication_gets_a_fresh_read_only_inspection(self):
         original = self.setup.runner
+        compilations = 0
+
         def changed(arguments, **options):
+            nonlocal compilations
             result = original(arguments, **options)
             if options.get('input') == namespace.PROFILE:
-                pathlib.Path(self.paths['revision']).write_bytes(b'2\n')
+                compilations += 1
+                if compilations == 1:
+                    pathlib.Path(self.paths['revision']).write_bytes(b'2\n')
             return result
+
         self.setup.runner = changed
-        with self.assert_rejected('system-path-changed'):
+        self.parser_results = [0, 0, 0]
+        with (
+            patch.object(namespace.time, 'sleep') as sleep,
+            patch.object(self.setup, 'publish', wraps=self.setup.publish) as published,
+        ):
+            self.assertEqual(self.setup.install(), 'installed')
+        self.assertEqual(compilations, 2)
+        sleep.assert_called_once_with(0.25)
+        published.assert_called_once_with(pathlib.Path(self.paths['policies']))
+        self.assertEqual(self.setup.conflict_snapshot[3], b'2\n')
+        target = pathlib.Path(self.paths['policies']) / namespace.PROFILE_NAME
+        self.assertEqual(target.read_bytes(), namespace.PROFILE)
+        self.assertEqual(sum('--add' in call[0] for call in self.calls), 1)
+
+    def test_read_only_inspection_exhausts_three_attempts_without_publication(self):
+        original = self.setup.runner
+        compilations = 0
+
+        def changed(arguments, **options):
+            nonlocal compilations
+            result = original(arguments, **options)
+            if options.get('input') == namespace.PROFILE:
+                compilations += 1
+                pathlib.Path(self.paths['revision']).write_bytes((str(compilations + 1) + '\n').encode())
+            return result
+
+        self.setup.runner = changed
+        self.parser_results = [0, 0, 0]
+        with (
+            patch.object(namespace.time, 'sleep') as sleep,
+            patch.object(self.setup, 'publish') as published,
+            self.assert_rejected('system-path-changed'),
+        ):
             self.setup.install()
+        self.assertEqual(namespace.INSPECTION_ATTEMPTS, 3)
+        self.assertEqual(namespace.INSPECTION_RETRY_SECONDS, 0.25)
+        self.assertEqual(compilations, 3)
+        self.assertEqual(sleep.call_args_list, [unittest.mock.call(0.25), unittest.mock.call(0.25)])
+        published.assert_not_called()
         self.assertEqual(list(pathlib.Path(self.paths['policies']).iterdir()), [])
         self.assertFalse(any('--add' in call[0] for call in self.calls))
+
+    def test_retry_repeats_the_opaque_attachment_observation_for_its_new_epoch(self):
+        attachment = pathlib.Path(self.paths['kernel']) / 'profiles/other.1/attach'
+        attachment.write_bytes(b'<unknown>\n')
+        original = self.setup.runner
+        compilations = 0
+
+        def changed(arguments, **options):
+            nonlocal compilations
+            result = original(arguments, **options)
+            if options.get('input') == namespace.PROFILE:
+                compilations += 1
+                if compilations == 1:
+                    pathlib.Path(self.paths['revision']).write_bytes(b'2\n')
+            return result
+
+        self.setup.runner = changed
+        self.parser_results = [0, 0, 0]
+        with (
+            patch.object(namespace.time, 'sleep'),
+            patch.object(namespace.AttachmentObserver, 'observe', side_effect=[b'1\n', b'2\n']) as observed,
+        ):
+            self.assertEqual(self.setup.install('ordinary.test'), 'installed')
+        self.assertEqual(observed.call_count, 2)
+        self.assertEqual(self.setup.conflict_snapshot[3], b'2\n')
+        self.assertEqual(sum('--add' in call[0] for call in self.calls), 1)
+
+    def test_a_new_regular_or_dangling_target_prevents_read_only_retry(self):
+        target = pathlib.Path(self.paths['policies']) / namespace.PROFILE_NAME
+        original_lstat = pathlib.Path.lstat
+        original_run = self.run_fake
+        for kind in ('regular', 'dangling-link'):
+            with self.subTest(kind=kind):
+                self.calls.clear()
+                self.probes, self.parser_results = [1], [0]
+                pathlib.Path(self.paths['revision']).write_bytes(b'1\n')
+                appeared = False
+
+                def lstat(path):
+                    if path == target and appeared and kind == 'dangling-link':
+                        return types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)
+                    return original_lstat(path)
+
+                def changed(arguments, **options):
+                    nonlocal appeared
+                    result = original_run(arguments, **options)
+                    if options.get('input') == namespace.PROFILE:
+                        pathlib.Path(self.paths['revision']).write_bytes(b'2\n')
+                        if kind == 'regular':
+                            target.write_bytes(b'administrator-owned-fixture')
+                        appeared = True
+                    return result
+
+                self.setup.runner = changed
+                with (
+                    patch.object(namespace.time, 'sleep') as sleep,
+                    patch.object(pathlib.Path, 'lstat', lstat),
+                    patch.object(self.setup, 'publish') as published,
+                    self.assert_rejected('system-path-changed'),
+                ):
+                    self.setup.install()
+                sleep.assert_not_called()
+                published.assert_not_called()
+                self.assertFalse(any('--add' in call[0] for call in self.calls))
+                if target.exists():
+                    self.assertEqual(target.read_bytes(), b'administrator-owned-fixture')
+                    target.unlink()
+
+    def test_unreadable_destination_is_not_a_positive_absence_for_retry(self):
+        target = pathlib.Path(self.paths['policies']) / namespace.PROFILE_NAME
+        original_lstat, original_run = pathlib.Path.lstat, self.run_fake
+        unreadable = False
+
+        def lstat(path):
+            if path == target and unreadable:
+                raise PermissionError('synthetic-only')
+            return original_lstat(path)
+
+        def changed(arguments, **options):
+            nonlocal unreadable
+            result = original_run(arguments, **options)
+            if options.get('input') == namespace.PROFILE:
+                pathlib.Path(self.paths['revision']).write_bytes(b'2\n')
+                unreadable = True
+            return result
+
+        self.setup.runner = changed
+        with (
+            patch.object(namespace.time, 'sleep') as sleep,
+            patch.object(pathlib.Path, 'lstat', lstat),
+            patch.object(self.setup, 'publish') as published,
+            self.assert_rejected('policy-inspection-unavailable'),
+        ):
+            self.setup.install()
+        sleep.assert_not_called()
+        published.assert_not_called()
+
+    def test_destination_created_after_final_inspection_is_preserved_without_publication(self):
+        target = pathlib.Path(self.paths['policies']) / namespace.PROFILE_NAME
+        validate = self.setup.validate_conflicts
+        validations = 0
+
+        def created(root, published=None):
+            nonlocal validations
+            validate(root, published)
+            validations += 1
+            if validations == 2:
+                target.write_bytes(b'administrator-late-profile')
+
+        with (
+            patch.object(self.setup, 'validate_conflicts', side_effect=created),
+            patch.object(self.setup, 'publish') as published,
+            patch.object(namespace.time, 'sleep') as sleep,
+            self.assert_rejected('existing-bwrap-policy'),
+        ):
+            self.setup.install()
+        self.assertEqual(target.read_bytes(), b'administrator-late-profile')
+        published.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_unknown_or_other_inspection_failures_never_retry(self):
+        for error in (
+            namespace.NamespaceError('existing-bwrap-policy'),
+            namespace.NamespaceError('policy-inspection-unavailable'),
+            OSError('synthetic-private-output'),
+            RuntimeError('synthetic-private-output'),
+        ):
+            self.probes = [1]
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(self.setup, 'check_conflicts', side_effect=error) as inspected,
+                patch.object(namespace.time, 'sleep') as sleep,
+                patch.object(self.setup, 'publish') as published,
+                self.assertRaises(type(error)),
+            ):
+                self.setup.install()
+            inspected.assert_called_once_with('dant')
+            sleep.assert_not_called()
+            published.assert_not_called()
+
+    def test_publication_entry_or_activation_failure_never_reenters_inspection(self):
+        policies = pathlib.Path(self.paths['policies'])
+        original_publish, original_validate = self.setup.publish, self.setup.validate_conflicts
+        original_runner = self.run_fake
+        for phase in ('publish', 'postpublication', 'activation', 'final-probe'):
+            with self.subTest(phase=phase):
+                self.calls.clear()
+                self.probes, self.parser_results = [1, 0], [0, 0]
+
+                def published(root):
+                    if phase == 'publish':
+                        namespace.reject('system-path-changed')
+                    return original_publish(root)
+
+                def validate(root, published=None):
+                    if published is not None and phase == 'postpublication':
+                        namespace.reject('system-path-changed')
+                    return original_validate(root, published)
+
+                def run(arguments, **options):
+                    if '--add' in arguments and phase == 'activation':
+                        namespace.reject('system-path-changed')
+                    if arguments[0] == self.paths['runuser'] and phase == 'final-probe' and not self.probes:
+                        namespace.reject('system-path-changed')
+                    return original_runner(arguments, **options)
+
+                if phase == 'final-probe':
+                    self.probes = [1]
+                self.setup.runner = run
+                with (
+                    patch.object(self.setup, 'check_conflicts', wraps=self.setup.check_conflicts) as inspected,
+                    patch.object(self.setup, 'publish', side_effect=published) as publish,
+                    patch.object(self.setup, 'validate_conflicts', side_effect=validate),
+                    patch.object(namespace.time, 'sleep') as sleep,
+                    self.assert_rejected('system-path-changed'),
+                ):
+                    self.setup.install()
+                inspected.assert_called_once_with('dant')
+                publish.assert_called_once_with(policies)
+                sleep.assert_not_called()
+                target = policies / namespace.PROFILE_NAME
+                if target.exists():
+                    self.assertEqual(target.read_bytes(), namespace.PROFILE)
+                    target.unlink()
 
     def test_postpublication_fences_allow_only_the_exact_owned_file(self):
         original = self.setup.publish

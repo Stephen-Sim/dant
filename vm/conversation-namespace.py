@@ -26,6 +26,8 @@ ATTACHMENT_LIMIT = 4096
 PATTERN_LIMIT = 256
 ATTACHMENT_POLL_LIMIT = 200
 ATTACHMENT_POLL_INTERVAL = 0.01
+INSPECTION_ATTEMPTS = 3
+INSPECTION_RETRY_SECONDS = 0.25
 PIPE_READ_WAIT = frozenset({b'pipe_read', b'anon_pipe_read'})
 NAMESPACES = ('cgroup', 'ipc', 'mnt', 'net', 'pid', 'pid_for_children',
               'time', 'time_for_children', 'user', 'uts')
@@ -815,13 +817,10 @@ class NamespaceSetup:
                 read_trusted(self.paths['restricted'], 16).strip() != b'1'):
             reject('namespace-unavailable')
         trusted_path(self.paths['parser'])
-        root = self.check_conflicts(username)
         parser = [self.paths['parser'], '--config-file=/dev/null', '--skip-cache', '--jobs=0']
-        if not self.run([*parser, '--skip-kernel-load'], PROFILE):
-            reject('policy-not-supported')
+        root = self.inspect_before_publication(username, parser)
         # These checks detect observed policy/input changes, not an atomic lock
         # against an independent administrator changing policy during --add.
-        self.validate_conflicts(root)
         target = self.publish(root)
         self.validate_conflicts(root, target)
         # --add deliberately refuses an existing loaded profile; never replace,
@@ -831,6 +830,38 @@ class NamespaceSetup:
         if not self.probe(username):
             reject('namespace-still-unavailable')
         return 'installed'
+
+    def target_absent(self):
+        try:
+            (pathlib.Path(self.paths['policies']) / PROFILE_NAME).lstat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            reject('policy-inspection-unavailable')
+        return False
+
+    def inspect_before_publication(self, username, parser):
+        # Boot-time policy loaders may change AppArmor's revision during this
+        # read-only phase. Each retry starts a complete fresh inspection, only
+        # while the exact destination is positively absent. Publication and all
+        # later actions stay outside the loop, including ambiguous failures.
+        for attempt in range(INSPECTION_ATTEMPTS):
+            self.conflict_snapshot = None
+            if not self.target_absent():
+                reject('existing-bwrap-policy')
+            try:
+                root = self.check_conflicts(username)
+                if not self.run([*parser, '--skip-kernel-load'], PROFILE):
+                    reject('policy-not-supported')
+                self.validate_conflicts(root)
+                if not self.target_absent():
+                    reject('existing-bwrap-policy')
+                return root
+            except NamespaceError as error:
+                if (str(error) != 'system-path-changed' or
+                        attempt + 1 >= INSPECTION_ATTEMPTS or not self.target_absent()):
+                    raise
+                time.sleep(INSPECTION_RETRY_SECONDS)
 
 
 def main(arguments=None):
