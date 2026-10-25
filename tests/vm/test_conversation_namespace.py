@@ -25,7 +25,7 @@ class NamespaceFixture(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = pathlib.Path(temporary.name)
+        self.root = pathlib.Path(temporary.name).resolve()
         # Drive-free Linux fixture paths resolve on the temporary drive even
         # when Windows TEMP and the checkout live on different drives.
         self.enterContext(contextlib.chdir(self.root))
@@ -583,6 +583,43 @@ class NamespaceFixture(unittest.TestCase):
 
 
 class NamespaceBoundaryTests(unittest.TestCase):
+    def test_noncanonical_temporary_roots_preserve_public_install_boundaries(self):
+        with tempfile.TemporaryDirectory(prefix='dant namespace alias ') as temporary:
+            parent = pathlib.Path(temporary).resolve()
+            variants = ['dot-segment']
+            if os.name == 'nt':
+                import ctypes
+                variants.append('short-path')
+            for variant in variants:
+                with self.subTest(variant=variant):
+                    directory = parent / (variant + ' synthetic namespace')
+                    directory.mkdir()
+                    alias = directory / '..' / directory.name
+                    if variant == 'short-path':
+                        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+                        kernel.GetShortPathNameW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+                        kernel.GetShortPathNameW.restype = ctypes.c_uint32
+                        buffer = ctypes.create_unicode_buffer(32768)
+                        length = kernel.GetShortPathNameW(str(directory), buffer, len(buffer))
+                        if 0 < length < len(buffer):
+                            short = pathlib.Path(buffer.value)
+                            if short != directory:
+                                alias = short
+                    self.assertNotEqual(alias, directory)
+                    self.assertEqual(alias.resolve(), directory)
+                    fixture = NamespaceFixture()
+                    redirected = types.SimpleNamespace(name=str(alias), cleanup=lambda: None)
+                    try:
+                        with patch.object(tempfile, 'TemporaryDirectory', return_value=redirected):
+                            fixture.setUp()
+                        self.assertEqual(fixture.setup.install('ordinary.test'), 'installed')
+                        target = pathlib.Path(fixture.paths['policies']) / namespace.PROFILE_NAME
+                        self.assertEqual(target.read_bytes(), namespace.PROFILE)
+                        self.assertTrue(target.is_relative_to(directory))
+                        self.assertEqual(sum('--add' in arguments for arguments, _ in fixture.calls), 1)
+                    finally:
+                        fixture.doCleanups()
+
     def test_attachment_matching_is_conservative_without_evaluating_aare_or_variables(self):
         matches = [b'/usr/bin/bwrap', b'/bin/bwrap', b'/usr/bin/*', b'/usr/bin/b[0-9]*',
             b'/usr/{bin,sbin}/b*', b'/usr/{{bin,sbin},lib}/b*', b'@{bin}/b*',
