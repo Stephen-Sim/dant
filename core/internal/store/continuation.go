@@ -16,6 +16,19 @@ type ClaimContinuationOptions struct {
 }
 
 func (value *Store) ClaimWorkContinuation(ctx context.Context, workID string, input ClaimContinuationOptions) (*contracts.WorkRecord, error) {
+	return value.claimWorkContinuation(ctx, workID, input, "")
+}
+
+// ClaimPausedWorkContinuation admits one explicit, known paused selection. Its
+// identity and claim are committed together, without an unowned Continuing gap.
+func (value *Store) ClaimPausedWorkContinuation(ctx context.Context, conversationID, workID string, input ClaimContinuationOptions) (*contracts.WorkRecord, error) {
+	if conversationID == "" || input.HumanReply {
+		return nil, continuationConflict()
+	}
+	return value.claimWorkContinuation(ctx, workID, input, conversationID)
+}
+
+func (value *Store) claimWorkContinuation(ctx context.Context, workID string, input ClaimContinuationOptions, selectedConversation string) (*contracts.WorkRecord, error) {
 	if input.At == 0 {
 		input.At = value.Timestamp()
 	}
@@ -24,6 +37,19 @@ func (value *Store) ClaimWorkContinuation(ctx context.Context, workID string, in
 		record, err := FindWork(state, workID)
 		if err != nil {
 			return continuationConflict()
+		}
+		if selectedConversation != "" {
+			if state.ConversationID != selectedConversation || state.ThreadConversationID != selectedConversation || state.ThreadID.Value != input.ThreadID || state.ThreadRuntime.Value != input.RuntimeID || record.TurnID != input.ExpectedTurnID || !workstate.ResumeEligible(record, state.Messages, input.At) || !workstate.ResumeOtherWorkKnown(record.ID, state.WorkTasks) {
+				return continuationConflict()
+			}
+			attempts := 0
+			if record.Continuation != nil {
+				attempts = record.Continuation.Attempts
+			}
+			record.Status = contracts.WorkStatusContinuing
+			record.PauseReason = contracts.Null[string]()
+			record.ProgressDismissedAt = contracts.Optional[float64]{}
+			record.Continuation = &contracts.WorkContinuation{NextAt: contracts.Some(input.At), Attempts: attempts, LastCheckpoint: workstate.Checkpoint(record.Plan)}
 		}
 		eligible := workstate.Eligible(record, input.At)
 		if input.HumanReply {
@@ -167,7 +193,7 @@ func (value *Store) SettleWorkContinuation(ctx context.Context, workID, attemptI
 		knownRejected := false
 		if proof := input.RejectedStart; proof != nil {
 			unacknowledged := dispatch.Phase == contracts.ContinuationDispatchPhaseSubmitting && dispatch.TurnID == ""
-			if input.Submitted || input.Status != contracts.WorkStatusFailed || !unacknowledged {
+			if input.Submitted || input.Status != contracts.WorkStatusFailed && input.Status != contracts.WorkStatusPaused || !unacknowledged {
 				return continuationConflict()
 			}
 			sameTurn := proof.FromTurnID == record.TurnID && proof.FromTurnID == dispatch.FromTurnID

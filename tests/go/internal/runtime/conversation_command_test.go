@@ -30,7 +30,7 @@ func conversationNPMFixture(t *testing.T) (string, string, string, string) {
 	for path, body := range map[string]string{
 		command: "#!/usr/bin/env node\n// Synthetic launcher; never executed.\n",
 		filepath.Join(packageRoot, "package.json"): `{"name":"@openai/codex","version":"0.163.0","bin":{"codex":"bin/codex.js"},"optionalDependencies":{"@openai/codex-linux-x64":"npm:@openai/codex@0.163.0-linux-x64"}}`,
-		filepath.Join(nativeRoot, "package.json"):  `{"name":"@openai/codex","version":"0.163.0-linux-x64","bin":null}`,
+		filepath.Join(nativeRoot, "package.json"):  `{"name":"@openai/codex","version":"0.163.0-linux-x64"}`,
 	} {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -61,6 +61,33 @@ func TestConversationEnvironmentResolvesSelectedUserNPMInstallationToOnlyItsNati
 		if (argument == "--bind" || argument == "--ro-bind") && strings.HasPrefix(options.Args[index+1], filepath.Dir(filepath.Dir(command))) && options.Args[index+1] != native {
 			t.Fatal("npm launcher support exposed an installation parent")
 		}
+	}
+}
+
+func TestConversationNPMNativePackageAcceptsOnlyAnAbsentOrNullBin(t *testing.T) {
+	for _, value := range []string{"omitted", "null", "{}", "[]", `"codex"`, "false", "0"} {
+		t.Run(value, func(t *testing.T) {
+			root, command, native, packageRoot := conversationNPMFixture(t)
+			manifest := filepath.Join(packageRoot, "node_modules", "@openai", "codex-linux-x64", "package.json")
+			if value != "omitted" {
+				source, err := os.ReadFile(manifest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				updated := strings.TrimSuffix(string(source), "}") + `,"bin": ` + value + "}"
+				if err := os.WriteFile(manifest, []byte(updated), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			options, err := conversationProcessOptions(root, command, []string{"app-server"})
+			if value == "omitted" || value == "null" {
+				if err != nil || !strings.Contains(strings.Join(options.Args, "\x00"), "--ro-bind\x00"+native+"\x00/tool/codex") {
+					t.Fatal("native package without a launcher lost its selected ELF", err)
+				}
+			} else if !errors.Is(err, ErrWorkerRole) {
+				t.Fatal("unexpected native package launcher metadata was admitted", err)
+			}
+		})
 	}
 }
 
@@ -95,7 +122,7 @@ func TestConversationNPMCommandRejectsUnknownPackagesVersionsPlatformsAndNativeF
 				} else if name == "native-version" {
 					source = strings.Replace(source, "0.163.0-linux-x64", "0.164.0-linux-x64", 1)
 				} else {
-					source = strings.Replace(source, `"bin":null`, `"bin":{"codex":"other"}`, 1)
+					source = strings.TrimSuffix(source, "}") + `,"bin":{"codex":"other"}}`
 				}
 			case "native-missing":
 				_ = os.Remove(native)

@@ -430,6 +430,24 @@ func (value *Engine) finish(active *execution, status contracts.TaskStatus, reas
 		value.mu.Unlock()
 		return nil
 	}
+	// Before acknowledgement, the selected continuation owns settlement of its
+	// durable claim. Stop paths cancel and join it rather than closing it twice.
+	if active.selectedResume && !active.startAcknowledged {
+		active.stopRequested = true
+		if active.stopReason == "" || reason == pauseReasonDisconnected {
+			active.stopReason = reason
+		}
+		active.cancelPreparation()
+		value.mu.Unlock()
+		deadline, cancel := context.WithTimeout(value.ctx, StopConfirmationTimeout)
+		defer cancel()
+		select {
+		case <-active.stopped:
+			return nil
+		case <-deadline.Done():
+			return ErrUnknown
+		}
+	}
 	active.finishing = true
 	active.cancelPreparation()
 	conversationStopConfirmed := true

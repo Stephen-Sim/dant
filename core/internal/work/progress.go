@@ -75,19 +75,23 @@ func (value *Engine) DismissProgress(ctx context.Context, id string, kind store.
 }
 
 func (value *Engine) ResumeProgress(ctx context.Context, id string, kind store.ProgressKind, turnID string) (*contracts.WorkRecord, error) {
-	value.mu.Lock()
-	defer value.mu.Unlock()
-	state := value.store.Snapshot()
-	if kind != store.ProgressWork || value.closed || value.maintenance || value.takeover || value.acquiring || value.active != nil && value.active.conversationOnly || value.worker.Snapshot().Status != contracts.ConnectionStatusOnline || value.progressOwnedLocked(id, kind, state) {
+	return value.ResumeProgressForConversation(ctx, "", id, kind, turnID)
+}
+
+func (value *Engine) ResumeProgressForConversation(ctx context.Context, conversationID, id string, kind store.ProgressKind, turnID string) (*contracts.WorkRecord, error) {
+	if kind != store.ProgressWork {
 		return nil, ErrBusy
 	}
-	record, err := value.store.ResumeWork(ctx, id, turnID)
+	_, err := value.continueRegisteredWork(ctx, id, ContinueOptions{ExpectedTurnID: turnID}, &selectedWorkResume{conversationID: conversationID})
 	if err != nil {
+		state := value.store.Snapshot()
+		if record, findErr := store.FindWork(&state, id); findErr == nil && (record.UnknownOutcome || record.Status == contracts.WorkStatusUnknown) {
+			return nil, &runtime.OperationError{Cause: err, UnknownOutcome: true}
+		}
 		return nil, err
 	}
-	value.clearPauseLocked()
-	value.changeLocked()
-	return record, nil
+	state := value.store.Snapshot()
+	return store.FindWork(&state, id)
 }
 
 func (value *Engine) ClearCompletedProgress(ctx context.Context) (int, error) {

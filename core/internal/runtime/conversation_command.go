@@ -66,7 +66,8 @@ func conversationNPMCommand(command string) (string, error) {
 	}
 	defer nativeManifest.file.Close()
 	nativeMetadata, err := nativeManifest.object()
-	if err != nil || observerString(nativeMetadata, "name") != conversationNPMPackage || observerString(nativeMetadata, "version") != version || strings.TrimSpace(string(nativeMetadata["bin"])) != "null" {
+	nativeBin, hasNativeBin := nativeMetadata["bin"]
+	if err != nil || observerString(nativeMetadata, "name") != conversationNPMPackage || observerString(nativeMetadata, "version") != version || hasNativeBin && strings.TrimSpace(string(nativeBin)) != "null" {
 		return "", ErrWorkerRole
 	}
 

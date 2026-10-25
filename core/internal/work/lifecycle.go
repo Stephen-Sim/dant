@@ -76,6 +76,18 @@ func (value *Engine) interrupt(ctx context.Context, active *execution) error {
 	active.cancelPreparation()
 	turn, thread := active.turnID, active.threadID
 	submitted := active.startSubmitted
+	var interruptDone <-chan struct{}
+	ownedInterrupt := false
+	if active.selectedResume && submitted && turn != "" && thread != "" {
+		if active.resumeInterruptSent {
+			turn = ""
+			interruptDone = active.resumeInterruptDone
+		} else {
+			active.resumeInterruptSent = true
+			active.resumeInterruptDone = make(chan struct{})
+			ownedInterrupt = true
+		}
+	}
 	if submitted && active.conversationOnly {
 		active.conversationStopping = true
 	}
@@ -109,7 +121,16 @@ func (value *Engine) interrupt(ctx context.Context, active *execution) error {
 		return value.finish(active, contracts.TaskStatusPaused, reason)
 	}
 	if turn != "" && thread != "" {
-		if _, err := value.worker.Request(value.ctx, "turn/interrupt", contracts.RawObject{"threadId": raw(thread), "turnId": raw(turn)}); err != nil {
+		_, err := value.worker.Request(value.ctx, "turn/interrupt", contracts.RawObject{"threadId": raw(thread), "turnId": raw(turn)})
+		if ownedInterrupt {
+			value.mu.Lock()
+			if err != nil {
+				active.resumeInterruptError = ErrUnknown
+			}
+			close(active.resumeInterruptDone)
+			value.mu.Unlock()
+		}
+		if err != nil {
 			value.mu.Lock()
 			active.unknown = true
 			value.pauseLocked(pauseReasonStopUnknown)
@@ -120,6 +141,21 @@ func (value *Engine) interrupt(ctx context.Context, active *execution) error {
 	}
 	deadline, cancel := context.WithTimeout(ctx, StopConfirmationTimeout)
 	defer cancel()
+	if interruptDone != nil {
+		select {
+		case <-interruptDone:
+			value.mu.Lock()
+			err := active.resumeInterruptError
+			value.mu.Unlock()
+			if err != nil {
+				return err
+			}
+		case <-deadline.Done():
+			return ErrUnknown
+		case <-value.ctx.Done():
+			return ErrClosed
+		}
+	}
 	select {
 	case <-active.stopped:
 		return nil

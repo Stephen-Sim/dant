@@ -15,6 +15,23 @@ import (
 
 const screenResponseBytes = 32 * 1024 * 1024
 
+type progressResumeResult struct {
+	WorkRecord *contracts.WorkRecord
+}
+
+func (result progressResumeResult) MarshalJSON() ([]byte, error) {
+	encoded, err := json.Marshal(result.WorkRecord)
+	if err != nil {
+		return nil, err
+	}
+	var fields contracts.RawObject
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, err
+	}
+	fields["resumed"] = json.RawMessage("true")
+	return json.Marshal(fields)
+}
+
 func progressBody(writer http.ResponseWriter, request *http.Request) (contracts.RawObject, error) {
 	return httpapi.ReadObject(writer, request, 0)
 }
@@ -141,12 +158,16 @@ func registerWorkRoutes(mux *http.ServeMux, app *WorkerApp) {
 		if err != nil || turn.Null {
 			return httpapi.Failure(409, "resume_unavailable", "Choose the paused task again.")
 		}
-		result, err := app.engine.ResumeProgress(request.Context(), request.PathValue("id"), kind, turn.Value)
+		conversation, err := routeConversation(body, app.store.ConversationID())
+		if err != nil {
+			return err
+		}
+		result, err := app.engine.ResumeProgressForConversation(request.Context(), conversation, request.PathValue("id"), kind, turn.Value)
 		if err != nil {
 			return conversationRouteError(err)
 		}
 		app.change()
-		return httpapi.JSON(writer, result)
+		return httpapi.JSON(writer, progressResumeResult{WorkRecord: result})
 	})
 	httpapi.Register(mux, "POST /api/tasks/clear-completed", func(writer http.ResponseWriter, request *http.Request) error {
 		count, err := app.engine.ClearCompletedProgress(request.Context())

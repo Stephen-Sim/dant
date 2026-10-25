@@ -55,13 +55,47 @@ func TestWorkerExplicitResumeRoutesKeepExactTaskIdentityAndDoNotReplayUnknownWor
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := app.store.Mutate(t.Context(), func(state *contracts.State) error {
+		state.ThreadID = contracts.Some("app-fixture-thread")
+		state.ThreadRuntime = contracts.Some(app.worker.RuntimeID())
+		state.ThreadConversationID = state.ConversationID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wire.response = func(method string, _ contracts.RawObject) json.RawMessage {
+		if method == "thread/read" {
+			return encode(contracts.RawObject{"thread": encode(contracts.RawObject{
+				"id": encode("app-fixture-thread"), "status": encode(contracts.RawObject{"type": encode("idle")}),
+				"turns": encode([]contracts.RawObject{{"id": encode(record.TurnID), "status": encode("completed")}}),
+			})})
+		}
+		return nil
+	}
 	endpoint := "/api/tasks/" + record.ID + "/resume"
 	requireWorkerStatus(t, callWorker(app, http.MethodPost, endpoint, `{"kind":"work","turnId":"stale"}`), 409)
-	requireWorkerStatus(t, callWorker(app, http.MethodPost, endpoint, `{"kind":"work","turnId":"`+record.TurnID+`"}`), 200)
+	for _, identity := range []string{`"stale-conversation"`, `null`, `17`} {
+		requireWorkerStatus(t, callWorker(app, http.MethodPost, endpoint, `{"kind":"work","turnId":"`+record.TurnID+`","conversationId":`+identity+`}`), 409)
+	}
+	if wire.count("thread/read") != 0 || wire.count("turn/start") != 0 {
+		t.Fatal("invalid captured identity crossed executor admission")
+	}
+	response := callWorker(app, http.MethodPost, endpoint, `{"kind":"work","turnId":"`+record.TurnID+`"}`)
+	requireWorkerStatus(t, response, 200)
+	var receipt struct {
+		Resumed bool `json:"resumed"`
+	}
+	if json.Unmarshal(response.Body.Bytes(), &receipt) != nil || !receipt.Resumed {
+		t.Fatal("acknowledged selected turn omitted its actual resume receipt")
+	}
 	state := app.store.Snapshot()
 	saved, err := store.FindWork(&state, record.ID)
-	if err != nil || saved.Status != contracts.WorkStatusContinuing || saved.TurnID != record.TurnID || saved.Continuation == nil || wire.count("turn/start") != 0 {
-		t.Fatal("resuming durable unfinished work lost its owner or started an unrequested turn")
+	if err != nil || saved.Status != contracts.WorkStatusRunning || saved.TurnID != "app-fixture-turn" || saved.Continuation == nil || wire.count("turn/start") != 1 || wire.count("thread/read") != 1 {
+		t.Fatal("selected resume lost its known work or duplicated its acknowledged dispatch")
+	}
+	requireWorkerStatus(t, callWorker(app, http.MethodPost, endpoint, `{"kind":"work","turnId":"`+record.TurnID+`"}`), 409)
+	if wire.count("turn/start") != 1 {
+		t.Fatal("late original card repeated the execution")
 	}
 }
 

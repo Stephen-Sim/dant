@@ -60,6 +60,13 @@ type execution struct {
 	requestNotices       map[string]bool
 	workObserved         bool
 	humanResponse        bool
+	selectedResume       bool
+	resumeInterruptSent  bool
+	resumeInterruptDone  chan struct{}
+	resumeInterruptError error
+	resumeTerminalTurns  []string
+	resumeWasPaused      bool
+	resumePauseReason    string
 	nativeVoice          bool
 	voiceTask            bool
 	conversationalInput  bool

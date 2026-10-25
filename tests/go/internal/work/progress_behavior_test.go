@@ -115,26 +115,27 @@ func TestHidingUnfinishedProgressRequiresExactIdentityAndAnExplicitConfirmation(
 	assertWorkerQuiet(t, worker)
 }
 
-func TestResumeRegisteredProgressRetainsItsTurnAndWaitsForSchedulerAdmission(t *testing.T) {
+func TestResumeRegisteredProgressRequiresTheExactPausedSelection(t *testing.T) {
 	engine, persistence, worker := engineFixture(t)
 	workID, turnID := savedUnfinished(t, persistence)
-	if _, err := persistence.UpdateRegisteredWork(context.Background(), turnID, store.UpdateRegisteredWorkOptions{
+	if _, err := persistence.UpdateRegisteredWork(t.Context(), turnID, store.UpdateRegisteredWorkOptions{
 		Status: contracts.Some(contracts.WorkStatusPaused), ExecutionEnded: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.ResumeProgress(context.Background(), workID, store.ProgressWork, "retired-turn"); err == nil {
-		t.Fatal("a stale progress card resumed another turn")
+	if _, err := engine.ResumeProgress(t.Context(), workID, store.ProgressWork, "retired-turn"); err == nil {
+		t.Fatal("stale selected turn was admitted")
 	}
-	record, err := engine.ResumeProgress(context.Background(), workID, store.ProgressWork, turnID)
-	if err != nil || record.ID != workID || record.TurnID != turnID || record.Status != contracts.WorkStatusContinuing || record.Continuation == nil || !record.Continuation.NextAt.Present || record.Continuation.Dispatch != nil {
-		t.Fatal("registered resume changed its identity or claimed an executor dispatch", err)
+	if _, err := engine.ResumeProgress(t.Context(), workID, store.ProgressTask, turnID); !errors.Is(err, ErrBusy) {
+		t.Fatal("wrong kind was admitted", err)
 	}
-	if engine.Snapshot().Active != nil || len(engine.Snapshot().Queue) != 0 {
-		t.Fatal("progress resume silently bypassed scheduler admission")
+	if _, err := engine.ResumeProgressForConversation(t.Context(), "retired-conversation", workID, store.ProgressWork, turnID); err == nil {
+		t.Fatal("stale conversation was admitted")
 	}
-	if _, err := engine.ResumeProgress(context.Background(), workID, store.ProgressTask, turnID); !errors.Is(err, ErrBusy) {
-		t.Fatal("a work identity was accepted under the wrong progress kind", err)
+	state := persistence.Snapshot()
+	record, _ := store.FindWork(&state, workID)
+	if record.Status != contracts.WorkStatusPaused || record.Continuation != nil && record.Continuation.Dispatch != nil {
+		t.Fatal("rejected selection acquired a dispatch")
 	}
 	assertWorkerQuiet(t, worker)
 }
