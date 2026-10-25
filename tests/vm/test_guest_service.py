@@ -145,6 +145,96 @@ class GuestServiceTests(unittest.TestCase):
         self.path_links[str(self.process / 'exe')] = '/usr/bin/python3.12'
         self.process = original
 
+    def current_candidate_listener(self):
+        self.current_user_listener()
+        self.configuration['entries']['vm/guest.py']['sha256'] = hashlib.sha256(self.candidate.read_bytes()).hexdigest()
+        self.namespace_listener(inode='100')
+
+    def test_disappearing_unrelated_descriptor_keeps_the_verified_guest_listener(self):
+        self.current_candidate_listener()
+        descriptor = self.proc / '456/fd/7'
+        readlink = self.observer.readlink
+        disappeared = []
+
+        def closed(path):
+            if path == descriptor:
+                descriptor.unlink()
+                disappeared.append(path)
+                raise FileNotFoundError('synthetic connection closed after enumeration')
+            return readlink(path)
+
+        self.observer.readlink = closed
+        for check in (self.observer.system_available, self.observer.user_ready):
+            with self.subTest(check=check.__name__):
+                descriptor.write_bytes(b'unrelated connection descriptor')
+                check(self.configuration)
+        self.assertEqual(disappeared, [descriptor, descriptor])
+
+    def test_a_disappearing_owned_listener_never_proves_endpoint_ownership(self):
+        self.current_candidate_listener()
+        descriptor = self.proc / '456/fd/3'
+        readlink = self.observer.readlink
+
+        def closed(path):
+            if path == descriptor:
+                descriptor.unlink()
+                raise FileNotFoundError('synthetic listener closed after enumeration')
+            return readlink(path)
+
+        self.observer.readlink = closed
+        checks = ((self.observer.system_available, 'guest-endpoint-conflict'),
+                  (self.observer.user_ready, 'guest-endpoint-unconfirmed'))
+        for check, code in checks:
+            with self.subTest(check=check.__name__):
+                descriptor.write_bytes(b'owned listener descriptor')
+                with self.assertRaisesRegex(proof.GuestProofError, '^' + code + '$'):
+                    check(self.configuration)
+
+    def test_descriptor_permission_and_other_errors_remain_unconfirmed(self):
+        self.current_candidate_listener()
+        descriptor = self.proc / '456/fd/7'
+        descriptor.write_bytes(b'unreadable descriptor')
+        readlink = self.observer.readlink
+
+        for error in (PermissionError('synthetic denial'), OSError('synthetic read failure'),
+                      ProcessLookupError('synthetic process lookup failure')):
+            with self.subTest(error=type(error).__name__):
+                def denied(path):
+                    if path == descriptor:
+                        raise error
+                    return readlink(path)
+
+                self.observer.readlink = denied
+                with self.assertRaises(type(error)):
+                    self.observer.system_available(self.configuration)
+
+    def test_a_disappearing_descriptor_does_not_hide_process_or_listener_changes(self):
+        self.current_candidate_listener()
+        descriptor = self.proc / '456/fd/7'
+        process_stat = self.proc / '456/stat'
+        original_stat = process_stat.read_bytes()
+        readlink = self.observer.readlink
+
+        for change in ('process', 'listener'):
+            with self.subTest(change=change):
+                descriptor.write_bytes(b'unrelated connection descriptor')
+
+                def changed(path):
+                    if path == descriptor:
+                        descriptor.unlink()
+                        if change == 'process':
+                            process_stat.write_bytes(original_stat.replace(b'234', b'235'))
+                        else:
+                            self.namespace_listener(inode='200')
+                        raise FileNotFoundError('synthetic connection closed after enumeration')
+                    return readlink(path)
+
+                self.observer.readlink = changed
+                with self.assertRaisesRegex(proof.GuestProofError, '^guest-endpoint-unconfirmed$'):
+                    self.observer.system_available(self.configuration)
+                process_stat.write_bytes(original_stat)
+                self.namespace_listener(inode='100')
+
     def test_exact_historical_source_and_owned_legacy_socket_allow_new_default(self):
         self.assertIn(hashlib.sha256(self.seed.read_bytes()).hexdigest(), proof.KNOWN_SEED_SOURCES)
         self.observer.system_available(self.configuration)

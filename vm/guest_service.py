@@ -206,7 +206,12 @@ class GuestServiceObserver:
             unconfirmed()
         sockets = set()
         for descriptor in descriptors:
-            target = self.readlink(descriptor)
+            try:
+                target = self.readlink(descriptor)
+            except FileNotFoundError:
+                # Connections can close after enumeration. Callers still prove
+                # the listener and recheck the service/process identity.
+                continue
             match = re.fullmatch(r'socket:\[([1-9][0-9]*)\]', target)
             if match:
                 sockets.add(match[1])
