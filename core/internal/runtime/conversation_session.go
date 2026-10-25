@@ -377,6 +377,9 @@ func (session *ConversationSession) monitor() {
 }
 
 func (session *ConversationSession) TerminateConfirmed(ctx context.Context) (bool, error) {
+	if session == nil {
+		return true, nil
+	}
 	session.stop()
 	deadline, cancel := context.WithTimeout(ctx, ExecutorStopTimeout)
 	defer cancel()

@@ -91,8 +91,14 @@ func conversationCommandMapping(command string) (string, []string, error) {
 	var prefix [2]byte
 	_, readErr := io.ReadFull(file, prefix[:])
 	closeErr := file.Close()
-	if (readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF) || closeErr != nil || bytes.Equal(prefix[:], []byte("#!")) {
+	if (readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF) || closeErr != nil {
 		return "", nil, ErrWorkerRole
+	}
+	if bytes.Equal(prefix[:], []byte("#!")) {
+		command, err = conversationNPMCommand(command)
+		if err != nil {
+			return "", nil, err
+		}
 	}
 	return "/tool/codex", []string{"--dir", "/tool", "--ro-bind", command, "/tool/codex"}, nil
 }

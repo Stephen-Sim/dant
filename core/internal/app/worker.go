@@ -319,7 +319,11 @@ func (app *WorkerApp) assembleExecution() error {
 	app.engine, err = work.New(app.ctx, app.store, app.worker, work.Options{
 		ToolRouter: app,
 		OpenConversation: func(ctx context.Context, conversationID string, isCurrent func() bool) (work.ConversationSession, error) {
-			return app.worker.OpenConversation(ctx, conversationID, isCurrent)
+			session, err := app.worker.OpenConversation(ctx, conversationID, isCurrent)
+			if session == nil {
+				return nil, err
+			}
+			return session, err
 		},
 		Memory: work.ReferenceMemoryFunc(func(ctx context.Context, query, conversationID, workID string) (string, error) {
 			var workIdentity *string
