@@ -36,7 +36,9 @@ class NamespaceFixture(unittest.TestCase):
             if key in ('policies', 'kernel'):
                 path.mkdir()
             else:
-                path.write_bytes({'enabled': b'Y\n', 'restricted': b'1\n', 'loaded': b'other (enforce)\n'}.get(key, b'fixed binary'))
+                path.write_bytes({'enabled': b'Y\n', 'restricted': b'1\n', 'loaded': b'other (enforce)\n',
+                                  'revision': b'1\n', 'namespace_level': b'0\n',
+                                  'context': b'unconfined\n'}.get(key, b'fixed binary'))
             self.paths[key] = str(path)
         profiles = pathlib.Path(self.paths['kernel']) / 'profiles/other.1'
         profiles.mkdir(parents=True)
@@ -50,11 +52,12 @@ class NamespaceFixture(unittest.TestCase):
         self.setup = namespace.NamespaceSetup(self.paths, self.run_fake)
         self.addCleanup(patch.stopall)
         patch.object(namespace.os, 'geteuid', return_value=0, create=True).start()
-        patch.object(namespace, 'ordinary_account', return_value=types.SimpleNamespace(pw_uid=1000)).start()
+        patch.object(namespace, 'ordinary_account', return_value=types.SimpleNamespace(pw_uid=1000, pw_gid=1000)).start()
         # Windows fixture owners/modes are not Unix ownership proof. Exercise
         # that separate boundary below with explicit stat records, not a real
         # root policy directory. No production path can reach this fixture.
         patch.object(namespace, 'trusted_path', side_effect=self.fixture_path).start()
+        patch.object(namespace, 'read_kernel_once', side_effect=lambda value, limit: namespace.read_trusted(value, limit)).start()
         patch.object(namespace, 'validate_info', side_effect=lambda info, directory=False: self.assertTrue(
             stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))).start()
 
@@ -449,6 +452,141 @@ class NamespaceFixture(unittest.TestCase):
                 self.assertEqual(list(pathlib.Path(self.paths['policies']).iterdir()), [])
         self.assertEqual(len(self.calls), 4)
 
+    def test_opaque_kernel_attachment_needs_positive_ordinary_exec_before_installation(self):
+        attachment = pathlib.Path(self.paths['kernel']) / 'profiles/other.1/attach'
+        attachment.write_bytes(b'<unknown>\n')
+        observer = patch.object(namespace.AttachmentObserver, 'observe', return_value=b'1\n')
+        with observer as observed:
+            self.assertEqual(self.setup.install('ordinary.test'), 'installed')
+        observed.assert_called_once_with()
+        self.assertEqual(attachment.read_bytes(), b'<unknown>\n')
+        target = pathlib.Path(self.paths['policies']) / namespace.PROFILE_NAME
+        self.assertEqual(target.read_bytes(), namespace.PROFILE)
+        self.assertEqual(sum('--add' in call[0] for call in self.calls), 1)
+
+    def test_unconfirmed_opaque_observation_never_publishes_or_loads(self):
+        attachment = pathlib.Path(self.paths['kernel']) / 'profiles/other.1/attach'
+        attachment.write_bytes(b'<unknown>\n')
+        for outcome in (b'2\n', namespace.NamespaceError('existing-bwrap-policy')):
+            self.probes = [1]
+            with self.subTest(outcome=type(outcome).__name__), patch.object(namespace.AttachmentObserver, 'observe') as observed:
+                if isinstance(outcome, Exception):
+                    observed.side_effect = outcome
+                else:
+                    observed.return_value = outcome
+                with self.assertRaises(namespace.NamespaceError):
+                    self.setup.install()
+                self.assertEqual(list(pathlib.Path(self.paths['policies']).iterdir()), [])
+        self.assertFalse(any('--add' in call[0] for call in self.calls))
+
+    def test_opaque_profile_cannot_bypass_explicit_global_identity_or_configured_conflicts(self):
+        attachment = pathlib.Path(self.paths['kernel']) / 'profiles/other.1/attach'
+        attachment.write_bytes(b'<unknown>\n')
+        policy = pathlib.Path(self.paths['policies']) / 'administrator'
+        for raw in (b'profile other /usr/bin/bwrap { }', b'profile other /usr/bin/b* { }',
+                    b'profile /usr/bin/bwrap /usr/bin/other { }'):
+            policy.write_bytes(raw)
+            with self.subTest(raw=raw), patch.object(namespace.AttachmentObserver, 'observe') as observed:
+                with self.assert_rejected('existing-bwrap-policy'):
+                    self.setup.check_conflicts()
+                observed.assert_not_called()
+                self.assertEqual(policy.read_bytes(), raw)
+
+    def test_policy_context_and_revision_are_validated_without_policy_writes(self):
+        for key, raw in [('revision', b'unknown'), ('namespace_level', b'1\n'),
+                         ('context', b'named (unconfined)\n')]:
+            path = pathlib.Path(self.paths[key])
+            original = path.read_bytes()
+            path.write_bytes(raw)
+            with self.subTest(key=key), self.assert_rejected('policy-inspection-unavailable'):
+                self.setup.check_conflicts()
+            path.write_bytes(original)
+        self.assertEqual(self.calls, [])
+
+    def test_changed_inputs_during_positive_observation_are_not_adopted(self):
+        attachment = pathlib.Path(self.paths['kernel']) / 'profiles/other.1/attach'
+        attachment.write_bytes(b'<unknown>\n')
+        policies = pathlib.Path(self.paths['policies'])
+        def changed():
+            (policies / 'new-administrator-policy').write_bytes(b'profile other /** { }')
+            return b'1\n'
+        with patch.object(namespace.AttachmentObserver, 'observe', side_effect=changed), self.assert_rejected('system-path-changed'):
+            self.setup.install()
+        self.assertFalse((policies / namespace.PROFILE_NAME).exists())
+        self.assertFalse(any('--add' in call[0] for call in self.calls))
+
+    def test_policy_epoch_change_after_validation_stops_before_publication(self):
+        original = self.setup.runner
+        def changed(arguments, **options):
+            result = original(arguments, **options)
+            if options.get('input') == namespace.PROFILE:
+                pathlib.Path(self.paths['revision']).write_bytes(b'2\n')
+            return result
+        self.setup.runner = changed
+        with self.assert_rejected('system-path-changed'):
+            self.setup.install()
+        self.assertEqual(list(pathlib.Path(self.paths['policies']).iterdir()), [])
+        self.assertFalse(any('--add' in call[0] for call in self.calls))
+
+    def test_postpublication_fences_allow_only_the_exact_owned_file(self):
+        original = self.setup.publish
+        policies = pathlib.Path(self.paths['policies'])
+        for kind in ('revision', 'new-file', 'replacement'):
+            with self.subTest(kind=kind):
+                self.probes = [1]
+                self.parser_results = [0]
+                pathlib.Path(self.paths['revision']).write_bytes(b'1\n')
+                def changed(root):
+                    target = original(root)
+                    if kind == 'revision':
+                        pathlib.Path(self.paths['revision']).write_bytes(b'2\n')
+                    elif kind == 'new-file':
+                        (policies / 'independent-change').write_bytes(b'other')
+                    else:
+                        replacement = policies / '.replacement'
+                        replacement.write_bytes(namespace.PROFILE)
+                        os.replace(replacement, target)
+                    return target
+                with patch.object(self.setup, 'publish', side_effect=changed), self.assert_rejected('system-path-changed'):
+                    self.setup.install()
+                self.assertFalse(any('--add' in call[0] for call in self.calls))
+                self.assertEqual((policies / namespace.PROFILE_NAME).read_bytes(), namespace.PROFILE)
+                for path in policies.iterdir():
+                    path.unlink()
+
+    def test_owned_publication_preserves_optional_missing_input_fences(self):
+        policies = pathlib.Path(self.paths['policies'])
+        (policies / 'local').mkdir()
+        policy = policies / 'administrator'
+        policy.write_bytes(b'profile other /usr/bin/other { include if exists <optional>\ninclude if exists <local/optional> }')
+        self.preprocessed['administrator'] = b'profile other /usr/bin/other { }'
+        self.assertEqual(self.setup.install(), 'installed')
+        self.assertFalse((policies / 'optional').exists())
+        self.assertFalse((policies / 'local/optional').exists())
+        self.assertEqual(sum('--add' in call[0] for call in self.calls), 1)
+
+    def test_conflict_validation_requires_its_matching_captured_root(self):
+        policies = pathlib.Path(self.paths['policies'])
+        with self.assert_rejected('policy-inspection-unavailable'):
+            self.setup.validate_conflicts(policies)
+        self.setup.check_conflicts()
+        with self.assert_rejected('policy-inspection-unavailable'):
+            self.setup.validate_conflicts(policies.parent)
+
+    def test_publication_does_not_adopt_an_identical_replacement_after_its_content_check(self):
+        policies = pathlib.Path(self.paths['policies'])
+        original = namespace.read_trusted
+        def replaced(value, limit=namespace.FILE_LIMIT):
+            raw = original(value, limit)
+            if pathlib.Path(value).name == namespace.PROFILE_NAME:
+                other = policies / '.identical-replacement'
+                other.write_bytes(namespace.PROFILE)
+                os.replace(other, value)
+            return raw
+        with patch.object(namespace, 'read_trusted', side_effect=replaced), self.assert_rejected('system-path-changed'):
+            self.setup.publish(policies)
+        self.assertEqual((policies / namespace.PROFILE_NAME).read_bytes(), namespace.PROFILE)
+
     def test_inactive_broad_or_variable_policy_is_not_weakened_on_next_boot(self):
         policy = pathlib.Path(self.paths['policies']) / 'administrator'
         for raw in (b'profile box /usr/bin/b* { }', b'/usr/bin/* { }',
@@ -838,6 +976,285 @@ abi <abi/4.0>,
         with patch.object(sys, 'argv', [str(SCRIPT), '--install']), patch.object(os, 'geteuid', return_value=1000, create=True), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
             runpy.run_path(str(SCRIPT), run_name='__main__')
         self.assertEqual(stopped.exception.code, 1)
+
+
+class AttachmentObserverTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = pathlib.Path(temporary.name).resolve()
+        self.image = self.root / 'bwrap'
+        self.image.write_bytes(b'synthetic executable, never executed')
+        self.account = types.SimpleNamespace(pw_uid=12345, pw_gid=54321)
+        self.events = []
+        self.child = types.SimpleNamespace(pid=98765, poll=lambda: None,
+            kill=lambda: self.events.append('kill-owned'),
+            wait=lambda **options: self.events.append(('join-owned', options)))
+        def spawn(arguments, **options):
+            self.events.append(('spawn', arguments, options))
+            return self.child
+        self.observer = namespace.AttachmentObserver({'bwrap': str(self.image)}, self.account,
+            spawner=spawn, sleeper=lambda seconds: self.events.append(('sleep', seconds)))
+        self.enterContext(patch.object(namespace, 'trusted_path', return_value=self.image))
+        self.enterContext(patch.object(namespace.os, 'getxattr',
+            side_effect=OSError(__import__('errno').ENODATA, 'synthetic absent'), create=True))
+        self.namespaces = tuple((name, (1, number)) for number, name in enumerate(namespace.NAMESPACES))
+
+    def observe_fixture(self, identities=None, boundaries=None):
+        expected = (b'12\n', self.namespaces)
+        self.enterContext(patch.object(self.observer, 'boundary', side_effect=boundaries or [expected, expected]))
+        identity = (os.getpid(), 1234, b'bare-unconfined')
+        self.enterContext(patch.object(self.observer, 'child_identity', side_effect=identities or [None, identity, identity]))
+        original_close = namespace.os.close
+        def close(descriptor):
+            self.events.append(('close-owned', descriptor))
+            original_close(descriptor)
+        self.enterContext(patch.object(namespace.os, 'close', side_effect=close))
+
+    def test_observation_owns_only_one_ordinary_child_and_joins_before_pipe_close(self):
+        self.observe_fixture()
+        self.assertEqual(self.observer.observe(), b'12\n')
+        spawned = next(event for event in self.events if isinstance(event, tuple) and event[0] == 'spawn')
+        arguments, options = spawned[1:]
+        self.assertEqual(arguments[:2], [str(self.image), '--args'])
+        self.assertEqual(options['pass_fds'], (int(arguments[-1]),))
+        self.assertEqual((options['user'], options['group'], options['extra_groups']), (12345, 54321, []))
+        self.assertEqual(options['env'], {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+        self.assertEqual((options['cwd'], options['shell'], options['close_fds']), ('/', False, True))
+        self.assertTrue(all(options[key] == subprocess.DEVNULL for key in ('stdin', 'stdout', 'stderr')))
+        self.assertNotIn('preexec_fn', options)
+        self.assertEqual(self.events[-4:-2], ['kill-owned', ('join-owned', {'timeout': 10})])
+        self.assertTrue(all(event[0] == 'close-owned' for event in self.events[-2:]))
+
+    def test_changed_epoch_or_namespace_never_produces_positive_observation(self):
+        first = (b'12\n', self.namespaces)
+        for after in ((b'13\n', self.namespaces), (b'12\n', (('user', (4, 5)),))):
+            with self.subTest(after=after), contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(self.observer, 'boundary', side_effect=[first, after]))
+                stack.enter_context(patch.object(self.observer, 'child_identity', return_value=('stable',)))
+                with self.assertRaisesRegex(namespace.NamespaceError, '^system-path-changed$'):
+                    self.observer.observe()
+                self.assertEqual(self.events[-2:], ['kill-owned', ('join-owned', {'timeout': 10})])
+
+    def test_no_pipe_wait_times_out_and_still_joins_the_owned_child(self):
+        self.observe_fixture(identities=[None, None])
+        with patch.object(namespace, 'ATTACHMENT_POLL_LIMIT', 2), self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+            self.observer.observe()
+        self.assertEqual(sum(event[0] == 'sleep' for event in self.events if isinstance(event, tuple)), 2)
+        self.assertEqual(self.events[-4:-2], ['kill-owned', ('join-owned', {'timeout': 10})])
+
+    def test_process_or_physical_stop_failure_releases_pipe_only_after_owned_join(self):
+        for error in (OSError('private path'), KeyboardInterrupt(), SystemExit()):
+            with self.subTest(error=type(error).__name__), contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(self.observer, 'boundary', return_value=(b'1\n', self.namespaces)))
+                stack.enter_context(patch.object(self.observer, 'child_identity', side_effect=error))
+                with self.assertRaises(type(error)):
+                    self.observer.observe()
+                self.assertEqual(self.events[-2:], ['kill-owned', ('join-owned', {'timeout': 10})])
+
+    def test_setuid_and_file_capability_executables_are_not_launched(self):
+        value = self.image.stat()
+        changed = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o4755)
+        with patch.object(self.observer, 'boundary', return_value=(b'1\n', self.namespaces)):
+            with patch.object(pathlib.Path, 'stat', return_value=changed), self.assertRaisesRegex(namespace.NamespaceError, '^untrusted-system-path$'):
+                self.observer.observe()
+            with patch.object(namespace.os, 'getxattr', return_value=b'capability'), self.assertRaisesRegex(namespace.NamespaceError, '^untrusted-system-path$'):
+                self.observer.observe()
+        self.assertEqual(self.image.stat(), value)
+        self.assertEqual(self.events, [])
+
+    def test_unknown_capability_inspection_failure_never_launches_a_child(self):
+        with patch.object(self.observer, 'boundary', return_value=(b'1\n', self.namespaces)), patch.object(namespace.os, 'getxattr', side_effect=PermissionError('private')):
+            with self.assertRaises(PermissionError):
+                self.observer.observe()
+        self.assertEqual(self.events, [])
+
+    def test_changed_opened_image_or_nonpipe_descriptor_is_rejected_before_spawn(self):
+        self.observe_fixture()
+        original = namespace.os.fstat
+        image = self.image.stat()
+        replacement = types.SimpleNamespace(st_dev=image.st_dev, st_ino=image.st_ino + 1,
+            st_size=image.st_size, st_mtime_ns=image.st_mtime_ns)
+        with patch.object(namespace.os, 'fstat', return_value=replacement), self.assertRaisesRegex(namespace.NamespaceError, '^system-path-changed$'):
+            self.observer.observe()
+        self.assertEqual(self.events, [])
+        calls = 0
+        def not_pipe(descriptor):
+            nonlocal calls
+            calls += 1
+            return original(descriptor) if calls == 1 else types.SimpleNamespace(st_mode=stat.S_IFREG)
+        with patch.object(namespace.os, 'fstat', side_effect=not_pipe), self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+            self.observer.observe()
+        self.assertEqual([event[0] for event in self.events], ['close-owned', 'close-owned'])
+
+    def test_spawn_failure_closes_only_its_owned_pipe(self):
+        self.observe_fixture()
+        self.observer.spawner = lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError('not executed'))
+        with self.assertRaises(OSError):
+            self.observer.observe()
+        self.assertEqual([event[0] for event in self.events], ['close-owned', 'close-owned'])
+
+    def test_unknown_join_never_returns_a_positive_result_or_delivers_pipe_eof(self):
+        self.observe_fixture()
+        descriptors = []
+        original = namespace.os.pipe
+        def pipe():
+            value = original()
+            descriptors.extend(value)
+            return value
+        try:
+            with patch.object(namespace.os, 'pipe', side_effect=pipe), patch.object(self.child, 'wait', side_effect=subprocess.TimeoutExpired('owned', 10)):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    self.observer.observe()
+            self.assertFalse(any(event[0] == 'close-owned' for event in self.events if isinstance(event, tuple)))
+        finally:
+            # Synthetic child only; explicitly reclaim this fixture's real FDs.
+            for descriptor in descriptors:
+                os.close(descriptor)
+
+    def test_root_context_and_kernel_epoch_boundary_are_positive_not_name_inferences(self):
+        self.observer.paths.update(namespace_level='synthetic-level', revision='synthetic-revision', context='synthetic-context')
+        for level, label, revision, accepted in ((b'0\n', b'unconfined\n', b'12\n', True),
+                (b'1\n', b'unconfined\n', b'12\n', False),
+                (b'0\n', b'named (unconfined)\n', b'12\n', False),
+                (b'0\n', b'unconfined\n', b'unknown\n', False)):
+            with self.subTest(level=level, label=label, revision=revision), contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(namespace, 'read_kernel_once', side_effect=[level, revision]))
+                stack.enter_context(patch.object(namespace, 'process_value', return_value=label))
+                stack.enter_context(patch.object(namespace, 'namespace_identity', return_value=self.namespaces))
+                if accepted:
+                    self.assertEqual(self.observer.boundary(), (b'12\n', self.namespaces))
+                else:
+                    with self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+                        self.observer.boundary()
+
+    def child_fixture(self):
+        root = self.root / 'proc' / str(self.child.pid)
+        root.mkdir(parents=True)
+        (root / 'attr/apparmor').mkdir(parents=True)
+        (root / 'exe').write_bytes(b'not executed')
+        (root / 'status').write_bytes(b'Uid:\t12345\t12345\t12345\t12345\nGid:\t54321\t54321\t54321\t54321\n')
+        raw = b'98765 (space ) in name) S ' + str(os.getpid()).encode() + b' ' + b'0 ' * 17 + b'1234 0\n'
+        (root / 'stat').write_bytes(raw)
+        (root / 'attr/apparmor/current').write_bytes(b'unconfined\n')
+        (root / 'wchan').write_bytes(b'pipe_read\n')
+        path_class = pathlib.Path
+        original_stat = path_class.stat
+        pipe = types.SimpleNamespace(st_mode=stat.S_IFIFO, st_dev=33, st_ino=44)
+        def path(value):
+            return self.root / 'proc' if value == '/proc' else path_class(value)
+        def stat_value(value, *args, **kwargs):
+            return pipe if value == root / 'fd/7' else original_stat(value, *args, **kwargs)
+        image = namespace.file_identity((root / 'exe').stat())
+        self.enterContext(patch.object(namespace.pathlib, 'Path', side_effect=path))
+        self.enterContext(patch.object(path_class, 'stat', stat_value))
+        self.enterContext(patch.object(namespace, 'namespace_identity', return_value=self.namespaces))
+        return root, image, (33, 44)
+
+    def test_child_observation_checks_actual_process_context_and_wait_state(self):
+        root, image, pipe = self.child_fixture()
+        observed = self.observer.child_identity(self.child, image, pipe, 7, self.namespaces)
+        self.assertEqual(observed, ((os.getpid(), 1234), image, b'unconfined\n'))
+        (root / 'wchan').write_bytes(b'0\n')
+        self.assertIsNone(self.observer.child_identity(self.child, image, pipe, 7, self.namespaces))
+
+    def test_named_profile_wrong_uid_executable_pipe_namespace_or_parent_is_rejected(self):
+        root, image, pipe = self.child_fixture()
+        labels = (b'other (unconfined)\n', b'other (enforce)\n', b'unconfined//&other\n')
+        for label in labels:
+            (root / 'attr/apparmor/current').write_bytes(label)
+            with self.subTest(label=label), self.assertRaisesRegex(namespace.NamespaceError, '^existing-bwrap-policy$'):
+                self.observer.child_identity(self.child, image, pipe, 7, self.namespaces)
+        (root / 'attr/apparmor/current').write_bytes(b'unconfined\n')
+        for changed_image, changed_pipe, changed_namespaces in ((('changed',), pipe, self.namespaces),
+                (image, (33, 45), self.namespaces), (image, pipe, ())):
+            with self.assertRaisesRegex(namespace.NamespaceError, '^existing-bwrap-policy$'):
+                self.observer.child_identity(self.child, changed_image, changed_pipe, 7, changed_namespaces)
+        original_status = (root / 'status').read_bytes()
+        for status in (b'', original_status.replace(b'12345', b'12346'), original_status.replace(b'54321', b'invalid')):
+            (root / 'status').write_bytes(status)
+            with self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+                self.observer.child_identity(self.child, image, pipe, 7, self.namespaces)
+        (root / 'status').write_bytes(original_status)
+        (root / 'stat').write_bytes(b'98765 (child) S 1 ' + b'0 ' * 17 + b'1234 0')
+        with self.assertRaisesRegex(namespace.NamespaceError, '^existing-bwrap-policy$'):
+            self.observer.child_identity(self.child, image, pipe, 7, self.namespaces)
+
+    def test_exited_or_replaced_child_is_not_adopted(self):
+        root, image, pipe = self.child_fixture()
+        for outcomes in ([0], [None, 0]):
+            with patch.object(self.child, 'poll', side_effect=outcomes), self.assertRaises(namespace.NamespaceError):
+                self.observer.child_identity(self.child, image, pipe, 7, self.namespaces)
+        valid = (root / 'stat').read_bytes()
+        changed = valid.replace(b'1234 0', b'1235 0')
+        original = namespace.process_value
+        count = 0
+        def replaced(path, limit=namespace.ATTACHMENT_LIMIT):
+            nonlocal count
+            if path == root / 'stat':
+                count += 1
+                return valid if count == 1 else changed
+            return original(path, limit)
+        with patch.object(namespace, 'process_value', side_effect=replaced), self.assertRaisesRegex(namespace.NamespaceError, '^system-path-changed$'):
+            self.observer.child_identity(self.child, image, pipe, 7, self.namespaces)
+
+    def test_bounded_metadata_and_malformed_process_identity_fail_closed(self):
+        path = self.root / 'bounded'
+        path.write_bytes(b'12345')
+        with self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+            namespace.process_value(path, 4)
+        for raw in (b'invalid', b'(child) S invalid ' + b'0 ' * 18, b'without delimiter ' * 20):
+            with self.subTest(raw=raw), self.assertRaises(namespace.NamespaceError):
+                namespace.process_identity(raw)
+
+    def test_each_namespace_identity_is_captured_from_the_fixed_kernel_links(self):
+        seen = []
+        class NamespacePath:
+            def __truediv__(self, name):
+                seen.append(name)
+                return self
+            def stat(self):
+                return types.SimpleNamespace(st_dev=1, st_ino=len(seen))
+        result = namespace.namespace_identity(NamespacePath())
+        self.assertEqual([name for name, _identity in result], list(namespace.NAMESPACES))
+        self.assertEqual(seen, [part for name in namespace.NAMESPACES for part in ('ns', name)])
+
+
+class KernelEventReadTests(unittest.TestCase):
+    def test_revision_read_is_one_nonblocking_syscall_not_a_buffered_eof_loop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / 'revision'
+            path.write_bytes(b'12\n')
+            original = path.stat()
+            changed = types.SimpleNamespace(st_dev=original.st_dev, st_ino=original.st_ino + 1,
+                st_size=original.st_size, st_mtime_ns=original.st_mtime_ns)
+            cases = [('success', b'12\n', original, [original, original], None),
+                ('opened-changed', b'12\n', changed, [original], 'system-path-changed'),
+                ('path-changed', b'12\n', original, [original, changed], 'system-path-changed'),
+                ('limit', b'x' * 66, original, [original, original], 'policy-limit'),
+                ('unavailable', BlockingIOError(), original, [original], BlockingIOError)]
+            for name, raw, opened, stats, error in cases:
+                with self.subTest(name=name), contextlib.ExitStack() as stack:
+                    stack.enter_context(patch.object(namespace, 'trusted_path', return_value=path))
+                    stack.enter_context(patch.object(pathlib.Path, 'stat', side_effect=stats))
+                    for key, value in (('O_NONBLOCK', 0x800), ('O_NOFOLLOW', 0x20000), ('O_CLOEXEC', 0x80000)):
+                        stack.enter_context(patch.object(namespace.os, key, value, create=True))
+                    opened_fd = stack.enter_context(patch.object(namespace.os, 'open', return_value=77777))
+                    stack.enter_context(patch.object(namespace.os, 'fstat', return_value=opened))
+                    read = stack.enter_context(patch.object(namespace.os, 'read', side_effect=raw if isinstance(raw, Exception) else [raw, AssertionError('second read would wait')]))
+                    closed = stack.enter_context(patch.object(namespace.os, 'close'))
+                    if error is None:
+                        self.assertEqual(namespace.read_kernel_once(path, 64), b'12\n')
+                    elif isinstance(error, str):
+                        with self.assertRaisesRegex(namespace.NamespaceError, '^' + error + '$'):
+                            namespace.read_kernel_once(path, 64)
+                    else:
+                        with self.assertRaises(error):
+                            namespace.read_kernel_once(path, 64)
+                    read.assert_called_once_with(77777, 65)
+                    closed.assert_called_once_with(77777)
+                    flags = opened_fd.call_args.args[1]
+                    self.assertTrue(flags & 0x800 and flags & 0x20000 and flags & 0x80000)
 
 
 if __name__ == '__main__':

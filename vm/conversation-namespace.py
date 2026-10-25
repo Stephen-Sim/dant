@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 TIMEOUT_SECONDS = 10
 FILE_LIMIT = 1024 * 1024
@@ -23,6 +24,11 @@ ENTRY_LIMIT = 4096
 DEPTH_LIMIT = 8
 ATTACHMENT_LIMIT = 4096
 PATTERN_LIMIT = 256
+ATTACHMENT_POLL_LIMIT = 200
+ATTACHMENT_POLL_INTERVAL = 0.01
+PIPE_READ_WAIT = frozenset({b'pipe_read', b'anon_pipe_read'})
+NAMESPACES = ('cgroup', 'ipc', 'mnt', 'net', 'pid', 'pid_for_children',
+              'time', 'time_for_children', 'user', 'uts')
 PROFILE_NAME = 'dant-conversation-bwrap'
 PROFILE_IDENTITY = b'/usr/bin/bwrap'
 PROFILE = b'''# Managed by dant conversation-namespace.py; exact system executable only.
@@ -41,6 +47,9 @@ PATHS = {
     'restricted': '/proc/sys/kernel/apparmor_restrict_unprivileged_userns',
     'loaded': '/sys/kernel/security/apparmor/profiles',
     'kernel': '/sys/kernel/security/apparmor/policy',
+    'revision': '/sys/kernel/security/apparmor/revision',
+    'namespace_level': '/sys/kernel/security/apparmor/.ns_level',
+    'context': '/proc/self/attr/apparmor/current',
 }
 SKIP_DIRECTORIES = frozenset({'cache', 'disable', 'force-complain'})
 # Match libapparmor's loader exclusions, not an independent recursive loader.
@@ -103,6 +112,160 @@ def read_regular(path, limit):
     if len(raw) > limit:
         reject('policy-limit')
     return raw
+
+
+def file_identity(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
+def read_kernel_once(value, limit):
+    # AppArmor's revision file is an event stream: another read on the same
+    # descriptor waits for the next policy change. Never buffered-read to EOF.
+    path = trusted_path(value)
+    before = path.stat()
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(descriptor)
+        raw = os.read(descriptor, limit + 1)
+        if (file_identity(before) != file_identity(opened) or
+                file_identity(opened) != file_identity(path.stat())):
+            reject('system-path-changed')
+        if len(raw) > limit:
+            reject('policy-limit')
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def process_value(path, limit=ATTACHMENT_LIMIT):
+    # Only fixed metadata of this process or its owned child is accepted here.
+    with path.open('rb') as stream:
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        reject('policy-inspection-unavailable')
+    return raw
+
+
+def process_identity(raw):
+    # A Linux comm can contain spaces and ')'; none of it enters diagnostics.
+    closing = raw.rfind(b') ')
+    fields = raw[closing + 2:].split()
+    if closing < 0 or len(fields) < 20 or not fields[1].isdigit() or not fields[19].isdigit():
+        reject('policy-inspection-unavailable')
+    return int(fields[1]), int(fields[19])
+
+
+def namespace_identity(root):
+    # These fixed proc namespace magic links are kernel-owned, not user paths.
+    return tuple((name, (info.st_dev, info.st_ino)) for name in NAMESPACES
+                 for info in [(root / 'ns' / name).stat()])
+
+
+class AttachmentObserver:
+    """Observe actual exec attachment without creating a namespace or policy.
+
+    Bubblewrap 0.8-0.10 reads --args to EOF before namespace setup. Keeping an
+    empty pipe's writer open blocks that owned child in argument parsing. Exact
+    parent/child namespace identity and a positive pipe-read wait also reject an
+    incompatible startup. The child is always killed/joined before either pipe
+    end closes. No other process, process group, or policy is changed.
+    """
+
+    def __init__(self, paths, account, spawner=None, sleeper=None):
+        self.paths = paths
+        self.account = account
+        self.spawner = subprocess.Popen if spawner is None else spawner
+        self.sleeper = time.sleep if sleeper is None else sleeper
+
+    def boundary(self):
+        level = read_kernel_once(self.paths['namespace_level'], 16)
+        context = process_value(pathlib.Path(self.paths['context']))
+        revision = read_kernel_once(self.paths['revision'], 64)
+        if (level != b'0\n' or context != b'unconfined\n' or
+                re.fullmatch(rb'[0-9]{1,20}\n', revision) is None):
+            reject('policy-inspection-unavailable')
+        return revision, namespace_identity(pathlib.Path('/proc/self'))
+
+    def child_identity(self, child, image, pipe, read_fd, namespaces):
+        if child.poll() is not None:
+            reject('policy-inspection-unavailable')
+        root = pathlib.Path('/proc') / str(child.pid)
+        identity = process_identity(process_value(root / 'stat'))
+        expected = ((b'Uid:', self.account.pw_uid), (b'Gid:', self.account.pw_gid))
+        status = process_value(root / 'status', 64 * ATTACHMENT_LIMIT).splitlines()
+        for prefix, value in expected:
+            fields = next((line.split()[1:] for line in status if line.startswith(prefix)), [])
+            if len(fields) != 4 or any(not field.isdigit() or int(field) != value for field in fields):
+                reject('policy-inspection-unavailable')
+        with (root / 'exe').open('rb') as stream:
+            actual_image = file_identity(os.fstat(stream.fileno()))
+        actual_pipe = (root / 'fd' / str(read_fd)).stat()
+        label = process_value(root / 'attr/apparmor/current')
+        if (identity[0] != os.getpid() or identity[1] <= 0 or actual_image != image or
+                label != b'unconfined\n' or namespace_identity(root) != namespaces or
+                not stat.S_ISFIFO(actual_pipe.st_mode) or
+                (actual_pipe.st_dev, actual_pipe.st_ino) != pipe):
+            reject('existing-bwrap-policy')
+        if (process_identity(process_value(root / 'stat')) != identity or
+                child.poll() is not None):
+            reject('system-path-changed')
+        if process_value(root / 'wchan', 128).strip() not in PIPE_READ_WAIT:
+            return None
+        return identity, actual_image, label
+
+    def observe(self):
+        before, namespaces = self.boundary()
+        image_path = trusted_path(self.paths['bwrap'])
+        image = image_path.stat()
+        if image.st_mode & 0o6000:
+            reject('untrusted-system-path')
+        try:
+            capabilities = os.getxattr(image_path, 'security.capability')
+        except OSError as error:
+            import errno
+            if error.errno != errno.ENODATA:
+                raise
+        else:
+            if capabilities:
+                reject('untrusted-system-path')
+        with image_path.open('rb') as image_stream:
+            opened = os.fstat(image_stream.fileno())
+            if file_identity(image) != file_identity(opened):
+                reject('system-path-changed')
+            read_fd, write_fd = os.pipe()
+            child = None
+            try:
+                pipe = os.fstat(read_fd)
+                if not stat.S_ISFIFO(pipe.st_mode):
+                    reject('policy-inspection-unavailable')
+                child = self.spawner([
+                    self.paths['bwrap'], '--args', str(read_fd),
+                ], user=self.account.pw_uid, group=self.account.pw_gid, extra_groups=[],
+                    pass_fds=(read_fd,), close_fds=True, shell=False, cwd='/',
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+                first = None
+                for _ in range(ATTACHMENT_POLL_LIMIT):
+                    observed = self.child_identity(child, file_identity(opened),
+                        (pipe.st_dev, pipe.st_ino), read_fd, namespaces)
+                    if observed is not None:
+                        if first == observed:
+                            break
+                        first = observed
+                    self.sleeper(ATTACHMENT_POLL_INTERVAL)
+                else:
+                    reject('policy-inspection-unavailable')
+                if (self.boundary() != (before, namespaces) or
+                        file_identity(image_path.stat()) != file_identity(opened)):
+                    reject('system-path-changed')
+                return before
+            finally:
+                # In particular, never deliver EOF to a live --args reader.
+                if child is not None:
+                    child.kill()
+                    child.wait(timeout=TIMEOUT_SECONDS)
+                os.close(read_fd)
+                os.close(write_fd)
 
 
 def attachment_patterns(value):
@@ -368,6 +531,8 @@ class NamespaceSetup:
         # Injection is for isolated tests, never exposed as CLI path overrides.
         self.paths = dict(PATHS if paths is None else paths)
         self.runner = subprocess.run if runner is None else runner
+        self.conflict_snapshot = None
+        self.published_identity = None
 
     def run(self, arguments, raw=None, output=None):
         options = {
@@ -396,9 +561,18 @@ class NamespaceSetup:
             '--ro-bind', '/', '/', '--remount-ro', '/', '--', self.paths['true'],
         ])
 
-    def check_conflicts(self):
+    def policy_epoch(self):
+        revision = read_kernel_once(self.paths['revision'], 64)
+        if (re.fullmatch(rb'[0-9]{1,20}\n', revision) is None or
+                read_kernel_once(self.paths['namespace_level'], 16) != b'0\n' or
+                process_value(pathlib.Path(self.paths['context'])) != b'unconfined\n'):
+            reject('policy-inspection-unavailable')
+        return revision
+
+    def check_conflicts(self, username='dant'):
+        epoch = self.policy_epoch()
         loaded = read_trusted(self.paths['loaded'], 4 * FILE_LIMIT)
-        self.check_loaded_attachments(loaded)
+        opaque = self.check_loaded_attachments(loaded)
         root = trusted_path(self.paths['policies'], directory=True)
         before = self.policy_inputs(root)
         parser = [self.paths['parser'], '--config-file=/dev/null', '--skip-cache',
@@ -411,9 +585,45 @@ class NamespaceSetup:
             if PROFILE_IDENTITY in names.splitlines():
                 reject('existing-bwrap-policy')
             check_configured_attachments(expanded, names)
-        if self.policy_inputs(root) != before or read_trusted(self.paths['loaded'], 4 * FILE_LIMIT) != loaded:
-            reject('system-path-changed')
+        self.conflict_snapshot = root, loaded, before, epoch
+        self.validate_conflicts(root)
+        if opaque:
+            # Official AppArmor 4.x serializes the xmatch DFA without an attach
+            # string, so ordinary profiles expose exactly <unknown>. Never infer
+            # that such a profile is harmless from its name/configured source:
+            # require a positive ordinary exec observation at this policy epoch.
+            observed = AttachmentObserver(self.paths, ordinary_account(username)).observe()
+            if observed != epoch:
+                reject('system-path-changed')
+            self.validate_conflicts(root)
         return root
+
+    def validate_conflicts(self, root, published=None):
+        if self.conflict_snapshot is None or self.conflict_snapshot[0] != root:
+            reject('policy-inspection-unavailable')
+        _, loaded, expected, epoch = self.conflict_snapshot
+        current = self.policy_inputs(root, published)
+        if published is not None:
+            files, directories, missing = current
+            own = files.pop(published, None)
+            if own != (self.published_identity, PROFILE):
+                reject('system-path-changed')
+            actual_root, entries = directories[root]
+            expected_root, expected_entries = expected[1][root]
+            if (actual_root[:2] != expected_root[:2] or
+                    tuple(item for item in entries if item != published) != expected_entries):
+                reject('system-path-changed')
+            # Only this installer's exact new entry may account for the root
+            # directory metadata change. Every existing file/dir/input remains
+            # compared; an optional include becoming present is still a change.
+            directories[root] = expected[1][root]
+            for target, (ancestor, identity) in list(missing.items()):
+                old = expected[2].get(target)
+                if ancestor == root and old is not None and identity[:2] == old[1][:2]:
+                    missing[target] = old
+        if (current != expected or self.policy_epoch() != epoch or
+                read_trusted(self.paths['loaded'], 4 * FILE_LIMIT) != loaded):
+            reject('system-path-changed')
 
     def inspect_policy(self, arguments):
         with tempfile.TemporaryFile() as output:
@@ -425,7 +635,7 @@ class NamespaceSetup:
                 reject('policy-limit')
             return raw
 
-    def policy_inputs(self, root):
+    def policy_inputs(self, root, published=None):
         pending, files, directories, missing = [(root, 0)], {}, {}, {}
         count, total = 0, 0
 
@@ -476,7 +686,7 @@ class NamespaceSetup:
                 else:
                     capture_file(item)
 
-        roots = [path for path in files if path.parent == root and loader_file(path.name)]
+        roots = [path for path in files if path.parent == root and loader_file(path.name) and path != published]
         queue, visited = [(path, 0) for path in roots], set()
         while queue:
             path, depth = queue.pop()
@@ -534,7 +744,7 @@ class NamespaceSetup:
         else:
             validate_info(info, directory=True)
         validate_info(root.stat(), directory=True)
-        pending, count, names = [(root / 'profiles', 0, b'')], 0, []
+        pending, count, names, opaque = [(root / 'profiles', 0, b'')], 0, [], False
         while pending:
             directory, depth, prefix = pending.pop()
             validate_info(directory.lstat(), directory=True)
@@ -546,8 +756,11 @@ class NamespaceSetup:
                 for name in ('attach', 'name'):
                     validate_info((profile / name).lstat())
                 attachment = read_regular(profile / 'attach', ATTACHMENT_LIMIT)
-                if not prefix and may_attach_bwrap(attachment):
-                    reject('existing-bwrap-policy')
+                if not prefix:
+                    if attachment == b'<unknown>\n':
+                        opaque = True
+                    elif may_attach_bwrap(attachment):
+                        reject('existing-bwrap-policy')
                 name = read_regular(profile / 'name', ATTACHMENT_LIMIT).rstrip(b'\n')
                 if not prefix and name == PROFILE_IDENTITY:
                     reject('existing-bwrap-policy')
@@ -559,6 +772,7 @@ class NamespaceSetup:
         expected = [line.rsplit(b' (', 1)[0] for line in loaded.splitlines()]
         if sorted(names) != sorted(expected):
             reject('policy-inspection-unavailable')
+        return opaque
 
     def publish(self, root):
         target = root / PROFILE_NAME
@@ -583,6 +797,10 @@ class NamespaceSetup:
                     candidate.unlink()
         if read_trusted(target) != PROFILE:
             reject('system-path-changed')
+        published = target.stat()
+        if (published.st_dev, published.st_ino) != (identity.st_dev, identity.st_ino):
+            reject('system-path-changed')
+        self.published_identity = file_identity(published)
         return target
 
     def install(self, username='dant'):
@@ -597,11 +815,15 @@ class NamespaceSetup:
                 read_trusted(self.paths['restricted'], 16).strip() != b'1'):
             reject('namespace-unavailable')
         trusted_path(self.paths['parser'])
-        root = self.check_conflicts()
+        root = self.check_conflicts(username)
         parser = [self.paths['parser'], '--config-file=/dev/null', '--skip-cache', '--jobs=0']
         if not self.run([*parser, '--skip-kernel-load'], PROFILE):
             reject('policy-not-supported')
+        # These checks detect observed policy/input changes, not an atomic lock
+        # against an independent administrator changing policy during --add.
+        self.validate_conflicts(root)
         target = self.publish(root)
+        self.validate_conflicts(root, target)
         # --add deliberately refuses an existing loaded profile; never replace,
         # reload all policy, or relax the system-wide namespace restrictions.
         if not self.run([*parser, '--add', str(target)]):
@@ -618,7 +840,7 @@ def main(arguments=None):
     options = parser.parse_args(arguments)
     try:
         result = NamespaceSetup().install(options.user)
-    except (NamespaceError, OSError, KeyError, ImportError) as error:
+    except (NamespaceError, OSError, KeyError, ImportError, ValueError, subprocess.SubprocessError) as error:
         code = str(error) if isinstance(error, NamespaceError) else 'system-configuration-unavailable'
         print('conversation-namespace: ' + code, file=sys.stderr)
         return 1
