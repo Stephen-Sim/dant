@@ -28,7 +28,11 @@ func TestQueuedHumanTaskRepliesUseTheSingleContinuationLaneAndRetainKnownRejecti
 			if !accepted {
 				thread["status"] = raw(contracts.RawObject{"type": raw("active")})
 			}
-			read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(thread)}}
+			if accepted {
+				replyContinuationInventory(t, worker, read, thread)
+			} else {
+				replyContinuationMetadata(t, read, thread)
+			}
 			if accepted {
 				start := nextRequest(t, worker, "turn/start")
 				start.result <- fakeResponse{value: contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw("queued-human-continuation")})}}

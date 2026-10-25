@@ -158,7 +158,7 @@ func TestSelectedKnownProgressResumePreservesUnrelatedHistoricalUncertainty(t *t
 			if request.method != "thread/read" || eventString(request.params, "threadId") != owner.ThreadID {
 				t.Fatal("resume did not validate the current registered thread", request.method)
 			}
-			request.result <- fakeResponse{value: contracts.RawObject{"thread": json.RawMessage(`{"id":"thread-fixture","status":{"type":"idle"},"turns":[{"id":"fresh-confirmed-selected-turn","status":"interrupted"}]}`)}}
+			replyContinuationInventory(t, worker, request, selectedReadThread("fresh-confirmed-selected-turn"))
 			start := nextRequest(t, worker, "turn/start")
 			if strings.Contains(string(start.params["input"]), "historical-unknown-marker") || !strings.Contains(string(start.params["input"]), record.WorkID) || !strings.Contains(string(start.params["input"]), "human explicitly selected Resume") || strings.Contains(string(start.params["input"]), "Automatic follow-up") {
 				t.Fatal("selected continuation adopted an unrelated request")

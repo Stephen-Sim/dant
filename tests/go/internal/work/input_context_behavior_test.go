@@ -59,7 +59,7 @@ func TestExplicitHumanWorkReplyRetainsCompletedStepsAndNeverReplaysTheOriginalRe
 	resume := nextRequest(t, worker, "thread/resume")
 	resume.result <- fakeResponse{value: contracts.RawObject{}}
 	read := nextRequest(t, worker, "thread/read")
-	read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(continuationBehaviorThread(record.TurnID))}}
+	replyContinuationInventory(t, worker, read, continuationBehaviorThread(record.TurnID))
 	start := nextRequest(t, worker, "turn/start")
 	var input []struct{ Text string }
 	if json.Unmarshal(start.params["input"], &input) != nil || len(input) != 1 {

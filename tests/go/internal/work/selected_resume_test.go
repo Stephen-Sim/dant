@@ -31,14 +31,16 @@ func selectedResumeRead(t *testing.T, engine *Engine, worker *fakeWorker, id, tu
 	}()
 	request := nextRequest(t, worker, "thread/resume")
 	request.result <- fakeResponse{value: contracts.RawObject{}}
-	return nextRequest(t, worker, "thread/read"), done
+	read := nextRequest(t, worker, "thread/read")
+	assertContinuationMetadataRequest(t, read)
+	return read, done
 }
 
-func selectedReadResponse(turn string) fakeResponse {
-	return fakeResponse{value: contracts.RawObject{"thread": raw(contracts.RawObject{
+func selectedReadThread(turn string) contracts.RawObject {
+	return contracts.RawObject{
 		"id": raw("thread-fixture"), "status": raw(contracts.RawObject{"type": raw("idle")}),
 		"turns": raw([]contracts.RawObject{{"id": raw(turn), "status": raw("interrupted")}}),
-	})}}
+	}
 }
 
 func TestSelectedResumeSameThreadHistoricalTurnRequiresFreshTerminalMembership(t *testing.T) {
@@ -62,9 +64,9 @@ func TestSelectedResumeSameThreadHistoricalTurnRequiresFreshTerminalMembership(t
 			if present {
 				turns = append(turns, contracts.RawObject{"id": raw("older-detached-turn"), "status": raw("completed")})
 			}
-			read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(contracts.RawObject{
+			replyContinuationInventory(t, worker, read, contracts.RawObject{
 				"id": raw("thread-fixture"), "status": raw(contracts.RawObject{"type": raw("idle")}), "turns": raw(turns),
-			})}}
+			})
 			if present {
 				start := nextRequest(t, worker, "turn/start")
 				start.result <- fakeResponse{value: contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw("fresh-selected-terminal-proof")})}}
@@ -99,7 +101,7 @@ func TestSelectedResumeClaimOwnsDuplicateAndLateRequests(t *testing.T) {
 		t.Fatal("a duplicate acquired a second executor", err)
 	}
 	assertWorkerQuiet(t, worker)
-	read.result <- selectedReadResponse(turn)
+	replyContinuationInventory(t, worker, read, selectedReadThread(turn))
 	start := nextRequest(t, worker, "turn/start")
 	start.result <- fakeResponse{value: contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw("selected-resumed-turn")})}}
 	if err := awaitWorkAction(t, done); err != nil {
@@ -178,42 +180,53 @@ func TestSelectedResumeRevalidatesAfterReadBeforeAnyTurnStart(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			engine, persistence, worker, id, turn := selectedPausedFixture(t)
 			read, done := selectedResumeRead(t, engine, worker, id, turn)
-			response := selectedReadResponse(turn)
+			thread := selectedReadThread(turn)
 			switch scenario {
-			case "busy-thread":
-				response = fakeResponse{value: contracts.RawObject{"thread": json.RawMessage(`{"id":"thread-fixture","status":{"type":"active"},"turns":[]}`)}}
-			case "missing-terminal":
-				response = selectedReadResponse("different-turn")
-			case "running-turn":
-				response = fakeResponse{value: contracts.RawObject{"thread": json.RawMessage(`{"id":"thread-fixture","status":{"type":"idle"},"turns":[{"id":"previous-turn","status":"inProgress"}]}`)}}
-			case "duplicate-turn":
-				response = fakeResponse{value: contracts.RawObject{"thread": json.RawMessage(`{"id":"thread-fixture","status":{"type":"idle"},"turns":[{"id":"previous-turn","status":"completed"},{"id":"previous-turn","status":"completed"}]}`)}}
-			case "runtime-changed", "conversation-changed", "new-unknown-message", "new-unknown-work":
-				if err := persistence.Mutate(t.Context(), func(state *contracts.State) error {
-					switch scenario {
-					case "runtime-changed":
-						state.ThreadRuntime = contracts.Some("replacement-runtime")
-					case "conversation-changed":
-						state.ConversationID = "replacement-conversation"
-					case "new-unknown-message":
-						state.Messages = append(state.Messages, &contracts.ChatMessage{ID: "new-unknown", Role: contracts.RoleUser, Time: contracts.Some(engine.Timestamp()), Submission: contracts.Some(contracts.SubmissionStatusUnknown), UnknownOutcome: true})
-					case "new-unknown-work":
-						state.WorkTasks = append(state.WorkTasks, contracts.WorkRecord{ID: store.UUID(), TurnID: "other-turn", Status: contracts.WorkStatusUnknown, UnknownOutcome: true})
+			case "missing-terminal", "running-turn", "duplicate-turn":
+				replyContinuationMetadata(t, read, thread)
+				page := nextContinuationInventoryPage(t, worker)
+				switch scenario {
+				case "missing-terminal":
+					thread = selectedReadThread("different-turn")
+				case "running-turn":
+					thread["turns"] = raw([]contracts.RawObject{{"id": raw(turn), "status": raw("inProgress")}})
+				case "duplicate-turn":
+					row := contracts.RawObject{"id": raw(turn), "status": raw("completed")}
+					thread["turns"] = raw([]contracts.RawObject{row, row})
+				}
+				page.result <- continuationInventoryResponse(thread)
+			default:
+				final := replyContinuationInventoryToFinalRead(t, worker, read, thread)
+				switch scenario {
+				case "busy-thread":
+					thread["status"] = raw(contracts.RawObject{"type": raw("active")})
+				case "runtime-changed", "conversation-changed", "new-unknown-message", "new-unknown-work":
+					if err := persistence.Mutate(t.Context(), func(state *contracts.State) error {
+						switch scenario {
+						case "runtime-changed":
+							state.ThreadRuntime = contracts.Some("replacement-runtime")
+						case "conversation-changed":
+							state.ConversationID = "replacement-conversation"
+						case "new-unknown-message":
+							state.Messages = append(state.Messages, &contracts.ChatMessage{ID: "new-unknown", Role: contracts.RoleUser, Time: contracts.Some(engine.Timestamp()), Submission: contracts.Some(contracts.SubmissionStatusUnknown), UnknownOutcome: true})
+						case "new-unknown-work":
+							state.WorkTasks = append(state.WorkTasks, contracts.WorkRecord{ID: store.UUID(), TurnID: "other-turn", Status: contracts.WorkStatusUnknown, UnknownOutcome: true})
+						}
+						return nil
+					}); err != nil {
+						t.Fatal(err)
 					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
+				case "takeover", "call-started":
+					engine.mu.Lock()
+					if scenario == "takeover" {
+						engine.takeover = true
+					} else {
+						engine.callReservation = &CallStartReservation{CallID: "new-call", Provider: "api"}
+					}
+					engine.mu.Unlock()
 				}
-			case "takeover", "call-started":
-				engine.mu.Lock()
-				if scenario == "takeover" {
-					engine.takeover = true
-				} else {
-					engine.callReservation = &CallStartReservation{CallID: "new-call", Provider: "api"}
-				}
-				engine.mu.Unlock()
+				replyContinuationMetadata(t, final, thread)
 			}
-			read.result <- response
 			if err := awaitWorkAction(t, done); err == nil {
 				t.Fatal("a stale or nonterminal thread admitted a turn")
 			}
@@ -251,7 +264,7 @@ func TestSelectedResumePauseAcrossReceivedAckInterruptsOnlyTheAcknowledgedTurn(t
 			}()
 			engine.worker = late
 			read, done := selectedResumeRead(t, engine, worker, id, turn)
-			read.result <- selectedReadResponse(turn)
+			replyContinuationInventory(t, worker, read, selectedReadThread(turn))
 			start := nextRequest(t, worker, "turn/start")
 			start.result <- fakeResponse{value: contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw("received-selected-ack")})}}
 			select {
@@ -304,7 +317,7 @@ func TestSelectedResumeKeepsKnownRejectionPausedAndUnknownSubmissionFenced(t *te
 		t.Run(map[bool]string{false: "known-rejected", true: "unknown-submission"}[unknown], func(t *testing.T) {
 			engine, persistence, worker, id, turn := selectedPausedFixture(t)
 			read, done := selectedResumeRead(t, engine, worker, id, turn)
-			read.result <- selectedReadResponse(turn)
+			replyContinuationInventory(t, worker, read, selectedReadThread(turn))
 			start := nextRequest(t, worker, "turn/start")
 			start.result <- fakeResponse{err: &runtime.OperationError{Cause: runtime.ErrDisconnected, UnknownOutcome: unknown}}
 			if err := awaitWorkAction(t, done); err == nil {
@@ -371,7 +384,7 @@ func TestSelectedResumeDisconnectionHasOneCleanupOwnerBeforeAcknowledgement(t *t
 			engine, persistence, worker, id, turn := selectedPausedFixture(t)
 			read, done := selectedResumeRead(t, engine, worker, id, turn)
 			if submitted {
-				read.result <- selectedReadResponse(turn)
+				replyContinuationInventory(t, worker, read, selectedReadThread(turn))
 				_ = nextRequest(t, worker, "turn/start")
 			}
 			disconnected := make(chan error, 1)

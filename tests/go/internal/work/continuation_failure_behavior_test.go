@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -27,6 +28,67 @@ func continuationBehaviorThread(fromTurn string) contracts.RawObject {
 		"id": raw("thread-fixture"), "status": raw(contracts.RawObject{"type": raw("idle")}),
 		"turns": raw([]contracts.RawObject{{"id": raw(fromTurn), "status": raw("completed")}}),
 	}
+}
+
+// Existing behavior fixtures reply to each real preparation RPC explicitly.
+// These helpers do not add responses to fakeWorker or hide a new turn dispatch.
+func assertContinuationMetadataRequest(t *testing.T, request fakeRequest) {
+	t.Helper()
+	if request.method != "thread/read" || eventString(request.params, "threadId") != "thread-fixture" || string(request.params["includeTurns"]) != "false" {
+		t.Fatal("continuation requested full history or a different thread", request.method)
+	}
+}
+
+func continuationMetadataResponse(thread contracts.RawObject) fakeResponse {
+	return fakeResponse{value: contracts.RawObject{"thread": raw(contracts.RawObject{
+		"id": thread["id"], "status": thread["status"], "turns": raw([]contracts.RawObject{}),
+	})}}
+}
+
+func replyContinuationMetadata(t *testing.T, request fakeRequest, thread contracts.RawObject) {
+	t.Helper()
+	assertContinuationMetadataRequest(t, request)
+	request.result <- continuationMetadataResponse(thread)
+}
+
+func nextContinuationInventoryPage(t *testing.T, worker *fakeWorker) fakeRequest {
+	t.Helper()
+	request := nextRequest(t, worker, "thread/turns/list")
+	if eventString(request.params, "threadId") != "thread-fixture" || eventString(request.params, "itemsView") != "notLoaded" || eventString(request.params, "sortDirection") != "asc" || string(request.params["limit"]) != "50" {
+		t.Fatal("continuation page changed its thread, payload projection, order or bound")
+	}
+	if _, present := request.params["cursor"]; present {
+		t.Fatal("single-page fixture unexpectedly skipped the first inventory page")
+	}
+	return request
+}
+
+func continuationInventoryResponse(thread contracts.RawObject) fakeResponse {
+	var turns []contracts.RawObject
+	if json.Unmarshal(thread["turns"], &turns) != nil {
+		return fakeResponse{value: contracts.RawObject{"data": thread["turns"], "nextCursor": raw(nil)}}
+	}
+	for _, turn := range turns {
+		turn["itemsView"] = raw("notLoaded")
+		turn["items"] = raw([]contracts.RawObject{})
+	}
+	return fakeResponse{value: contracts.RawObject{"data": raw(turns), "nextCursor": raw(nil)}}
+}
+
+func replyContinuationInventoryToFinalRead(t *testing.T, worker *fakeWorker, first fakeRequest, thread contracts.RawObject) fakeRequest {
+	t.Helper()
+	replyContinuationMetadata(t, first, thread)
+	page := nextContinuationInventoryPage(t, worker)
+	page.result <- continuationInventoryResponse(thread)
+	final := nextRequest(t, worker, "thread/read")
+	assertContinuationMetadataRequest(t, final)
+	return final
+}
+
+func replyContinuationInventory(t *testing.T, worker *fakeWorker, first fakeRequest, thread contracts.RawObject) {
+	t.Helper()
+	final := replyContinuationInventoryToFinalRead(t, worker, first, thread)
+	replyContinuationMetadata(t, final, thread)
 }
 
 func TestContinuationReadFailuresNeverDispatchANewTurnAndSettleTheKnownUnsubmittedClaim(t *testing.T) {
@@ -65,7 +127,18 @@ func TestContinuationReadFailuresNeverDispatchANewTurnAndSettleTheKnownUnsubmitt
 			if scenario != "malformed-thread" {
 				response.value["thread"] = raw(thread)
 			}
-			read.result <- response
+			switch scenario {
+			case "read-error", "malformed-thread", "wrong-thread", "malformed-status":
+				assertContinuationMetadataRequest(t, read)
+				if scenario != "malformed-thread" {
+					response.value["thread"] = continuationMetadataResponse(thread).value["thread"]
+				}
+				read.result <- response
+			default:
+				replyContinuationMetadata(t, read, continuationBehaviorThread(fromTurn))
+				page := nextContinuationInventoryPage(t, worker)
+				page.result <- continuationInventoryResponse(thread)
+			}
 			if err := awaitWorkAction(t, done); err == nil {
 				t.Fatal("invalid canonical thread became permission for another turn")
 			}
@@ -86,7 +159,7 @@ func TestContinuationStartFailuresPreserveTheirKnownOrUnknownExternalOutcome(t *
 			workID, fromTurn := savedUnfinished(t, persistence)
 			done := beginContinuationBehavior(t, engine, worker, workID, fromTurn)
 			read := nextRequest(t, worker, "thread/read")
-			read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(continuationBehaviorThread(fromTurn))}}
+			replyContinuationInventory(t, worker, read, continuationBehaviorThread(fromTurn))
 			start := nextRequest(t, worker, "turn/start")
 			known := scenario == "known-rejection"
 			response := fakeResponse{}
@@ -181,7 +254,7 @@ func TestNativeContinuationAdmissionHasOneOwnerAndFailsClosedAfterAnUncertainHan
 			}
 			done := beginContinuationBehavior(t, engine, worker, workID, fromTurn)
 			read := nextRequest(t, worker, "thread/read")
-			read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(continuationBehaviorThread(fromTurn))}}
+			replyContinuationInventory(t, worker, read, continuationBehaviorThread(fromTurn))
 			start := nextRequest(t, worker, "turn/start")
 			start.result <- fakeResponse{value: contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw("native-continuation-turn")})}}
 			err := awaitWorkAction(t, done)

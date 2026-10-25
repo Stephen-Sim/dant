@@ -76,7 +76,7 @@ func TestContinuationReplaysOnlyItsAcknowledgedBufferedEvent(t *testing.T) {
 	workID, fromTurn := savedUnfinished(t, persistence)
 	done := beginContinuationBehavior(t, engine, worker, workID, fromTurn)
 	read := nextRequest(t, worker, "thread/read")
-	read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(continuationBehaviorThread(fromTurn))}}
+	replyContinuationInventory(t, worker, read, continuationBehaviorThread(fromTurn))
 	start := nextRequest(t, worker, "turn/start")
 	if err := engine.Handle(t.Context(), runtimeEvent("item/agentMessage/delta", contracts.RawObject{"itemId": raw("buffered-continuation-output"), "delta": raw("Still verifying the existing task")}, "buffered-continuation-turn")); err != nil {
 		t.Fatal(err)

@@ -237,33 +237,9 @@ func (value *Engine) continueRegisteredWork(ctx context.Context, workID string, 
 			return nil, value.failContinuation(active, err, false)
 		}
 	}
-	result, err := value.worker.Request(active.prepare, "thread/read", contracts.RawObject{"threadId": raw(active.threadID), "includeTurns": raw(true)})
+	seen, err := value.continuationHistory(active)
 	if err != nil {
 		return nil, value.failContinuation(active, err, false)
-	}
-	thread, err := contracts.DecodeObject(result["thread"], runtime.MaxRPCFrameBytes)
-	if err != nil || eventString(thread, "id") != active.threadID {
-		return nil, value.failContinuation(active, ErrStaleOwner, false)
-	}
-	status, err := contracts.DecodeObject(thread["status"], runtime.MaxRPCFrameBytes)
-	if err != nil || eventString(status, "type") != "idle" {
-		return nil, value.failContinuation(active, ErrBusy, false)
-	}
-	var turns []contracts.RawObject
-	if json.Unmarshal(thread["turns"], &turns) != nil || len(turns) > 10000 {
-		return nil, value.failContinuation(active, ErrStaleOwner, false)
-	}
-	seen := []string{}
-	for _, turn := range turns {
-		id := eventString(turn, "id")
-		status := eventString(turn, "status")
-		if !workstate.ValidID(id, workstate.ReferenceIDLength) || slices.Contains(seen, id) || !contracts.RuntimeTerminalTurnStatus(status).Valid() {
-			return nil, value.failContinuation(active, ErrBusy, false)
-		}
-		seen = append(seen, id)
-	}
-	if !slices.Contains(seen, active.fromTurnID) {
-		return nil, value.failContinuation(active, ErrStaleOwner, false)
 	}
 	if selection != nil {
 		value.mu.Lock()

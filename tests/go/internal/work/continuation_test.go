@@ -50,7 +50,7 @@ func continueFixture(t *testing.T, engine *Engine, worker *fakeWorker, workID, f
 	resume := nextRequest(t, worker, "thread/resume")
 	resume.result <- fakeResponse{value: contracts.RawObject{}}
 	read := nextRequest(t, worker, "thread/read")
-	read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(contracts.RawObject{"id": raw("thread-fixture"), "status": json.RawMessage(`{"type":"idle"}`), "turns": raw([]contracts.RawObject{{"id": raw(fromTurn), "status": raw("completed")}})})}}
+	replyContinuationInventory(t, worker, read, continuationBehaviorThread(fromTurn))
 	start := nextRequest(t, worker, "turn/start")
 	start.result <- fakeResponse{value: contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw(newTurn)})}}
 	if err := <-done; err != nil {
@@ -109,6 +109,7 @@ func TestContinuationChecksActualIdleThreadBeforeSendingAnyNewAction(t *testing.
 	resume := nextRequest(t, worker, "thread/resume")
 	resume.result <- fakeResponse{value: contracts.RawObject{}}
 	read := nextRequest(t, worker, "thread/read")
+	assertContinuationMetadataRequest(t, read)
 	read.result <- fakeResponse{value: contracts.RawObject{"thread": json.RawMessage(`{"id":"thread-fixture","status":{"type":"active"},"turns":[]}`)}}
 	if err := <-done; err == nil {
 		t.Fatal("busy executor admitted continuation")

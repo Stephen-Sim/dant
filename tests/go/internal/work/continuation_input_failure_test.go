@@ -36,7 +36,7 @@ func TestHumanContinuationPersistenceFailuresRetainTheirExactDispatchOutcome(t *
 			resume.result <- fakeResponse{value: contracts.RawObject{}}
 			if phase != contracts.SubmissionStatusPreparing {
 				read := nextRequest(t, worker, "thread/read")
-				read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(continuationBehaviorThread(fromTurn))}}
+				replyContinuationInventory(t, worker, read, continuationBehaviorThread(fromTurn))
 			}
 			if phase == contracts.SubmissionStatusConfirmed {
 				start := nextRequest(t, worker, "turn/start")
@@ -93,7 +93,7 @@ func TestHumanContinuationReferenceFailureCannotDispatchOrLoseItsSavedInput(t *t
 	resume := nextRequest(t, worker, "thread/resume")
 	resume.result <- fakeResponse{value: contracts.RawObject{}}
 	read := nextRequest(t, worker, "thread/read")
-	read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(continuationBehaviorThread(fromTurn))}}
+	replyContinuationInventory(t, worker, read, continuationBehaviorThread(fromTurn))
 	if err := awaitWorkAction(t, done); !errors.Is(err, failure) {
 		t.Fatal("failed human reference preparation was accepted", err)
 	}

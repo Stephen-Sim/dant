@@ -37,7 +37,11 @@ func TestContinuationPersistenceFailureNeverReusesAnUnconfirmedAcknowledgement(t
 			if phase == "settlement" {
 				thread["status"] = raw(contracts.RawObject{"type": raw("active")})
 			}
-			read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(thread)}}
+			if phase == "settlement" {
+				replyContinuationMetadata(t, read, thread)
+			} else {
+				replyContinuationInventory(t, worker, read, thread)
+			}
 			if phase == "acknowledgement" {
 				start := nextRequest(t, worker, "turn/start")
 				start.result <- fakeResponse{value: contracts.RawObject{"turn": raw(contracts.RawObject{"id": raw("observed-unpersisted-turn")})}}
@@ -99,7 +103,7 @@ func TestContinuationInputIncludesOnlyScopedMemoryAndStopsOnPreparationFailures(
 			}
 			done := beginContinuationBehavior(t, engine, worker, workID, fromTurn)
 			read := nextRequest(t, worker, "thread/read")
-			read.result <- fakeResponse{value: contracts.RawObject{"thread": raw(continuationBehaviorThread(fromTurn))}}
+			replyContinuationInventory(t, worker, read, continuationBehaviorThread(fromTurn))
 			if scenario == "scoped-memory" {
 				start := nextRequest(t, worker, "turn/start")
 				if !strings.Contains(string(start.params["input"]), "quoted scoped memory") || !strings.Contains(string(start.params["input"]), workID) {

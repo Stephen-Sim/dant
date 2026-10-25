@@ -63,12 +63,24 @@ func TestWorkerExplicitResumeRoutesKeepExactTaskIdentityAndDoNotReplayUnknownWor
 	}); err != nil {
 		t.Fatal(err)
 	}
-	wire.response = func(method string, _ contracts.RawObject) json.RawMessage {
+	wire.response = func(method string, params contracts.RawObject) json.RawMessage {
 		if method == "thread/read" {
+			if string(params["includeTurns"]) != "false" {
+				t.Error("selected route requested hydrated history")
+			}
 			return encode(contracts.RawObject{"thread": encode(contracts.RawObject{
 				"id": encode("app-fixture-thread"), "status": encode(contracts.RawObject{"type": encode("idle")}),
-				"turns": encode([]contracts.RawObject{{"id": encode(record.TurnID), "status": encode("completed")}}),
+				"turns": encode([]contracts.RawObject{}),
 			})})
+		}
+		if method == "thread/turns/list" {
+			if string(params["itemsView"]) != `"notLoaded"` || string(params["threadId"]) != `"app-fixture-thread"` {
+				t.Error("selected route loaded item history or changed thread")
+			}
+			return encode(contracts.RawObject{
+				"data":       encode([]contracts.RawObject{{"id": encode(record.TurnID), "status": encode("completed"), "itemsView": encode("notLoaded"), "items": encode([]string{})}}),
+				"nextCursor": encode(nil),
+			})
 		}
 		return nil
 	}
@@ -90,7 +102,7 @@ func TestWorkerExplicitResumeRoutesKeepExactTaskIdentityAndDoNotReplayUnknownWor
 	}
 	state := app.store.Snapshot()
 	saved, err := store.FindWork(&state, record.ID)
-	if err != nil || saved.Status != contracts.WorkStatusRunning || saved.TurnID != "app-fixture-turn" || saved.Continuation == nil || wire.count("turn/start") != 1 || wire.count("thread/read") != 1 {
+	if err != nil || saved.Status != contracts.WorkStatusRunning || saved.TurnID != "app-fixture-turn" || saved.Continuation == nil || wire.count("turn/start") != 1 || wire.count("thread/read") != 2 || wire.count("thread/turns/list") != 1 {
 		t.Fatal("selected resume lost its known work or duplicated its acknowledged dispatch")
 	}
 	requireWorkerStatus(t, callWorker(app, http.MethodPost, endpoint, `{"kind":"work","turnId":"`+record.TurnID+`"}`), 409)
