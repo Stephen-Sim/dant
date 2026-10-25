@@ -1345,12 +1345,30 @@ struct DownloadFixture {
     progress: Mutex<Vec<(String, u64, String)>>,
 }
 
+fn download_asset(channel: &str) -> Asset {
+    let ((major, minor, patch), _) = version(env!("CARGO_PKG_VERSION")).unwrap();
+    let release = format!("{major}.{minor}.{}", patch.checked_add(1).unwrap());
+    let mut selected = asset();
+    selected.version = match channel {
+        "stable" => release,
+        "beta" => format!("{release}-beta.2"),
+        _ => panic!("unsupported fixture channel"),
+    };
+    selected.channel = channel.into();
+    selected.name = format!("dant_{}_windows_x64_setup.exe", selected.version);
+    selected.url = format!(
+        "https://github.com/Stephen-Sim/dant/releases/download/v{}/{}",
+        selected.version, selected.name
+    );
+    selected
+}
+
 impl DownloadFixture {
     fn new(root: &Path) -> Self {
         Self {
             root: root.to_owned(),
             metadata: Ok(
-                serde_json::json!({"asset":asset(),"channel":"beta","updateAvailable":true}),
+                serde_json::json!({"asset":download_asset("beta"),"channel":"beta","updateAvailable":true}),
             ),
             cache_failed: false,
             download_failed: false,
@@ -1436,7 +1454,10 @@ fn downloaded_descriptor_must_match_channel_expected_version_and_available_newer
     let root = tempfile::tempdir().unwrap();
     let mut invalid = Vec::new();
     for (path, value) in [
-        ("/asset/version", serde_json::json!("0.5.0-beta.3")),
+        (
+            "/asset/version",
+            serde_json::json!(download_asset("beta").version.replace("-beta.2", "-beta.3")),
+        ),
         ("/asset/channel", serde_json::json!("stable")),
         ("/asset/sha256", serde_json::json!("invalid")),
         ("/channel", serde_json::json!("stable")),
@@ -1471,7 +1492,7 @@ fn downloaded_descriptor_must_match_channel_expected_version_and_available_newer
     for fixture in invalid {
         let state = Updates::default();
         assert!(fixture
-            .run(&state, "main", "beta", &asset().version)
+            .run(&state, "main", "beta", &download_asset("beta").version)
             .is_err());
         assert_eq!(fixture.download_calls.load(Ordering::Acquire), 0);
         assert!(fixture.progress.lock().unwrap().is_empty());
@@ -1481,12 +1502,47 @@ fn downloaded_descriptor_must_match_channel_expected_version_and_available_newer
 }
 
 #[test]
+fn current_version_descriptor_cannot_download_even_when_controller_claims_an_update() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fixture = DownloadFixture::new(root.path());
+    let mut current = asset();
+    current.version = env!("CARGO_PKG_VERSION").into();
+    current.channel = if version(&current.version).unwrap().1.is_some() {
+        "beta"
+    } else {
+        "stable"
+    }
+    .into();
+    current.name = format!("dant_{}_windows_x64_setup.exe", current.version);
+    current.url = format!(
+        "https://github.com/Stephen-Sim/dant/releases/download/v{}/{}",
+        current.version, current.name
+    );
+    assert!(valid_asset(&current));
+    fixture.metadata =
+        Ok(serde_json::json!({"asset":current,"channel":current.channel,"updateAvailable":true}));
+    let state = Updates::default();
+    assert_eq!(
+        fixture
+            .run(&state, "main", &current.channel, &current.version)
+            .err()
+            .as_deref(),
+        Some(FAILED)
+    );
+    assert_eq!(fixture.metadata_calls.load(Ordering::Acquire), 1);
+    assert_eq!(fixture.download_calls.load(Ordering::Acquire), 0);
+    assert!(fixture.progress.lock().unwrap().is_empty());
+    assert!(state.busy.lock().unwrap().is_empty());
+    assert!(state.packages.lock().unwrap().is_empty());
+}
+
+#[test]
 fn successful_download_registers_only_the_captured_verified_identity_and_emits_exact_ready_progress(
 ) {
     let root = tempfile::tempdir().unwrap();
     let fixture = DownloadFixture::new(root.path());
     let state = Updates::default();
-    let selected = asset();
+    let selected = download_asset("beta");
     let result = fixture
         .run(&state, "main", "beta", &selected.version)
         .unwrap();
@@ -1514,7 +1570,7 @@ fn busy_download_or_cache_failure_never_spawns_and_failed_download_releases_only
     state.busy.lock().unwrap().insert("beta".into());
     assert_eq!(
         fixture
-            .run(&state, "main", "beta", &asset().version)
+            .run(&state, "main", "beta", &download_asset("beta").version)
             .err()
             .as_deref(),
         Some("This update is already downloading.")
@@ -1525,14 +1581,14 @@ fn busy_download_or_cache_failure_never_spawns_and_failed_download_releases_only
     fixture.cache_failed = true;
     let state = Updates::default();
     assert!(fixture
-        .run(&state, "main", "beta", &asset().version)
+        .run(&state, "main", "beta", &download_asset("beta").version)
         .is_err());
     assert_eq!(fixture.download_calls.load(Ordering::Acquire), 0);
     fixture.cache_failed = false;
     fixture.download_failed = true;
     state.busy.lock().unwrap().insert("stable".into());
     assert!(fixture
-        .run(&state, "main", "beta", &asset().version)
+        .run(&state, "main", "beta", &download_asset("beta").version)
         .is_err());
     assert_eq!(fixture.download_calls.load(Ordering::Acquire), 1);
     assert_eq!(
@@ -1542,7 +1598,7 @@ fn busy_download_or_cache_failure_never_spawns_and_failed_download_releases_only
     assert!(state.packages.lock().unwrap().is_empty());
     assert_eq!(
         *fixture.progress.lock().unwrap(),
-        vec![(asset().sha256, 0, "failed".into())]
+        vec![(download_asset("beta").sha256, 0, "failed".into())]
     );
 }
 
@@ -1550,26 +1606,26 @@ fn busy_download_or_cache_failure_never_spawns_and_failed_download_releases_only
 fn valid_but_different_descriptors_cannot_cross_expected_version_or_channel_boundaries() {
     let root = tempfile::tempdir().unwrap();
     let fixture = DownloadFixture::new(root.path());
-    for (channel, expected) in [("beta", "0.5.0-beta.3"), ("stable", "0.5.0-beta.2")] {
+    for (channel, expected) in [
+        (
+            "beta",
+            download_asset("beta").version.replace("-beta.2", "-beta.3"),
+        ),
+        ("stable", download_asset("beta").version),
+    ] {
         assert!(fixture
-            .run(&Updates::default(), "main", channel, expected)
+            .run(&Updates::default(), "main", channel, &expected)
             .is_err());
     }
     assert_eq!(fixture.download_calls.load(Ordering::Acquire), 0);
     let mut fixture = DownloadFixture::new(root.path());
-    let mut stable = asset();
-    stable.channel = "stable".into();
-    stable.version = "0.5.0".into();
-    stable.name = format!("dant_{}_windows_x64_setup.exe", stable.version);
-    stable.url = format!(
-        "https://github.com/Stephen-Sim/dant/releases/download/v{}/{}",
-        stable.version, stable.name
-    );
+    let stable = download_asset("stable");
+    let expected = stable.version.clone();
     fixture.metadata =
         Ok(serde_json::json!({"asset":stable,"channel":"stable","updateAvailable":true}));
     assert_eq!(
         fixture
-            .run(&Updates::default(), "main", "stable", "0.5.0")
+            .run(&Updates::default(), "main", "stable", &expected)
             .unwrap()
             .channel,
         "stable"
