@@ -299,3 +299,117 @@ func TestSelectedResumeOtherKnownPausedRecordsRemainIndependentAndUnknownRecords
 		}
 	}
 }
+
+func transportResumeInputs() []*contracts.ChatMessage {
+	messages := detachedResumeInputs()
+	messages[0].Source = contracts.RawObject{"type": json.RawMessage(`"telegram"`), "messageId": json.RawMessage(`"42"`)}
+	messages[1].WorkKind = "conversation"
+	return messages
+}
+
+func TestSelectedResumeTelegramTransportAndPlainConversationPreserveActualLegacyShapes(t *testing.T) {
+	record, messages := selectedResumeRecord(), transportResumeInputs()
+	before, err := json.Marshal([]any{record, messages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ResumeEligible(record, messages, 4000) || !ResumeThreadCompatible(record, messages, 4000, "selected-thread", nil) {
+		t.Fatal("external Telegram transport identity or plain legacy conversation became execution ownership")
+	}
+	after, err := json.Marshal([]any{record, messages})
+	if err != nil || string(before) != string(after) || !messages[0].UnknownOutcome || !messages[1].UnknownOutcome || messages[0].Submission.Value != contracts.SubmissionStatusUnknown || messages[1].Submission.Value != contracts.SubmissionStatusUnknown {
+		t.Fatal("selected admission rewrote the two detached historical uncertainties", err)
+	}
+	messages[0].Extra = contracts.RawObject{"threadId": json.RawMessage(`"selected-thread"`)}
+	if ResumeThreadCompatible(record, messages, 4000, "selected-thread", nil) || !ResumeThreadCompatible(record, messages, 4000, "selected-thread", []string{"detached-turn-one"}) {
+		t.Fatal("transport metadata bypassed fresh same-thread terminal proof")
+	}
+	messages[1].TurnID = contracts.Some("selected-turn")
+	if ResumeEligible(record, messages, 4000) {
+		t.Fatal("plain conversation bypassed the selected turn lineage fence")
+	}
+}
+
+func TestSelectedResumeTelegramTransportIDIsCanonicalPositiveDecimalStringOnly(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		encoded json.RawMessage
+		allowed bool
+	}{
+		{name: "minimum", encoded: json.RawMessage(`"1"`), allowed: true},
+		{name: "ordinary", encoded: json.RawMessage(`"42"`), allowed: true},
+		{name: "maximum", encoded: json.RawMessage(`"9007199254740991"`), allowed: true},
+		{name: "number", encoded: json.RawMessage(`42`)},
+		{name: "numeric maximum", encoded: json.RawMessage(`9007199254740991`)},
+		{name: "zero", encoded: json.RawMessage(`"0"`)},
+		{name: "negative", encoded: json.RawMessage(`"-1"`)},
+		{name: "sign", encoded: json.RawMessage(`"+1"`)},
+		{name: "leading zero", encoded: json.RawMessage(`"01"`)},
+		{name: "whitespace", encoded: json.RawMessage(`" 1"`)},
+		{name: "fraction", encoded: json.RawMessage(`"1.0"`)},
+		{name: "exponent", encoded: json.RawMessage(`"1e1"`)},
+		{name: "over maximum", encoded: json.RawMessage(`"9007199254740992"`)},
+		{name: "too wide", encoded: json.RawMessage(`"999999999999999999999999"`)},
+		{name: "uuid", encoded: json.RawMessage(`"00000000-0000-4000-8000-000000000001"`)},
+		{name: "empty", encoded: json.RawMessage(`""`)},
+		{name: "null", encoded: json.RawMessage(`null`)},
+		{name: "boolean", encoded: json.RawMessage(`true`)},
+		{name: "object", encoded: json.RawMessage(`{}`)},
+		{name: "array", encoded: json.RawMessage(`[]`)},
+		{name: "invalid JSON", encoded: json.RawMessage(`"unterminated`)},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			messages := transportResumeInputs()
+			messages[0].Source["messageId"] = scenario.encoded
+			if got := ResumeEligible(selectedResumeRecord(), messages, 4000); got != scenario.allowed {
+				t.Fatal("transport identity was coerced or confused with an execution identifier", got)
+			}
+		})
+	}
+	for _, sourceType := range []json.RawMessage{nil, json.RawMessage(`"web"`), json.RawMessage(`"Telegram"`), json.RawMessage(`"voice"`), json.RawMessage(`null`), json.RawMessage(`1`)} {
+		messages := transportResumeInputs()
+		if sourceType == nil {
+			delete(messages[0].Source, "type")
+		} else {
+			messages[0].Source["type"] = sourceType
+		}
+		if ResumeEligible(selectedResumeRecord(), messages, 4000) {
+			t.Fatal("an unnamespaced or different-source messageId acquired Telegram transport semantics")
+		}
+	}
+	for _, key := range []string{"workId", "turnId", "threadId", "callId", "voiceCallId", "scheduleId", "messageIds", "parentTaskId"} {
+		messages := transportResumeInputs()
+		messages[0].Source[key] = json.RawMessage(`null`)
+		if ResumeEligible(selectedResumeRecord(), messages, 4000) {
+			t.Fatal("Telegram transport semantics ignored another source ownership key", key)
+		}
+	}
+}
+
+func TestSelectedResumePlainConversationStillRejectsVoiceAndExecutionOwnership(t *testing.T) {
+	for name, mutate := range map[string]func(*contracts.ChatMessage){
+		"voice":         func(m *contracts.ChatMessage) { m.Voice = true },
+		"voice call":    func(m *contracts.ChatMessage) { m.VoiceCallID = "voice-call" },
+		"call":          func(m *contracts.ChatMessage) { m.CallID = "call" },
+		"provider":      func(m *contracts.ChatMessage) { m.Provider = "synthetic-provider" },
+		"kind":          func(m *contracts.ChatMessage) { m.Kind = "voice" },
+		"voice context": func(m *contracts.ChatMessage) { m.VoiceContext = contracts.RawObject{"id": json.RawMessage(`"voice"`)} },
+		"call context":  func(m *contracts.ChatMessage) { m.CallContext = contracts.RawObject{"id": json.RawMessage(`"call"`)} },
+		"work":          func(m *contracts.ChatMessage) { m.WorkID = "other-work" },
+		"work reply":    func(m *contracts.ChatMessage) { m.WorkReply = &contracts.WorkReplyTarget{WorkID: "other-work"} },
+		"parent":        func(m *contracts.ChatMessage) { m.ParentTaskID = contracts.Some("other-parent") },
+		"legacy work":   func(m *contracts.ChatMessage) { m.Work = contracts.RawObject{"id": json.RawMessage(`"other-work"`)} },
+		"continuation": func(m *contracts.ChatMessage) {
+			m.Continuation = &contracts.WorkContinuation{NextAt: contracts.Null[float64](), LastCheckpoint: Checkpoint(nil)}
+		},
+		"other work kind": func(m *contracts.ChatMessage) { m.WorkKind = "voice" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			messages := transportResumeInputs()
+			mutate(messages[1])
+			if ResumeEligible(selectedResumeRecord(), messages, 4000) {
+				t.Fatal("plain conversation label overrode retained voice or execution ownership")
+			}
+		})
+	}
+}

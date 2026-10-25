@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Stephen-Sim/dant/core/internal/contracts"
 	"github.com/Stephen-Sim/dant/core/internal/store"
@@ -43,6 +44,13 @@ func TestSelectedKnownProgressResumePreservesUnrelatedHistoricalUncertainty(t *t
 					input.PauseReason = contracts.Some("executor-disconnected")
 					if index == 0 {
 						input.ReceivedAt = contracts.Null[float64]()
+						input.Source = contracts.RawObject{
+							"type": raw("telegram"), "botId": raw("12345"), "chatId": raw("67890"),
+							"userId": raw("67890"), "pairingId": raw(strings.Repeat("a", 32)),
+							"updateId": raw(19), "messageId": raw("42"),
+						}
+					} else {
+						input.WorkKind = "conversation"
 					}
 				}
 				message, err := persistence.Add(t.Context(), input)
@@ -135,7 +143,14 @@ func TestSelectedKnownProgressResumePreservesUnrelatedHistoricalUncertainty(t *t
 				_, err := engine.ResumeProgress(t.Context(), record.WorkID, store.ProgressWork, owner.TurnID)
 				done <- err
 			}()
-			request := nextRequest(t, worker, "thread/read")
+			var request fakeRequest
+			select {
+			case request = <-worker.requests:
+			case err := <-done:
+				t.Fatalf("explicit selection failed before thread validation: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("explicit selection did not validate its thread")
+			}
 			if request.method == "thread/resume" {
 				request.result <- fakeResponse{value: contracts.RawObject{}}
 				request = nextRequest(t, worker, "thread/read")

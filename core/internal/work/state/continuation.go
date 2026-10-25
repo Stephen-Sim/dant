@@ -232,20 +232,23 @@ func historicalDetachedInput(message *contracts.ChatMessage, before float64) boo
 	if len(message.TurnIDs) != 0 || message.VoiceCallID != "" || message.CallID != "" || message.Voice || len(message.VoiceContext) != 0 || len(message.CallContext) != 0 {
 		return false
 	}
-	if message.WorkKind != "" && message.WorkKind != "task" || message.Kind != "" || message.Provider != "" {
+	if message.WorkKind != "" && message.WorkKind != "task" && message.WorkKind != "conversation" || message.Kind != "" || message.Provider != "" {
 		return false
 	}
 	if message.TaskID.Value != "" && message.TaskID.Value != message.ID || message.MessageID.Value != "" || len(message.MessageIDs) != 0 || message.ReplyTo.Value != "" || message.Scheduled || message.ScheduleID != "" {
 		return false
 	}
-	for _, key := range []string{"workId", "turnId", "threadId", "callId", "voiceCallId", "scheduleId", "messageId", "messageIds", "parentTaskId"} {
-		if _, present := message.Source[key]; present {
+	var sourceType string
+	if encoded, present := message.Source["type"]; present {
+		if json.Unmarshal(encoded, &sourceType) != nil || sourceType == "voice" || sourceType == "voice-call" || sourceType == "schedule" || sourceType == "scheduled" {
 			return false
 		}
 	}
-	if sourceType, present := message.Source["type"]; present {
-		var kind string
-		if json.Unmarshal(sourceType, &kind) != nil || kind == "voice" || kind == "voice-call" || kind == "schedule" || kind == "scheduled" {
+	for _, key := range []string{"workId", "turnId", "threadId", "callId", "voiceCallId", "scheduleId", "messageId", "messageIds", "parentTaskId"} {
+		if encoded, present := message.Source[key]; present {
+			if key == "messageId" && sourceType == "telegram" && telegramTransportMessageID(encoded) {
+				continue
+			}
 			return false
 		}
 	}
@@ -269,6 +272,19 @@ func historicalDetachedInput(message *contracts.ChatMessage, before float64) boo
 	}
 	_, valid := resumeStoredThread(message)
 	return valid
+}
+
+const telegramTransportMessageIDMaxDigits = 16
+
+// Telegram Source.messageId is an external decimal string emitted by incoming
+// identifier(), rather than a dant message, work or executor-turn identity.
+func telegramTransportMessageID(encoded json.RawMessage) bool {
+	var id string
+	if json.Unmarshal(encoded, &id) != nil || len(id) == 0 || len(id) > telegramTransportMessageIDMaxDigits {
+		return false
+	}
+	value, err := strconv.ParseUint(id, 10, 64)
+	return err == nil && value > 0 && value <= MaxSafeInteger && strconv.FormatUint(value, 10) == id
 }
 
 func resumeStoredThread(message *contracts.ChatMessage) (string, bool) {
