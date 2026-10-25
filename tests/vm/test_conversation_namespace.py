@@ -26,6 +26,9 @@ class NamespaceFixture(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = pathlib.Path(temporary.name)
+        # Drive-free Linux fixture paths resolve on the temporary drive even
+        # when Windows TEMP and the checkout live on different drives.
+        self.enterContext(contextlib.chdir(self.root))
         self.paths = {}
         for key, name in namespace.PATHS.items():
             path = self.root / name.lstrip('/')
@@ -42,6 +45,8 @@ class NamespaceFixture(unittest.TestCase):
         self.calls = []
         self.probes = [1, 0]
         self.parser_results = [0, 0]
+        self.preprocessed = {}
+        self.syntax_failure = False
         self.setup = namespace.NamespaceSetup(self.paths, self.run_fake)
         self.addCleanup(patch.stopall)
         patch.object(namespace.os, 'geteuid', return_value=0, create=True).start()
@@ -54,7 +59,7 @@ class NamespaceFixture(unittest.TestCase):
             stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))).start()
 
     def fixture_path(self, value, directory=False):
-        path = pathlib.Path(value)
+        path = pathlib.Path(value).resolve()
         self.assertTrue(path.is_relative_to(self.root))
         self.assertFalse(path.is_symlink())
         self.assertTrue(path.is_dir() if directory else path.is_file())
@@ -67,6 +72,19 @@ class NamespaceFixture(unittest.TestCase):
         self.assertTrue(options['close_fds'])
         self.assertEqual(options['cwd'], '/')
         self.assertEqual(options['env'], {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8'})
+        if '--names' in arguments or '--preprocess' in arguments:
+            self.assertNotEqual(options['stdout'], subprocess.DEVNULL)
+            self.assertIs(options['preexec_fn'], namespace.limit_parser_output)
+            self.assertIn('--skip-kernel-load', arguments)
+            self.assertIn('--base', arguments)
+            self.assertNotIn('--add', arguments)
+            item = pathlib.Path(arguments[-1])
+            raw = self.preprocessed.get(item.name, item.read_bytes())
+            if '--names' in arguments:
+                options['stdout'].write(getattr(self, 'canonical_names', b'other\n'))
+            else:
+                options['stdout'].write(raw)
+            return types.SimpleNamespace(returncode=1 if self.syntax_failure else 0)
         self.assertEqual(options['stdout'], subprocess.DEVNULL)
         self.assertEqual(options['stderr'], subprocess.DEVNULL)
         self.assertNotIn('--replace', arguments)
@@ -128,36 +146,213 @@ class NamespaceFixture(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
         self.assertEqual(list(pathlib.Path(self.paths['policies']).iterdir()), [])
 
-    def test_existing_loaded_named_or_vendor_reference_is_preserved(self):
+    def test_existing_global_loaded_or_configured_attachment_is_preserved(self):
         policies = pathlib.Path(self.paths['policies'])
-        for location in ['loaded', 'bwrap', 'vendor-app', namespace.PROFILE_NAME]:
+        attach = pathlib.Path(self.paths['kernel']) / 'profiles/other.1/attach'
+        attach.write_bytes(b'/usr/bin/bwrap')
+        with self.assert_rejected('existing-bwrap-policy'):
+            self.setup.install()
+        attach.write_bytes(b'/usr/bin/other')
+        for location in ['bwrap', 'vendor-app', namespace.PROFILE_NAME]:
             with self.subTest(location=location):
-                target = pathlib.Path(self.paths['loaded']) if location == 'loaded' else policies / location
+                target = policies / location
                 before = b'profile vendor /usr/bin/bwrap flags=(unconfined) { userns, }'
                 target.write_bytes(before)
                 self.probes = [1]
                 with self.assert_rejected('existing-bwrap-policy'):
                     self.setup.install()
                 self.assertEqual(target.read_bytes(), before)
-                if location == 'loaded':
-                    target.write_bytes(b'other (enforce)')
-                else:
-                    target.unlink()
-        self.assertEqual(len(self.calls), 4)
+                target.unlink()
 
-    def test_scan_includes_local_overrides_and_refuses_untrusted_links(self):
+    def test_only_loader_roots_are_interpreted_and_include_expansion_retains_parent_scope(self):
+        policies = pathlib.Path(self.paths['policies'])
+        local = policies / 'local'
+        local.mkdir()
+        fragment = local / 'vendor'
+        fragment.write_bytes(b'/usr/bin/bwrap ix,\n')
+        abstractions = policies / 'abstractions'
+        abstractions.mkdir()
+        (abstractions / 'vendor').write_bytes(b'if exists /etc/vendor { /usr/bin/bwrap ix, }')
+        profile = policies / 'vendor'
+        profile.write_bytes(b'profile other /usr/bin/other {\n#include <local>\n}\n')
+        self.preprocessed['vendor'] = b'profile other /usr/bin/other { /usr/bin/bwrap ix, }'
+        self.assertEqual(self.setup.check_conflicts(), policies)
+        inspected = [call[0][-1] for call in self.calls]
+        self.assertEqual(inspected, [str(profile), str(profile)])
+        self.preprocessed['vendor'] = b'profile other /usr/bin/other { }\n/usr/bin/bwrap { }'
+        with self.assert_rejected('existing-bwrap-policy'):
+            self.setup.check_conflicts()
+        self.assertEqual(fragment.read_bytes(), b'/usr/bin/bwrap ix,\n')
+
+    def test_unsafe_include_or_link_is_rejected_before_running_the_parser(self):
         policies = pathlib.Path(self.paths['policies'])
         local = policies / 'local'
         local.mkdir()
         policy = local / 'vendor'
-        policy.write_bytes(b'/bin/bwrap userns,')
-        with self.assert_rejected('existing-bwrap-policy'):
-            self.setup.check_conflicts()
+        (policies / 'vendor').write_bytes(b'profile other /usr/bin/other {\n#include <local/vendor>\n}')
+        for raw in [b'#include "/outside/policy"', b'include </outside>',
+                    b'include <../outside>', b'include <safe/../../outside>', b'include <@{outside}>']:
+            policy.write_bytes(raw)
+            with self.subTest(raw=raw), self.assert_rejected('policy-inspection-unavailable'):
+                self.setup.check_conflicts()
+        self.assertEqual(self.calls, [])
         policy.write_bytes(b'unrelated policy')
         fake_link = types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)
         original = pathlib.Path.lstat
         with patch.object(pathlib.Path, 'lstat', lambda path: fake_link if path == policy else original(path)), self.assert_rejected('untrusted-system-path'):
             self.setup.check_conflicts()
+
+    def external_include(self, path):
+        value = path.as_posix()
+        # Linux-only literal path grammar is exercised through a temporary
+        # filesystem on Windows too; no real system include is read by a test.
+        return value[2:] if path.drive else value
+
+    def external_profile(self, target, optional=False):
+        policies = pathlib.Path(self.paths['policies'])
+        profile = policies / 'vendor'
+        source = 'profile other /usr/bin/other { include ' + ('if exists ' if optional else '')
+        profile.write_text(source + '"' + self.external_include(target) + '"\n}\n', encoding='utf-8')
+        self.preprocessed['vendor'] = b'profile other /usr/bin/other { /usr/bin/bwrap ix, }'
+        return profile
+
+    def test_trusted_external_directory_and_recursive_inline_include_keep_parent_scope(self):
+        external = self.root / 'var/lib/vendor/policy'
+        external.mkdir(parents=True)
+        included = external / 'fragment'
+        shared = self.root / 'var/lib/vendor/shared'
+        shared.write_bytes(b'/usr/bin/bwrap ix,')
+        included.write_text('include "' + self.external_include(shared) + '"\n', encoding='utf-8')
+        (external / 'ignored-child-directory').mkdir()
+        (external / 'ignored.dpkg-old').write_bytes(b'include "/must-not-be-read"')
+        profile = self.external_profile(external)
+        policies = pathlib.Path(self.paths['policies'])
+        before = self.setup.policy_inputs(policies)
+        self.assertIn(pathlib.Path(self.external_include(shared)), before[0])
+        self.assertIn(pathlib.Path(self.external_include(external)), before[1])
+        self.assertEqual(self.setup.check_conflicts(), policies)
+        self.assertEqual([call[0][-1] for call in self.calls], [str(profile), str(profile)])
+        self.assertEqual(shared.read_bytes(), b'/usr/bin/bwrap ix,')
+        self.preprocessed['vendor'] = b'profile other /usr/bin/other { }\n/usr/bin/bwrap { }'
+        with self.assert_rejected('existing-bwrap-policy'):
+            self.setup.check_conflicts()
+
+    def test_external_untrusted_boundary_and_changed_source_stop_before_publication(self):
+        external = self.root / 'var/lib/vendor/fragment'
+        external.parent.mkdir(parents=True)
+        external.write_bytes(b'/usr/bin/bwrap ix,')
+        self.external_profile(external)
+        trusted = self.fixture_path
+
+        def untrusted(value, directory=False):
+            if pathlib.Path(value).resolve() == external:
+                namespace.reject('untrusted-system-path')
+            return trusted(value, directory)
+
+        with patch.object(namespace, 'trusted_path', side_effect=untrusted), self.assert_rejected('untrusted-system-path'):
+            self.setup.check_conflicts()
+        self.assertEqual(self.calls, [])
+        run = self.run_fake
+
+        def changed(arguments, **options):
+            result = run(arguments, **options)
+            if '--preprocess' in arguments:
+                external.write_bytes(b'administrator changed the source')
+            return result
+
+        self.setup.runner = changed
+        with self.assert_rejected('system-path-changed'):
+            self.setup.check_conflicts()
+        self.assertFalse(any('--add' in call[0] for call in self.calls))
+
+    def test_optional_absence_is_owned_and_required_missing_or_late_creation_is_rejected(self):
+        external = self.root / 'var/lib/vendor/optional/fragment'
+        external.parent.parent.mkdir(parents=True)
+        profile = self.external_profile(external, optional=True)
+        policies = pathlib.Path(self.paths['policies'])
+        before = self.setup.policy_inputs(policies)
+        self.assertIn(pathlib.Path(self.external_include(external)), before[2])
+        self.assertEqual(self.setup.check_conflicts(), policies)
+        self.external_profile(external, optional=False)
+        self.calls.clear()
+        with self.assert_rejected('policy-inspection-unavailable'):
+            self.setup.check_conflicts()
+        self.assertEqual(self.calls, [])
+        self.external_profile(external, optional=True)
+        run = self.run_fake
+
+        def created(arguments, **options):
+            result = run(arguments, **options)
+            if '--preprocess' in arguments:
+                external.parent.mkdir()
+                external.write_bytes(b'/usr/bin/bwrap ix,')
+            return result
+
+        self.setup.runner = created
+        with self.assert_rejected('system-path-changed'):
+            self.setup.check_conflicts()
+        self.assertTrue(profile.is_file())
+        self.assertEqual(external.read_bytes(), b'/usr/bin/bwrap ix,')
+
+    def test_external_graph_cycles_are_bounded_and_broken_optional_links_are_not_absence(self):
+        external = self.root / 'var/lib/vendor/fragment'
+        external.parent.mkdir(parents=True)
+        external.write_text('include "' + self.external_include(external) + '"\n', encoding='utf-8')
+        self.external_profile(external)
+        self.assertEqual(self.setup.check_conflicts(), pathlib.Path(self.paths['policies']))
+        external.unlink()
+        self.external_profile(external, optional=True)
+        lstat = pathlib.Path.lstat
+        logical = pathlib.Path(self.external_include(external))
+
+        def broken(path):
+            if path == logical:
+                return types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)
+            return lstat(path)
+
+        with patch.object(pathlib.Path, 'lstat', side_effect=broken, autospec=True), self.assert_rejected('untrusted-system-path'):
+            self.setup.check_conflicts()
+
+    def test_exact_loaded_profile_identity_collision_is_preserved_even_with_another_attachment(self):
+        profile = pathlib.Path(self.paths['kernel']) / 'profiles/other.1'
+        (profile / 'name').write_bytes(namespace.PROFILE_IDENTITY)
+        (profile / 'attach').write_bytes(b'/usr/bin/other')
+        pathlib.Path(self.paths['loaded']).write_bytes(namespace.PROFILE_IDENTITY + b' (enforce)\n')
+        with self.assert_rejected('existing-bwrap-policy'):
+            self.setup.check_conflicts()
+        self.assertEqual(self.calls, [])
+        self.assertEqual((profile / 'name').read_bytes(), namespace.PROFILE_IDENTITY)
+
+    def test_canonical_global_name_collision_and_missing_header_cannot_be_hidden(self):
+        policies = pathlib.Path(self.paths['policies'])
+        source = policies / 'vendor'
+        source.write_bytes(b'profile /usr/bin/bwrap /usr/bin/other { }')
+        self.canonical_names = namespace.PROFILE_IDENTITY + b'\n'
+        with self.assert_rejected('existing-bwrap-policy'):
+            self.setup.check_conflicts()
+        self.assertEqual(source.read_bytes(), b'profile /usr/bin/bwrap /usr/bin/other { }')
+        self.canonical_names = b'other\nmissing-global\n'
+        source.write_bytes(b'profile other /usr/bin/other { }')
+        with self.assert_rejected('policy-inspection-unavailable'):
+            self.setup.check_conflicts()
+        self.assertFalse(any('--add' in call[0] for call in self.calls))
+
+    def test_external_graph_depth_missing_and_entry_limits_precede_parser_or_policy_writes(self):
+        external = self.root / 'var/lib/vendor/fragment'
+        external.parent.mkdir(parents=True)
+        next_file = external.with_name('next')
+        next_file.write_bytes(b'/usr/bin/bwrap ix,')
+        external.write_text('include "' + self.external_include(next_file) + '"\n', encoding='utf-8')
+        self.external_profile(external)
+        with patch.object(namespace, 'DEPTH_LIMIT', 1), self.assert_rejected('policy-limit'):
+            self.setup.check_conflicts()
+        with patch.object(namespace, 'ENTRY_LIMIT', 1), self.assert_rejected('policy-limit'):
+            self.setup.check_conflicts()
+        absent = external.with_name('missing')
+        self.external_profile(absent, optional=True)
+        with patch.object(namespace, 'ENTRY_LIMIT', 2), self.assert_rejected('policy-limit'):
+            self.setup.check_conflicts()
+        self.assertEqual(self.calls, [])
 
     def test_scan_is_bounded_and_skips_disabled_profile_link_directories(self):
         policies = pathlib.Path(self.paths['policies'])
@@ -165,7 +360,7 @@ class NamespaceFixture(unittest.TestCase):
         disabled.mkdir()
         (disabled / 'vendor').write_bytes(b'/usr/bin/bwrap')
         unrelated = policies / 'vendor'
-        unrelated.write_bytes(b'other')
+        unrelated.write_bytes(b'profile other /usr/bin/other { }')
         self.assertEqual(self.setup.check_conflicts(), policies)
         for name, value in [('ENTRY_LIMIT', 0), ('DEPTH_LIMIT', -1), ('TREE_LIMIT', 1), ('FILE_LIMIT', 1)]:
             with self.subTest(limit=name), patch.object(self.setup, 'check_loaded_attachments'), patch.object(namespace, name, value), self.assert_rejected('policy-limit'):
@@ -278,6 +473,86 @@ class NamespaceFixture(unittest.TestCase):
             with self.subTest(limit=key), patch.object(namespace, key, value), self.assert_rejected('policy-limit'):
                 self.setup.check_loaded_attachments(loaded)
 
+    def test_loaded_local_bwrap_profile_and_body_reference_are_not_global_attachments(self):
+        parent = pathlib.Path(self.paths['kernel']) / 'profiles/other.1'
+        (parent / 'name').write_bytes(b'other_bwrap_tool')
+        child = parent / 'profiles/bwrap.2'
+        child.mkdir(parents=True)
+        (child / 'name').write_bytes(b'bwrap')
+        for raw in [b'/usr/bin/bwrap', b'<unknown>']:
+            (child / 'attach').write_bytes(raw)
+            pathlib.Path(self.paths['loaded']).write_bytes(b'other_bwrap_tool (enforce)\nother_bwrap_tool//bwrap (enforce)\n')
+            with self.subTest(attachment=raw):
+                self.assertEqual(self.setup.check_conflicts(), pathlib.Path(self.paths['policies']))
+        (parent / 'attach').write_bytes(b'<unknown>')
+        with self.assert_rejected('existing-bwrap-policy'):
+            self.setup.check_conflicts()
+
+    def test_loader_exclusions_do_not_hide_active_profile_files(self):
+        policies = pathlib.Path(self.paths['policies'])
+        for name in ['README', '.ignored', *['vendor' + suffix for suffix in namespace.SKIP_SUFFIXES]]:
+            (policies / name).write_bytes(b'/usr/bin/bwrap { }')
+        vendor = policies / 'bwrap-helper'
+        vendor.write_bytes(b'profile other /usr/bin/other { /usr/bin/bwrap ix, }')
+        self.assertEqual(self.setup.check_conflicts(), policies)
+        self.assertEqual([call[0][-1] for call in self.calls], [str(vendor), str(vendor)])
+        vendor.write_bytes(b'/usr/bin/bwrap { }')
+        with self.assert_rejected('existing-bwrap-policy'):
+            self.setup.check_conflicts()
+
+    def test_parser_failure_incomplete_or_changed_inputs_never_publish(self):
+        policies = pathlib.Path(self.paths['policies'])
+        vendor = policies / 'vendor'
+        vendor.write_bytes(b'profile other /usr/bin/other { }')
+        self.syntax_failure = True
+        with self.assert_rejected('policy-inspection-unavailable'):
+            self.setup.check_conflicts()
+        self.syntax_failure = False
+        self.preprocessed['vendor'] = b'# no interpreted global profile'
+        with self.assert_rejected('policy-inspection-unavailable'):
+            self.setup.check_conflicts()
+        self.preprocessed.clear()
+        original = self.run_fake
+
+        def changed(arguments, **options):
+            result = original(arguments, **options)
+            if '--preprocess' in arguments:
+                vendor.write_bytes(b'profile replacement /usr/bin/other { }')
+            return result
+
+        self.setup.runner = changed
+        with self.assert_rejected('system-path-changed'):
+            self.setup.check_conflicts()
+        self.assertNotIn(namespace.PROFILE_NAME, [path.name for path in policies.iterdir()])
+
+    def test_policy_replacement_during_capture_preserves_both_files_and_never_parses(self):
+        policies = pathlib.Path(self.paths['policies'])
+        vendor = policies / 'vendor'
+        displaced = policies / '.administrator-retained'
+        vendor.write_bytes(b'profile other /usr/bin/other { }')
+        read = namespace.read_trusted
+
+        def replace(path, limit=namespace.FILE_LIMIT):
+            raw = read(path, limit)
+            if path == vendor:
+                vendor.rename(displaced)
+                vendor.write_bytes(raw)
+            return raw
+
+        with patch.object(namespace, 'read_trusted', side_effect=replace), self.assert_rejected('system-path-changed'):
+            self.setup.check_conflicts()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(vendor.read_bytes(), displaced.read_bytes())
+
+    def test_inspection_output_overflow_is_fixed_without_echoing_output(self):
+        def overflow(_arguments, **options):
+            options['stdout'].write(b'private-output' * 10)
+            return types.SimpleNamespace(returncode=0)
+
+        self.setup.runner = overflow
+        with patch.object(namespace, 'TREE_LIMIT', 8), self.assert_rejected('policy-limit'):
+            self.setup.inspect_policy(['fixed-parser'])
+
     def test_only_the_exact_root_owned_kernel_magic_link_is_accepted(self):
         root = pathlib.Path(self.paths['kernel'])
         original = pathlib.Path.lstat
@@ -320,27 +595,127 @@ class NamespaceBoundaryTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertFalse(namespace.may_attach_bwrap(raw))
 
-    def test_configured_headers_distinguish_rules_and_refuse_unsupported_syntax(self):
-        namespace.check_configured_attachments(b'''# profile ignored comment
+    def test_literal_nested_attachment_alternatives_preserve_vendor_scope_and_real_conflicts(self):
+        safe = [b'/{{usr/bin,etc/alternatives}/notepadqq,usr/lib/notepadqq/notepadqq.sh}',
+                b'/usr/{lib/steam/bin_steam.sh,games/steam}', b'/{,usr/}bin/other',
+                b'/usr/{bin,sbin}/other', b'/usr/{lib/{one,two},share}/other']
+        for raw in safe:
+            with self.subTest(raw=raw):
+                self.assertFalse(namespace.may_attach_bwrap(raw))
+        conflicts = [b'/{{usr/bin,etc/alternatives}/bwrap,usr/lib/other}',
+                     b'/usr/{lib/other,bin/bwrap}', b'/{,usr/}bin/bwrap',
+                     b'/usr/{lib/*,bin/b*}', b'@bin/bwrap']
+        for raw in conflicts:
+            with self.subTest(raw=raw):
+                self.assertTrue(namespace.may_attach_bwrap(raw))
+        self.assertEqual(namespace.attachment_patterns('/{a,b}{c,d}'), ['/ac', '/ad', '/bc', '/bd'])
+        for raw in [b'/usr/{bin', b'/usr/{bin}', b'/usr/[bin', b'/usr/@{invalid-name}/other',
+                    b'/usr/@{unterminated', b'/usr/@{anything}/bwrap', b'/usr/}bwrap',
+                    b'/usr/bin/bwrap' + b'x' * namespace.ATTACHMENT_LIMIT]:
+            with self.subTest(raw=raw):
+                self.assertTrue(namespace.may_attach_bwrap(raw))
+        with patch.object(namespace, 'PATTERN_LIMIT', 2):
+            self.assertTrue(namespace.may_attach_bwrap(b'/{a,b,c}/other'))
+            self.assertTrue(namespace.may_attach_bwrap(b'/{a,b}{c,d}/other'))
+        with patch.object(namespace, 'DEPTH_LIMIT', 1):
+            self.assertTrue(namespace.may_attach_bwrap(b'/{{a,b},c}/other'))
+
+    def test_configured_global_headers_distinguish_nested_profiles_rules_and_brace_aare(self):
+        self.assertEqual(namespace.check_configured_attachments(b'''# harmless bwrap comment
 @{HOME}=/home/*
-include <tunables/global>
-profile other /usr/bin/other flags=(enforce) {
-  /** mr,
+abi <abi/4.0>,
+profile other
+  /usr/{bin,sbin}/other
+  flags=(enforce) {
+  /usr/bin/bwrap ix,
   @{HOME}/** rw,
+  profile child /usr/bin/bwrap { /usr/bin/bwrap ix, }
+  if exists /etc/other { /usr/bin/bwrap r, }
 }
-profile named_only { }
+profile named_bwrap_only { }
 "/usr/bin/other" { }
-''')
-        invalid = [b'profile { }', b'profile multiline\n /usr/bin/other { }', b'profile escape /usr/bin/oth\\er { }',
-            b'profile "unclosed { }', b'profile a /usr/bin/a { } profile b /** { }',
-            b'} /** { }', b'namespace hidden { }', b'#include "/outside/policy"',
-            b'include </outside/policy>', b'\xff', b'profile ' + b'x' * 4097 + b' { }']
+'''), 3)
+        self.assertEqual(namespace.check_configured_attachments(b'profile other { userns,}'), 1)
+        with patch.object(namespace, 'DEPTH_LIMIT', 1), self.assertRaisesRegex(namespace.NamespaceError, '^policy-limit$'):
+            namespace.check_configured_attachments(b'profile other { profile child { } }')
+        invalid = [b'profile { }', b'profile escape /usr/bin/oth\\er { }',
+            b'profile "unclosed { }', b'} /** { }', b'namespace hidden { }',
+            b'\xff', b'profile ' + b'x' * 4097 + b' { }', b'profile unfinished',
+            b'profile other /usr/{bin { }', b'profile other { ',
+            b'profile "multi\nline" { }', b'profile other /usr/bin/other { \\',
+            b'profile other /usr/bin/other { \x00 }',
+            b'/usr/bin/unrelated profile hidden /usr/bin/bwrap { }',
+            b'profile other /usr/bin/other extra { }',
+            b'alias /usr/bin/other -> /usr/bin/bwrap,\n/usr/bin/other { }']
         for raw in invalid:
             with self.subTest(raw=raw), self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
                 namespace.check_configured_attachments(raw)
-        for raw in [b'profile box /usr/bin/b* { }', b'profile box @{location}/b* { }', b'/** { }']:
+        for raw in [b'profile box /usr/bin/b* { }', b'profile box @{location}/b* { }',
+                    b'/** { }', b'profile a /usr/bin/a { } profile b /** { }',
+                    b'profile other { }\n"/usr/bin/bwrap" { }']:
             with self.subTest(raw=raw), self.assertRaisesRegex(namespace.NamespaceError, '^existing-bwrap-policy$'):
                 namespace.check_configured_attachments(raw)
+
+    def test_leading_brace_variable_rhs_and_multiline_flags_keep_profile_scope(self):
+        raw = b'''@{locations} = {alpha,beta/{gamma,delta}}
+@{prefix} = {,usr/}bin/
+abi <abi/4.0>,
+profile other /usr/bin/other flags=(
+ attach_disconnected,
+ mediate_deleted
+) {
+ profile child /usr/bin/bwrap { }
+}
+'''
+        self.assertEqual(namespace.check_configured_attachments(raw, b'other\nother//child\n'), 1)
+        with self.assertRaisesRegex(namespace.NamespaceError, '^existing-bwrap-policy$'):
+            namespace.check_configured_attachments(raw + b'/usr/bin/bwrap { }')
+        for names in [b'', b'other\nmissing-global\n', b'unrelated\n']:
+            with self.subTest(names=names), self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+                namespace.check_configured_attachments(raw, names)
+        with self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+            namespace.check_configured_attachments(b'@{values} = {alpha,beta')
+        with self.assertRaisesRegex(namespace.NamespaceError, '^existing-bwrap-policy$'):
+            namespace.check_configured_attachments(b'profile /usr/bin/bwrap /usr/bin/other { }')
+
+    def test_legacy_bare_flags_preserve_named_implicit_and_conflicting_attachments(self):
+        cases = [(b'/usr/bin/other (attach_disconnected,mediate_deleted) { }', b'/usr/bin/other\n'),
+                 (b'profile other /usr/bin/other (attach_disconnected) { }', b'other\n'),
+                 (b'profile other (attach_disconnected) { }', b'other\n'),
+                 (b'/usr/bin/other (\n attach_disconnected,\n mediate_deleted\n) { }', b'/usr/bin/other\n')]
+        for raw, names in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(namespace.check_configured_attachments(raw, names), 1)
+        for raw in [b'/usr/bin/bwrap (attach_disconnected) { }',
+                    b'profile other /usr/bin/bwrap (attach_disconnected) { }']:
+            with self.subTest(raw=raw), self.assertRaisesRegex(namespace.NamespaceError, '^existing-bwrap-policy$'):
+                namespace.check_configured_attachments(raw)
+        with self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+            namespace.check_configured_attachments(b'/usr/bin/other (attach_disconnected) extra { }')
+
+    def test_include_lexer_preserves_quoted_absolute_and_inline_inputs_but_rejects_unresolved_paths(self):
+        self.assertEqual(namespace.check_includes(b'profile other { include if exists "/var/lib/vendor/policy" }'), [('/var/lib/vendor/policy', True, True)])
+        self.assertEqual(namespace.check_includes(b'# comment include "/not-an-input"\n"/usr/bin/include" r,'), [])
+        namespace.check_includes(b'''# ordinary comment
+#include <tunables/global>
+include if exists <local/vendor>
+include <abstractions/vendor.d/> # bounded directory input
+abi <abi/4.0>,
+''')
+        for raw in [b'include "relative"', b'include </etc/other>',
+                    b'include <../other>', b'include <a/../b>', b'include <@{var}>', b'\xff', b'include', b'include <cache/foreign>',
+                    b'include <disable/foreign>', b'include <a//b>', b'include <a/[.][.]>',
+                    b'include <a/{b,c}>', b'include <a/*>', b'abi </outside>,',
+                    b'abi "outside",', b'abi <abi/4.0>']:
+            with self.subTest(raw=raw), self.assertRaisesRegex(namespace.NamespaceError, '^policy-inspection-unavailable$'):
+                namespace.check_includes(raw)
+
+    def test_parser_output_is_capped_in_the_linux_child_before_host_read(self):
+        limits = []
+        fake_resource = types.SimpleNamespace(RLIMIT_FSIZE=42, setrlimit=lambda key, value: limits.append((key, value)))
+        with patch.dict(sys.modules, {'resource': fake_resource}):
+            namespace.limit_parser_output()
+        self.assertEqual(limits, [(42, (namespace.TREE_LIMIT, namespace.TREE_LIMIT))])
 
     def test_system_ownership_types_and_permissions_are_explicit(self):
         for mode, owner, directory in [(stat.S_IFREG | 0o755, 0, False), (stat.S_IFDIR | 0o755, 0, True)]:

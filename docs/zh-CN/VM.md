@@ -20,11 +20,11 @@ dant 的桌面、任务引擎、数据和 Codex 运行在 Ubuntu 虚拟机内。
 
 Worker 拒绝在 Windows、裸机 Linux、root 账号或缺少可用图形桌面的环境执行任务。更新前会检查活动任务与通话；正在工作时保留当前进程并推迟升级。相同源码版本复用已有健康服务。
 
-新 VM 的 root 初始化会安装系统 `bubblewrap` 和 `apparmor` 软件包，再明确执行 root 拥有的 `/opt/dant/conversation-namespace.py --install --user dant`。该助手先以普通 Linux 用户在 bwrap 中运行固定的 `/usr/bin/true` 探针；现有环境已可用时不作更改。如果 Ubuntu 的 AppArmor 限制阻止用户命名空间，则按照 [Ubuntu 的逐应用指导](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces)，校验并仅新增绑定 `/usr/bin/bwrap`、允许 `userns` 的 ABI 4 策略。它不会修改全局 sysctl、禁用 AppArmor 或替换管理员/发行版的现有策略。已有 bwrap 策略引用、不可信文件、不支持的 parser 或探针失败都会以固定诊断码停止初始化。策略激活无法确认时保留新建文件供操作者核查，不会删除或替换其他策略。
+新 VM 的 root 初始化会安装系统 `bubblewrap` 和 `apparmor` 软件包，再明确执行 root 拥有的 `/opt/dant/conversation-namespace.py --install --user dant`。该助手先以普通 Linux 用户在 bwrap 中运行固定的 `/usr/bin/true` 探针；现有环境已可用时不作更改。如果 Ubuntu 的 AppArmor 限制阻止用户命名空间，则按照 [Ubuntu 的逐应用指导](https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces)，校验并仅新增绑定 `/usr/bin/bwrap`、允许 `userns` 的 ABI 4 策略。它不会修改全局 sysctl、禁用 AppArmor 或替换管理员/发行版的现有策略。冲突的全局策略身份或程序绑定、不可信文件、不支持的 parser 或探针失败都会以固定诊断码停止初始化。策略激活无法确认时保留新建文件供操作者核查，不会删除或替换其他策略。
 
 现有 VM 需要管理员先审阅并把该助手安装到 root 拥有的位置，再明确使用 `--install --user <普通-Linux-用户名>` 执行。账号通过操作系统解析，必须不是 root。应用不会为普通 Worker 更新自动提权安装策略；更新器在停止旧服务之前仅执行只读命名空间探针。隔离不可用时，旧服务和对话保持不变，直到先决条件得到解决。
 
-`--user` 只选择探针账号；AppArmor 例外绑定系统程序，对使用同一 `/usr/bin/bwrap` 的所有用户生效。新增前，助手会有界检查内核的策略绑定元数据和已配置策略。现有宽泛/变量绑定可能覆盖 bwrap、内核元数据未知或不完整、策略头语法不支持时，都需要管理员核查。助手不会因为策略名称不同就假定它与 bwrap 无关。
+`--user` 只选择探针账号；AppArmor 例外绑定系统程序，对使用同一 `/usr/bin/bwrap` 的所有用户生效。新增前，助手会有界检查内核的策略绑定元数据和全局策略身份。系统 parser 按根级策略加载规则校验语法，并展开有界、可信的 include 图，其中可包含策略目录之外的发行版配置。所有输入及祖先路径均须由 root 拥有且其他用户不可写，检查后还会复核文件身份和目录成员。子策略和规则正文按父级作用域处理，字面量花括号备选路径逐项核对。宽泛或未解析的绑定可能覆盖 bwrap、内核元数据未知或不完整、策略头语法不支持时，都需要管理员核查。
 
 明确选择**退出**时，应用先暂停工作，再保存正在运行的受管 VM。若连接离线，且本次虚拟化平台检查确认同一受管 VM 已保存或关闭，退出会保留其非运行状态，无须连接客户机。Hyper-V 检查可能请求管理员授权。身份、权限或电源状态无法确认时，退出仍保持未确认。安装更新仍须先确认客户机准备完成，再挂起 VM。
 
