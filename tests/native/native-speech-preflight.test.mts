@@ -1,8 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { observedRecord } from '../support/service-fixtures.mts';
+
+function runSpeechFixture(script: string) {
+  const parent = fs.realpathSync(os.tmpdir());
+  const root = fs.mkdtempSync(path.join(parent, 'dant-speech-preflight-'));
+  const captured = fs.lstatSync(root, { bigint: true });
+  const resolved = fs.realpathSync(root);
+  const file = path.join(root, 'fixture.ps1');
+  let written: fs.BigIntStats | undefined;
+  try {
+    // Keep the complete multiline fixture out of Windows' encoded command line.
+    // Only its selected feature functions execute, with synthetic capabilities.
+    const descriptor = fs.openSync(file, 'wx', 0o600);
+    try {
+      // Windows PowerShell 5.1 requires a BOM to recognize a UTF-8 script file.
+      fs.writeFileSync(descriptor, '\uFEFF' + script, 'utf8');
+      written = fs.fstatSync(descriptor, { bigint: true });
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    return spawnSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file],
+      { encoding: 'utf8', windowsHide: true, timeout: 20_000 },
+    );
+  } finally {
+    const current = fs.lstatSync(root, { bigint: true, throwIfNoEntry: false });
+    if (
+      current &&
+      current.isDirectory() &&
+      !current.isSymbolicLink() &&
+      current.dev === captured.dev &&
+      current.ino === captured.ino &&
+      fs.realpathSync(root) === resolved &&
+      path.dirname(resolved) === parent &&
+      path.basename(resolved).startsWith('dant-speech-preflight-')
+    ) {
+      const scriptFile = fs.lstatSync(file, { bigint: true, throwIfNoEntry: false });
+      if (
+        written &&
+        scriptFile?.isFile() &&
+        !scriptFile.isSymbolicLink() &&
+        scriptFile.dev === written.dev &&
+        scriptFile.ino === written.ino &&
+        scriptFile.size === written.size &&
+        scriptFile.mtimeNs === written.mtimeNs
+      ) {
+        fs.unlinkSync(file);
+        if (fs.readdirSync(root).length === 0) fs.rmdirSync(root);
+      }
+    }
+  }
+}
 
 test(
   'native speech preflight and failure classifier run without audio or microphone operations',
@@ -23,18 +77,10 @@ test(
  $language=Get-SpeechFailure -Failure $wrapped -Phase 'request'
  $microphone=Get-SpeechFailure -Failure ([Exception]::new('Audio device error encountered. Error Code: 0x2 PRIVATE audio endpoint')) -Phase 'recognition-input'
  $unknown=Get-SpeechFailure -Failure ([Exception]::new('PRIVATE spoken text')) -Phase 'load'
- @{missing=$missing;audio=$audio;language=$language;microphone=$microphone;unknown=$unknown;playedAudio=$false;openedMicrophone=$false} | ConvertTo-Json -Depth 5 -Compress
+ $unicodeFixturePreserved='中文🙂' -ceq [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('5Lit5paH8J+Zgg=='))
+ @{missing=$missing;audio=$audio;language=$language;microphone=$microphone;unknown=$unknown;playedAudio=$false;openedMicrophone=$false;unicodeFixturePreserved=$unicodeFixturePreserved} | ConvertTo-Json -Depth 5 -Compress
  `.replace('SOURCE', Buffer.from(source).toString('base64'));
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-EncodedCommand',
-        Buffer.from(script, 'utf16le').toString('base64'),
-      ],
-      { encoding: 'utf8', windowsHide: true, timeout: 20000 },
-    );
+    const result = runSpeechFixture(script);
     if (result.error) throw result.error;
     assert.equal(result.status, 0, 'Isolated PowerShell speech functions failed');
     const body = observedRecord(JSON.parse(result.stdout.replace(/^\uFEFF/, ''))),
@@ -53,6 +99,7 @@ test(
     assert.equal(unknown.errorCode, 'speech-unavailable');
     assert.equal(body.playedAudio, false);
     assert.equal(body.openedMicrophone, false);
+    assert.equal(body.unicodeFixturePreserved, true);
     assert.doesNotMatch(result.stdout, /PRIVATE|endpoint|wrapper/);
   },
 );
@@ -107,16 +154,7 @@ $events.Clear();$state.FailOutput=$true
 $failure=Invoke-SpeechRequest -Request $request -Services $services
 @{blocked=$blocked;success=$success;successOrder=$successOrder;failure=$failure;failureOrder=$events.ToArray();playedAudio=$false;openedMicrophone=$false;defaultAdapterVerified=$true} | ConvertTo-Json -Depth 6 -Compress
 `.replace('SOURCE', Buffer.from(source).toString('base64'));
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-EncodedCommand',
-        Buffer.from(script, 'utf16le').toString('base64'),
-      ],
-      { encoding: 'utf8', windowsHide: true, timeout: 20000 },
-    );
+    const result = runSpeechFixture(script);
     if (result.error) throw result.error;
     assert.equal(result.status, 0, 'Isolated speech feature execution failed');
     const body = observedRecord(JSON.parse(result.stdout.replace(/^\uFEFF/, ''))),
