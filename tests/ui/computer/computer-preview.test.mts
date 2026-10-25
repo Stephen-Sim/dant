@@ -13,6 +13,8 @@ import { parseHTML } from 'linkedom';
 import { reconcile } from '../../../ui/shared/dom.mts';
 import { bindAttachmentImages } from '../../../ui/files/attachment-images.mts';
 import { createWorkDisclosures } from '../../../ui/work/work-disclosures.mts';
+import type { VmSettings } from '../../../ui/shared/contracts.mts';
+import { createTransport } from '../../../ui/platform/transport.mts';
 
 const source = fs.readFileSync(new URL('../../../ui/main.mts', import.meta.url), 'utf8'),
   part = (start: string, end: string) => sourceSection(source, start, end),
@@ -103,7 +105,6 @@ function fixture(language = 'en') {
     screenTimer: null,
     screenLoad: null,
     screenAbort: null,
-    screenBusy: false,
     screenEpoch: 0,
     vmDraft: null,
     voiceLoadedFor: '',
@@ -310,9 +311,255 @@ test('screen requests stay serialized and abort immediately when controller or e
   cached.c.state.worker.status = 'online';
   cached.c.render();
   assert.equal(cached.c.screenVisible(), false);
-  assert.equal(cached.document.querySelector<HTMLImageElement>('#screen'), null);
+  assert.equal(
+    defined(cached.document.querySelector<HTMLImageElement>('#screen')).src,
+    'blob:existing-frame',
+  );
+  assert.equal(
+    defined(cached.document.querySelector('.screen-status')).textContent,
+    'Computer is not connected',
+  );
+  assert.equal(
+    defined(cached.document.querySelector<HTMLTextAreaElement>('#vm-ime')).disabled,
+    true,
+  );
   cached.c.restartScreen();
   assert.equal(cached.screens.length, 0);
+});
+
+test('one reconnect retains the Computer image and action through repeated connection transitions without sending input or another connect', async () => {
+  for (const language of ['en', 'zh']) {
+    const f = fixture(language);
+    f.c.state.worker.status = 'online';
+    f.c.state.computer.status = 'human';
+    f.c.render();
+    const target = defined(f.document.querySelector('#screen-target')),
+      image = defined(f.document.querySelector<HTMLImageElement>('#screen')),
+      button = defined(
+        f.document.querySelector<HTMLButtonElement>('[data-key="computer-connection-action"]'),
+      );
+    let complete: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => (complete = resolve));
+    f.c.post = async (route, body) => {
+      f.requests.push({ route, body });
+      assert.equal(route, '/connect');
+      await pending;
+      return { ok: true };
+    };
+    const connection = f.c.action('connect');
+    assert.equal(button.getAttribute('aria-busy'), 'true');
+    assert.equal(button.getAttribute('data-action'), 'connect');
+    assert.equal(button.disabled, true);
+    for (const [events, status, cached] of [
+      [true, 'connecting', true],
+      [false, 'offline', true],
+      [true, 'online', false],
+      [true, 'connecting', true],
+      [true, 'online', false],
+    ] as const) {
+      f.c.eventConnected = events;
+      f.c.state.controller = { status, cached };
+      f.c.render();
+      f.c.restartScreen();
+      assert.equal(f.document.querySelector('#screen-target'), target);
+      assert.equal(f.document.querySelector('#screen'), image);
+      assert.equal(f.document.querySelector('[data-key="computer-connection-action"]'), button);
+      assert.equal(image.src, 'blob:existing-frame');
+      assert.equal(target.getAttribute('tabindex'), '-1');
+      assert.equal(
+        defined(f.document.querySelector<HTMLTextAreaElement>('#vm-ime')).disabled,
+        true,
+      );
+      assert.equal(
+        defined(f.document.querySelector('.screen-status')).textContent,
+        language === 'en' ? 'Connecting' : '连接中',
+      );
+      await f.c.action('connect');
+      await f.c.vmInput({ type: 'key', key: 'Return' });
+    }
+    assert.deepEqual(
+      f.requests.map((request) => request.route),
+      ['/connect'],
+    );
+    assert.equal(f.screens.length, 0);
+    assert.deepEqual(f.revoked, []);
+    defined(complete)();
+    await connection;
+    assert.equal(f.document.querySelector('#screen-target'), target);
+    assert.equal(f.document.querySelector('#screen'), image);
+    assert.equal(f.document.querySelector('[data-key="computer-connection-action"]'), button);
+    assert.equal(button.getAttribute('data-action'), 'screen-refresh');
+    assert.equal(button.disabled, false);
+    assert.equal(f.document.querySelector('.screen-status'), null);
+    assert.equal(defined(f.document.querySelector<HTMLTextAreaElement>('#vm-ime')).disabled, false);
+    assert.deepEqual(
+      f.requests.map((request) => request.route),
+      ['/connect', '/state'],
+    );
+    f.c.restartScreen();
+    await settle();
+    assert.equal(f.screens.length, 1);
+    assert.equal(f.document.querySelector('#screen'), image);
+    assert.equal(image.src, 'blob:screen-1');
+    assert.deepEqual(f.revoked, ['blob:existing-frame']);
+  }
+});
+
+test('connection and trust changes clear only the previous computer frame, rather than retaining it for another target', () => {
+  const changes: Partial<VmSettings>[] = [
+    { host: '192.0.2.20' },
+    { user: 'another-user' },
+    { port: 2222 },
+    { keyPath: 'C:/another-key' },
+    { knownHosts: 'C:/another-known-hosts' },
+    { provider: 'vmware' },
+  ];
+  for (const change of changes) {
+    const f = fixture(),
+      image = defined(f.document.querySelector<HTMLImageElement>('#screen'));
+    f.c.state.settings.vm = { ...f.c.state.settings.vm, ...change };
+    f.c.render();
+    assert.equal(f.c.screenURL, '');
+    assert.equal(image.getAttribute('src'), null);
+    assert.equal(f.document.querySelector('#screen'), image);
+    assert.deepEqual(f.revoked, ['blob:existing-frame']);
+    f.c.render();
+    assert.deepEqual(f.revoked, ['blob:existing-frame']);
+  }
+});
+
+test('late screenshot decode cannot publish across a changed connection even before its next render', async () => {
+  const f = fixture();
+  f.decode = 'pending';
+  f.c.restartScreen();
+  await settle();
+  f.c.state.settings.vm.host = '192.0.2.20';
+  defined(defined(f.images[0]).onload)();
+  await settle();
+  assert.equal(f.c.screenURL, 'blob:existing-frame');
+  assert.deepEqual(f.revoked, ['blob:screen-1']);
+  assert.equal(f.c.screenFailures, 0);
+  f.c.render();
+  assert.equal(f.c.screenURL, '');
+  assert.deepEqual(f.revoked, ['blob:screen-1', 'blob:existing-frame']);
+  assert.equal(
+    defined(f.document.querySelector<HTMLImageElement>('#screen')).getAttribute('src'),
+    null,
+  );
+});
+
+test('queued human input cannot cross a connection change with a reused lease ID', async () => {
+  const f = fixture();
+  f.c.state.worker.status = 'online';
+  f.c.state.computer.status = 'human';
+  let release: (() => void) | undefined;
+  const firstRequest = new Promise<void>((resolve) => (release = resolve));
+  f.c.post = async (route, body) => {
+    f.requests.push({ route, body });
+    await firstRequest;
+    return { ok: true };
+  };
+  const first = f.c.vmInput({ type: 'key', key: 'Left' });
+  await settle();
+  const second = f.c.vmInput({ type: 'key', key: 'Right' });
+  f.c.state.settings.vm.host = '192.0.2.20';
+  defined(release)();
+  await Promise.all([first, second]);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0]?.body)), {
+    type: 'key',
+    key: 'Left',
+    sessionId: 'lease-1',
+  });
+  assert.match(defined(f.toasts.at(-1)), /connection.*changed/i);
+});
+
+test('native-dispatch input validation rejects a target change while waiting behind a control write', async () => {
+  for (const boundary of ['connection', 'lease'] as const) {
+    const f = fixture(),
+      invoked: string[] = [];
+    f.c.state.worker.status = 'online';
+    f.c.state.computer.status = 'human';
+    let release: (() => void) | undefined;
+    const waiting = new Promise<void>((resolve) => (release = resolve)),
+      transport = createTransport({
+        desktop: true,
+        invokeRequest: async (_command, request) => {
+          invoked.push(request.route);
+          await waiting;
+          return { status: 200, body: '{}' };
+        },
+      }),
+      prior = transport.json('/api/settings', { method: 'PATCH', body: { theme: 'dark' } });
+    await settle();
+    f.c.post = (route, body, options) =>
+      transport.json('/api' + route, { method: 'POST', body, ...options });
+    const input = f.c.vmInput({ type: 'key', key: 'Left' });
+    await settle();
+    if (boundary === 'connection') f.c.state.settings.vm.host = '192.0.2.20';
+    else f.c.state.computer.sessionId = 'lease-2';
+    defined(release)();
+    await Promise.all([prior, input]);
+    assert.deepEqual(invoked, ['/api/settings']);
+    assert.equal(f.requests.length, 0);
+    assert.ok(f.toasts.length > 0);
+    transport.close();
+  }
+});
+
+test('a retained screen rejects a pointer gesture begun on another connection or human lease', async () => {
+  for (const boundary of ['connection', 'lease'] as const) {
+    const f = fixture();
+    f.c.state.worker.status = 'online';
+    f.c.state.computer.status = 'human';
+    f.c.render();
+    const target = defined(f.document.querySelector<HTMLElement>('#screen-target'));
+    target.setPointerCapture = () => {};
+    const Event = defined(f.document.defaultView).Event,
+      down = new Event('pointerdown');
+    Object.assign(down, { pointerId: 1, clientX: 10, clientY: 10, button: 0 });
+    target.dispatchEvent(down);
+    const late = defined(target.onpointerup);
+    if (boundary === 'connection') f.c.state.settings.vm.host = '192.0.2.20';
+    else f.c.state.computer.sessionId = 'lease-2';
+    f.c.render();
+    const up = new Event('pointerup');
+    Object.assign(up, { pointerId: 1, clientX: 30, clientY: 40, button: 0 });
+    late.call(target, up as PointerEvent);
+    await settle();
+    assert.equal(f.requests.length, 0);
+  }
+});
+
+test('composed text begun before a connection or lease change is cleared and never typed into the new owner', async () => {
+  for (const boundary of ['connection', 'lease'] as const) {
+    const f = fixture();
+    f.c.state.worker.status = 'online';
+    f.c.state.computer.status = 'human';
+    f.c.render();
+    const ime = defined(f.document.querySelector<HTMLTextAreaElement>('#vm-ime')),
+      Event = defined(f.document.defaultView).Event;
+    ime.dispatchEvent(new Event('compositionstart'));
+    ime.value = '旧电脑输入';
+    if (boundary === 'connection') f.c.state.settings.vm.host = '192.0.2.20';
+    else f.c.state.computer.sessionId = 'lease-2';
+    f.c.render();
+    ime.value = '旧电脑迟到的输入';
+    ime.dispatchEvent(new Event('compositionend'));
+    await settle();
+    assert.equal(ime.value, '');
+    assert.equal(f.requests.length, 0);
+    ime.dispatchEvent(new Event('compositionstart'));
+    ime.value = '新电脑输入';
+    ime.dispatchEvent(new Event('compositionend'));
+    await settle();
+    assert.equal(f.requests.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0]?.body)), {
+      type: 'text',
+      text: '新电脑输入',
+      sessionId: boundary === 'lease' ? 'lease-2' : 'lease-1',
+    });
+  }
 });
 
 test('agent-offline takeover and all input routes stay blocked even while the desktop is reachable', async () => {
@@ -492,6 +739,126 @@ test('online connection status preserves agent control, human control and deskto
   }
 });
 
+test('the online desktop refresh icon joins the pending frame and preserves its image through transient event and cached snapshots', async () => {
+  for (const language of ['en', 'zh']) {
+    const f = fixture(language),
+      render = f.c.render;
+    f.decode = 'pending';
+    f.c.state.worker.status = 'online';
+    f.c.render = () => {
+      render();
+      f.c.restartScreen();
+    };
+    f.c.render();
+    await settle();
+    const target = defined(f.document.querySelector('#screen-target')),
+      image = defined(f.document.querySelector<HTMLImageElement>('#screen')),
+      button = defined(
+        f.document.querySelector<HTMLButtonElement>(
+          '.computer-meta [data-action="screen-refresh"]',
+        ),
+      ),
+      signal = defined(f.screens[0]).options.signal;
+    await f.click('.computer-meta [data-action="screen-refresh"]');
+    assert.equal(f.c.pendingActions.has('screen-refresh'), true);
+    assert.equal(button.disabled, true);
+    for (const [events, status, cached] of [
+      [false, 'online', false],
+      [true, 'offline', true],
+      [true, 'connecting', true],
+      [false, 'online', false],
+    ] as const) {
+      f.c.eventConnected = events;
+      f.c.state.controller = { status, cached };
+      f.c.render();
+      assert.equal(f.document.querySelector('#screen-target'), target);
+      assert.equal(f.document.querySelector('#screen'), image);
+      assert.equal(image.src, 'blob:existing-frame');
+      assert.equal(f.document.querySelector('.screen-status'), null);
+      assert.equal(
+        defined(f.document.querySelector('#computer-connection-status')).textContent,
+        language === 'en' ? 'Loading desktop…' : '正在加载桌面…',
+      );
+      assert.equal(target.getAttribute('aria-busy'), 'true');
+      assert.equal(
+        defined(f.document.querySelector<HTMLTextAreaElement>('#vm-ime')).disabled,
+        true,
+      );
+      await f.click('.computer-meta [data-action="screen-refresh"]');
+      assert.equal(f.screens.length, 1, 'manual refresh joins the existing request and decode');
+      assert.equal(signal.aborted, false);
+      assert.equal(f.requests.length, 0, 'desktop refresh never posts /connect or task actions');
+    }
+    defined(defined(f.images[0]).onload)();
+    await settle();
+    assert.equal(f.c.pendingActions.has('screen-refresh'), false);
+    assert.equal(image.src, 'blob:screen-1');
+    assert.equal(f.document.querySelector('#screen'), image);
+    assert.equal(f.document.querySelector('.screen-status'), null);
+    assert.equal(
+      defined(f.document.querySelector('#computer-connection-status')).textContent,
+      language === 'en' ? 'Connecting' : '连接中',
+      'an event-channel gap does not claim a confirmed VM disconnection',
+    );
+    assert.deepEqual(f.revoked, ['blob:existing-frame']);
+    f.c.eventConnected = true;
+    f.c.render();
+    assert.equal(f.document.querySelector('#screen'), image);
+    assert.equal(f.document.querySelector('[data-key="computer-connection-action"]'), button);
+    assert.equal(button.getAttribute('data-action'), 'screen-refresh');
+    assert.equal(button.disabled, false);
+    assert.equal(
+      defined(f.document.querySelector('#computer-connection-status')).textContent,
+      language === 'en' ? 'Controlled by dant' : '由 dant 控制',
+    );
+    assert.equal(
+      f.screens.length,
+      2,
+      'normal polling resumes only after the joined frame finishes',
+    );
+  }
+});
+
+test('a failed manual desktop refresh keeps its last image but reports a genuine frame failure or confirmed offline state', async () => {
+  for (const offline of [false, true]) {
+    const f = fixture(),
+      render = f.c.render;
+    f.c.state.worker.status = 'online';
+    f.decode = 'pending';
+    f.c.render = () => {
+      render();
+      f.c.restartScreen();
+    };
+    f.c.render();
+    await settle();
+    const image = defined(f.document.querySelector<HTMLImageElement>('#screen')),
+      action = defined(f.document.querySelector('[data-key="computer-connection-action"]'));
+    await f.click('.computer-meta [data-action="screen-refresh"]');
+    if (offline) {
+      f.c.state.controller = { status: 'offline', cached: true };
+      f.c.render();
+    }
+    defined(defined(f.images[0]).onerror)();
+    await settle();
+    assert.equal(f.c.pendingActions.has('screen-refresh'), false);
+    assert.equal(f.c.screenError, true);
+    assert.equal(f.c.screenFailures, 1, 'an explicit refresh failure is visible immediately');
+    assert.equal(f.document.querySelector('#screen'), image);
+    assert.equal(image.src, 'blob:existing-frame');
+    assert.equal(f.document.querySelector('[data-key="computer-connection-action"]'), action);
+    assert.equal(
+      defined(f.document.querySelector('.screen-status')).textContent,
+      offline
+        ? 'Computer is not connected'
+        : 'The desktop could not refresh. Check the computer connection.',
+    );
+    assert.equal(action.getAttribute('data-action'), offline ? 'connect' : 'screen-refresh');
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.screens.length, 1);
+    assert.deepEqual(f.revoked, ['blob:screen-1']);
+  }
+});
+
 test('older snapshots without a controller retain their previous online-only preview contract', () => {
   const f = fixture();
   delete f.c.state.controller;
@@ -510,7 +877,7 @@ test('a slow frame decodes before publication while the prior image survives sta
   await settle();
   assert.equal(f.images.length, 1);
   assert.equal(defined(f.images[0]).src, 'blob:screen-1');
-  assert.equal(f.c.screenBusy, true);
+  assert.notEqual(f.c.screenRequest, null);
   assert.equal(f.c.screenURL, 'blob:existing-frame');
   assert.equal(defined(img).src, 'blob:existing-frame');
   assert.deepEqual(f.revoked, []);
@@ -524,7 +891,7 @@ test('a slow frame decodes before publication while the prior image survives sta
   await settle();
   assert.equal(f.c.screenURL, 'blob:screen-1');
   assert.equal(defined(img).src, 'blob:screen-1');
-  assert.equal(f.c.screenBusy, false);
+  assert.equal(f.c.screenRequest, null);
   assert.deepEqual(f.revoked, ['blob:existing-frame']);
   assert.equal(defined(f.images[0]).onload, null);
   assert.equal(defined(f.images[0]).onerror, null);
@@ -575,7 +942,7 @@ test('decode abort and late load callbacks cannot publish or revoke a different 
   await settle();
   assert.equal(defined(f.screens[0]).options.signal.aborted, true);
   assert.equal(defined(pending).src, '');
-  assert.equal(f.c.screenBusy, false);
+  assert.equal(f.c.screenRequest, null);
   assert.equal(f.c.screenURL, 'blob:existing-frame');
   assert.equal(f.c.screenFailures, 0);
   assert.deepEqual(f.revoked, ['blob:screen-1']);
@@ -600,7 +967,7 @@ test('the request timeout also bounds image decoding and zero-sized frames are r
   assert.ok(timeout);
   timeout.callback();
   await settle();
-  assert.equal(f.c.screenBusy, false);
+  assert.equal(f.c.screenRequest, null);
   assert.equal(f.c.screenURL, 'blob:existing-frame');
   assert.equal(f.c.screenFailures, 1);
   assert.deepEqual(f.revoked, ['blob:screen-1']);
@@ -643,7 +1010,7 @@ test('loaded image bytes must finish pixel decoding before publication, and deco
   defined(defined(f.images[0]).onload)();
   await settle();
   assert.equal(f.c.screenURL, 'blob:existing-frame');
-  assert.equal(f.c.screenBusy, true);
+  assert.notEqual(f.c.screenRequest, null);
   defined(finishDecode)();
   await settle();
   assert.equal(f.c.screenURL, 'blob:screen-1');
@@ -666,7 +1033,7 @@ test('loaded image bytes must finish pixel decoding before publication, and deco
   f.c.restartScreen();
   await settle();
   assert.equal(f.c.screenURL, 'blob:screen-1');
-  assert.equal(f.c.screenBusy, false);
+  assert.equal(f.c.screenRequest, null);
   defined(lateDecode)();
   await settle();
   assert.deepEqual(f.revoked, ['blob:existing-frame', 'blob:screen-2', 'blob:screen-3']);

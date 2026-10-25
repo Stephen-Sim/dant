@@ -87,6 +87,7 @@ const entrypointSlots: UiMainFunctions = {
   renderOutgoingMessages: () => '',
   positionReactionMenus: missing,
   renderComputer: missing,
+  syncScreenScope: missing,
   renderSettings: missing,
   loadSettingsCategory: missing,
   appearanceColor: missing,
@@ -160,6 +161,7 @@ const entrypointSlots: UiMainFunctions = {
   screenVisible: missing,
   decodeScreenFrame: missing,
   restartScreen: missing,
+  screenRequestCurrent: missing,
   loadVoices: missing,
   startCall: missing,
   cleanupCall: missing,
@@ -190,6 +192,8 @@ export function uiEntrypointFixture<T extends object>(
   context: T,
 ): Omit<T, keyof UiMainFunctions> & UiMainFunctions & Omit<Partial<MainBindings>, keyof T> {
   const bindings: Partial<MainBindings> = {
+    screenScope: null,
+    screenRequest: null,
     pendingActions: new Set(),
     unloading: false,
     outgoingMessages: {

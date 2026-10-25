@@ -1,6 +1,9 @@
 import { NATIVE_PROTOCOL, MAX_PORT, apiPath } from '../../ui/platform/native-protocol.mts';
 import { COMPUTER_RESOURCES } from '../../ui/computer/resource-config.mts';
-import { DEFAULT_SSH_PORT } from '../../ui/computer/connection-config.mts';
+import {
+  DEFAULT_SSH_PORT,
+  computerConnectionIdentity,
+} from '../../ui/computer/connection-config.mts';
 import {
   appearanceDefaults,
   appearanceFontRanges,
@@ -40,6 +43,7 @@ import { callCaptionScope } from '../../ui/call/call-caption-preferences.mts';
 export const languageContext = {
   COMPUTER_RESOURCES,
   DEFAULT_SSH_PORT,
+  computerConnectionIdentity,
   NATIVE_PROTOCOL,
   MAX_PORT,
   apiPath,

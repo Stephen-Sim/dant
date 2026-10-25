@@ -10,7 +10,7 @@ import {
 } from './shared/states.mts';
 import { MAX_ATTACHMENT_BYTES } from './files/attachment-limits.mts';
 import { COMPUTER_RESOURCES } from './computer/resource-config.mts';
-import { DEFAULT_SSH_PORT } from './computer/connection-config.mts';
+import { DEFAULT_SSH_PORT, computerConnectionIdentity } from './computer/connection-config.mts';
 import { NATIVE_PROTOCOL, MAX_PORT, apiPath } from './platform/native-protocol.mts';
 import {
   appearanceDefaults,
@@ -231,7 +231,7 @@ let token = '',
   replyTo: string | null = null,
   attachments: Attachment[] = [],
   screenTimer: Interval | null = null,
-  screenBusy = false,
+  screenRequest: Promise<void> | null = null,
   pc: RTCPeerConnection | null = null,
   stream: MediaStream | null = null,
   audio: HTMLAudioElement | null = null,
@@ -273,6 +273,7 @@ let chatMode = 'text',
   manualVMExpanded = false,
   screenLoad: (() => Promise<void>) | null = null,
   screenAbort: AbortController | null = null,
+  screenScope: string | null = null,
   screenEpoch = 0,
   steerDraft = '',
   steerExpectedTurn: string | null = null;
@@ -924,7 +925,13 @@ const callControlBusy = () =>
     (state?.call && currentState().call?.status !== 'connected') ||
     (pc && !state?.call),
   );
-const computerInputReady = () => humanControl() && computerExecutorReady() && !callControlBusy();
+const computerInputReady = () =>
+  humanControl() &&
+  computerExecutorReady() &&
+  !pendingActions.has('connect') &&
+  !pendingActions.has('import-vm') &&
+  !pendingActions.has('screen-refresh') &&
+  !callControlBusy();
 const callBlocksControl = () => !humanControl() && callControlBusy();
 const unknownTask = (message: Pick<ProgressMessage, 'unknownOutcome' | 'submission'> | undefined) =>
   Boolean(
@@ -1609,25 +1616,52 @@ function positionReactionMenus() {
   }
 }
 function renderComputer() {
+  syncScreenScope();
   const online = computerReachable(),
+    display = online || Boolean(currentState().settings.vm.host),
     agentOnline = computerExecutorReady(),
+    refreshing = pendingActions.has('screen-refresh'),
+    transportUnknown =
+      !eventConnected &&
+      (currentState().controller
+        ? currentState().controller?.status === ConnectionStatus.Online &&
+          currentState().controller?.cached !== true
+        : currentState().worker.status === ConnectionStatus.Online),
     connecting =
       pendingActions.has('connect') ||
+      transportUnknown ||
       currentState().worker.status === ConnectionStatus.Connecting ||
       currentState().controller?.status === ConnectionStatus.Connecting,
-    status = connecting
-      ? 'connecting'
-      : online
-        ? !agentOnline
-          ? 'vmConnectedAgentOffline'
-          : humanControl()
-            ? 'takeover'
-            : 'controlledByDant'
-        : 'computerEmpty',
-    connectionAction =
-      !agentOnline || connecting
-        ? `<button type="button" class="text-btn" data-action="connect" ${connecting ? 'disabled aria-busy="true"' : ''}>${ico('refresh-cw')}${t(connecting ? 'connecting' : 'refresh')}</button>`
-        : button('screen-refresh', 'refresh-cw', t('refreshDesktop')),
+    status = refreshing
+      ? 'loadingDesktop'
+      : connecting
+        ? 'connecting'
+        : online
+          ? !agentOnline
+            ? 'vmConnectedAgentOffline'
+            : humanControl()
+              ? 'takeover'
+              : 'controlledByDant'
+          : 'computerEmpty',
+    reconnect = !refreshing && (!agentOnline || connecting),
+    connectionAction = `<button type="button" class="${reconnect ? 'text-btn' : 'icon-btn'}" data-key="computer-connection-action" data-action="${reconnect ? 'connect' : 'screen-refresh'}" ${connecting || refreshing ? 'disabled aria-busy="true"' : ''} title="${t(reconnect ? 'refresh' : 'refreshDesktop')}" aria-label="${t(refreshing ? 'loadingDesktop' : reconnect ? (connecting ? 'connecting' : 'refresh') : 'refreshDesktop')}">${ico('refresh-cw')}${reconnect ? t(connecting ? 'connecting' : 'refresh') : ''}</button>`,
+    screenStatus = refreshing
+      ? screenURL
+        ? ''
+        : t('loadingDesktop')
+      : connecting
+        ? screenError
+          ? t('screenFailed')
+          : screenURL && transportUnknown
+            ? ''
+            : t('connecting')
+        : !online
+          ? t('computerEmpty')
+          : screenError
+            ? t('screenFailed')
+            : !screenURL
+              ? t('loadingDesktop')
+              : '',
     pending = pendingActions.has('takeover'),
     blocked = callBlocksControl(),
     controlHint = blocked
@@ -1636,7 +1670,30 @@ function renderComputer() {
         ? 'agentOfflineControl'
         : null,
     controlHintId = blocked ? 'takeover-call-hint' : 'computer-connection-status';
-  return `<div data-key="resize" class="resize-handle" data-workspace-resize="computer" role="separator" aria-label="${t('resizeComputer')}" aria-controls="computer-panel" aria-orientation="vertical" tabindex="0"></div><aside data-key="computer-panel" id="computer-panel" class="computer-panel"><div class="panel-header"><strong>${t('computer')}</strong>${button('hide-computer', 'x', t('close'))}</div><div class="computer-meta"><span id="computer-connection-status" role="status">${t(status)}</span>${connectionAction}</div><div class="screen-frame"><div class="desktop-surface">${online ? `<div class="screen-target ${computerInputReady() ? 'controlling' : ''}" id="screen-target" tabindex="${computerInputReady() ? 0 : -1}" aria-label="${t('vmDesktop')}"><img id="screen" ${screenURL ? `src="${screenURL}"` : ''} alt="${t('ubuntuDesktop')}" draggable="false"><textarea id="vm-ime" ${computerInputReady() ? '' : 'disabled'} aria-label="${t('vmKeyboard')}" autocapitalize="off" autocomplete="off"></textarea>${!screenURL || screenError ? `<div class="screen-status" data-key="screen-status">${esc(screenError ? t('screenFailed') : t('loadingDesktop'))}</div>` : ''}</div>` : `<div class="computer-empty">${ico('monitor')}<h3>${t('computerEmpty')}</h3><p>${t('computerSub')}</p><button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button></div>`}</div></div><div class="computer-footer ${controlHint ? 'control-unavailable' : ''}">${online ? `<button type="button" class="text-btn primary takeover-button" data-action="takeover" ${pending || controlHint ? 'disabled' : ''} ${controlHint ? `title="${t(controlHint)}" aria-describedby="${controlHintId}"` : ''}>${t(pending ? (humanControl() ? 'returningControl' : 'takingControl') : humanControl() ? 'give' : 'take')}</button>` : `<span>Ubuntu · ${t('computerHint')}</span>`}${blocked && controlHint ? `<p id="${controlHintId}" class="takeover-call-hint" role="status">${t(controlHint)}</p>` : ''}</div></aside>`;
+  return `<div data-key="resize" class="resize-handle" data-workspace-resize="computer" role="separator" aria-label="${t('resizeComputer')}" aria-controls="computer-panel" aria-orientation="vertical" tabindex="0"></div><aside data-key="computer-panel" id="computer-panel" class="computer-panel"><div class="panel-header"><strong>${t('computer')}</strong>${button('hide-computer', 'x', t('close'))}</div><div class="computer-meta"><span id="computer-connection-status" role="status">${t(status)}</span>${connectionAction}</div><div class="screen-frame"><div class="desktop-surface">${display ? `<div class="screen-target ${computerInputReady() ? 'controlling' : ''}" id="screen-target" tabindex="${computerInputReady() ? 0 : -1}" aria-label="${t('vmDesktop')}" ${connecting || refreshing ? 'aria-busy="true"' : ''}><img id="screen" ${screenURL ? `src="${screenURL}"` : ''} alt="${t('ubuntuDesktop')}" draggable="false"><textarea id="vm-ime" ${computerInputReady() ? '' : 'disabled'} aria-label="${t('vmKeyboard')}" autocapitalize="off" autocomplete="off"></textarea>${screenStatus ? `<div class="screen-status" data-key="screen-status" role="status">${esc(screenStatus)}</div>` : ''}</div>` : `<div class="computer-empty">${ico('monitor')}<h3>${t('computerEmpty')}</h3><p>${t('computerSub')}</p><button type="button" class="text-btn" data-action="computer-settings">${t('setup')}</button></div>`}</div></div><div class="computer-footer ${controlHint ? 'control-unavailable' : ''}">${online ? `<button type="button" class="text-btn primary takeover-button" data-action="takeover" ${pending || connecting || refreshing || controlHint ? 'disabled' : ''} ${controlHint ? `title="${t(controlHint)}" aria-describedby="${controlHintId}"` : ''}>${t(pending ? (humanControl() ? 'returningControl' : 'takingControl') : humanControl() ? 'give' : 'take')}</button>` : `<span>Ubuntu · ${t('computerHint')}</span>`}${blocked && controlHint ? `<p id="${controlHintId}" class="takeover-call-hint" role="status">${t(controlHint)}</p>` : ''}</div></aside>`;
+}
+function syncScreenScope() {
+  const next = computerConnectionIdentity(currentState().settings.vm);
+  if (screenScope === next) return;
+  if (screenScope !== null) {
+    const target = document.querySelector<HTMLElement>('#screen-target'),
+      ime = document.querySelector<HTMLTextAreaElement>('#vm-ime');
+    if (target) target.onpointerup = null;
+    if (ime) {
+      ime.value = '';
+      if (document.activeElement === ime) ime.blur();
+    }
+    if (screenTimer !== null) clearInterval(screenTimer);
+    screenTimer = null;
+    screenLoad = null;
+    screenEpoch++;
+    screenAbort?.abort();
+    if (screenURL) URL.revokeObjectURL(screenURL);
+    screenURL = '';
+    screenError = '';
+    screenFailures = 0;
+  }
+  screenScope = next;
 }
 function renderSettings() {
   const settings = currentState().settings,
@@ -2829,7 +2886,8 @@ async function saveVM() {
 }
 let inputChain: Promise<unknown> = Promise.resolve();
 function vmInput(input: Record<string, unknown>) {
-  const sessionId = currentState().computer?.sessionId;
+  const sessionId = currentState().computer?.sessionId,
+    connection = computerConnectionIdentity(currentState().settings.vm);
   inputChain = inputChain
     .catch(() => {})
     .then(() => {
@@ -2844,7 +2902,20 @@ function vmInput(input: Record<string, unknown>) {
           ),
         );
       if (sessionId !== currentState().computer?.sessionId) throw Error(t('connectionChanged'));
-      return post('/input', { ...input, sessionId });
+      if (connection !== computerConnectionIdentity(currentState().settings.vm))
+        throw Error(t('connectionChanged'));
+      return post(
+        '/input',
+        { ...input, sessionId },
+        {
+          beforeSend: () =>
+            !unloading &&
+            !updateInstalling &&
+            computerInputReady() &&
+            sessionId === currentState().computer?.sessionId &&
+            connection === computerConnectionIdentity(currentState().settings.vm),
+        },
+      );
     })
     .catch((error) => toast(errorText(error)));
   return inputChain;
@@ -3332,9 +3403,19 @@ function bindComputerInput() {
   const target = document.querySelector<HTMLElement>('#screen-target'),
     ime = document.querySelector<HTMLTextAreaElement>('#vm-ime');
   if (!target || !ime) return;
-  if (!computerInputReady() && document.activeElement === ime) ime.blur();
+  if (!computerInputReady()) {
+    target.onpointerup = null;
+    ime.value = '';
+    if (document.activeElement === ime) ime.blur();
+  }
   if (boundComputerInputs.has(target)) return;
   boundComputerInputs.add(target);
+  const inputScope = () =>
+    JSON.stringify([
+      computerConnectionIdentity(currentState().settings.vm),
+      currentState().computer?.sessionId ?? null,
+    ]);
+  let compositionScope: string | null = null;
   const point = (e: Pick<MouseEvent, 'clientX' | 'clientY'>) => {
     const img = document.querySelector<HTMLImageElement>('#screen');
     if (!img) return null;
@@ -3373,10 +3454,16 @@ function bindComputerInput() {
     if (!start) return;
     e.preventDefault();
     target.setPointerCapture(e.pointerId);
-    const drag = { ...start, button: e.button, clientX: e.clientX, clientY: e.clientY };
+    const drag = {
+      ...start,
+      button: e.button,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      scope: inputScope(),
+    };
     target.onpointerup = (up) => {
       target.onpointerup = null;
-      if (!computerInputReady()) return;
+      if (!computerInputReady() || drag.scope !== inputScope()) return;
       const end = point(up);
       if (end) {
         if (Math.hypot(up.clientX - drag.clientX, up.clientY - drag.clientY) > 4)
@@ -3405,13 +3492,20 @@ function bindComputerInput() {
   const sendText = () => {
     const text = ime.value;
     ime.value = '';
-    if (!computerInputReady()) return;
+    if (!computerInputReady() || (compositionScope !== null && compositionScope !== inputScope()))
+      return;
     if (text) vmInput({ type: 'text', text });
   };
+  ime.addEventListener('compositionstart', () => {
+    compositionScope = inputScope();
+  });
   ime.oninput = (e) => {
     if (!e.isComposing) sendText();
   };
-  ime.addEventListener('compositionend', sendText);
+  ime.addEventListener('compositionend', () => {
+    sendText();
+    compositionScope = null;
+  });
   ime.onkeydown = (e) => {
     if (!computerInputReady()) return;
     if (e.isComposing || e.key === 'Process' || e.keyCode === 229) return;
@@ -3554,7 +3648,16 @@ async function action(a: string) {
     return;
   }
   if (a === 'screen-refresh') {
-    await screenLoad?.();
+    if (pendingActions.has(a) || !screenLoad) return;
+    const load = screenLoad;
+    pendingActions.add(a);
+    try {
+      render();
+      await load();
+    } finally {
+      pendingActions.delete(a);
+      if (!unloading) render();
+    }
     return;
   }
   if (a === 'computer') {
@@ -3631,6 +3734,8 @@ async function action(a: string) {
     return;
   }
   if (a === 'takeover' && callBlocksControl()) throw Error(t('callControlBusy'));
+  if (a === 'takeover' && pendingActions.has('connect')) throw Error(t('connectionChanged'));
+  if (a === 'takeover' && pendingActions.has('screen-refresh')) throw Error(t('connectionChanged'));
   if (a === 'takeover' && !humanControl() && !computerExecutorReady())
     throw Error(t(computerReachable() ? 'agentOfflineControl' : 'computerEmpty'));
   if (pendingActions.has(a)) return;
@@ -3859,6 +3964,8 @@ function screenVisible() {
     page === 'chat' &&
     chatMode === 'text' &&
     showComputer &&
+    !pendingActions.has('connect') &&
+    !pendingActions.has('import-vm') &&
     computerReachable() &&
     !document.hidden &&
     document.hasFocus()
@@ -3902,19 +4009,32 @@ function decodeScreenFrame(url: string, signal: AbortSignal): Promise<void> {
   });
 }
 function restartScreen() {
+  syncScreenScope();
   if (!screenVisible()) {
     if (screenTimer !== null) clearInterval(screenTimer);
     screenTimer = null;
     screenLoad = null;
-    screenEpoch++;
-    screenAbort?.abort();
+    if (!pendingActions.has('screen-refresh') || !screenRequestCurrent(screenEpoch, screenScope)) {
+      screenEpoch++;
+      screenAbort?.abort();
+    }
     return;
   }
   if (screenTimer) return;
-  const load = async () => {
-    if (screenBusy || !screenVisible()) return;
-    screenBusy = true;
+  const load = () => {
+    if (screenRequest) return screenRequest;
+    if (!screenVisible()) return Promise.resolve();
+    const request = loadFrame();
+    screenRequest = request;
+    const release = () => {
+      if (screenRequest === request) screenRequest = null;
+    };
+    void request.then(release, release);
+    return request;
+  };
+  const loadFrame = async () => {
     const epoch = screenEpoch,
+      scope = screenScope,
       controller = new AbortController();
     screenAbort = controller;
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -3927,10 +4047,10 @@ function restartScreen() {
       if (!response.ok) throw Error('Screen unavailable');
       const blob = await response.blob();
       if (!blob.type.startsWith('image/')) throw Error('Invalid screen');
-      if (epoch !== screenEpoch || !screenVisible()) return;
+      if (!screenRequestCurrent(epoch, scope)) return;
       candidate = URL.createObjectURL(blob);
       await decodeScreenFrame(candidate, controller.signal);
-      if (epoch !== screenEpoch || !screenVisible()) return;
+      if (!screenRequestCurrent(epoch, scope)) return;
       const img = document.querySelector<HTMLImageElement>('#screen');
       if (img) {
         const previous = screenURL;
@@ -3946,9 +4066,9 @@ function restartScreen() {
         if (hadStatus) render();
       }
     } catch {
-      if (epoch === screenEpoch && screenVisible()) {
+      if (screenRequestCurrent(epoch, scope)) {
         screenFailures++;
-        if (screenFailures >= 2 && !screenError) {
+        if ((screenFailures >= 2 || pendingActions.has('screen-refresh')) && !screenError) {
           screenError = true;
           render();
         }
@@ -3957,12 +4077,26 @@ function restartScreen() {
       if (candidate) URL.revokeObjectURL(candidate);
       clearTimeout(timeout);
       if (screenAbort === controller) screenAbort = null;
-      screenBusy = false;
     }
   };
   screenLoad = load;
   load();
   screenTimer = setInterval(load, 1200);
+}
+function screenRequestCurrent(epoch: number, scope: string | null) {
+  return (
+    epoch === screenEpoch &&
+    scope === computerConnectionIdentity(currentState().settings.vm) &&
+    !unloading &&
+    page === 'chat' &&
+    chatMode === 'text' &&
+    showComputer &&
+    !document.hidden &&
+    document.hasFocus() &&
+    !pendingActions.has('connect') &&
+    !pendingActions.has('import-vm') &&
+    (computerReachable() || pendingActions.has('screen-refresh'))
+  );
 }
 async function loadVoices() {
   if (currentState().worker.status !== ConnectionStatus.Online) {
@@ -5062,6 +5196,7 @@ export type MainFunctions = {
   renderOutgoingMessages: typeof renderOutgoingMessages;
   positionReactionMenus: typeof positionReactionMenus;
   renderComputer: typeof renderComputer;
+  syncScreenScope: typeof syncScreenScope;
   renderSettings: typeof renderSettings;
   loadSettingsCategory: typeof loadSettingsCategory;
   appearanceColor: typeof appearanceColor;
@@ -5135,6 +5270,7 @@ export type MainFunctions = {
   screenVisible: typeof screenVisible;
   decodeScreenFrame: typeof decodeScreenFrame;
   restartScreen: typeof restartScreen;
+  screenRequestCurrent: typeof screenRequestCurrent;
   loadVoices: typeof loadVoices;
   startCall: typeof startCall;
   cleanupCall: typeof cleanupCall;
@@ -5160,6 +5296,8 @@ export type MainFunctions = {
   boot: typeof boot;
 };
 export type MainBindings = {
+  screenScope: typeof screenScope;
+  screenRequest: typeof screenRequest;
   pendingActions: typeof pendingActions;
   unloading: typeof unloading;
   outgoingMessages: typeof outgoingMessages;
