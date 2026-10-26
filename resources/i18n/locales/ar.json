@@ -502,7 +502,7 @@
   "Pair Telegram account": "ربط حساب Telegram",
   "Pairing code expires": "تنتهي صلاحية رمز الربط",
   "Password, token or API key": "كلمة مرور أو رمز أو مفتاح API",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "تُشفّر كلمات المرور والرموز ومفاتيح API على كمبيوتر العمل. لا تظهر هنا إلا الأسماء وتفاصيل الحساب.",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "تُشفّر كلمات المرور والرموز ومفاتيح API على كمبيوتر العمل وتبقى مخفية حتى تختار إظهارها.",
   "Past 365 days": "آخر 365 يوماً",
   "Path on work computer": "المسار على كمبيوتر العمل",
   "Pause": "إيقاف مؤقت",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "لا يدعم اتصال الجهاز الافتراضي هذا تعليقًا يمكن التحقق منه.",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "تعذر تأكيد تعليق الجهاز الافتراضي. تحقق من حالته وأي طلب تأكيد من المسؤول.",
   "Work pause could not be confirmed.": "تعذر تأكيد إيقاف العمل مؤقتًا.",
-  "dant remains open. Check the operation status in Settings before exiting.": "يبقى dant مفتوحًا. تحقق من حالة العملية في الإعدادات قبل الإنهاء."
+  "dant remains open. Check the operation status in Settings before exiting.": "يبقى dant مفتوحًا. تحقق من حالة العملية في الإعدادات قبل الإنهاء.",
+  "Show": "إظهار",
+  "Hide": "إخفاء",
+  "Show this multiline value to edit it.": "أظهر هذه القيمة متعددة الأسطر لتعديلها."
 }

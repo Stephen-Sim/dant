@@ -502,7 +502,7 @@
   "Pair Telegram account": "Telegram 계정 연결",
   "Pairing code expires": "연결 코드 만료",
   "Password, token or API key": "비밀번호, 토큰 또는 API 키",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "비밀번호, 토큰 및 API 키는 작업 컴퓨터에서 암호화됩니다. 여기에는 이름과 계정 정보만 표시됩니다.",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "비밀번호, 토큰 및 API 키는 작업 컴퓨터에서 암호화되며, 표시하도록 선택할 때까지 숨겨집니다.",
   "Past 365 days": "지난 365일",
   "Path on work computer": "작업 컴퓨터의 경로",
   "Pause": "일시 중지",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "이 가상 머신 연결은 검증 가능한 일시 중단을 지원하지 않습니다.",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "가상 머신이 일시 중단되었는지 확인하지 못했습니다. 가상 머신 상태와 관리자 확인 창을 확인하세요.",
   "Work pause could not be confirmed.": "작업이 일시 중지되었는지 확인하지 못했습니다.",
-  "dant remains open. Check the operation status in Settings before exiting.": "dant는 열린 상태로 유지됩니다. 종료하기 전에 설정에서 작업 상태를 확인하세요."
+  "dant remains open. Check the operation status in Settings before exiting.": "dant는 열린 상태로 유지됩니다. 종료하기 전에 설정에서 작업 상태를 확인하세요.",
+  "Show": "표시",
+  "Hide": "숨기기",
+  "Show this multiline value to edit it.": "여러 줄로 된 이 값을 편집하려면 표시하세요."
 }

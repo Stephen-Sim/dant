@@ -502,7 +502,7 @@
   "Pair Telegram account": "Telegram खाता जोड़ें",
   "Pairing code expires": "जोड़ने का कोड समाप्त होगा",
   "Password, token or API key": "पासवर्ड, टोकन या API कुंजी",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "पासवर्ड, टोकन और API कुंजियाँ कार्य कंप्यूटर पर एन्क्रिप्ट होती हैं। यहाँ केवल नाम और खाता विवरण दिखते हैं।",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "पासवर्ड, टोकन और API कुंजियाँ कार्य कंप्यूटर पर एन्क्रिप्ट की जाती हैं और तब तक छिपी रहती हैं जब तक आप उन्हें दिखाने का विकल्प नहीं चुनते।",
   "Past 365 days": "पिछले 365 दिन",
   "Path on work computer": "कार्य कंप्यूटर का पथ",
   "Pause": "रोकें",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "यह वर्चुअल मशीन कनेक्शन सत्यापित निलंबन का समर्थन नहीं करता।",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "वर्चुअल मशीन के निलंबन की पुष्टि नहीं हो सकी। उसकी स्थिति और प्रशासक के किसी पुष्टि अनुरोध की जाँच करें।",
   "Work pause could not be confirmed.": "काम के रुके होने की पुष्टि नहीं हो सकी।",
-  "dant remains open. Check the operation status in Settings before exiting.": "dant खुला रहेगा। बंद करने से पहले सेटिंग में प्रक्रिया की स्थिति जाँचें।"
+  "dant remains open. Check the operation status in Settings before exiting.": "dant खुला रहेगा। बंद करने से पहले सेटिंग में प्रक्रिया की स्थिति जाँचें।",
+  "Show": "दिखाएँ",
+  "Hide": "छिपाएँ",
+  "Show this multiline value to edit it.": "इस बहुपंक्ति मान को संपादित करने के लिए दिखाएँ।"
 }

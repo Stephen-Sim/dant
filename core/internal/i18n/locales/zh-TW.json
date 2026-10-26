@@ -502,7 +502,7 @@
   "Pair Telegram account": "配對 Telegram 帳號",
   "Pairing code expires": "配對碼到期時間",
   "Password, token or API key": "密碼、Token 或 API Key",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "密碼、Token 和 API Key 加密儲存在工作電腦中。界面只顯示名稱與帳號。",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "密碼、Token 和 API Key 加密儲存在工作電腦中，只有你選擇顯示時才可見。",
   "Past 365 days": "最近 365 天",
   "Path on work computer": "工作電腦中的路徑",
   "Pause": "暫停",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "此虛擬機連線不支援可驗證的掛起操作。",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "無法確認虛擬機已掛起，請核對虛擬機狀態及管理員確認。",
   "Work pause could not be confirmed.": "無法確認工作已暫停。",
-  "dant remains open. Check the operation status in Settings before exiting.": "dant 保持開啟，請先到設定核對操作狀態，再退出。"
+  "dant remains open. Check the operation status in Settings before exiting.": "dant 保持開啟，請先到設定核對操作狀態，再退出。",
+  "Show": "顯示",
+  "Hide": "隱藏",
+  "Show this multiline value to edit it.": "選擇顯示後可編輯這個多行值。"
 }

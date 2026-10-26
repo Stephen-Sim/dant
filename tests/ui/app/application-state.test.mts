@@ -41,6 +41,28 @@ const snapshot = (): AppState => ({
   call: null,
 });
 
+test('worker secret-owner identity preserves supported omissions and validates supplied runtime metadata', () => {
+  const value = snapshot();
+  assert.equal(readAppState(value), value);
+  for (const metadata of [
+    { runtimeId: null, generation: 0 },
+    { runtimeId: 'runtime-fixture', generation: 3 },
+  ]) {
+    const current = { ...value, worker: { ...value.worker, ...metadata } };
+    assert.equal(readAppState(current), current);
+  }
+  for (const metadata of [
+    { runtimeId: false },
+    { runtimeId: {} },
+    { generation: null },
+    { generation: '1' },
+    { generation: -1 },
+    { generation: 1.5 },
+    { generation: Number.MAX_SAFE_INTEGER + 1 },
+  ])
+    assert.throws(() => readAppState({ ...value, worker: { ...value.worker, ...metadata } }));
+});
+
 test('VM profile discovery accepts omitted and legacy nullable errors while validating profile fields', () => {
   const current = {
       id: 'current-profile',

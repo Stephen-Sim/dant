@@ -5,6 +5,7 @@ import type {
   UiState,
   UiSettings,
   UiConnection,
+  UiWorkerConnection,
   VmSettings,
   Attachment,
   UsageSnapshot,
@@ -57,7 +58,7 @@ export interface RealtimeStatus {
   subscription?: { available?: boolean };
   api?: { available?: boolean };
 }
-export interface WorkerState extends UiConnection {
+export interface WorkerState extends UiWorkerConnection {
   status: ConnectionStatusValue;
   account?: { email?: string; planType?: string } | null;
   models: { model: string; displayName?: string }[];

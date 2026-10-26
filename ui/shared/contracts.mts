@@ -140,6 +140,11 @@ export interface UiConnection {
   cached?: boolean;
   serviceUpdate?: UiServiceUpdate;
 }
+export interface UiWorkerConnection extends UiConnection {
+  runtimeId?: string | null;
+  generation?: number;
+  account?: { email?: string; planType?: string } | null;
+}
 export interface CallState {
   id?: string;
   callId?: string;
@@ -187,7 +192,7 @@ export interface UiState {
   conversationId?: string;
   settings?: UiSettings;
   controller?: UiConnection;
-  worker?: UiConnection;
+  worker?: UiWorkerConnection;
   active?: UiActiveTask | null;
   queue?: string[];
   messages?: ChatMessage[];

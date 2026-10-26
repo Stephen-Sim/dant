@@ -35,7 +35,8 @@ const same = (left: RevealIdentity | null, right: RevealIdentity | null) =>
   left.modal === right.modal;
 
 // Fetched plaintext has no path into drafts, snapshots, markup, or Save payloads.
-// The readonly live field is the only consumer, and every async result is fenced.
+// The live editor display is its consumer; replacement intent is owned separately.
+// Every async result is fenced before it can reach that display.
 export function createCredentialReveal({
   request,
   identity,

@@ -502,7 +502,7 @@
   "Pair Telegram account": "Associa account Telegram",
   "Pairing code expires": "Scadenza codice associazione",
   "Password, token or API key": "Password, token o chiave API",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "Password, token e chiavi API sono cifrati sul computer di lavoro. Qui compaiono solo nomi e dettagli account.",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "Password, token e chiavi API vengono cifrati sul computer di lavoro e restano nascosti finché non scegli di mostrarli.",
   "Past 365 days": "Ultimi 365 giorni",
   "Path on work computer": "Percorso sul computer di lavoro",
   "Pause": "Pausa",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "Questa connessione alla macchina virtuale non supporta una sospensione verificabile.",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Non è stato possibile confermare la sospensione della macchina virtuale. Verifica il suo stato ed eventuali richieste di conferma dell’amministratore.",
   "Work pause could not be confirmed.": "Non è stato possibile confermare la pausa del lavoro.",
-  "dant remains open. Check the operation status in Settings before exiting.": "dant rimane aperto. Verifica lo stato dell’operazione nelle Impostazioni prima di uscire."
+  "dant remains open. Check the operation status in Settings before exiting.": "dant rimane aperto. Verifica lo stato dell’operazione nelle Impostazioni prima di uscire.",
+  "Show": "Mostra",
+  "Hide": "Nascondi",
+  "Show this multiline value to edit it.": "Mostra questo valore su più righe per modificarlo."
 }

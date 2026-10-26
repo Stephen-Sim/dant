@@ -502,7 +502,7 @@
   "Pair Telegram account": "Pasangkan akaun Telegram",
   "Pairing code expires": "Kod pasangan tamat tempoh",
   "Password, token or API key": "Kata laluan, token atau kunci API",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "Kata laluan, token dan kunci API disulitkan pada komputer kerja. Hanya nama dan butiran akaun dipaparkan di sini.",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "Kata laluan, token dan kunci API disulitkan pada komputer kerja dan kekal tersembunyi sehingga anda memilih untuk memaparkannya.",
   "Past 365 days": "365 hari terakhir",
   "Path on work computer": "Laluan pada komputer kerja",
   "Pause": "Jeda",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "Sambungan mesin maya ini tidak menyokong penangguhan yang boleh disahkan.",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Penangguhan mesin maya belum dapat disahkan. Semak keadaannya dan sebarang permintaan pengesahan pentadbir.",
   "Work pause could not be confirmed.": "Jeda kerja belum dapat disahkan.",
-  "dant remains open. Check the operation status in Settings before exiting.": "dant kekal terbuka. Semak status operasi dalam Tetapan sebelum keluar."
+  "dant remains open. Check the operation status in Settings before exiting.": "dant kekal terbuka. Semak status operasi dalam Tetapan sebelum keluar.",
+  "Show": "Papar",
+  "Hide": "Sembunyikan",
+  "Show this multiline value to edit it.": "Paparkan nilai berbilang baris ini untuk mengeditnya."
 }

@@ -502,7 +502,7 @@
   "Pair Telegram account": "Telegramアカウントをペアリング",
   "Pairing code expires": "ペアリングコードの有効期限",
   "Password, token or API key": "パスワード、トークン、APIキー",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "パスワード、トークン、APIキーは作業用コンピューター上で暗号化されます。ここには名前とアカウント情報のみ表示されます。",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "パスワード、トークン、APIキーは作業用コンピューター上で暗号化され、表示を選択するまで非表示のままです。",
   "Past 365 days": "過去365日間",
   "Path on work computer": "作業用コンピューター上のパス",
   "Pause": "一時停止",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "この仮想マシン接続では、検証可能な中断操作を利用できません。",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "仮想マシンの中断を確認できませんでした。仮想マシンの状態と管理者の確認画面を確認してください。",
   "Work pause could not be confirmed.": "作業が一時停止したことを確認できませんでした。",
-  "dant remains open. Check the operation status in Settings before exiting.": "dant は開いたままです。終了する前に設定で操作の状態を確認してください。"
+  "dant remains open. Check the operation status in Settings before exiting.": "dant は開いたままです。終了する前に設定で操作の状態を確認してください。",
+  "Show": "表示",
+  "Hide": "非表示",
+  "Show this multiline value to edit it.": "この複数行の値を編集するには、表示してください。"
 }

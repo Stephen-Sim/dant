@@ -502,7 +502,7 @@
   "Pair Telegram account": "Telegram hesabını eşleştir",
   "Pairing code expires": "Eşleştirme kodunun geçerlilik süresi",
   "Password, token or API key": "Parola, token veya API anahtarı",
-  "Passwords, tokens and API keys are encrypted on the work computer. Only names and account details appear here.": "Parolalar, tokenlar ve API anahtarları iş bilgisayarında şifrelenir. Burada yalnızca adlar ve hesap bilgileri görünür.",
+  "Passwords, tokens and API keys are encrypted on the work computer and hidden until you choose to show them.": "Parolalar, tokenlar ve API anahtarları iş bilgisayarında şifrelenir ve siz göstermeyi seçene kadar gizli kalır.",
   "Past 365 days": "Son 365 gün",
   "Path on work computer": "İş bilgisayarındaki yol",
   "Pause": "Duraklat",
@@ -1072,5 +1072,8 @@
   "This VM connection does not support verified suspension.": "Bu sanal makine bağlantısı doğrulanabilir askıya almayı desteklemiyor.",
   "VM suspension could not be confirmed. Verify the VM state and any administrator confirmation.": "Sanal makinenin askıya alındığı doğrulanamadı. Durumunu ve varsa yönetici onayını kontrol edin.",
   "Work pause could not be confirmed.": "Çalışmanın duraklatıldığı doğrulanamadı.",
-  "dant remains open. Check the operation status in Settings before exiting.": "dant açık kalır. Çıkmadan önce Ayarlar’dan işlemin durumunu kontrol edin."
+  "dant remains open. Check the operation status in Settings before exiting.": "dant açık kalır. Çıkmadan önce Ayarlar’dan işlemin durumunu kontrol edin.",
+  "Show": "Göster",
+  "Hide": "Gizle",
+  "Show this multiline value to edit it.": "Bu çok satırlı değeri düzenlemek için gösterin."
 }

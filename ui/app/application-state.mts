@@ -339,6 +339,11 @@ const connection = (value: unknown): value is WorkerState['status'] =>
 const worker = objectOf<WorkerState>({
   status: connection,
   cached: optional(boolean),
+  runtimeId: optional(nullable(string)),
+  generation: optional(
+    (value): value is number =>
+      Number.isSafeInteger(value) && typeof value === 'number' && value >= 0,
+  ),
   serviceUpdate: optional(serviceUpdate),
   error: optional(nullable(string)),
   account: optional(

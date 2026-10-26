@@ -4210,6 +4210,48 @@ textarea:disabled {
 .managed-dialog input[type='checkbox'] {
   width: 15px;
 }
+.credential-secret-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.credential-secret-control {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--desktop-surface);
+}
+.credential-secret-control > input,
+.credential-secret-control > textarea {
+  flex: 1 1 0;
+  width: 0;
+  border: 0;
+  background: transparent;
+}
+.credential-secret-control > .credential-input-toggle {
+  flex: 0 0 auto;
+  max-width: 50%;
+  min-height: 26px;
+  margin: 3px;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-soft);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.credential-secret-control > .credential-input-toggle:hover {
+  background: var(--hover);
+}
+.credential-secret-field > p {
+  margin: 0;
+}
+.credential-secret-control > [hidden] {
+  display: none;
+}
 .skill-files {
   margin: 16px 0;
 }
